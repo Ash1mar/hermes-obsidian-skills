@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hermes Obsidian Controlled Ingest"
+  short_description: "Governed Hermes workflow for Obsidian knowledge ingestion."
+  default_prompt: "Use this skill to classify and ingest source files into an Obsidian vault with raw-source protection, artifact routing, concept governance, and optional MarkItDown conversion."
