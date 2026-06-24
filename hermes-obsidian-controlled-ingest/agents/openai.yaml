@@ -1,4 +1,4 @@
 interface:
   display_name: "Hermes Obsidian Controlled Ingest"
-  short_description: "Governed bundle ingestion with section ledgers"
-  default_prompt: "Use $hermes-obsidian-controlled-ingest to validate a Bundle v2, reconcile its source map and section ledger, and ingest the next eligible section into the governed Obsidian vault."
+  short_description: "Governed source onboarding and bundle ingestion"
+  default_prompt: "Use $hermes-obsidian-controlled-ingest to preserve a new source, build and validate any required Bundle v2, and ingest the next eligible section into the governed Obsidian vault."

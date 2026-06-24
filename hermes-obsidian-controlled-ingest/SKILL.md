@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-controlled-ingest
-description: Governed Obsidian vault ingestion for Markdown, engineering PDFs, layered MinerU document bundles, and other source files. Use when asked to preserve raw sources, classify material, create source maps, manage resumable section ledgers, ingest long documents by bounded ranges, prevent duplicate or stale section ingestion, route cards/concepts/projects/spec indexes, validate or convert engineering PDFs, retain page/table/figure evidence, enforce quality gates, maintain Dataview metadata, or record ingest logs and source maps.
+description: Governed Obsidian vault ingestion for Markdown, engineering PDFs, layered MinerU document bundles, and other source files. Use when asked to onboard a new external source, preserve raw sources, initialize local MinerU processing for a new engineering PDF, classify material, create source maps, manage resumable section ledgers, ingest long documents by bounded ranges, prevent duplicate or stale section ingestion, route cards/concepts/projects/spec indexes, validate or convert engineering PDFs, retain page/table/figure evidence, enforce quality gates, maintain Dataview metadata, or record ingest logs and source maps.
 ---
 
 # Hermes Obsidian Controlled Ingest
@@ -8,9 +8,9 @@ description: Governed Obsidian vault ingestion for Markdown, engineering PDFs, l
 Turn source files into governed Obsidian artifacts without rewriting raw material or overcreating concepts.
 
 ```text
-source
--> optional conversion or layered PDF bundle
+external or vault source
 -> 10_Raw preservation
+-> optional conversion or layered PDF bundle
 -> material classification
 -> source map or bounded ingestion
 -> governed artifact
@@ -24,10 +24,21 @@ Before writing:
 1. Read the vault `AGENTS.md` and `_system/prompts/hermes-ingest-rules.md` when present.
 2. Read `_system/metadata/concept-registry.md` before creating or linking concepts.
 3. Inspect `30_Cards/`, `40_Concepts/`, `50_Projects/`, and `_system/reports/`.
-4. Treat `10_Raw/` as read-only.
+4. Treat existing content in `10_Raw/` as read-only.
 5. Preserve the source path in every derived artifact.
 
 See `references/vault-structure.md` for the validated vault layout and artifact templates.
+
+## New Source Onboarding
+
+When the source is outside the vault:
+
+1. Require an initialized governed vault. If it does not exist, use `hermes-obsidian-vault-bootstrap` first.
+2. Copy the source unchanged into `10_Raw/`; never overwrite a conflicting file.
+3. Verify the copied source against the original by SHA-256, then treat it as read-only.
+4. Run all conversion from the vault copy and write derived output under `10_Raw/converted/`.
+5. For a new engineering PDF or complex manual, create a fresh Bundle v2 with the configured local MinerU path. Do not reuse prior MinerU output or a prior bundle unless the user explicitly requests reuse or resumption.
+6. Stop and report instead of substituting a weaker conversion when the required MinerU path is unavailable or Bundle validation fails.
 
 ## Source Handling
 
