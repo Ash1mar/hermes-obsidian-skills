@@ -1,4 +1,4 @@
 interface:
   display_name: "Hermes Obsidian Controlled Ingest"
-  short_description: "Governed Hermes workflow for Obsidian knowledge ingestion."
-  default_prompt: "Use this skill to classify and ingest source files into an Obsidian vault with raw-source protection, artifact routing, concept governance, and optional MarkItDown conversion."
+  short_description: "Governed Markdown and engineering PDF ingestion"
+  default_prompt: "Use $hermes-obsidian-controlled-ingest to validate a layered engineering document bundle, create a source map, and ingest selected sections into the governed Obsidian vault."

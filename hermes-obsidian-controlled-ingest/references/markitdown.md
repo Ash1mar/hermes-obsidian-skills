@@ -1,17 +1,19 @@
 # MarkItDown Integration
 
-Use MarkItDown as a pre-ingestion conversion layer for non-Markdown sources.
+Use MarkItDown as a pre-ingestion conversion layer for non-PDF sources and simple PDF fallback.
 
 ## Role In This Workflow
 
 ```text
-PDF / Office / HTML / image / audio / EPUB / ZIP / URL
+Office / HTML / image / audio / EPUB / ZIP / URL / simple PDF fallback
 -> MarkItDown
 -> Markdown under 10_Raw/converted/
 -> governed Hermes ingestion
 ```
 
 MarkItDown should not decide knowledge structure. It only normalizes source format into Markdown.
+
+For engineering PDFs and complex manuals, prefer the MinerU bundle workflow in `mineru-pdf-bundle.md`.
 
 ## Supported Source Types
 
