@@ -177,10 +177,13 @@ Do not recursively scan `_evidence/` during ordinary ingestion. Open only the sp
 ```text
 manifest.json
 -> bundle validator
+-> initialize/reconcile source map + section ledger
 -> outline.json
--> selected document.md line range
+-> claim one ledger section with revision checking
+-> selected non-overlapping ledger content_ranges from document.md
 -> linked table/image only when needed
 -> _evidence only for targeted QA
+-> record outputs and terminal section status
 ```
 
 Validate with:
@@ -195,6 +198,8 @@ The validator exits:
 - `0` for pass
 - `1` for warn
 - `2` for fail
+
+For staged ingestion, resumption, deduplication, and Bundle change detection, continue with `scripts/manage_bundle_ingest.py` and read `bundle-source-map-ledger.md`.
 
 ## Conversion Commands
 

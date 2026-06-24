@@ -160,3 +160,26 @@ domains:
 ## 后续建议
 ```
 
+## Bundle Source Map and Section Ledger
+
+For Bundle v2, generate these paired control files under `_system/reports/`:
+
+```text
+<source-stem>.source-map.md
+<source-stem>.section-ledger.json
+```
+
+Create and refresh them with `scripts/manage_bundle_ingest.py`; do not hand-copy the generic report template. The Markdown source map is the human-readable view, while the JSON ledger is the authority for section status, revisions, hashes, outputs, and resumption.
+
+Every governed artifact created from a Bundle section must include:
+
+```yaml
+source_bundle_id:
+source_sha256:
+source_section_id:
+source_lines:
+source_pages: []
+source_assets: []
+```
+
+See `references/bundle-source-map-ledger.md` for lifecycle and recovery rules.

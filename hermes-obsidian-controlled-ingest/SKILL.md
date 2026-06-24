@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-controlled-ingest
-description: Governed Obsidian vault ingestion for Markdown, engineering PDFs, layered MinerU document bundles, and other source files. Use when asked to preserve raw sources, classify material, create source maps, ingest long documents by bounded ranges, route cards/concepts/projects/spec indexes, validate or convert engineering PDFs, retain page/table/figure evidence, enforce quality gates, maintain Dataview metadata, or record ingest logs and source maps.
+description: Governed Obsidian vault ingestion for Markdown, engineering PDFs, layered MinerU document bundles, and other source files. Use when asked to preserve raw sources, classify material, create source maps, manage resumable section ledgers, ingest long documents by bounded ranges, prevent duplicate or stale section ingestion, route cards/concepts/projects/spec indexes, validate or convert engineering PDFs, retain page/table/figure evidence, enforce quality gates, maintain Dataview metadata, or record ingest logs and source maps.
 ---
 
 # Hermes Obsidian Controlled Ingest
@@ -45,7 +45,7 @@ document_bundle/
   _evidence/
 ```
 
-Use `scripts/convert_pdf_with_mineru_bundle.py`. Use `--model-source local` in the repaired offline MinerU environment. Read `references/mineru-pdf-bundle.md` before conversion, validation, or ingestion.
+Use `scripts/convert_pdf_with_mineru_bundle.py`. Use `--model-source local` in the repaired offline MinerU environment. Read `references/mineru-pdf-bundle.md` before conversion or validation. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
 
 For Word, PowerPoint, Excel, HTML, CSV, JSON, XML, image, audio, EPUB, ZIP, URL, or a simple PDF when MinerU is unavailable:
 
@@ -62,14 +62,17 @@ Keep the agent-facing path small. Do not recursively scan a bundle.
 
 1. Read `manifest.json` first.
 2. Run `scripts/validate_document_bundle.py <bundle>` before downstream writes.
-3. Stop at an ingest log or QA report when validation returns `fail`.
-4. Allow a source map when status is `warn`, but do not promote affected formulas, tables, figures, or parameters as authoritative facts.
-5. Read `outline.json` to select bounded sections.
-6. Read only the required line range from `document.md`.
-7. Follow linked files under `tables/` or `images/` only when the selected section needs them.
-8. Do not read `_evidence/` by default. Open it only for targeted QA of layout, page order, formulas, tables, or extraction disputes.
+3. Run `scripts/manage_bundle_ingest.py init <bundle> --reports-dir <vault>/_system/reports` at the start of every session. This creates or reconciles the source map and section ledger.
+4. Stop at an ingest log or QA report when validation returns `fail` or the ledger state is `blocked`.
+5. Allow a source map when status is `warn`, but do not promote affected formulas, tables, figures, or parameters as authoritative facts.
+6. Select an eligible ledger section. Do not duplicate an `ingested` section or reuse a `stale` section without review.
+7. Claim the section as `in_progress` with `--expected-revision` before downstream writes.
+8. Read only its ledger `content_ranges` from `document.md`. The enclosing `start_line`/`end_line` scope is context, not an instruction to duplicate nested child content.
+9. Follow linked files under `tables/` or `images/` only when the selected section needs them.
+10. Record every created output and finish the section as `ingested`, `qa_required`, or `skipped`. Never leave a successful run only in prose logs.
+11. Do not read `_evidence/` by default. Open it only for targeted QA of layout, page order, formulas, tables, or extraction disputes.
 
-Treat `document.md` as the single normalized text source. Do not duplicate every section into separate Markdown files. Use outline line ranges for staged ingestion.
+Treat `document.md` as the single normalized text source. Do not duplicate every section into separate Markdown files. Use the ledger's non-overlapping `content_ranges` for staged ingestion and the JSON ledger as the section-state authority.
 
 Honor `manifest.quality.review_required`. Verify engineering formulas, table structure, and figure internals against page evidence before turning them into reusable rules or parameters.
 
@@ -130,13 +133,14 @@ See `references/concept-governance.md`.
 
 For a long, composite, or engineering-dense source:
 
-1. Create a source map first.
+1. Initialize or reconcile the generated source map and section ledger first.
 2. Do not create cards or concepts in the same run unless explicitly requested.
-3. Select later work by `outline.json` section and `document.md` line range.
+3. Select later work by ledger section and its non-overlapping `document.md` `content_ranges`.
 4. Load tables and figures only for the selected range.
 5. Limit cards per run.
 6. Put candidate concepts through review before creation.
 7. Keep unverified formulas and parameters in the source map as QA items, not facts.
+8. Resume from ledger status and revision; do not infer completion from existing filenames alone.
 
 ## Batch Ingestion
 
@@ -154,10 +158,11 @@ Report every run with:
 1. Whether `10_Raw/` remained unchanged.
 2. Material classification and evidence.
 3. Bundle schema/profile and quality status when applicable.
-4. Exact sections, line ranges, tables, and figures read.
-5. Files created.
-6. Possible artifacts not created and why.
-7. Whether any concept page or registry entry changed and why.
-8. Existing concepts reused and relationship types.
-9. Candidate concepts and decisions.
-10. Extraction QA items and recommended next step.
+4. Bundle id, ledger revision, and section status transition when applicable.
+5. Exact sections, line ranges, tables, and figures read.
+6. Files created and recorded in the section ledger.
+7. Possible artifacts not created and why.
+8. Whether any concept page or registry entry changed and why.
+9. Existing concepts reused and relationship types.
+10. Candidate concepts and decisions.
+11. Extraction QA items and recommended next step.

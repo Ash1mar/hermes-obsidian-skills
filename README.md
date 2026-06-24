@@ -54,6 +54,7 @@ Check helper script syntax with:
 ```powershell
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\convert_pdf_with_mineru_bundle.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\validate_document_bundle.py"
+python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\manage_bundle_ingest.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\convert_with_markitdown.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-bootstrap\scripts\init_obsidian_vault.py"
 ```
@@ -70,6 +71,7 @@ Main helper:
 
 - `hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py`
 - `hermes-obsidian-controlled-ingest/scripts/validate_document_bundle.py`
+- `hermes-obsidian-controlled-ingest/scripts/manage_bundle_ingest.py`
 
 It creates a layered bundle:
 
@@ -83,7 +85,17 @@ document_bundle/
   _evidence/
 ```
 
-`document.md` remains the single normalized text source. Hermes reads `manifest.json`, then `outline.json`, then a selected `document.md` line range. Tables and figures are loaded only when referenced by that range. `_evidence/` preserves selected MinerU QA artifacts but is excluded from default ingestion.
+`document.md` remains the single normalized text source. Hermes reads `manifest.json`, then `outline.json`, then the selected section's non-overlapping ledger `content_ranges`. Parent scopes remain useful for navigation without causing duplicate child ingestion. Tables and figures are loaded only when referenced by that section. `_evidence/` preserves selected MinerU QA artifacts but is excluded from default ingestion.
+
+For staged or multi-session ingestion, initialize a human-readable source map and a machine-readable section ledger under the vault `_system/reports/` directory:
+
+```bash
+python3 hermes-obsidian-controlled-ingest/scripts/manage_bundle_ingest.py \
+  init "/path/to/input_document_bundle" \
+  --reports-dir "/path/to/vault/_system/reports"
+```
+
+Hermes uses ledger revisions and per-section content hashes to resume work, prevent duplicate ingestion, and mark changed completed sections as stale.
 
 By default, figures and charts are extracted as visual evidence files and referenced from Markdown. Their internals are not OCR-expanded unless explicitly requested through MinerU image/chart analysis. Engineering formulas, table structure, and figure internals remain review-required before they become authoritative knowledge.
 
