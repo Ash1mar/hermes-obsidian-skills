@@ -12,6 +12,12 @@ This repository stores local skills and tool-integration notes for the Hermes + 
   - Supports layered MinerU document bundle v2 for engineering manuals, with a small agent-facing Markdown/outline contract and a non-default QA evidence layer.
   - Supports MarkItDown as an optional pre-ingestion conversion layer for non-PDF sources and simple fallback conversion.
 
+- `hermes-obsidian-controlled-query/`
+  - Governed read-only query workflow for existing Hermes + Obsidian vaults.
+  - Searches governed layers before source reports and converted raw bundles.
+  - Distinguishes vault facts, source-backed evidence, agent inference, QA risks, and gaps.
+  - Prevents query runs from creating or modifying cards, concepts, reports, or raw material unless writeback is explicitly requested.
+
 - `hermes-obsidian-vault-bootstrap/`
   - Initializes governed Obsidian vaults.
   - Creates the standard folder layout, prompts, templates, metadata registries, Dataview indexes, and setup report.
@@ -42,10 +48,11 @@ hermes-obsidian-skills/
 
 ## Validation
 
-Validate both skills with:
+Validate skills with:
 
 ```powershell
 python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest"
+python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-query"
 python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-bootstrap"
 ```
 
