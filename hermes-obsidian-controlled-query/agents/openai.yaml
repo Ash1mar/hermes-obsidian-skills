@@ -1,4 +1,4 @@
 interface:
   display_name: "Hermes Obsidian Controlled Query"
   short_description: "Run read-only governed queries over Hermes Obsidian vaults."
-  default_prompt: "Use this skill to answer a question from a Hermes Obsidian vault without writing to the vault unless explicitly asked."
+  default_prompt: "Use this skill for a read-only Hermes Obsidian vault query. Provide the vault path and question; the skill handles search order, evidence packets, QA labels, and writeback boundaries."

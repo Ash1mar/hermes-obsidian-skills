@@ -35,6 +35,18 @@ Treat these paths as read-only by default:
 
 If the answer suggests a durable artifact, recommend a controlled writeback step instead of doing it.
 
+## Minimal Prompt Contract
+
+Users should only need to provide:
+
+1. The vault path or enough context to identify the vault.
+2. The question or list of questions.
+3. Any explicit scope preference, such as "only use ingested FNP manuals" or "include source-page evidence".
+
+Do not require users to restate this skill's search order, evidence packet fields, QA labels, or writeback restrictions in every prompt. Infer and apply those rules from this skill.
+
+If the user asks for an engineering answer and does not specify an output format, use the full controlled-query answer shape with evidence packets.
+
 ## First Reads
 
 At the start of a vault query, read only the minimum governance files needed:
