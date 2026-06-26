@@ -1,4 +1,4 @@
 interface:
   display_name: "Hermes Obsidian Controlled Ingest"
-  short_description: "Governed source onboarding and bundle ingestion"
-  default_prompt: "Use $hermes-obsidian-controlled-ingest to preserve a new source, build and validate any required Bundle v2, and ingest the next eligible section into the governed Obsidian vault."
+  short_description: "Governed ingest, recovery, and synthesis"
+  default_prompt: "Use $hermes-obsidian-controlled-ingest to detect the vault/source/bundle state, recover or resume as needed, ingest eligible content, and synthesize high-confidence knowledge into the governed Obsidian vault."
