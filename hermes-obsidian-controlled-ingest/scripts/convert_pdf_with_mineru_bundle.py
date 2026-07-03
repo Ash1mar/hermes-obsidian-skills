@@ -26,6 +26,11 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
+import urllib.error
+import urllib.request
+import uuid
+import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -102,6 +107,227 @@ def run_mineru(args: argparse.Namespace, work_dir: Path) -> None:
     except subprocess.CalledProcessError as exc:
         print(f"MinerU conversion failed with exit code {exc.returncode}.", file=sys.stderr)
         raise SystemExit(exc.returncode)
+
+
+def api_url(base_url: str, path: str) -> str:
+    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def parse_headers(values: list[str] | None) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    for value in values or []:
+        if ":" in value:
+            key, text = value.split(":", 1)
+        elif "=" in value:
+            key, text = value.split("=", 1)
+        else:
+            raise argparse.ArgumentTypeError(
+                f"Expected header as 'Name: value' or 'Name=value', got {value!r}"
+            )
+        key = key.strip()
+        if not key:
+            raise argparse.ArgumentTypeError(f"Header name is empty in {value!r}")
+        headers[key] = text.strip()
+    return headers
+
+
+def multipart_form_data(
+    fields: list[tuple[str, str]],
+    file_field: str,
+    file_path: Path,
+) -> tuple[bytes, str]:
+    boundary = f"----mineru-bundle-{uuid.uuid4().hex}"
+    chunks: list[bytes] = []
+    for name, value in fields:
+        chunks.append(f"--{boundary}\r\n".encode("utf-8"))
+        chunks.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode("utf-8"))
+        chunks.append(value.encode("utf-8"))
+        chunks.append(b"\r\n")
+
+    chunks.append(f"--{boundary}\r\n".encode("utf-8"))
+    chunks.append(
+        (
+            f'Content-Disposition: form-data; name="{file_field}"; '
+            f'filename="{file_path.name}"\r\n'
+            "Content-Type: application/pdf\r\n\r\n"
+        ).encode("utf-8")
+    )
+    chunks.append(file_path.read_bytes())
+    chunks.append(b"\r\n")
+    chunks.append(f"--{boundary}--\r\n".encode("utf-8"))
+    return b"".join(chunks), boundary
+
+
+def is_zip_bytes(data: bytes) -> bool:
+    return data.startswith(b"PK\x03\x04") or data.startswith(b"PK\x05\x06") or data.startswith(b"PK\x07\x08")
+
+
+def http_request(
+    url: str,
+    *,
+    method: str = "GET",
+    body: bytes | None = None,
+    content_type: str | None = None,
+    headers: dict[str, str] | None = None,
+    timeout: float = 3600,
+) -> tuple[int, str, bytes]:
+    request_headers = dict(headers or {})
+    if content_type:
+        request_headers["Content-Type"] = content_type
+    request = urllib.request.Request(url, data=body, headers=request_headers, method=method)
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.headers.get("Content-Type", ""), response.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        print(f"MinerU API request failed: HTTP {exc.code} {url}\n{detail}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    except urllib.error.URLError as exc:
+        print(f"MinerU API request failed: {url}: {exc.reason}", file=sys.stderr)
+        raise SystemExit(1) from exc
+
+
+def parse_json_response(data: bytes) -> dict[str, Any]:
+    try:
+        parsed = json.loads(data.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        sample = data[:500].decode("utf-8", errors="replace")
+        raise ValueError(f"Response is not JSON. First bytes:\n{sample}") from exc
+    if not isinstance(parsed, dict):
+        raise ValueError("Response JSON is not an object")
+    return parsed
+
+
+def safe_extract_zip(zip_path: Path, target_dir: Path) -> None:
+    target_root = target_dir.resolve()
+    with zipfile.ZipFile(zip_path) as archive:
+        for member in archive.infolist():
+            destination = (target_dir / member.filename).resolve()
+            if target_root != destination and target_root not in destination.parents:
+                raise ValueError(f"Refusing unsafe zip member path: {member.filename}")
+        archive.extractall(target_dir)
+
+
+def api_form_fields(args: argparse.Namespace) -> list[tuple[str, str]]:
+    lang = args.lang or "ch"
+    start_page = 0 if args.start is None else args.start
+    end_page = 99999 if args.end is None else args.end
+    return [
+        ("backend", args.backend),
+        ("effort", args.effort or "high"),
+        ("parse_method", args.method),
+        ("lang_list", lang),
+        ("formula_enable", str(args.formula).lower()),
+        ("table_enable", str(args.table).lower()),
+        ("image_analysis", str(args.image_analysis).lower()),
+        ("return_md", "true"),
+        ("return_middle_json", "true"),
+        ("return_model_output", "true"),
+        ("return_content_list", "true"),
+        ("return_images", "true"),
+        ("response_format_zip", "true"),
+        ("return_original_file", str(args.api_return_original_file).lower()),
+        ("client_side_output_generation", "false"),
+        ("start_page_id", str(start_page)),
+        ("end_page_id", str(end_page)),
+    ]
+
+
+def write_api_response_zip(data: bytes, work_dir: Path) -> Path:
+    zip_path = work_dir / "mineru_api_result.zip"
+    zip_path.write_bytes(data)
+    if not zipfile.is_zipfile(zip_path):
+        raise ValueError("MinerU API did not return a valid ZIP archive")
+    return zip_path
+
+
+def extract_api_zip_response(data: bytes, work_dir: Path) -> None:
+    zip_path = write_api_response_zip(data, work_dir)
+    safe_extract_zip(zip_path, work_dir)
+
+
+def run_mineru_api(args: argparse.Namespace, work_dir: Path) -> None:
+    base_url = args.mineru_api_url or os.environ.get("MINERU_API_URL")
+    if not base_url:
+        raise ValueError("Missing MinerU API URL")
+
+    headers = parse_headers(args.mineru_api_header)
+    fields = api_form_fields(args)
+    body, boundary = multipart_form_data(fields, "files", args.input)
+    timeout = float(args.mineru_api_timeout)
+
+    if args.mineru_api_mode == "async":
+        submit_url = api_url(base_url, "tasks")
+        status, content_type, response_body = http_request(
+            submit_url,
+            method="POST",
+            body=body,
+            content_type=f"multipart/form-data; boundary={boundary}",
+            headers=headers,
+            timeout=timeout,
+        )
+        payload = parse_json_response(response_body)
+        result_url = payload.get("result_url")
+        status_url = payload.get("status_url")
+        task_id = payload.get("task_id")
+        if not result_url or not status_url:
+            raise ValueError(f"Async MinerU API response lacks task URLs: {payload}")
+
+        deadline = time.monotonic() + float(args.mineru_api_poll_timeout)
+        while True:
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"Timed out waiting for MinerU API task {task_id}")
+            _, _, status_body = http_request(str(status_url), headers=headers, timeout=timeout)
+            status_payload = parse_json_response(status_body)
+            task_status = str(status_payload.get("status", "")).lower()
+            if task_status == "completed":
+                break
+            if task_status in {"failed", "error", "cancelled", "canceled"}:
+                raise RuntimeError(f"MinerU API task {task_id} failed: {status_payload}")
+            time.sleep(float(args.mineru_api_poll_interval))
+
+        _, result_content_type, result_body = http_request(str(result_url), headers=headers, timeout=timeout)
+        if not is_zip_bytes(result_body):
+            sample = result_body[:1000].decode("utf-8", errors="replace")
+            raise ValueError(
+                "MinerU API task result was not a ZIP archive. "
+                f"Content-Type={result_content_type!r}. First bytes:\n{sample}"
+            )
+        extract_api_zip_response(result_body, work_dir)
+        return
+
+    parse_url = api_url(base_url, "file_parse")
+    status, content_type, response_body = http_request(
+        parse_url,
+        method="POST",
+        body=body,
+        content_type=f"multipart/form-data; boundary={boundary}",
+        headers=headers,
+        timeout=timeout,
+    )
+    if is_zip_bytes(response_body):
+        extract_api_zip_response(response_body, work_dir)
+        return
+
+    payload = parse_json_response(response_body)
+    result_url = payload.get("result_url")
+    if result_url:
+        _, result_content_type, result_body = http_request(str(result_url), headers=headers, timeout=timeout)
+        if is_zip_bytes(result_body):
+            extract_api_zip_response(result_body, work_dir)
+            return
+        sample = result_body[:1000].decode("utf-8", errors="replace")
+        raise ValueError(
+            "MinerU API result URL did not return a ZIP archive. "
+            f"Content-Type={result_content_type!r}. First bytes:\n{sample}"
+        )
+
+    sample = response_body[:1000].decode("utf-8", errors="replace")
+    raise ValueError(
+        "MinerU API returned JSON instead of a ZIP archive. The bundle workflow needs "
+        "response_format_zip=true with content-list/model/middle outputs. First bytes:\n"
+        f"{sample}"
+    )
 
 
 def score_output_path(path: Path, source_stem: str, suffix_hint: str) -> tuple[int, int]:
@@ -720,7 +946,52 @@ def main() -> int:
     parser.add_argument("--method", default="auto", choices=["auto", "txt", "ocr"], help="MinerU parsing method")
     parser.add_argument("--effort", choices=["medium", "high"], default="high", help="Hybrid parsing effort")
     parser.add_argument("--lang", help="MinerU OCR language hint, such as ch")
-    parser.add_argument("--api-url", help="Existing mineru-api base URL")
+    parser.add_argument(
+        "--api-url",
+        help="Existing mineru-api base URL passed through to the local MinerU CLI.",
+    )
+    parser.add_argument(
+        "--mineru-api-url",
+        help=(
+            "Call a remote MinerU HTTP API directly instead of invoking the local MinerU CLI. "
+            "Can also be set with MINERU_API_URL."
+        ),
+    )
+    parser.add_argument(
+        "--mineru-api-mode",
+        choices=["sync", "async"],
+        default="sync",
+        help="Use /file_parse or /tasks when --mineru-api-url is supplied.",
+    )
+    parser.add_argument(
+        "--mineru-api-header",
+        action="append",
+        help="Extra HTTP header for MinerU API requests, as 'Name: value' or 'Name=value'. Repeatable.",
+    )
+    parser.add_argument(
+        "--mineru-api-timeout",
+        type=float,
+        default=3600,
+        help="Per-request timeout in seconds for direct MinerU HTTP API calls.",
+    )
+    parser.add_argument(
+        "--mineru-api-poll-interval",
+        type=float,
+        default=5,
+        help="Polling interval in seconds for --mineru-api-mode async.",
+    )
+    parser.add_argument(
+        "--mineru-api-poll-timeout",
+        type=float,
+        default=7200,
+        help="Total polling timeout in seconds for --mineru-api-mode async.",
+    )
+    parser.add_argument(
+        "--api-return-original-file",
+        type=parse_bool,
+        default=True,
+        help="Include original input file in MinerU API ZIP responses when the server supports it.",
+    )
     parser.add_argument("--start", type=int, help="Start page, 0-based")
     parser.add_argument("--end", type=int, help="End page, 0-based")
     parser.add_argument("--formula", type=parse_bool, default=True, help="Enable formula parsing")
@@ -775,7 +1046,14 @@ def main() -> int:
         else:
             temp_dir = tempfile.TemporaryDirectory(prefix="mineru-bundle-")
             mineru_root = Path(temp_dir.name)
-        run_mineru(args, mineru_root)
+        try:
+            if args.mineru_api_url or os.environ.get("MINERU_API_URL"):
+                run_mineru_api(args, mineru_root)
+            else:
+                run_mineru(args, mineru_root)
+        except (RuntimeError, TimeoutError, ValueError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 1
 
     source_stem = input_path.stem
     content_list_path = choose_output_file(
@@ -861,6 +1139,13 @@ def main() -> int:
         review_required.append("figure-internals-when-used-as-evidence")
 
     settings_known = not args.from_mineru_output or args.record_conversion_settings
+    mineru_api_url = args.mineru_api_url or os.environ.get("MINERU_API_URL")
+    if args.from_mineru_output:
+        invocation = "reused-output"
+    elif mineru_api_url:
+        invocation = "http-api"
+    else:
+        invocation = "cli"
     manifest = {
         "schema_version": "2.0",
         "profile": "engineering",
@@ -874,6 +1159,9 @@ def main() -> int:
         "conversion": {
             "engine": "MinerU",
             "engine_version": mineru_version(),
+            "invocation": invocation,
+            "api_url": mineru_api_url if settings_known else None,
+            "api_mode": args.mineru_api_mode if (settings_known and mineru_api_url) else None,
             "backend": args.backend if settings_known else None,
             "method": args.method if settings_known else None,
             "effort": args.effort if settings_known else None,

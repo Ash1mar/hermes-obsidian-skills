@@ -238,6 +238,60 @@ python3 \
   --overwrite
 ```
 
+For an intranet MinerU HTTP API when no local MinerU CLI is available:
+
+```bash
+python3 \
+  hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
+  "/path/to/input.pdf" \
+  -o "/path/to/vault/10_Raw/converted/input_document_bundle" \
+  --mineru-api-url "http://10.27.17.35:7861" \
+  --mineru-api-mode sync \
+  --backend hybrid-engine \
+  --effort high \
+  --method auto \
+  --lang ch \
+  --overwrite
+```
+
+The helper sends a multipart request with `response_format_zip=true`,
+`return_md=true`, `return_middle_json=true`, `return_model_output=true`,
+`return_content_list=true`, and `return_images=true`, then extracts the returned
+ZIP into a temporary MinerU output directory. The API ZIP is expected to contain
+files such as:
+
+```text
+hybrid_auto/
+  input.md
+  input_content_list.json
+  input_content_list_v2.json
+  input_middle.json
+  input_model.json
+  images/
+```
+
+`layout.pdf` and `span.pdf` are preserved when present, but standard MinerU API
+ZIP responses may omit them. In that case the Bundle remains usable with reduced
+layout QA evidence.
+
+For large PDFs or API gateways with short synchronous timeouts, submit through
+the asynchronous task API:
+
+```bash
+python3 \
+  hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
+  "/path/to/input.pdf" \
+  -o "/path/to/vault/10_Raw/converted/input_document_bundle" \
+  --mineru-api-url "http://10.27.17.35:7861" \
+  --mineru-api-mode async \
+  --mineru-api-poll-timeout 7200 \
+  --backend hybrid-engine \
+  --effort high \
+  --method auto \
+  --lang ch \
+  --overwrite
+```
+
 Defaults:
 
 - formula parsing enabled

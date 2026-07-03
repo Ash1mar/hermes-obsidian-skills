@@ -87,7 +87,7 @@ document_bundle/
   _evidence/
 ```
 
-Use `scripts/convert_pdf_with_mineru_bundle.py`. Use `--model-source local` in the repaired offline MinerU environment. Read `references/mineru-pdf-bundle.md` before conversion or validation. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
+Use `scripts/convert_pdf_with_mineru_bundle.py`. Prefer the configured local MinerU CLI when available. If MinerU is only reachable as an intranet HTTP API, use `--mineru-api-url` so the helper requests a ZIP result containing Markdown, content lists, middle/model JSON, and images. Use `--model-source local` in the repaired offline MinerU environment. Read `references/mineru-pdf-bundle.md` before conversion or validation. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
 
 For Word, PowerPoint, Excel, HTML, CSV, JSON, XML, image, audio, EPUB, ZIP, URL, or a simple PDF when MinerU is unavailable:
 
