@@ -10,6 +10,7 @@ This repository stores local skills and tool-integration notes for the Hermes + 
   - Routes outputs into `30_Cards/`, `40_Concepts/`, `50_Projects/`, `90_Dataview/`, or `_system/reports/`.
   - Uses concept registry checks before creating concept pages.
   - Supports layered MinerU document bundle v2 for engineering manuals, with a small agent-facing Markdown/outline contract and a non-default QA evidence layer.
+  - Supports standalone image Bundle v2 for scanned pages, table screenshots, diagrams, and other image-only sources with OCR review controls.
   - Supports MarkItDown as an optional pre-ingestion conversion layer for non-PDF sources and simple fallback conversion.
 
 - `hermes-obsidian-controlled-query/`
@@ -60,6 +61,7 @@ Check helper script syntax with:
 
 ```powershell
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\convert_pdf_with_mineru_bundle.py"
+python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\convert_image_with_ocr_bundle.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\validate_document_bundle.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\manage_bundle_ingest.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\convert_with_markitdown.py"
@@ -107,6 +109,23 @@ Hermes uses ledger revisions and per-section content hashes to resume work, prev
 By default, figures and charts are extracted as visual evidence files and referenced from Markdown. Their internals are not OCR-expanded unless explicitly requested through MinerU image/chart analysis. Engineering formulas, table structure, and figure internals remain review-required before they become authoritative knowledge.
 
 The helper accepts `--mineru-command` or `MINERU_COMMAND`. In the configured WSL runtime, use `/usr/local/bin/mineru`, which selects local model snapshots and delegates to the native WSL virtual environment.
+
+## Standalone Image Bundle Integration
+
+Use `hermes-obsidian-controlled-ingest/scripts/convert_image_with_ocr_bundle.py` for image-only sources where the image itself carries source content, such as scanned pages, table screenshots, diagrams, forms, or image-based specifications.
+
+It creates a compatible Bundle v2:
+
+```text
+image_document_bundle/
+  manifest.json
+  document.md
+  outline.json
+  images/
+  _evidence/
+```
+
+The image remains the visual evidence. OCR text can be supplied with `--ocr-text-file` or generated through `--ocr-command`, but the bundle remains `warn` with review requirements so OCR, table structure, and diagram internals are not promoted as authoritative facts without QA. After conversion, use the same `validate_document_bundle.py` and `manage_bundle_ingest.py init` flow as MinerU PDF bundles. See `hermes-obsidian-controlled-ingest/references/image-bundle.md`.
 
 ## MarkItDown Integration
 

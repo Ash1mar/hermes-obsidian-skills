@@ -2,6 +2,8 @@
 
 Use a layered bundle for engineering PDFs whose headings, page evidence, tables, figures, units, or formulas matter.
 
+For standalone image sources, do not use the PDF figure policy. Read `image-bundle.md` and create an image Bundle v2 so OCR text and visual evidence remain review-controlled.
+
 ## Contents
 
 1. Design goals
