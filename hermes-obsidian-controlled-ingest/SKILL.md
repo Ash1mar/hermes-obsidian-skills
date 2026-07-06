@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-controlled-ingest
-description: Governed Obsidian vault ingestion for Markdown, engineering PDFs, layered MinerU document bundles, and other source files. Use when asked to onboard a new external source, detect whether a vault/source/bundle/ledger is new or resumable, preserve raw sources, initialize or recover local MinerU Bundle v2 processing, classify material, create source maps, manage section ledgers, ingest long documents by bounded ranges, perform batch synthesis across related documents, generate high-confidence cards or candidate concepts, prevent duplicate or stale section ingestion, route cards/concepts/projects/spec indexes, reconcile new evidence with existing artifacts, validate or convert engineering PDFs, retain page/table/figure evidence, enforce quality gates, maintain Dataview metadata, or record ingest logs and source maps.
+description: Governed Obsidian vault ingestion for Markdown, engineering PDFs, standalone image sources, layered MinerU/image document bundles, and other source files. Use when asked to onboard a new external source, detect whether a vault/source/bundle/ledger is new or resumable, preserve raw sources, initialize or recover local MinerU Bundle v2 processing, convert scanned/image-only material with OCR review controls, classify material, create source maps, manage section ledgers, ingest long documents by bounded ranges, perform batch synthesis across related documents, generate high-confidence cards or candidate concepts, prevent duplicate or stale section ingestion, route cards/concepts/projects/spec indexes, reconcile new evidence with existing artifacts, validate or convert engineering PDFs/images, retain page/table/figure evidence, enforce quality gates, maintain Dataview metadata, or record ingest logs and source maps.
 ---
 
 # Hermes Obsidian Controlled Ingest
@@ -11,7 +11,7 @@ Turn source files into governed Obsidian artifacts without rewriting raw materia
 external or vault source
 -> runtime state detection
 -> 10_Raw preservation
--> recovery/resume or layered PDF bundle
+-> recovery/resume or layered PDF/image bundle
 -> material classification
 -> source map or bounded ingestion
 -> governed artifact
@@ -40,7 +40,7 @@ Before processing any source or batch, classify the current state and choose the
 | --- | --- | --- |
 | new vault required | vault path missing or lacks governed structure | use `hermes-obsidian-vault-bootstrap` first |
 | existing vault, new external source | source is outside vault and no matching `10_Raw/` copy exists | copy to `10_Raw/`, verify SHA-256, then build Bundle v2 when needed |
-| raw exists, no bundle | matching raw file exists, no corresponding `10_Raw/converted/*_document_bundle` | build Bundle v2 from the vault raw copy |
+| raw exists, no bundle | matching raw file exists, no corresponding `10_Raw/converted/*_document_bundle` or `*_image_document_bundle` | build Bundle v2 from the vault raw copy |
 | bundle exists but is empty or invalid | bundle directory exists but `manifest.json` or `document.md` is missing, empty, or validation fails | treat as failed derived output; use recovery rules |
 | valid bundle, no ledger/source map | Bundle validates as `pass` or `warn`, control files missing | initialize source map and section ledger |
 | ledger/source map exists | control files exist | run ledger init to reconcile, then resume by ledger state |
@@ -56,7 +56,7 @@ When the source is outside the vault:
 2. Copy the source unchanged into `10_Raw/`; never overwrite a conflicting file.
 3. Verify the copied source against the original by SHA-256, then treat it as read-only.
 4. Run all conversion from the vault copy and write derived output under `10_Raw/converted/`.
-5. For a new engineering PDF or complex manual, create a fresh Bundle v2 with the configured local MinerU path. Do not reuse prior MinerU output or a prior bundle unless the user explicitly requests reuse or resumption.
+5. For a new engineering PDF, complex manual, or standalone image source that carries source content, create a fresh Bundle v2 from the vault raw copy. Do not reuse prior conversion output or a prior bundle unless the user explicitly requests reuse or resumption.
 6. Stop and report instead of substituting a weaker conversion when the required MinerU path is unavailable or Bundle validation fails.
 
 ## Recovery and Resume Rules
@@ -89,7 +89,20 @@ document_bundle/
 
 Use `scripts/convert_pdf_with_mineru_bundle.py`. Prefer the configured local MinerU CLI when available. If MinerU is only reachable as an intranet HTTP API, use `--mineru-api-url` so the helper requests a ZIP result containing Markdown, content lists, middle/model JSON, and images. Use `--model-source local` in the repaired offline MinerU environment. Read `references/mineru-pdf-bundle.md` before conversion or validation. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
 
-For Word, PowerPoint, Excel, HTML, CSV, JSON, XML, image, audio, EPUB, ZIP, URL, or a simple PDF when MinerU is unavailable:
+For standalone image sources (`.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.gif`, `.tif`, `.tiff`) where the image itself is the source material, create an image Bundle v2 instead of treating the image like a PDF figure:
+
+```text
+image_document_bundle/
+  manifest.json
+  document.md
+  outline.json
+  images/
+  _evidence/
+```
+
+Use `scripts/convert_image_with_ocr_bundle.py`. If OCR text is already available, pass `--ocr-text-file`; if an OCR command is available, pass `--ocr-command`. Without OCR text, still create the bundle as visual evidence with `quality: warn` and `qa_required` sections. Read `references/image-bundle.md` before converting or ingesting standalone image sources.
+
+For Word, PowerPoint, Excel, HTML, CSV, JSON, XML, audio, EPUB, ZIP, URL, or a simple PDF when MinerU is unavailable:
 
 1. Convert the source to Markdown with `scripts/convert_with_markitdown.py` when available.
 2. Save converted Markdown under `10_Raw/converted/`.
