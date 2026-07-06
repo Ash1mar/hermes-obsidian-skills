@@ -240,14 +240,18 @@ python3 \
   --overwrite
 ```
 
-For an intranet MinerU HTTP API when no local MinerU CLI is available:
+On the `intranet` branch, Bundle conversion defaults to the MinerU HTTP API at
+`http://10.27.17.35:7861`. No `export MINERU_API_URL=...` is required unless the
+service address changes. Override with `--mineru-api-url` or `MINERU_API_URL` when
+needed.
+
+For an intranet MinerU HTTP API:
 
 ```bash
 python3 \
   hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
   "/path/to/input.pdf" \
   -o "/path/to/vault/10_Raw/converted/input_document_bundle" \
-  --mineru-api-url "http://10.27.17.35:7861" \
   --mineru-api-mode sync \
   --backend hybrid-engine \
   --effort high \
@@ -284,7 +288,6 @@ python3 \
   hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
   "/path/to/input.pdf" \
   -o "/path/to/vault/10_Raw/converted/input_document_bundle" \
-  --mineru-api-url "http://10.27.17.35:7861" \
   --mineru-api-mode async \
   --mineru-api-poll-timeout 7200 \
   --backend hybrid-engine \
@@ -293,6 +296,10 @@ python3 \
   --lang ch \
   --overwrite
 ```
+
+To force the local MinerU CLI instead of the intranet API on this branch, pass
+`--mineru-invocation cli` together with the usual `--mineru-command` and
+`--model-source` settings.
 
 Defaults:
 

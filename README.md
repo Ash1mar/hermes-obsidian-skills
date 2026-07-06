@@ -110,7 +110,7 @@ By default, figures and charts are extracted as visual evidence files and refere
 
 The helper accepts `--mineru-command` or `MINERU_COMMAND`. In the configured WSL runtime, use `/usr/local/bin/mineru`, which selects local model snapshots and delegates to the native WSL virtual environment.
 
-For intranet deployments where Hermes cannot run a local MinerU CLI but can reach a MinerU 3.x HTTP API, use `--mineru-api-url` or `MINERU_API_URL`. The helper posts to `/file_parse` or `/tasks`, requests `response_format_zip=true`, extracts the returned ZIP, and continues with the same Bundle v2 builder. The API ZIP must include at least Markdown and content-list outputs; middle/model JSON and images are requested for evidence. Some API deployments do not include `layout.pdf` or `span.pdf`, so those QA PDFs may be absent from `_evidence/`.
+On the `intranet` branch, the helper defaults to the MinerU 3.x HTTP API at `http://10.27.17.35:7861`, so prompts do not need to repeat the API URL. Override it with `--mineru-api-url` or `MINERU_API_URL` if the service address changes. The helper posts to `/file_parse` or `/tasks`, requests `response_format_zip=true`, extracts the returned ZIP, and continues with the same Bundle v2 builder. The API ZIP must include at least Markdown and content-list outputs; middle/model JSON and images are requested for evidence. Some API deployments do not include `layout.pdf` or `span.pdf`, so those QA PDFs may be absent from `_evidence/`. To force a local MinerU CLI on this branch, pass `--mineru-invocation cli`.
 
 ## Standalone Image Bundle Integration
 

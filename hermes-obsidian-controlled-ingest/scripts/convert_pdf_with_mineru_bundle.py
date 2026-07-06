@@ -47,6 +47,7 @@ EVIDENCE_PATTERNS = (
     "*layout.pdf",
     "*span.pdf",
 )
+DEFAULT_MINERU_API_URL = "http://10.27.17.35:7861"
 
 
 def parse_bool(value: str | bool) -> bool:
@@ -111,6 +112,10 @@ def run_mineru(args: argparse.Namespace, work_dir: Path) -> None:
 
 def api_url(base_url: str, path: str) -> str:
     return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def configured_mineru_api_url(args: argparse.Namespace) -> str | None:
+    return args.mineru_api_url or os.environ.get("MINERU_API_URL") or DEFAULT_MINERU_API_URL
 
 
 def parse_headers(values: list[str] | None) -> dict[str, str]:
@@ -247,7 +252,7 @@ def extract_api_zip_response(data: bytes, work_dir: Path) -> None:
 
 
 def run_mineru_api(args: argparse.Namespace, work_dir: Path) -> None:
-    base_url = args.mineru_api_url or os.environ.get("MINERU_API_URL")
+    base_url = configured_mineru_api_url(args)
     if not base_url:
         raise ValueError("Missing MinerU API URL")
 
@@ -954,8 +959,14 @@ def main() -> int:
         "--mineru-api-url",
         help=(
             "Call a remote MinerU HTTP API directly instead of invoking the local MinerU CLI. "
-            "Can also be set with MINERU_API_URL."
+            f"Defaults to {DEFAULT_MINERU_API_URL}; override with MINERU_API_URL."
         ),
+    )
+    parser.add_argument(
+        "--mineru-invocation",
+        choices=["api", "cli"],
+        default="api",
+        help="Choose the MinerU invocation path. The intranet branch defaults to the HTTP API.",
     )
     parser.add_argument(
         "--mineru-api-mode",
@@ -1047,7 +1058,7 @@ def main() -> int:
             temp_dir = tempfile.TemporaryDirectory(prefix="mineru-bundle-")
             mineru_root = Path(temp_dir.name)
         try:
-            if args.mineru_api_url or os.environ.get("MINERU_API_URL"):
+            if args.mineru_invocation == "api":
                 run_mineru_api(args, mineru_root)
             else:
                 run_mineru(args, mineru_root)
@@ -1139,10 +1150,10 @@ def main() -> int:
         review_required.append("figure-internals-when-used-as-evidence")
 
     settings_known = not args.from_mineru_output or args.record_conversion_settings
-    mineru_api_url = args.mineru_api_url or os.environ.get("MINERU_API_URL")
+    mineru_api_url = configured_mineru_api_url(args)
     if args.from_mineru_output:
         invocation = "reused-output"
-    elif mineru_api_url:
+    elif args.mineru_invocation == "api":
         invocation = "http-api"
     else:
         invocation = "cli"
@@ -1160,8 +1171,8 @@ def main() -> int:
             "engine": "MinerU",
             "engine_version": mineru_version(),
             "invocation": invocation,
-            "api_url": mineru_api_url if settings_known else None,
-            "api_mode": args.mineru_api_mode if (settings_known and mineru_api_url) else None,
+            "api_url": mineru_api_url if (settings_known and invocation == "http-api") else None,
+            "api_mode": args.mineru_api_mode if (settings_known and invocation == "http-api") else None,
             "backend": args.backend if settings_known else None,
             "method": args.method if settings_known else None,
             "effort": args.effort if settings_known else None,

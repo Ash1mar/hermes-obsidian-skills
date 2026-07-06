@@ -87,7 +87,7 @@ document_bundle/
   _evidence/
 ```
 
-Use `scripts/convert_pdf_with_mineru_bundle.py`. Prefer the configured local MinerU CLI when available. If MinerU is only reachable as an intranet HTTP API, use `--mineru-api-url` so the helper requests a ZIP result containing Markdown, content lists, middle/model JSON, and images. Use `--model-source local` in the repaired offline MinerU environment. Read `references/mineru-pdf-bundle.md` before conversion or validation. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
+Use `scripts/convert_pdf_with_mineru_bundle.py`. On the `intranet` branch, the helper defaults to the MinerU HTTP API at `http://10.27.17.35:7861` and requests a ZIP result containing Markdown, content lists, middle/model JSON, and images. Do not require prompts to restate the API URL unless the service address changes. If a local MinerU CLI must be used instead, pass `--mineru-invocation cli` and use `--model-source local` in the repaired offline MinerU environment. Read `references/mineru-pdf-bundle.md` before conversion or validation. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
 
 For standalone image sources (`.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.gif`, `.tif`, `.tiff`) where the image itself is the source material, create an image Bundle v2 instead of treating the image like a PDF figure:
 
