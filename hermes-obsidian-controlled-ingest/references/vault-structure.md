@@ -30,6 +30,7 @@ Vault/
 - `_system/metadata/`: registries and governance metadata.
 - `_system/prompts/`: reusable prompts.
 - `_system/reports/`: ingest logs, source maps, reviews, batch plans.
+- `_system/reports/query-writeback-candidates/`: optional query-derived writeback queue. These files are triage records, not knowledge artifacts.
 - `_system/skills/`: local skill drafts or vault-specific skill notes.
 
 ## Knowledge Card Template
@@ -159,6 +160,55 @@ domains:
 ## 10_Raw 只读规则
 ## 后续建议
 ```
+
+## Query Writeback Candidate Template
+
+Use this only when query logging is explicitly allowed by the user or vault policy. It is a handoff for later controlled ingest, not a source of truth.
+
+```markdown
+---
+type: query-writeback-candidate
+status: candidate
+created:
+domains:
+---
+
+# Query Writeback Candidate
+
+## User Question
+## Answer Summary
+## Candidate Type
+## Evidence Level
+## Possible Artifact
+## Why Candidate
+## Why Not Direct Write
+## Evidence Packets
+## Existing Artifacts Checked
+## QA Risks
+## Later Ingest Decision
+```
+
+Later ingest must re-check the cited source evidence and existing artifacts before writing any card, concept, spec index, project note, or QA item.
+
+## Conservative Wikilink Policy
+
+Use Obsidian `[[wikilinks]]` for navigation between existing governed artifacts, not for raw evidence or speculative graph density.
+
+Good wikilink targets:
+
+- existing `30_Cards/` files
+- existing `40_Concepts/` files
+- existing `50_Projects/` files
+- relevant spec indexes, source maps, candidate reviews, and maintained Dataview notes
+
+Avoid wikilinking:
+
+- raw PDFs or converted bundle files
+- every repeated noun, equipment name, field name, section heading, or parameter
+- concepts that have not passed concept governance
+- evidence assets such as table/image files; cite these as source paths instead
+
+If a target would be useful but does not exist, record it as a possible future card, candidate concept, or QA/review item rather than creating an empty link.
 
 ## Bundle Source Map and Section Ledger
 

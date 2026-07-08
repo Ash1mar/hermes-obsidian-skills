@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-controlled-query
-description: Governed read-only querying for Hermes + Obsidian vaults. Use when asked to answer, locate, verify, compare, summarize, or identify gaps from an existing governed vault without ingesting new sources or writing artifacts. Supports evidence-first lookup across 30_Cards, 40_Concepts, 50_Projects, _system/reports source maps/spec indexes/section ledgers/ingest logs, and 10_Raw/converted document bundles, with explicit separation of vault facts, agent inference, evidence gaps, and QA risks.
+description: Governed read-only querying for Hermes + Obsidian vaults. Use when asked to answer, locate, verify, compare, summarize, or identify gaps from an existing governed vault without ingesting new sources or writing durable knowledge artifacts. Supports evidence-first lookup across 30_Cards, 40_Concepts, 50_Projects, _system/reports source maps/spec indexes/section ledgers/ingest logs, and 10_Raw/converted document bundles, with explicit separation of vault facts, agent inference, evidence gaps, QA risks, and optional internal query-writeback candidates for later controlled ingest.
 ---
 
 # Hermes Obsidian Controlled Query
@@ -14,7 +14,7 @@ user question
 -> source-map / ledger navigation
 -> targeted converted-source verification
 -> answer with evidence quality and gaps
--> optional writeback recommendation only
+-> optional internal query-writeback candidate
 ```
 
 ## Non-Writing Contract
@@ -33,7 +33,7 @@ Treat these paths as read-only by default:
 - `_system/prompts/`
 - `_system/reports/`
 
-If the answer suggests a durable artifact, recommend a controlled writeback step instead of doing it.
+If the answer suggests a durable artifact, do not create it during query. Record only an internal query-writeback candidate when the user or vault policy explicitly allows query logs/candidates; otherwise keep the candidate in the current conversation for a possible later ingest handoff.
 
 ## Minimal Prompt Contract
 
@@ -70,6 +70,56 @@ Classify the question before searching:
 | gap | "Do we already have X?" | governed layers plus reports; answer with missing pieces |
 
 For engineering parameter, formula, table, or figure questions, treat the query as evidence type even if it is phrased as a simple lookup.
+
+## Post-Query Writeback Candidate
+
+Default to no candidate. Create a candidate only when the answer reveals reusable knowledge that is not already covered by a governed artifact, or when the query exposes an evidence gap, QA risk, or source conflict worth later review.
+
+High-value candidate triggers include:
+
+- a source-backed answer with no existing durable card/spec index coverage
+- repeated or workflow-relevant parameter, formula, design value, interface, review checklist, validation rule, or code-like requirement
+- cross-source synthesis that creates a new useful comparison or boundary
+- a gap, conflict, stale conclusion, or QA-sensitive table/figure/formula needed for future work
+- a user explicitly asks to log, persist, queue, or later ingest query findings
+
+Do not create a candidate for:
+
+- one-off locating questions
+- answers fully covered by an existing card/concept/project/spec index
+- weak evidence that only supports speculation
+- ordinary chat summaries with no vault evidence
+- every user question by default
+
+Candidate question types are broad heuristics, not fixed domain labels:
+
+| Candidate type | Use for | Likely later artifact |
+| --- | --- | --- |
+| `parameter-or-design-value` | values, formulas, pressures, flow rates, intensities, levels, durations, classifications | parameter card, design check, or QA item |
+| `review-checklist` | review points, acceptance checks, equipment checks | checklist card or object index |
+| `interface-or-handoff` | inter-discipline inputs/outputs, fields, source boundaries | interface spec index or interface card |
+| `code-or-principle` | standard applicability, design principles, rule-to-scenario mapping | code/scenario/spec crosswalk |
+| `object-or-equipment` | equipment composition, system objects, reusable object boundaries | object index, equipment card, or candidate concept |
+| `gap-or-conflict` | missing evidence, conflicting sources, QA-sensitive evidence | QA item, gap log, or candidate review |
+
+When a candidate is allowed, include only a compact handoff:
+
+```yaml
+type: query-writeback-candidate
+status: candidate
+user_question:
+answer_summary:
+candidate_type:
+evidence_level: clear | source-backed | needs-qa | gap
+possible_artifact: none | card | spec-index-update | qa-item | candidate-concept-review | project-note | dataview
+why_candidate:
+why_not_direct_write:
+evidence_packets:
+existing_artifacts_checked:
+qa_risks:
+```
+
+Do not present this candidate in the user-facing answer unless the user asks for writeback reasoning. If persisted, write it only under `_system/reports/query-writeback-candidates/` and treat it as a review queue, not a knowledge artifact.
 
 ## Search Order
 
@@ -120,7 +170,8 @@ Return concise answers with these parts when the query is non-trivial:
 4. Answer
 5. Evidence packets with document name, original PDF page, original paragraph, and figure/table location
 6. Uncertainty / gaps
-7. Writeback recommendation
+
+Do not include a user-facing writeback recommendation by default. If the user asks whether the result should be persisted, summarize the writeback candidate decision in plain language.
 
 For quick locating queries, a shorter answer is acceptable if it still includes file paths and evidence quality.
 
@@ -128,7 +179,7 @@ Read `references/answer-format.md` for the full response contract.
 
 ## Writeback Boundary
 
-If a query reveals a reusable result, do not write it automatically. Suggest one of:
+If a query reveals a reusable result, do not write it automatically. At most, create or retain an internal query-writeback candidate for later controlled ingest:
 
 - create or update a `30_Cards/` knowledge card
 - create a candidate concept review
@@ -136,7 +187,7 @@ If a query reveals a reusable result, do not write it automatically. Suggest one
 - record a query log
 - run controlled ingest or controlled writeback
 
-Use `hermes-obsidian-controlled-ingest` only when the user explicitly asks to persist, reconcile, or create governed artifacts.
+Use `hermes-obsidian-controlled-ingest` only when the user explicitly asks to persist, reconcile, or create governed artifacts, or when a later controlled ingest run is explicitly processing the query-writeback candidate queue.
 
 ## References
 

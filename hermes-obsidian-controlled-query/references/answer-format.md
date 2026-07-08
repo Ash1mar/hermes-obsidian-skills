@@ -21,10 +21,10 @@ Evidence:
 
 Uncertainty / gaps:
 - <what is not proven, conflicting, or needs QA>
-
-Writeback recommendation:
-<none | create/update card | candidate concept review | source QA | controlled ingest>
 ```
+
+Do not include writeback recommendations in the user-facing answer by default.
+If the user explicitly asks whether to persist the result, briefly state the candidate decision and likely artifact type.
 
 ## Short Locating Answer
 
@@ -55,3 +55,30 @@ QA status: <clear/source-backed/needs-qa/gap>
 ```
 
 Avoid long verbatim copying. Summarize and quote only short phrases needed to anchor the evidence.
+
+## Internal Query-Writeback Candidate
+
+When the query reveals high-value reusable knowledge and candidate logging is allowed, keep or persist this internal handoff for later ingest. It is not part of the normal user answer.
+
+```yaml
+type: query-writeback-candidate
+status: candidate
+user_question: <original question>
+answer_summary: <short synthesis, not a source of truth>
+candidate_type: <parameter-or-design-value | review-checklist | interface-or-handoff | code-or-principle | object-or-equipment | gap-or-conflict>
+evidence_level: <clear | source-backed | needs-qa | gap>
+possible_artifact: <none | card | spec-index-update | qa-item | candidate-concept-review | project-note | dataview>
+why_candidate: <why this is reusable or review-worthy>
+why_not_direct_write: <missing authorization, QA risk, duplicate risk, or boundary uncertainty>
+evidence_packets:
+  - document: <source PDF/manual name>
+    original_pdf_page: <page or unresolved>
+    source_path: <source map/ledger/document/table/image path>
+    quality: <clear | source-backed | needs-qa | gap>
+existing_artifacts_checked:
+  - <path or none>
+qa_risks:
+  - <risk or none>
+```
+
+If persisted, place candidates under `_system/reports/query-writeback-candidates/`. Later ingest must re-check source evidence and existing artifacts; it must not treat the query answer summary as source evidence.
