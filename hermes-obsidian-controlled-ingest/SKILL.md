@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-controlled-ingest
-description: Governed Obsidian vault ingestion for Markdown, engineering PDFs, standalone image sources, layered MinerU/image document bundles, and other source files. Use when asked to onboard a new external source, detect whether a vault/source/bundle/ledger is new or resumable, preserve raw sources, initialize or recover local MinerU Bundle v2 processing, convert scanned/image-only material with OCR review controls, classify material, create source maps, manage section ledgers, ingest long documents by bounded ranges, perform batch synthesis across related documents, generate high-confidence cards or candidate concepts, prevent duplicate or stale section ingestion, route cards/concepts/projects/spec indexes, reconcile new evidence with existing artifacts, validate or convert engineering PDFs/images, retain page/table/figure evidence, enforce quality gates, maintain Dataview metadata, or record ingest logs and source maps.
+description: Governed Obsidian vault ingestion for Markdown, engineering PDFs, standalone image sources, layered MinerU/image document bundles, query-writeback candidates, and other source files. Use when asked to onboard or resume sources, preserve 10_Raw, convert PDFs/images with quality gates, create source maps and section ledgers, ingest bounded ranges, process query-derived writebacks, synthesize cards or candidate concepts, route projects/spec indexes/QA logs, reconcile existing artifacts, retain page/table/figure evidence, add conservative Obsidian wikilinks, maintain Dataview metadata, and record ingest logs.
 ---
 
 # Hermes Obsidian Controlled Ingest
@@ -18,6 +18,13 @@ external or vault source
 -> incremental reconciliation
 -> batch synthesis when applicable
 -> ingest log
+
+query-writeback candidate
+-> candidate validation
+-> source evidence re-check
+-> duplicate/reuse check
+-> governed writeback or skip
+-> writeback log
 ```
 
 ## First Checks
@@ -45,6 +52,7 @@ Before processing any source or batch, classify the current state and choose the
 | valid bundle, no ledger/source map | Bundle validates as `pass` or `warn`, control files missing | initialize source map and section ledger |
 | ledger/source map exists | control files exist | run ledger init to reconcile, then resume by ledger state |
 | prior source ingestion complete | ledger has terminal `ingested`/`skipped`/`qa_required`, no `pending`/`in_progress`/`stale` | run reconciliation or batch synthesis instead of repeating ingestion |
+| query-writeback candidate | input is a candidate from `_system/reports/query-writeback-candidates/` or current conversation | run query-derived writeback; do not treat the query answer as source evidence |
 
 Do not rely on filenames alone. Use raw SHA-256, Bundle validation, and ledger revision as the state authority.
 
@@ -162,6 +170,34 @@ Explain the classification before routing artifacts.
 
 For engineering handbooks, prefer a document index and staged chapter plan. Do not default to a generic knowledge card.
 
+## Query-Derived Writeback
+
+Use this mode when the input is a query-writeback candidate rather than a new external source. This is not new-file ingest: do not copy sources into `10_Raw/`, do not rebuild bundles, and do not infer completion from the query answer.
+
+Treat the candidate as a navigation and triage record only. Re-check the cited source maps, section ledgers, converted `document.md`, tables/images, and original page evidence before writing any durable artifact.
+
+Process candidates with this gate:
+
+1. Confirm the candidate has `user_question`, `candidate_type`, `evidence_level`, `possible_artifact`, and evidence packet paths.
+2. Re-open the cited governed artifacts and source evidence. If the evidence cannot be found or no longer supports the answer, write only a QA/gap item or skip.
+3. Search existing `30_Cards/`, `40_Concepts/`, `50_Projects/`, `_system/reports/`, and Dataview metadata for coverage and near-duplicates.
+4. Classify the query-derived knowledge using broad, non-domain-specific types:
+   - `parameter-or-design-value`
+   - `review-checklist`
+   - `interface-or-handoff`
+   - `code-or-principle`
+   - `object-or-equipment`
+   - `gap-or-conflict`
+5. Route conservatively:
+   - create/update a `30_Cards/` card only for reusable, evidence-backed knowledge
+   - update a spec index when the value is primarily navigational or rule-to-source mapping
+   - write a QA/gap item when evidence is missing, conflicting, or extraction-sensitive
+   - create a candidate concept review when cross-source reuse is plausible but boundaries are not clear
+   - skip when existing artifacts already cover the answer or the value is one-off
+6. Record the query candidate path or conversation handoff, source evidence re-check, duplicate check, decision, and skipped alternatives in a writeback log.
+
+Never promote the query answer summary itself into a card, concept, or spec index. Durable artifacts must cite the underlying source PDF/bundle/section/page/asset evidence.
+
 ## Concept Governance
 
 Do not create concept pages by default. Before creating one, answer:
@@ -196,6 +232,22 @@ After each bounded ingest unit, and after each source in a batch:
 6. Record created, updated, reused, skipped, stale, and review-required artifacts in the section ledger and ingest report.
 7. Do not delete prior outputs or silently rewrite established concepts during batch ingestion.
 8. Report reconciliation evidence: paths inspected, matching existing artifacts, decision rationale, and citations used for any update.
+
+## Conservative Obsidian Linking
+
+After creating or updating a card, concept, project note, spec index, candidate review, or query-derived writeback log, run a conservative wikilink pass.
+
+Add `[[...]]` links only to existing governed artifacts that are useful navigation targets:
+
+- existing `30_Cards/` cards
+- existing `40_Concepts/` concepts with clear boundaries
+- existing `50_Projects/` project notes
+- relevant spec indexes, source maps, or candidate reviews under `_system/reports/`
+- Dataview notes when the artifact is meant to appear in a maintained view
+
+Do not add wikilinks for every repeated noun, equipment name, field name, section title, raw PDF, converted bundle file, table asset, or unapproved concept. Use normal citations and source metadata for evidence paths; use wikilinks for governed knowledge-to-knowledge navigation.
+
+If a useful target does not exist yet, record it under "candidate concept but not created", "possible future card", or a QA/review note instead of creating an empty Obsidian link.
 
 ## Batch Synthesis Phase
 
@@ -249,6 +301,8 @@ Report every run with:
 9. Existing concepts reused and relationship types.
 10. Candidate concepts and decisions.
 11. Existing cards, concepts, projects, spec indexes, or Dataview metadata updated or marked stale/review-required.
-12. Batch synthesis decisions: sections compared, cards created or updated, candidate concepts, and rejected candidates.
-13. Failed bundle recovery attempts and remaining manual checks.
-14. Extraction QA items and recommended next step.
+12. Query-derived writeback decisions when applicable: candidate read, source evidence re-checked, artifact created/updated/skipped, and why.
+13. Conservative wikilink pass: existing artifacts linked and candidate links intentionally not created.
+14. Batch synthesis decisions: sections compared, cards created or updated, candidate concepts, and rejected candidates.
+15. Failed bundle recovery attempts and remaining manual checks.
+16. Extraction QA items and recommended next step.
