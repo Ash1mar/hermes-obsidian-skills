@@ -19,6 +19,12 @@ This repository stores local skills and tool-integration notes for the Hermes + 
   - Distinguishes vault facts, source-backed evidence, agent inference, QA risks, and gaps.
   - Prevents query runs from creating or modifying cards, concepts, reports, or raw material unless writeback is explicitly requested.
 
+- `hermes-obsidian-vault-lint/`
+  - Audits governed Obsidian vault health without assuming a fixed vault path.
+  - Checks bootstrap structure, bundle validation, section ledgers, source maps, and governed Markdown evidence frontmatter.
+  - Provides `post-ingest`, `query-ready`, `strict`, and `qa-review` profiles with stable JSON and Markdown report output.
+  - Reuses the controlled-ingest bundle validator when available.
+
 - `hermes-obsidian-vault-bootstrap/`
   - Initializes governed Obsidian vaults.
   - Creates the standard folder layout, prompts, templates, metadata registries, Dataview indexes, and setup report.
@@ -55,6 +61,7 @@ Validate skills with:
 python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest"
 python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-query"
 python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-bootstrap"
+python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-lint"
 ```
 
 Check helper script syntax with:
@@ -66,6 +73,13 @@ python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-sk
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\manage_bundle_ingest.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\convert_with_markitdown.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-bootstrap\scripts\init_obsidian_vault.py"
+python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-lint\scripts\lint_vault.py"
+```
+
+Run tests with:
+
+```powershell
+python -m unittest discover "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\tests"
 ```
 
 ## MinerU PDF Bundle Integration
