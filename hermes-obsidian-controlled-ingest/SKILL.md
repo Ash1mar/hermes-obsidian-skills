@@ -7,6 +7,15 @@ description: Governed Obsidian vault ingestion for Markdown, engineering PDFs, s
 
 Turn source files into governed Obsidian artifacts without rewriting raw material or overcreating concepts.
 
+## Intranet Vault Configuration
+
+On the `intranet` branch, the governed vault path is fixed by this skill's config:
+
+- config file: `config/intranet.json`
+- configured vault path: `/opt/data/phq/testVault`
+
+Use this configured path as the vault root for source onboarding, conversion output, source maps, section ledgers, governed artifacts, and ingest reports. If the server vault path changes, update `config/intranet.json`; do not switch vaults by prompt wording.
+
 ```text
 external or vault source
 -> runtime state detection
@@ -60,7 +69,7 @@ Do not rely on filenames alone. Use raw SHA-256, Bundle validation, and ledger r
 
 When the source is outside the vault:
 
-1. Require an initialized governed vault. If it does not exist, use `hermes-obsidian-vault-bootstrap` first.
+1. Require the configured governed vault at `/opt/data/phq/testVault`. If it does not exist, use `hermes-obsidian-vault-bootstrap` first.
 2. Copy the source unchanged into `10_Raw/`; never overwrite a conflicting file.
 3. Verify the copied source against the original by SHA-256, then treat it as read-only.
 4. Run all conversion from the vault copy and write derived output under `10_Raw/converted/`.
@@ -125,7 +134,7 @@ Keep the agent-facing path small. Do not recursively scan a bundle.
 
 1. Read `manifest.json` first.
 2. Run `scripts/validate_document_bundle.py <bundle>` before downstream writes.
-3. Run `scripts/manage_bundle_ingest.py init <bundle> --reports-dir <vault>/_system/reports` at the start of every session. This creates or reconciles the source map and section ledger.
+3. Run `scripts/manage_bundle_ingest.py init <bundle> --reports-dir /opt/data/phq/testVault/_system/reports` at the start of every session. This creates or reconciles the source map and section ledger.
 4. Use recovery rules when validation returns `fail`; stop at an ingest log or QA report when recovery is unavailable or retry fails.
 5. Allow a source map when status is `warn`, but do not promote affected formulas, tables, figures, or parameters as authoritative facts.
 6. Select an eligible ledger section. Do not duplicate an `ingested` section or reuse a `stale` section without review.

@@ -213,7 +213,7 @@ cd /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills
 python3 \
   hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
   "/mnt/c/path/to/input.pdf" \
-  -o "/mnt/c/path/to/vault/10_Raw/converted/input_document_bundle" \
+  -o "/opt/data/phq/testVault/10_Raw/converted/input_document_bundle" \
   --mineru-command "/usr/local/bin/mineru" \
   --model-source local \
   --backend hybrid-engine \
@@ -231,7 +231,7 @@ For a CPU fallback:
 python3 \
   hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
   "/mnt/c/path/to/input.pdf" \
-  -o "/mnt/c/path/to/vault/10_Raw/converted/input_document_bundle" \
+  -o "/opt/data/phq/testVault/10_Raw/converted/input_document_bundle" \
   --mineru-command "/usr/local/bin/mineru" \
   --model-source local \
   --backend pipeline \
@@ -251,7 +251,7 @@ For an intranet MinerU HTTP API:
 python3 \
   hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
   "/path/to/input.pdf" \
-  -o "/path/to/vault/10_Raw/converted/input_document_bundle" \
+  -o "/opt/data/phq/testVault/10_Raw/converted/input_document_bundle" \
   --mineru-api-mode sync \
   --backend hybrid-engine \
   --effort high \
@@ -287,7 +287,7 @@ the asynchronous task API:
 python3 \
   hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
   "/path/to/input.pdf" \
-  -o "/path/to/vault/10_Raw/converted/input_document_bundle" \
+  -o "/opt/data/phq/testVault/10_Raw/converted/input_document_bundle" \
   --mineru-api-mode async \
   --mineru-api-poll-timeout 7200 \
   --backend hybrid-engine \

@@ -1,4 +1,4 @@
 interface:
   display_name: "Hermes Obsidian Vault Bootstrap"
   short_description: "Initialize governed Obsidian vaults for Hermes workflows."
-  default_prompt: "Use this skill to create a governed Obsidian vault with standard folders, rules, Dataview indexes, templates, metadata registries, optional Obsidian config copying, and profile-specific setup such as meeting vaults."
+  default_prompt: "Use this skill to create the governed Obsidian vault configured in config/intranet.json, currently /opt/data/phq/testVault, with standard folders, rules, Dataview indexes, templates, metadata registries, optional Obsidian config copying, and profile-specific setup such as meeting vaults."

@@ -19,12 +19,18 @@ This repository stores local skills and tool-integration notes for the Hermes + 
   - Distinguishes vault facts, source-backed evidence, agent inference, QA risks, and gaps.
   - Prevents query runs from creating or modifying cards, concepts, reports, or raw material unless writeback is explicitly requested.
 
+- `hermes-obsidian-vault-lint/`
+  - Audits governed Obsidian vault health against the configured intranet vault.
+  - Validates Bundle v2, source maps, section ledgers, governed artifact frontmatter, and QA boundaries.
+
 - `hermes-obsidian-vault-bootstrap/`
   - Initializes governed Obsidian vaults.
   - Creates the standard folder layout, prompts, templates, metadata registries, Dataview indexes, and setup report.
   - Supports `general` and `meeting` profiles.
   - Can copy `.obsidian/`, base concept pages, and skill notes from a template vault.
   - Does not copy raw sources, test cards, test projects, or historical reports by default.
+
+On the `intranet` branch, bootstrap, ingest, query, and lint use the vault path configured in each skill's `config/intranet.json`, currently `/opt/data/phq/testVault`. Change that config file if the server vault location changes.
 
 ## Repository Layout
 
@@ -55,6 +61,7 @@ Validate skills with:
 python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest"
 python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-query"
 python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-bootstrap"
+python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-lint"
 ```
 
 Check helper script syntax with:
@@ -66,6 +73,7 @@ python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-sk
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\manage_bundle_ingest.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\convert_with_markitdown.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-bootstrap\scripts\init_obsidian_vault.py"
+python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-lint\scripts\lint_vault.py"
 ```
 
 ## MinerU PDF Bundle Integration
@@ -101,7 +109,7 @@ For staged or multi-session ingestion, initialize a human-readable source map an
 ```bash
 python3 hermes-obsidian-controlled-ingest/scripts/manage_bundle_ingest.py \
   init "/path/to/input_document_bundle" \
-  --reports-dir "/path/to/vault/_system/reports"
+  --reports-dir "/opt/data/phq/testVault/_system/reports"
 ```
 
 Hermes uses ledger revisions and per-section content hashes to resume work, prevent duplicate ingestion, and mark changed completed sections as stale.

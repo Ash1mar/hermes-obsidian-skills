@@ -7,6 +7,15 @@ description: Governed read-only querying for Hermes + Obsidian vaults. Use when 
 
 Answer questions from a governed Hermes + Obsidian vault without polluting the vault. Query is not ingest: default to read-only lookup, evidence selection, source checking, and cautious synthesis.
 
+## Intranet Vault Configuration
+
+On the `intranet` branch, the governed vault path is fixed by this skill's config:
+
+- config file: `config/intranet.json`
+- configured vault path: `/opt/data/phq/testVault`
+
+Use this configured path as the vault root for all controlled queries. If the server vault path changes, update `config/intranet.json`; do not switch vaults by prompt wording.
+
 ```text
 user question
 -> vault rules and query type
@@ -39,11 +48,10 @@ If the answer suggests a durable artifact, do not create it during query. Record
 
 Users should only need to provide:
 
-1. The vault path or enough context to identify the vault.
-2. The question or list of questions.
-3. Any explicit scope preference, such as "only use ingested FNP manuals" or "include source-page evidence".
+1. The question or list of questions.
+2. Any explicit scope preference, such as "only use ingested FNP manuals" or "include source-page evidence".
 
-Do not require users to restate this skill's search order, evidence packet fields, QA labels, or writeback restrictions in every prompt. Infer and apply those rules from this skill.
+Do not require users to restate the vault path, this skill's search order, evidence packet fields, QA labels, or writeback restrictions in every prompt. Infer and apply those rules from this skill.
 
 If the user asks for an engineering answer and does not specify an output format, use the full controlled-query answer shape with evidence packets.
 

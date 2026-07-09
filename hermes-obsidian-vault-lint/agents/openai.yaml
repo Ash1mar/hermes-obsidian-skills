@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hermes Obsidian Vault Lint"
+  short_description: "Audit governed Obsidian vault health"
+  default_prompt: "Use $hermes-obsidian-vault-lint to lint the intranet vault configured in config/intranet.json, currently /opt/data/phq/testVault, and report evidence-chain, ledger, bundle, and QA issues."

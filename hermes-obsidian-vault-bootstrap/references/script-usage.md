@@ -4,15 +4,16 @@
 
 ```powershell
 python scripts/init_obsidian_vault.py `
-  --vault-path "C:\Users\vimdr\Desktop\hermes-workspace\Hermes-MeetingVault" `
   --profile meeting
 ```
+
+On the `intranet` branch, the vault path defaults to `/opt/data/phq/testVault` from `config/intranet.json`.
+Change that config file if the server path changes.
 
 ## Use A Template Vault
 
 ```powershell
 python scripts/init_obsidian_vault.py `
-  --vault-path "C:\Users\vimdr\Desktop\hermes-workspace\Hermes-MeetingVault" `
   --profile meeting `
   --template-vault "C:\Users\vimdr\Desktop\hermes-workspace\Hermes-Obsidian-TestVault" `
   --copy-obsidian-config `

@@ -30,6 +30,20 @@ PROFILE_DIRS = {
     "general": [],
     "meeting": ["10_Raw/Meetings", "10_Raw/Materials", "20_Notes/Meetings"],
 }
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "intranet.json"
+
+
+def configured_vault_path() -> Path:
+    try:
+        data = json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise SystemExit(f"Cannot read intranet vault config: {DEFAULT_CONFIG_PATH}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Cannot parse intranet vault config: {DEFAULT_CONFIG_PATH}: {exc}") from exc
+    value = data.get("vault_path")
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(f"intranet vault config must define a non-empty vault_path: {DEFAULT_CONFIG_PATH}")
+    return Path(value).expanduser()
 
 
 def write_text(path: Path, content: str) -> None:
@@ -612,7 +626,7 @@ def copy_base_concepts(template: Path, vault: Path) -> int:
 
 
 def setup(args: argparse.Namespace) -> None:
-    vault = Path(args.vault_path).expanduser().resolve()
+    vault = (Path(args.vault_path).expanduser() if args.vault_path else configured_vault_path()).resolve()
     template = Path(args.template_vault).expanduser().resolve() if args.template_vault else None
 
     if is_non_empty(vault) and not args.force_empty:
@@ -694,7 +708,7 @@ Raw source folders were initialized but no raw sources were copied.
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Initialize a governed Hermes + Obsidian vault.")
-    parser.add_argument("--vault-path", required=True, help="Target vault path")
+    parser.add_argument("--vault-path", help="Target vault path. Defaults to config/intranet.json on this branch.")
     parser.add_argument("--profile", choices=["general", "meeting"], default="general")
     parser.add_argument("--template-vault", help="Optional template vault path")
     parser.add_argument("--skill-repo", help="Optional external skill repository path to write into prompts")

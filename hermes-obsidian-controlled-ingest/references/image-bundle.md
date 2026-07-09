@@ -82,7 +82,7 @@ Create a bundle without OCR text:
 ```bash
 python3 hermes-obsidian-controlled-ingest/scripts/convert_image_with_ocr_bundle.py \
   "/path/to/source.png" \
-  -o "/path/to/vault/10_Raw/converted/source_image_document_bundle" \
+  -o "/opt/data/phq/testVault/10_Raw/converted/source_image_document_bundle" \
   --material-type scanned-page
 ```
 
@@ -91,7 +91,7 @@ Create a bundle from an OCR sidecar:
 ```bash
 python3 hermes-obsidian-controlled-ingest/scripts/convert_image_with_ocr_bundle.py \
   "/path/to/source.png" \
-  -o "/path/to/vault/10_Raw/converted/source_image_document_bundle" \
+  -o "/opt/data/phq/testVault/10_Raw/converted/source_image_document_bundle" \
   --material-type scanned-page \
   --ocr-text-file "/path/to/source.ocr.txt"
 ```
@@ -101,7 +101,7 @@ Create a multi-image bundle:
 ```bash
 python3 hermes-obsidian-controlled-ingest/scripts/convert_image_with_ocr_bundle.py \
   "/path/to/page-001.png" "/path/to/page-002.png" \
-  -o "/path/to/vault/10_Raw/converted/source_image_document_bundle" \
+  -o "/opt/data/phq/testVault/10_Raw/converted/source_image_document_bundle" \
   --material-type mixed
 ```
 
@@ -129,7 +129,7 @@ python3 hermes-obsidian-controlled-ingest/scripts/validate_document_bundle.py \
 
 python3 hermes-obsidian-controlled-ingest/scripts/manage_bundle_ingest.py \
   init "/path/to/source_image_document_bundle" \
-  --reports-dir "/path/to/vault/_system/reports"
+  --reports-dir "/opt/data/phq/testVault/_system/reports"
 ```
 
 Then:
