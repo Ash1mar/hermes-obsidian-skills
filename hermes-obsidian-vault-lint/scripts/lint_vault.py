@@ -49,6 +49,20 @@ QA_BOUNDARY_TERMS = (
 )
 HIGH_AUTHORITY_STATUSES = {"approved", "authoritative", "final", "published", "verified"}
 HIGH_AUTHORITY_EVIDENCE_LEVELS = {"clear", "source-backed"}
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "intranet.json"
+
+
+def configured_vault_path() -> Path:
+    try:
+        data = json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise SystemExit(f"Cannot read intranet vault config: {DEFAULT_CONFIG_PATH}: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Cannot parse intranet vault config: {DEFAULT_CONFIG_PATH}: {exc}") from exc
+    value = data.get("vault_path")
+    if not isinstance(value, str) or not value.strip():
+        raise SystemExit(f"intranet vault config must define a non-empty vault_path: {DEFAULT_CONFIG_PATH}")
+    return Path(value).expanduser()
 
 
 @dataclass
@@ -741,7 +755,7 @@ def build_markdown_report(result: dict[str, Any]) -> str:
 
 def lint(args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
-    vault = Path(args.vault).expanduser().resolve()
+    vault = (Path(args.vault).expanduser() if args.vault else configured_vault_path()).resolve()
     profile = args.profile
     issues: list[Issue] = []
     metrics: dict[str, Any] = {}
@@ -785,7 +799,7 @@ def lint(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only Hermes + Obsidian vault governance lint")
-    parser.add_argument("--vault", required=True, help="Path to the governed Obsidian vault")
+    parser.add_argument("--vault", help="Path to the governed Obsidian vault. Defaults to config/intranet.json on this branch.")
     parser.add_argument("--profile", choices=sorted(ALLOWED_PROFILES), default="post-ingest")
     parser.add_argument("--json", action="store_true", help="Print JSON result")
     parser.add_argument("--markdown-report", type=Path, help="Optional path for a persisted Markdown lint report")
@@ -803,14 +817,14 @@ def main() -> int:
             "ok": False,
             "status": "internal-error",
             "profile": args.profile,
-            "vault": str(Path(args.vault).expanduser()),
+            "vault": str(Path(args.vault).expanduser() if args.vault else configured_vault_path()),
             "summary": {"errors": 1, "warnings": 0, "info": 0},
             "metrics": {},
             "issues": [
                 Issue(
                     "lint.internal_error",
                     "error",
-                    str(Path(args.vault).expanduser()),
+                    str(Path(args.vault).expanduser() if args.vault else configured_vault_path()),
                     f"Lint crashed: {exc}",
                 ).to_dict()
             ],

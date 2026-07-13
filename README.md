@@ -20,7 +20,7 @@ This repository stores local skills and tool-integration notes for the Hermes + 
   - Prevents query runs from creating or modifying cards, concepts, reports, or raw material unless writeback is explicitly requested.
 
 - `hermes-obsidian-vault-lint/`
-  - Audits governed Obsidian vault health without assuming a fixed vault path.
+  - Audits governed Obsidian vault health against the configured intranet vault.
   - Checks bootstrap structure, bundle validation, section ledgers, source maps, governed Markdown evidence, structured multi-source synthesis, and QA authority boundaries.
   - Provides `post-ingest`, `query-ready`, `strict`, and `qa-review` profiles with stable JSON and Markdown report output.
   - Reuses the controlled-ingest bundle validator when available.
@@ -32,7 +32,7 @@ This repository stores local skills and tool-integration notes for the Hermes + 
   - Can copy `.obsidian/`, base concept pages, and skill notes from a template vault.
   - Does not copy raw sources, test cards, test projects, or historical reports by default.
 
-On the `intranet` branch, bootstrap, ingest, and query use the vault path configured in each skill's `config/intranet.json`, currently `/opt/data/phq/testVault`. Vault lint remains prompt-scoped and requires `--vault` so it can audit any requested vault.
+On the `intranet` branch, bootstrap, ingest, query, and lint use the vault path configured in each skill's `config/intranet.json`, currently `/opt/data/phq/testVault`. Change that config file if the server vault location changes.
 
 ## Repository Layout
 

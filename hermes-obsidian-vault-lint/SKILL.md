@@ -9,7 +9,7 @@ Audit a governed Hermes + Obsidian vault without changing it.
 
 ```text
 prompt scope
--> choose vault path from user request or current context
+-> use configured intranet vault path
 -> choose lint profile
 -> run read-only lint script
 -> report errors, warnings, metrics, and next actions
@@ -17,7 +17,7 @@ prompt scope
 
 ## Boundary
 
-- Do not hard-code a vault path. Use the vault requested in the prompt or the current task context.
+- Do not ask the user for a vault path on this branch. Use the configured intranet path.
 - Treat lint as read-only. Do not create, edit, move, rename, or delete vault files unless the user explicitly asks for a report file or a later fix operation.
 - Do not run controlled ingest or controlled query as part of lint. Lint may point to those workflows as follow-up actions.
 - Do not treat `qa_required` as a failure by default. It is a controlled open QA state unless the selected profile says otherwise.
@@ -29,10 +29,15 @@ Run:
 
 ```bash
 python hermes-obsidian-vault-lint/scripts/lint_vault.py \
-  --vault "/path/to/Vault" \
   --profile post-ingest \
   --json
 ```
+
+## Intranet Vault Configuration
+
+Use `config/intranet.json` as the default lint target on this branch. It currently defines `/opt/data/phq/testVault`.
+
+Use `--vault` only as an explicit operational override. Do not select another vault from prompt wording alone.
 
 Use `--markdown-report <path>` only when the user explicitly asks to persist a lint report.
 
