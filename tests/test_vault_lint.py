@@ -148,12 +148,47 @@ class VaultLintTest(unittest.TestCase):
         )
         return vault
 
+    def add_second_source(self, vault: Path) -> str:
+        bundle_id = "bundle-v2-" + ("b" * 16)
+        reports = vault / "_system" / "reports"
+        ledger = {
+            "ledger_schema_version": "1.0",
+            "bundle_id": bundle_id,
+            "revision": 1,
+            "state": "complete",
+            "validation": {"status": "pass"},
+            "source": {"sha256": "b" * 64},
+            "sections": [
+                {
+                    "id": "two",
+                    "quality": "pass",
+                    "status": "ingested",
+                    "outputs": [],
+                    "ingest_unit": True,
+                }
+            ],
+        }
+        (reports / "second.section-ledger.json").write_text(json.dumps(ledger), encoding="utf-8")
+        (reports / "second.source-map.md").write_text(
+            "---\n"
+            "type: source-map\n"
+            f"bundle_id: {bundle_id}\n"
+            f"source_sha256: {'b' * 64}\n"
+            "validation_status: pass\n"
+            "ledger_revision: 1\n"
+            "ingest_state: complete\n"
+            "---\n# Source Map\n",
+            encoding="utf-8",
+        )
+        return bundle_id
+
     def test_post_ingest_allows_controlled_qa(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             data = self.run_lint(self.create_vault(Path(temporary)))
             self.assertEqual("pass-with-warnings", data["status"])
             self.assertEqual(0, data["summary"]["errors"])
             self.assertIn("ledger.qa_open", {issue["code"] for issue in data["issues"]})
+            self.assertIn("qa.boundary_weak", {issue["code"] for issue in data["issues"]})
 
     def test_strict_escalates_controlled_qa(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -163,6 +198,53 @@ class VaultLintTest(unittest.TestCase):
                 ("ledger.qa_open", "error"),
                 {(issue["code"], issue["severity"]) for issue in data["issues"]},
             )
+
+    def test_structured_multi_source_evidence_is_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            vault = self.create_vault(Path(temporary))
+            second_bundle = self.add_second_source(vault)
+            first_ledger_path = vault / "_system" / "reports" / "sample.section-ledger.json"
+            first_ledger = json.loads(first_ledger_path.read_text(encoding="utf-8"))
+            first_ledger["sections"][0]["status"] = "ingested"
+            first_ledger["sections"][0]["quality"] = "pass"
+            first_ledger_path.write_text(json.dumps(first_ledger), encoding="utf-8")
+            (vault / "30_Cards" / "synthesis.md").write_text(
+                "---\ntype: knowledge-card\nstatus: draft\n---\n"
+                "# Synthesis\n\n"
+                "| source | bundle | section | pages | owned lines |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| A | `bundle-v2-aaaaaaaaaaaaaaaa` | `one` | 1 | 2-3 |\n"
+                f"| B | `{second_bundle}` | `two` | 2 | 4-5 |\n",
+                encoding="utf-8",
+            )
+            data = self.run_lint(vault)
+            self.assertNotIn("synthesis.multi_source_unstructured", {issue["code"] for issue in data["issues"]})
+            self.assertEqual(1, data["metrics"]["multi_source_artifacts"])
+            self.assertEqual(1, data["metrics"]["structured_multi_source_artifacts"])
+
+    def test_unstructured_multi_source_evidence_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            vault = self.create_vault(Path(temporary))
+            second_bundle = self.add_second_source(vault)
+            (vault / "30_Cards" / "synthesis.md").write_text(
+                "---\ntype: knowledge-card\nstatus: draft\n---\n"
+                "# Synthesis\n\n"
+                f"Compare bundle-v2-aaaaaaaaaaaaaaaa with {second_bundle}.\n",
+                encoding="utf-8",
+            )
+            data = self.run_lint(vault)
+            self.assertIn("synthesis.multi_source_unstructured", {issue["code"] for issue in data["issues"]})
+
+    def test_qa_evidence_cannot_be_promoted_as_clear(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            vault = self.create_vault(Path(temporary))
+            card = vault / "30_Cards" / "one.md"
+            card.write_text(
+                card.read_text(encoding="utf-8").replace("status: draft", "status: published\nevidence_level: clear"),
+                encoding="utf-8",
+            )
+            data = self.run_lint(vault, expect=2)
+            self.assertIn("qa.authority_overpromoted", {issue["code"] for issue in data["issues"]})
 
 
 if __name__ == "__main__":

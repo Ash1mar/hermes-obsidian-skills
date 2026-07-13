@@ -9,24 +9,15 @@ Audit a governed Hermes + Obsidian vault without changing it.
 
 ```text
 prompt scope
--> use configured intranet vault path
+-> choose vault path from user request or current context
 -> choose lint profile
 -> run read-only lint script
 -> report errors, warnings, metrics, and next actions
 ```
 
-## Intranet Vault Configuration
-
-On the `intranet` branch, the lint target vault path is fixed by this skill's config:
-
-- config file: `config/intranet.json`
-- configured vault path: `/opt/data/phq/testVault`
-
-Use this configured path by default. If the server vault path changes, update `config/intranet.json`; do not switch vaults by prompt wording.
-
 ## Boundary
 
-- Do not ask the user for a vault path on this branch. Use the configured intranet path.
+- Do not hard-code a vault path. Use the vault requested in the prompt or the current task context.
 - Treat lint as read-only. Do not create, edit, move, rename, or delete vault files unless the user explicitly asks for a report file or a later fix operation.
 - Do not run controlled ingest or controlled query as part of lint. Lint may point to those workflows as follow-up actions.
 - Do not treat `qa_required` as a failure by default. It is a controlled open QA state unless the selected profile says otherwise.
@@ -38,6 +29,7 @@ Run:
 
 ```bash
 python hermes-obsidian-vault-lint/scripts/lint_vault.py \
+  --vault "/path/to/Vault" \
   --profile post-ingest \
   --json
 ```
@@ -80,7 +72,7 @@ Read `references/output-contract.md` before consuming the JSON from another scri
 
 ## Rule Scope
 
-First-phase rules cover:
+Rules cover:
 
 - vault folder and governance-file structure
 - Markdown frontmatter presence and basic required fields
@@ -89,6 +81,10 @@ First-phase rules cover:
 - source-map frontmatter alignment with ledger bundle id, revision, state, and validation status
 - source citation fields for single-source governed artifacts
 - ledger output paths resolving to existing governed files
+- structured evidence tables for multi-source synthesis
+- bundle/section validity for row-level synthesis evidence
+- explicit `needs-qa` boundaries around QA-affected evidence
+- rejection of authoritative status or evidence levels over QA-affected sections
 
 Read `references/rule-catalog.md` before adding or changing rule codes.
 

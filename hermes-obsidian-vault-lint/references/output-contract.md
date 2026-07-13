@@ -11,7 +11,7 @@
   "ok": true,
   "status": "pass|pass-with-warnings|fail|internal-error",
   "profile": "post-ingest",
-  "vault": "/opt/data/phq/testVault",
+  "vault": "/absolute/path/to/vault",
   "summary": {
     "errors": 0,
     "warnings": 0,
@@ -46,3 +46,11 @@ Each issue has:
 - `3`: internal lint failure
 
 Consumers should rely on `status`, `summary`, and `issues[].code`, not console formatting.
+
+## Semantic Metrics
+
+When applicable, `metrics` includes:
+
+- `multi_source_artifacts`
+- `structured_multi_source_artifacts`
+- `qa_affected_artifacts`
