@@ -10,6 +10,8 @@ Use after controlled ingest or batch ingest.
 - `pending` is warning.
 - `in_progress` and `stale` are errors.
 - bundle validation `fail` is error.
+- weak QA boundaries and unstructured multi-source synthesis are warnings.
+- authoritative promotion of QA-affected evidence is error.
 
 ## query-ready
 
@@ -18,13 +20,15 @@ Use before controlled query work.
 - missing citation contract is error for single-source knowledge cards and spec indexes.
 - open QA is warning because it affects answer authority.
 - missing source-map or ledger alignment is error.
+- weak QA boundaries remain warning; authoritative promotion is error.
 
 ## strict
 
 Use before publication, archive, or handoff.
 
-- open `qa_required`, `pending`, `in_progress`, or `stale` states are errors unless a future waiver mechanism records an explicit exception.
-- warnings from `post-ingest` should generally become errors.
+- open `qa_required`, `pending`, `in_progress`, or `stale` states are errors.
+- weak QA boundaries and unstructured multi-source synthesis are errors.
+- authoritative promotion of QA-affected evidence is error.
 
 ## qa-review
 
@@ -32,3 +36,5 @@ Use to plan manual QA.
 
 - open `qa_required` is info unless the ledger is stale or the bundle fails validation.
 - grouped QA metrics matter more than pass/fail.
+- weak QA boundaries are warnings so reviewers can prioritize missing safeguards.
+- authoritative promotion remains error because it hides the QA state.

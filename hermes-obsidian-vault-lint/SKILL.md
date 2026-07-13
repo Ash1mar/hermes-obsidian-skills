@@ -72,7 +72,7 @@ Read `references/output-contract.md` before consuming the JSON from another scri
 
 ## Rule Scope
 
-First-phase rules cover:
+Rules cover:
 
 - vault folder and governance-file structure
 - Markdown frontmatter presence and basic required fields
@@ -81,6 +81,10 @@ First-phase rules cover:
 - source-map frontmatter alignment with ledger bundle id, revision, state, and validation status
 - source citation fields for single-source governed artifacts
 - ledger output paths resolving to existing governed files
+- structured evidence tables for multi-source synthesis
+- bundle/section validity for row-level synthesis evidence
+- explicit `needs-qa` boundaries around QA-affected evidence
+- rejection of authoritative status or evidence levels over QA-affected sections
 
 Read `references/rule-catalog.md` before adding or changing rule codes.
 

@@ -42,8 +42,12 @@ Rule codes are stable identifiers for automation and reports.
 
 ## Multi-Source and QA Boundary
 
-Reserved for later phases:
-
 - `synthesis.multi_source_unstructured`
 - `qa.boundary_weak`
 - `qa.authority_overpromoted`
+
+`synthesis.multi_source_unstructured` requires a Markdown evidence table with `bundle`, `section`, `pages`, and `owned lines` or `source lines` columns when two or more Bundle v2 ids are cited. Row bundle/section pairs are checked against section ledgers.
+
+`qa.boundary_weak` applies when an artifact cites a `qa_required` or warn/fail-quality section but has neither `evidence_level: needs-qa` nor an explicit QA/review boundary in its body.
+
+`qa.authority_overpromoted` applies when QA-affected evidence is paired with `evidence_level: clear|source-backed` or artifact status `approved|authoritative|final|published|verified`.

@@ -21,7 +21,7 @@ This repository stores local skills and tool-integration notes for the Hermes + 
 
 - `hermes-obsidian-vault-lint/`
   - Audits governed Obsidian vault health without assuming a fixed vault path.
-  - Checks bootstrap structure, bundle validation, section ledgers, source maps, and governed Markdown evidence frontmatter.
+  - Checks bootstrap structure, bundle validation, section ledgers, source maps, governed Markdown evidence, structured multi-source synthesis, and QA authority boundaries.
   - Provides `post-ingest`, `query-ready`, `strict`, and `qa-review` profiles with stable JSON and Markdown report output.
   - Reuses the controlled-ingest bundle validator when available.
 

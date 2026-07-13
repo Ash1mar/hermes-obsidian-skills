@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import re
 import sys
 import time
 from collections import Counter
@@ -31,6 +32,23 @@ REQUIRED_DIRS = [
 GOVERNED_MARKDOWN_DIRS = ["30_Cards", "40_Concepts", "50_Projects", "_system/reports"]
 SOURCE_MAP_SUFFIX = ".source-map.md"
 LEDGER_SUFFIX = ".section-ledger.json"
+BUNDLE_ID_PATTERN = re.compile(r"bundle-v2-[0-9a-fA-F]{16,64}")
+QA_BOUNDARY_TERMS = (
+    "needs-qa",
+    "qa_required",
+    "qa required",
+    "manual qa",
+    "人工 qa",
+    "人工复核",
+    "待复核",
+    "需复核",
+    "不提升为权威",
+    "暂不提升为权威",
+    "not authoritative",
+    "do not promote",
+)
+HIGH_AUTHORITY_STATUSES = {"approved", "authoritative", "final", "published", "verified"}
+HIGH_AUTHORITY_EVIDENCE_LEVELS = {"clear", "source-backed"}
 
 
 @dataclass
@@ -132,6 +150,83 @@ def parse_frontmatter(path: Path) -> dict[str, Any] | None:
         else:
             data[key] = strip_quotes(value)
     return data
+
+
+def markdown_body(path: Path) -> str:
+    try:
+        lines = read_text(path).splitlines()
+    except OSError:
+        return ""
+    if not lines or lines[0].strip() != "---":
+        return "\n".join(lines)
+    for index, line in enumerate(lines[1:], start=1):
+        if line.strip() == "---":
+            return "\n".join(lines[index + 1 :])
+    return ""
+
+
+def split_table_row(line: str) -> list[str]:
+    value = line.strip().strip("|")
+    return [cell.strip() for cell in value.split("|")]
+
+
+def parse_markdown_tables(body: str) -> list[dict[str, Any]]:
+    lines = body.splitlines()
+    tables: list[dict[str, Any]] = []
+    index = 0
+    while index + 1 < len(lines):
+        header_line = lines[index]
+        separator_line = lines[index + 1]
+        if "|" not in header_line or "|" not in separator_line:
+            index += 1
+            continue
+        headers = split_table_row(header_line)
+        separators = split_table_row(separator_line)
+        if len(headers) != len(separators) or not separators or not all(
+            re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in separators
+        ):
+            index += 1
+            continue
+        rows: list[list[str]] = []
+        index += 2
+        while index < len(lines) and "|" in lines[index] and lines[index].strip():
+            row = split_table_row(lines[index])
+            if len(row) == len(headers):
+                rows.append(row)
+            index += 1
+        tables.append({"headers": headers, "rows": rows})
+    return tables
+
+
+def normalized_header(value: str) -> str:
+    return re.sub(r"[\s_-]+", " ", value.strip().strip("`").casefold())
+
+
+def structured_evidence_rows(body: str) -> list[dict[str, str]]:
+    aliases = {
+        "bundle": {"bundle", "bundle id", "source bundle id"},
+        "section": {"section", "section id", "source section id"},
+        "pages": {"pages", "source pages"},
+        "lines": {"lines", "owned lines", "source lines"},
+    }
+    evidence: list[dict[str, str]] = []
+    for table in parse_markdown_tables(body):
+        normalized = [normalized_header(item) for item in table["headers"]]
+        indexes: dict[str, int] = {}
+        for field_name, names in aliases.items():
+            found = next((i for i, header in enumerate(normalized) if header in names), None)
+            if found is not None:
+                indexes[field_name] = found
+        if set(indexes) != set(aliases):
+            continue
+        for row in table["rows"]:
+            values = {name: row[position].strip().strip("`") for name, position in indexes.items()}
+            match = BUNDLE_ID_PATTERN.search(values["bundle"])
+            if match:
+                values["bundle"] = match.group(0)
+                values["section"] = values["section"].strip().strip("`")
+                evidence.append(values)
+    return evidence
 
 
 def severity_for_open_qa(profile: str) -> str:
@@ -404,6 +499,120 @@ def section_lookup(ledgers_by_bundle: dict[str, dict[str, Any]]) -> dict[tuple[s
     return lookup
 
 
+def semantic_warning_severity(profile: str) -> str:
+    return "error" if profile == "strict" else "warning"
+
+
+def section_needs_qa(section: dict[str, Any]) -> bool:
+    return str(section.get("status", "")).casefold() == "qa_required" or str(section.get("quality", "")).casefold() in {
+        "warn",
+        "fail",
+    }
+
+
+def has_qa_boundary(frontmatter: dict[str, Any], body: str) -> bool:
+    if str(frontmatter.get("evidence_level", "")).casefold() == "needs-qa":
+        return True
+    lowered = body.casefold()
+    return any(term in lowered for term in QA_BOUNDARY_TERMS)
+
+
+def lint_semantic_boundaries(
+    relative: str,
+    profile: str,
+    frontmatter: dict[str, Any],
+    body: str,
+    bundle_ids: list[str],
+    ledgers_by_bundle: dict[str, dict[str, Any]],
+    known_sections: dict[tuple[str, str], dict[str, Any]],
+    issues: list[Issue],
+    metrics: dict[str, Any],
+) -> None:
+    body_bundle_ids = sorted(set(BUNDLE_ID_PATTERN.findall(body)))
+    all_bundle_ids = sorted(set(bundle_ids) | set(body_bundle_ids))
+    rows = structured_evidence_rows(body)
+    affected: list[dict[str, str]] = []
+
+    if len(all_bundle_ids) > 1:
+        metrics["multi_source_artifacts"] = int(metrics.get("multi_source_artifacts", 0)) + 1
+        if rows:
+            metrics["structured_multi_source_artifacts"] = int(metrics.get("structured_multi_source_artifacts", 0)) + 1
+        else:
+            add_issue(
+                issues,
+                "synthesis.multi_source_unstructured",
+                semantic_warning_severity(profile),
+                relative,
+                "Multi-source artifact has no structured evidence table with bundle, section, pages, and owned/source lines.",
+                "Add a row-level evidence table so each synthesized claim can be traced to a governed section.",
+                bundle_count=len(all_bundle_ids),
+            )
+
+        unknown = [bundle_id for bundle_id in all_bundle_ids if bundle_id not in ledgers_by_bundle]
+        if unknown:
+            add_issue(
+                issues,
+                "evidence.unknown_bundle",
+                "error",
+                relative,
+                "Multi-source artifact references bundle ids with no matching ledger.",
+                bundle_ids=unknown,
+            )
+
+    for row in rows:
+        section = known_sections.get((row["bundle"], row["section"]))
+        if row["bundle"] not in ledgers_by_bundle:
+            continue
+        if section is None:
+            add_issue(
+                issues,
+                "evidence.unknown_section",
+                "error",
+                relative,
+                "Structured evidence row references a section not present in the matching ledger.",
+                bundle_id=row["bundle"],
+                section_id=row["section"],
+            )
+        elif section_needs_qa(section):
+            affected.append({"bundle_id": row["bundle"], "section_id": row["section"]})
+
+    if len(bundle_ids) == 1:
+        section_id = str(frontmatter.get("source_section_id", "")).strip().strip('"')
+        section = known_sections.get((bundle_ids[0], section_id))
+        if section is not None and section_needs_qa(section):
+            affected.append({"bundle_id": bundle_ids[0], "section_id": section_id})
+
+    if not affected:
+        return
+
+    unique_affected = list({(item["bundle_id"], item["section_id"]): item for item in affected}.values())
+    metrics["qa_affected_artifacts"] = int(metrics.get("qa_affected_artifacts", 0)) + 1
+    artifact_status = str(frontmatter.get("status", "")).casefold()
+    evidence_level = str(frontmatter.get("evidence_level", "")).casefold()
+    if artifact_status in HIGH_AUTHORITY_STATUSES or evidence_level in HIGH_AUTHORITY_EVIDENCE_LEVELS:
+        add_issue(
+            issues,
+            "qa.authority_overpromoted",
+            "error",
+            relative,
+            "Artifact promotes QA-affected evidence with an authoritative status or evidence level.",
+            "Downgrade the artifact/evidence level to needs-qa or complete targeted source-page and asset review first.",
+            artifact_status=artifact_status or None,
+            evidence_level=evidence_level or None,
+            affected_sections=unique_affected,
+        )
+    elif not has_qa_boundary(frontmatter, body):
+        add_issue(
+            issues,
+            "qa.boundary_weak",
+            semantic_warning_severity(profile),
+            relative,
+            "Artifact uses QA-affected evidence without an explicit needs-qa boundary.",
+            "Add evidence_level: needs-qa or state the targeted page/table/figure review still required.",
+            affected_sections=unique_affected,
+        )
+
+
 def lint_markdown_artifacts(
     vault: Path,
     profile: str,
@@ -419,6 +628,7 @@ def lint_markdown_artifacts(
         if path.name.endswith(SOURCE_MAP_SUFFIX):
             continue
         frontmatter = parse_frontmatter(path)
+        body = markdown_body(path)
         relative = rel(path, vault)
         if frontmatter is None:
             add_issue(issues, "frontmatter.missing", "warning", relative, "Governed Markdown file is missing frontmatter.")
@@ -433,32 +643,25 @@ def lint_markdown_artifacts(
             bundle_ids = [str(item).strip() for item in source_bundle_value if str(item).strip()]
         else:
             bundle_ids = [str(source_bundle_value).strip()] if str(source_bundle_value).strip() else []
-        if not bundle_ids:
-            continue
         if artifact_type == "report" and path.name.endswith(".controlled-ingest-log.md"):
             continue
 
+        lint_semantic_boundaries(
+            relative,
+            profile,
+            frontmatter,
+            body,
+            bundle_ids,
+            ledgers_by_bundle,
+            known_sections,
+            issues,
+            metrics,
+        )
+
+        if not bundle_ids:
+            continue
+
         if len(bundle_ids) > 1:
-            unknown = [bundle_id for bundle_id in bundle_ids if bundle_id not in ledgers_by_bundle]
-            if unknown:
-                add_issue(
-                    issues,
-                    "evidence.unknown_bundle",
-                    "error",
-                    relative,
-                    "Multi-source artifact references bundle ids with no matching ledger.",
-                    bundle_ids=unknown,
-                )
-            if artifact_type == "knowledge-card":
-                add_issue(
-                    issues,
-                    "synthesis.multi_source_unstructured",
-                    "warning",
-                    relative,
-                    "Multi-source card uses multiple source_bundle_id values; ensure evidence table remains the authority for pages, sections, and QA exclusions.",
-                    "Future versions should prefer an explicit source_bundles structure.",
-                    bundle_count=len(bundle_ids),
-                )
             continue
 
         required = ["source_sha256", "source_section_id", "source_lines", "source_pages", "source_assets"]
