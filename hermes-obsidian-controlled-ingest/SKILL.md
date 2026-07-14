@@ -135,6 +135,8 @@ Keep the agent-facing path small. Do not recursively scan a bundle.
 10. Record every created output and finish the section as `ingested`, `qa_required`, or `skipped`. Never leave a successful run only in prose logs.
 11. Do not read `_evidence/` by default. Open it only for targeted QA of layout, page order, formulas, tables, or extraction disputes.
 
+After ledger initialization, reconciliation, or completed source ingestion, optionally run `scripts/build_section_query_index.py <vault-root> --bundle <bundle>`. It writes only a disposable, non-authoritative projection under `_system/reports/query-index/`; failure must not change Bundle, ledger, source-map, spec-index, or ingest status. The projection contains no generated section summaries. See the repository `Hierarchical_search.md` design note.
+
 Treat `document.md` as the single normalized text source. Do not duplicate every section into separate Markdown files. Use the ledger's non-overlapping `content_ranges` for staged ingestion and the JSON ledger as the section-state authority.
 
 Honor `manifest.quality.review_required`. Verify engineering formulas, table structure, and figure internals against page evidence before turning them into reusable rules or parameters.

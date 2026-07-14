@@ -54,6 +54,8 @@ Search `_system/reports/` for navigation and quality state:
 
 Use reports to decide which converted source files and line ranges to open. Do not treat spec indexes alone as final engineering facts when they explicitly say they are navigational.
 
+In parallel with this report-navigation pass, use `scripts/locate_source_sections.py <vault-root> <query>` when `_system/reports/query-index/` is available. Merge candidates by document path and section ID. Keep the strongest match reasons and the strictest quality/status flags. The locator is optional and non-authoritative; missing or stale projections must fall back to this existing report search rather than block the query.
+
 ## 5. Verify Converted Sources
 
 For evidence queries, open targeted converted sources:
