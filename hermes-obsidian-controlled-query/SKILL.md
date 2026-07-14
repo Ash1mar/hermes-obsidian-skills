@@ -144,6 +144,8 @@ Use the most governed layer that can answer the question, then descend only as n
 
 For layered MinerU bundles, prefer `document.md` plus source map/ledger navigation. Open `_evidence/` only for targeted QA of page order, formulas, tables, figures, or extraction disputes.
 
+When governed artifacts do not fully answer the question or source evidence is required, run `scripts/locate_source_sections.py <vault-root> <query>` as a parallel candidate locator beside the existing report-navigation search. Merge and deduplicate both candidate sets, then continue through the existing converted-source and page-evidence verification steps. Treat query-index output only as navigation: never quote it or promote it to evidence. If the projection is absent, stale, or invalid, continue with the existing search order without failing the query. See the repository `Hierarchical_search.md` design note.
+
 ## Evidence Quality
 
 Before answering, label the usable evidence:
