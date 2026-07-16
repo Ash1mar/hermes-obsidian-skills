@@ -1,11 +1,11 @@
 ---
 name: hermes-obsidian-controlled-query
-description: Governed read-only querying for Hermes + Obsidian vaults. Use when asked to answer, locate, verify, compare, summarize, or identify gaps from an existing governed vault without ingesting new sources or writing durable knowledge artifacts. Supports evidence-first lookup across 30_Cards, 40_Concepts, 50_Projects, _system/reports source maps/spec indexes/section ledgers/ingest logs, and 10_Raw/converted document bundles, with explicit separation of vault facts, agent inference, evidence gaps, QA risks, and optional internal query-writeback candidates for later controlled ingest.
+description: Governed querying and retrieval tracing for Hermes + Obsidian vaults. Use when asked to answer, locate, verify, compare, summarize, identify gaps, or audit how an answer was retrieved from an existing governed vault. Supports evidence-first lookup across governed artifacts, reports, ledgers, converted sources, and hierarchical source navigation; writes only non-authoritative query traces by default while preserving the controlled writeback boundary for durable knowledge.
 ---
 
 # Hermes Obsidian Controlled Query
 
-Answer questions from a governed Hermes + Obsidian vault without polluting the vault. Query is not ingest: default to read-only lookup, evidence selection, source checking, and cautious synthesis.
+Answer questions from a governed Hermes + Obsidian vault without polluting the vault. Query is not ingest: default to read-only lookup, evidence selection, source checking, cautious synthesis, and an append-only non-authoritative query trace.
 
 ## Intranet Vault Configuration
 
@@ -28,7 +28,7 @@ user question
 
 ## Non-Writing Contract
 
-During a controlled query, do not create, modify, rename, move, or delete vault files unless the user explicitly asks to write, persist, create a card, update a concept, record a query log, or otherwise "沉淀" the result.
+During a controlled query, do not create, modify, rename, move, or delete governed Vault files. The only default write exception is the current run's non-authoritative trace under `_system/reports/query-traces/`. Skip that trace when the user explicitly requests no logging or the Vault is not writable.
 
 Treat these paths as read-only by default:
 
@@ -42,7 +42,15 @@ Treat these paths as read-only by default:
 - `_system/prompts/`
 - `_system/reports/`
 
-If the answer suggests a durable artifact, do not create it during query. Record only an internal query-writeback candidate when the user or vault policy explicitly allows query logs/candidates; otherwise keep the candidate in the current conversation for a possible later ingest handoff.
+Within `_system/reports/`, write only the query trace exception. Do not edit ingest logs, source maps, spec indexes, ledgers, query indexes, or other reports.
+
+If the answer suggests a durable artifact, do not create it during query. Record only an internal query-writeback candidate when the user or vault policy explicitly allows candidates; otherwise keep the candidate in the current conversation for a possible later ingest handoff. A query trace is not a writeback candidate and must never be promoted or cited as evidence.
+
+## Query Trace
+
+After resolving the Vault and classifying the question, run `scripts/manage_query_trace.py start` with the question, query type, and Hermes session ID when available. Retain its `trace_id` and append an event after every attempted retrieval layer, including zero-hit, skipped, fallback, and failed stages. Record paths, counts, concise selection/exclusion reasons, and evidence checks; never record hidden reasoning, credentials, unrestricted tool output, or long source passages.
+
+Pass `--trace-id <id>` to `scripts/locate_source_sections.py` so actual hierarchical candidates and match data are recorded directly. Finish the trace as `completed`, `failed`, or `incomplete` before returning. Logging errors never block the answer. Read `references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
 
 ## Minimal Prompt Contract
 
@@ -144,7 +152,7 @@ Use the most governed layer that can answer the question, then descend only as n
 
 For layered MinerU bundles, prefer `document.md` plus source map/ledger navigation. Open `_evidence/` only for targeted QA of page order, formulas, tables, figures, or extraction disputes.
 
-When governed artifacts do not fully answer the question or source evidence is required, run `scripts/locate_source_sections.py <vault-root> <query>` as a parallel candidate locator beside the existing report-navigation search. Merge and deduplicate both candidate sets, then continue through the existing converted-source and page-evidence verification steps. Treat query-index output only as navigation: never quote it or promote it to evidence. If the projection is absent, stale, or invalid, continue with the existing search order without failing the query. Read `references/Hierarchical_search.md` for the design and migration boundary.
+When governed artifacts do not fully answer the question or source evidence is required, run `scripts/locate_source_sections.py <vault-root> <query> --trace-id <id>` as a parallel candidate locator beside the existing report-navigation search. Merge and deduplicate both candidate sets, then continue through the existing converted-source and page-evidence verification steps. Treat query-index output only as navigation: never quote it or promote it to evidence. If the projection is absent, stale, or invalid, record the fallback and continue with the existing search order without failing the query. Read `references/Hierarchical_search.md` for the design and migration boundary.
 
 ## Evidence Quality
 
@@ -204,3 +212,4 @@ Use `hermes-obsidian-controlled-ingest` only when the user explicitly asks to pe
 - `references/query-workflow.md`: full workflow, search tactics, and FNP-style engineering query guidance.
 - `references/evidence-levels.md`: evidence quality labels and QA restrictions.
 - `references/answer-format.md`: standard answer templates.
+- `references/query-tracing.md`: incremental trace lifecycle, event schema, privacy boundary, and Obsidian dashboard.

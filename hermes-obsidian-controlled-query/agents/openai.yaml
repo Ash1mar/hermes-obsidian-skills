@@ -1,4 +1,4 @@
 interface:
   display_name: "Hermes Obsidian Controlled Query"
-  short_description: "Run read-only governed queries over Hermes Obsidian vaults."
-  default_prompt: "Use this skill for a read-only Hermes Obsidian vault query against the intranet vault configured in config/intranet.json, currently /opt/data/phq/testVault. Provide the question; the skill handles search order, evidence packets, QA labels, and internal query-writeback candidate boundaries."
+  short_description: "Run governed vault queries with auditable retrieval traces."
+  default_prompt: "Use this skill for a governed query against the intranet vault configured in config/intranet.json, currently /opt/data/phq/testVault. Provide the question; the skill handles search order, evidence packets, QA labels, hierarchical navigation, and a non-authoritative Obsidian query trace while preserving durable writeback boundaries."
