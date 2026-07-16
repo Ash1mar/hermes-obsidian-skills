@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -67,6 +68,7 @@ def main() -> int:
     parser.add_argument("--top-sections", type=int, default=20)
     parser.add_argument("--index-dir", type=Path, help="Defaults to <vault>/_system/reports/query-index")
     parser.add_argument("--no-content-scan", action="store_true", help="Score only document routing and section paths")
+    parser.add_argument("--trace-id", help="Append actual candidates to an active query trace")
     args = parser.parse_args()
 
     vault_root = args.vault_root.resolve()
@@ -147,6 +149,28 @@ def main() -> int:
         "errors": errors,
         "next_step": "Merge with existing report-navigation hits, then verify document.md and page/table/figure evidence before answering.",
     }
+    if args.trace_id:
+        try:
+            from manage_query_trace import append_event
+
+            append_event(
+                vault_root,
+                args.trace_id,
+                {
+                    "stage": "hierarchical-candidate-location",
+                    "route": "hierarchical-search",
+                    "status": result["status"],
+                    "summary": "Located document/section candidates; results remain navigation-only until source verification.",
+                    "hit_count": len(result["candidates"]),
+                    "accepted_count": None,
+                    "inspected_paths": sorted(
+                        {str(item.get("index_path")) for item in result["candidates"] if item.get("index_path")}
+                    ),
+                    "candidates": result["candidates"],
+                },
+            )
+        except Exception as exc:  # Trace failure must not block retrieval.
+            print(f"warning: query trace append failed: {exc}", file=sys.stderr)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if not errors else 2
 

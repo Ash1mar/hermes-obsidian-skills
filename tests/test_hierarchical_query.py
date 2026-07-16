@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "hermes-obsidian-controlled-ingest" / "scripts" / "build_section_query_index.py"
 LOCATE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "locate_source_sections.py"
+TRACE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "manage_query_trace.py"
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -121,3 +122,113 @@ def test_locator_scans_owned_content_and_returns_navigation_only(tmp_path: Path)
     assert result["design_origin"] == "hanyu"
     assert result["candidates"][0]["section_id"] == "spray"
     assert "60" in result["candidates"][0]["matched_terms"]["content"]
+
+
+def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    started = subprocess.run(
+        [
+            sys.executable,
+            str(TRACE),
+            "start",
+            str(vault),
+            "水喷雾喷头 K=60 应如何核查？",
+            "--session-id",
+            "session-123",
+            "--query-type",
+            "evidence",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(started.stdout)["trace_id"]
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            sys.executable,
+            str(LOCATE),
+            str(vault),
+            "水喷雾喷头 K=60",
+            "--trace-id",
+            trace_id,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            str(TRACE),
+            "event",
+            str(vault),
+            trace_id,
+            "--stage",
+            "source-verification",
+            "--route",
+            "converted-source",
+            "--hit-count",
+            "1",
+            "--accepted-count",
+            "1",
+            "--accepted-path",
+            "10_Raw/converted/0712XFNPXTS02_document_bundle/document.md",
+            "--summary",
+            "Verified the complete owned section.",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            str(TRACE),
+            "finish",
+            str(vault),
+            trace_id,
+            "--evidence-level",
+            "source-backed",
+            "--conclusion",
+            "The checked section supports K=60.",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    trace_root = vault / "_system" / "reports" / "query-traces"
+    state = json.loads((trace_root / "_data" / f"{trace_id}.query-trace.json").read_text(encoding="utf-8"))
+    note = (trace_root / f"{trace_id}.query-trace.md").read_text(encoding="utf-8")
+    dashboard = (trace_root / "Query Trace Dashboard.md").read_text(encoding="utf-8")
+    assert state["authority"] == "non-authoritative-runtime-log"
+    assert state["status"] == "completed"
+    assert state["events"][0]["route"] == "hierarchical-search"
+    assert state["events"][0]["candidates"][0]["section_id"] == "spray"
+    assert "hierarchical_search_used: true" in note
+    assert "Runtime trace, not evidence" in note
+    assert "session-123" in note
+    assert "```dataview" in dashboard
+
+
+def test_trace_failure_does_not_block_hierarchical_retrieval(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(LOCATE),
+            str(vault),
+            "水喷雾喷头 K=60",
+            "--trace-id",
+            "missing-trace",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(completed.stdout)
+    assert completed.returncode == 0
+    assert result["status"] == "ok"
+    assert result["candidates"][0]["section_id"] == "spray"
+    assert "query trace append failed" in completed.stderr
