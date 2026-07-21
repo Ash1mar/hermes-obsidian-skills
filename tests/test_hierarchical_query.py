@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "hermes-obsidian-controlled-ingest" / "scripts" / "build_section_query_index.py"
 LOCATE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "locate_source_sections.py"
 TRACE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "manage_query_trace.py"
+QUERY_SKILL = ROOT / "hermes-obsidian-controlled-query" / "SKILL.md"
+TRACE_REFERENCE = ROOT / "hermes-obsidian-controlled-query" / "references" / "query-tracing.md"
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -232,3 +234,14 @@ def test_trace_failure_does_not_block_hierarchical_retrieval(tmp_path: Path) -> 
     assert result["status"] == "ok"
     assert result["candidates"][0]["section_id"] == "spray"
     assert "query trace append failed" in completed.stderr
+
+
+def test_read_only_wording_does_not_disable_default_query_trace() -> None:
+    skill = QUERY_SKILL.read_text(encoding="utf-8")
+    reference = TRACE_REFERENCE.read_text(encoding="utf-8")
+    assert '"read-only query", "只读受控查询"' in skill
+    assert "They do **not** disable the query trace" in skill
+    assert "before searching governed artifacts" in skill
+    assert "verify that the returned Markdown trace path exists" in skill
+    assert "including when the user calls the query \"read-only\"" in reference
+    assert "trace: unavailable" in reference

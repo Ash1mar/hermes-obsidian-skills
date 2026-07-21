@@ -11,11 +11,11 @@ Use query traces to audit retrieval navigation without turning runtime history i
 - Keep the rest of the Vault read-only unless the user separately authorizes controlled writeback.
 - Logging failure must not block or weaken the answer. Mention the failure in the answer only when auditability was explicitly requested.
 
-The default is one trace per controlled query. Skip it only when the user explicitly requests no logging or the Vault cannot be written.
+The default is one trace per controlled query. This is a required operational side effect of the Query Skill, including when the user calls the query "read-only" or asks not to modify/沉淀 governed knowledge. Those phrases protect knowledge artifacts; they do not disable runtime audit logging. Skip the trace only when the user explicitly requests no query trace/log, or the Vault cannot be written.
 
 ## Lifecycle
 
-Start immediately after resolving the Vault and Hermes session ID:
+Start immediately after resolving the Vault, query type, and Hermes session ID, before the first governed-artifact search:
 
 ```bash
 python3 scripts/manage_query_trace.py start <vault-root> "<question>" \
@@ -54,7 +54,13 @@ python3 scripts/manage_query_trace.py finish <vault-root> <trace-id> \
   --unresolved "Table image still requires visual QA."
 ```
 
-If execution stops after a trace starts, finish it as `failed` or `incomplete` when possible. Because every event is persisted immediately, a crash still leaves a readable partial trace.
+If execution stops after a trace starts, finish it as `failed` or `incomplete` when possible. Because every event is persisted immediately, a crash still leaves a readable partial trace. Before answering, check that the Markdown path returned by `finish` exists; never substitute a prose reconstruction for a missing trace.
+
+Always include a compact audit status in the final answer:
+
+- `trace: <vault-relative Markdown path>` when written;
+- `trace: skipped (explicit user opt-out)` when explicitly disabled;
+- `trace: unavailable (<short reason>)` when the Vault or logger could not be written.
 
 ## What to record
 
