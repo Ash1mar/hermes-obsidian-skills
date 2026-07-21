@@ -5,21 +5,25 @@ description: Governed querying and retrieval tracing for Hermes + Obsidian vault
 
 # Hermes Obsidian Controlled Query
 
-Answer questions from a governed Hermes + Obsidian vault without polluting the vault. Query is not ingest: default to read-only lookup, evidence selection, source checking, cautious synthesis, and an append-only non-authoritative query trace.
+Answer questions from a governed Hermes + Obsidian vault without polluting governed knowledge. Query is not ingest: keep evidence and knowledge artifacts read-only while writing the required append-only, non-authoritative query trace.
+
+> **Mandatory interpretation:** "read-only query", "只读受控查询", and similar wording mean that governed evidence and knowledge artifacts must not change. They do **not** disable the query trace. Treat trace creation as required operational audit logging, not knowledge writeback. Skip it only for an explicit no-trace request or an unwritable Vault.
 
 ```text
 user question
 -> vault rules and query type
+-> start query trace (default required)
 -> governed layer lookup
 -> source-map / ledger navigation
 -> targeted converted-source verification
+-> finish query trace
 -> answer with evidence quality and gaps
 -> optional internal query-writeback candidate
 ```
 
 ## Non-Writing Contract
 
-During a controlled query, do not create, modify, rename, move, or delete governed Vault files. The only default write exception is the current run's non-authoritative trace under `_system/reports/query-traces/`. Skip that trace when the user explicitly requests no logging or the Vault is not writable.
+During a controlled query, do not create, modify, rename, move, or delete governed Vault files. The current run's non-authoritative trace under `_system/reports/query-traces/` is a required operational write, not an optional knowledge write. Skip it only when the user explicitly says not to record/write a query trace (or equivalent), or when the Vault is actually not writable. A generic request for "read-only", "controlled query", "do not modify knowledge", or "不要沉淀" is not a trace opt-out.
 
 Treat these paths as read-only by default:
 
@@ -39,9 +43,9 @@ If the answer suggests a durable artifact, do not create it during query. Record
 
 ## Query Trace
 
-After resolving the Vault and classifying the question, run `scripts/manage_query_trace.py start` with the question, query type, and Hermes session ID when available. Retain its `trace_id` and append an event after every attempted retrieval layer, including zero-hit, skipped, fallback, and failed stages. Record paths, counts, concise selection/exclusion reasons, and evidence checks; never record hidden reasoning, credentials, unrestricted tool output, or long source passages.
+After resolving the Vault and classifying the question, but before searching governed artifacts, run `scripts/manage_query_trace.py start` with the question, query type, and Hermes session ID when available. Do not postpone this until the end and do not infer an opt-out from read-only wording. Retain its `trace_id` and append an event after every attempted retrieval layer, including zero-hit, skipped, fallback, and failed stages. Record paths, counts, concise selection/exclusion reasons, and evidence checks; never record hidden reasoning, credentials, unrestricted tool output, or long source passages.
 
-Pass `--trace-id <id>` to `scripts/locate_source_sections.py` so actual hierarchical candidates and match data are recorded directly. Finish the trace as `completed`, `failed`, or `incomplete` before returning. Logging errors never block the answer. Read `references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
+Pass `--trace-id <id>` to `scripts/locate_source_sections.py` so actual hierarchical candidates and match data are recorded directly. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
 
 ## Minimal Prompt Contract
 
