@@ -16,7 +16,7 @@ Vault/
     ├── metadata/
     ├── prompts/
     ├── reports/
-    └── skills/
+    └── templates/
 ```
 
 ## Folder Roles
@@ -31,7 +31,7 @@ Vault/
 - `_system/prompts/`: reusable prompts.
 - `_system/reports/`: ingest logs, source maps, reviews, batch plans.
 - `_system/reports/query-writeback-candidates/`: optional query-derived writeback queue. These files are triage records, not knowledge artifacts.
-- `_system/skills/`: local skill drafts or vault-specific skill notes.
+- `_system/templates/`: Vault content templates, not runtime Skill files or executable scripts.
 
 ## Knowledge Card Template
 

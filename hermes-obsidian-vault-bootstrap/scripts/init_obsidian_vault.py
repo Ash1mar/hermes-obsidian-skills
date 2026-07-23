@@ -22,7 +22,6 @@ BASE_DIRS = [
     "_system/metadata",
     "_system/prompts",
     "_system/reports",
-    "_system/skills",
     "_system/templates",
 ]
 
@@ -634,11 +633,6 @@ def setup(args: argparse.Namespace) -> None:
     if template and args.copy_base_concepts:
         copied_concepts = copy_base_concepts(template, vault)
 
-    if template and args.copy_skill_note:
-        src = template / "_system/skills/hermes-obsidian-controlled-ingest.skill.md"
-        if src.exists():
-            shutil.copy2(src, vault / "_system/skills/hermes-obsidian-controlled-ingest.skill.md")
-
     write_text(vault / "README.md", readme(args.profile, vault))
     write_text(vault / "AGENTS.md", agents(args.profile))
     write_text(vault / "_system/prompts/hermes-ingest-rules.md", ingest_rules(args.profile, vault, args.skill_repo))
@@ -676,7 +670,6 @@ source: {template or "none"}
 
 - copied obsidian config: {bool(template and args.copy_obsidian_config)}
 - copied base concepts: {copied_concepts}
-- copied skill note: {bool(template and args.copy_skill_note)}
 
 ## Safety
 
@@ -700,7 +693,6 @@ def main() -> int:
     parser.add_argument("--skill-repo", help="Optional external skill repository path to write into prompts")
     parser.add_argument("--copy-obsidian-config", action="store_true")
     parser.add_argument("--copy-base-concepts", action="store_true")
-    parser.add_argument("--copy-skill-note", action="store_true")
     parser.add_argument("--force-empty", action="store_true", help="Allow writing into an existing non-empty target")
     setup(parser.parse_args())
     return 0

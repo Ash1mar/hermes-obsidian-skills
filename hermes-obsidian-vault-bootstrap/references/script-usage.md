@@ -16,8 +16,7 @@ python scripts/init_obsidian_vault.py `
   --profile meeting `
   --template-vault "C:\Users\vimdr\Desktop\hermes-workspace\Hermes-Obsidian-TestVault" `
   --copy-obsidian-config `
-  --copy-base-concepts `
-  --copy-skill-note
+  --copy-base-concepts
 ```
 
 ## Safety Behavior
@@ -33,6 +32,5 @@ From template vault:
 
 - `.obsidian/` is copied only with `--copy-obsidian-config`.
 - `40_Concepts/*.md` and `_system/metadata/concept-registry.md` are copied only with `--copy-base-concepts`.
-- `_system/skills/hermes-obsidian-controlled-ingest.skill.md` is copied only with `--copy-skill-note`.
 
 Generated files are profile-specific and written fresh.
