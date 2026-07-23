@@ -259,7 +259,10 @@ def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:
     skill = QUERY_SKILL.read_text(encoding="utf-8")
     reference = TRACE_REFERENCE.read_text(encoding="utf-8")
     assert "directory containing this active `SKILL.md`" in skill
-    assert "/root/.hermes/skills/domain/hermes-obsidian-controlled-query" in skill
+    assert "location supplied by the runtime's Skill loader" in skill
+    assert "Do not hard-code an installation directory" in skill
     assert "never to the Vault or the shell's current working directory" in skill
     assert "<vault>/_system/skills" in skill
-    assert "$QUERY_SKILL_ROOT/scripts/manage_query_trace.py" in reference
+    assert "<query-skill-root>/scripts/manage_query_trace.py" in reference
+    assert "/root/.hermes/skills" not in skill
+    assert "/root/.hermes/skills" not in reference

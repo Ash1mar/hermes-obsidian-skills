@@ -11,7 +11,7 @@ Answer questions from a governed Hermes + Obsidian vault without polluting gover
 
 ## Runtime Skill Boundary
 
-Resolve `<query-skill-root>` as the directory containing this active `SKILL.md`. On the standard Hermes deployment it is `/root/.hermes/skills/domain/hermes-obsidian-controlled-query`. Treat every `scripts/` and `references/` path in this Skill as relative to `<query-skill-root>`, never to the Vault or the shell's current working directory.
+Resolve `<query-skill-root>` as the directory containing this active `SKILL.md`, using the location supplied by the runtime's Skill loader. Treat every `scripts/` and `references/` path in this Skill as relative to `<query-skill-root>`, never to the Vault or the shell's current working directory. Do not hard-code an installation directory.
 
 Before running a bundled script, verify it under `<query-skill-root>`. Never search for runtime Skill files under `<vault>/_system/skills`, `<vault>/_system/templates`, or `<vault>/scripts`, and never create replacement Skill scripts inside the Vault. If the installed Skill is incomplete, report the missing runtime resource and continue with the documented non-blocking fallback where one exists.
 
