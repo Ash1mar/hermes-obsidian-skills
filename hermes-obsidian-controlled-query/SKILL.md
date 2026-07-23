@@ -58,12 +58,14 @@ Pass `--trace-id <id>` to `scripts/locate_source_sections.py` so actual hierarch
 
 ## Minimal Prompt Contract
 
+Treat an explicit request to use `hermes-obsidian-controlled-query` as sufficient activation of the complete controlled-query contract. The user does not need to add "read-only", "controlled", "create a trace", or equivalent operational wording. Absence of those phrases never relaxes governed-artifact protection and never disables the default query trace.
+
 Users should only need to provide:
 
 1. The question or list of questions.
 2. Any explicit scope preference, such as "only use ingested FNP manuals" or "include source-page evidence".
 
-Do not require users to restate the vault path, this skill's search order, evidence packet fields, QA labels, or writeback restrictions in every prompt. Infer and apply those rules from this skill.
+Do not require users to restate the vault path, read-only boundaries, trace requirements, search order, evidence packet fields, QA labels, or writeback restrictions in every prompt. Infer and apply those rules from this skill.
 
 If the user asks for an engineering answer and does not specify an output format, use the full controlled-query answer shape with evidence packets.
 

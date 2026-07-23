@@ -245,3 +245,11 @@ def test_read_only_wording_does_not_disable_default_query_trace() -> None:
     assert "verify that the returned Markdown trace path exists" in skill
     assert "including when the user calls the query \"read-only\"" in reference
     assert "trace: unavailable" in reference
+
+
+def test_skill_name_alone_activates_complete_query_contract() -> None:
+    skill = QUERY_SKILL.read_text(encoding="utf-8")
+    assert "explicit request to use `hermes-obsidian-controlled-query`" in skill
+    assert "sufficient activation of the complete controlled-query contract" in skill
+    assert "does not need to add \"read-only\", \"controlled\", \"create a trace\"" in skill
+    assert "never disables the default query trace" in skill
