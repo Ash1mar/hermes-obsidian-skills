@@ -181,6 +181,18 @@ Explain the classification before routing artifacts.
 
 For engineering handbooks, prefer a document index and staged chapter plan. Do not default to a generic knowledge card.
 
+## Evidence Modes
+
+Classify every new or reconciled knowledge card before writing:
+
+- `direct`: a bounded claim set tied to a specific source section, lines, pages, and assets.
+- `index`: a navigation or cross-source synthesis artifact whose claims are supported by a structured evidence table and authoritative source maps/section ledgers.
+- `relational`: a knowledge-to-knowledge orientation artifact used primarily to express governed relationships; it still needs source provenance for its own statements.
+
+Record the classification as `evidence_mode` in frontmatter. For `index`, also record `evidence_scope: multi-source`, `evidence_coverage: complete | representative`, `evidence_authority: navigation`, and `source_reports`. A representative evidence table must say that it is representative in prose and identify the complete source map/ledger authority. Do not use an ellipsis pseudo-row such as `| … |` as if it were evidence.
+
+Never leave template or generator expressions in governed output. Resolve or remove placeholders such as Python `.join(...)` expressions before completing ingest.
+
 ## Query-Derived Writeback
 
 Use this mode when the input is a query-writeback candidate rather than a new external source. This is not new-file ingest: do not copy sources into `10_Raw/`, do not rebuild bundles, and do not infer completion from the query answer.
@@ -243,6 +255,7 @@ After each bounded ingest unit, and after each source in a batch:
 6. Record created, updated, reused, skipped, stale, and review-required artifacts in the section ledger and ingest report.
 7. Do not delete prior outputs or silently rewrite established concepts during batch ingestion.
 8. Report reconciliation evidence: paths inspected, matching existing artifacts, decision rationale, and citations used for any update.
+9. Reclassify legacy cards under the evidence modes above, remove unresolved generator placeholders, make representative evidence coverage explicit, and run the knowledge-graph relation pass. Perform these repairs only through controlled ingest, never as an incidental query edit.
 
 ## Conservative Obsidian Linking
 
@@ -260,6 +273,20 @@ Do not add wikilinks for every repeated noun, equipment name, field name, sectio
 
 If a useful target does not exist yet, record it under "candidate concept but not created", "possible future card", or a QA/review note instead of creating an empty Obsidian link.
 
+## Knowledge-Graph Relation Pass
+
+Treat governed knowledge relationships as a core ingest output, not optional graph decoration. Concept governance limits new concept pages; it does not prohibit evidence-backed relationships among existing cards, concepts, projects, indexes, and candidate reviews.
+
+After all artifacts for the current source or batch exist, run a second pass across the completed set:
+
+1. Compare each new or updated durable artifact with existing governed artifacts and the other outputs from the same batch.
+2. Add typed `[[wikilinks]]` when the relationship is supported by shared source scope, an explicit evidence-table overlap, a direct-versus-index relationship, or a clear semantic boundary.
+3. Use concise relationship labels such as `broader-index`, `detail-synthesis`, `direct-evidence-for`, `implementation-case`, `workflow-extension`, `contrast`, or `sibling`.
+4. Prefer Card-to-Card and Card-to-index links when concept boundaries are not approved. Do not create a Concept merely to obtain a graph node.
+5. When two or more relevant governed knowledge artifacts exist, do not finish with zero links unless the ingest report names the inspected targets and explains why every candidate relationship was rejected.
+6. Keep evidence citations as ordinary paths and metadata. A wikilink expresses a governed knowledge relationship, not source proof.
+7. Check every emitted link resolves to an existing governed Markdown target.
+
 ## Batch Synthesis Phase
 
 After source ingestion for a batch, automatically synthesize when two or more related sources have valid ledgers:
@@ -271,6 +298,7 @@ After source ingestion for a batch, automatically synthesize when two or more re
 5. Do not let bundle-level `warn` block synthesis. Exclude affected QA sections and use only unaffected evidence.
 6. If no card or candidate concept is created, justify that with inspected section ids and evidence gaps; do not only say the material is long or engineering-dense.
 7. Update existing cards, spec indexes, registry notes, or Dataview metadata when new evidence changes links, sources, relationships, or stale/review-required status.
+8. After all batch artifacts are present, run the knowledge-graph relation pass across both new and existing governed artifacts.
 
 ## Long and Complex Sources
 
@@ -317,3 +345,5 @@ Report every run with:
 14. Batch synthesis decisions: sections compared, cards created or updated, candidate concepts, and rejected candidates.
 15. Failed bundle recovery attempts and remaining manual checks.
 16. Extraction QA items and recommended next step.
+17. Evidence-mode reconciliation: direct/index/relational classification, coverage declaration, source-report authority, and unresolved placeholders removed.
+18. Knowledge-graph relation pass: typed links added, targets verified, or explicit zero-link rejection rationale.

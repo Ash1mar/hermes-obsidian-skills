@@ -39,6 +39,8 @@ All are true:
 - `contrast`: useful as a comparison or alternative.
 - `weak`: only tangentially related.
 
+Concept-page creation and relationship extraction are separate decisions. A deferred Concept must not suppress valid Card-to-Card, Card-to-index, Card-to-Project, or Card-to-candidate-review relationships. Prefer typed links among existing governed artifacts until the candidate Concept has sufficient evidence and a clear boundary.
+
 ## Anti-Patterns
 
 Avoid:
@@ -49,4 +51,3 @@ Avoid:
 - creating pages from tool names
 - creating pages from headings
 - creating near-duplicates such as "AI knowledge base", "local AI knowledge base", and "personal AI knowledge base" without boundary analysis
-

@@ -170,10 +170,12 @@ When governed artifacts do not fully answer the question or source evidence is r
 
 Before answering, label the usable evidence:
 
-- `clear`: governed card/concept or pass-quality source section directly supports the point.
+- `clear`: a governed artifact with `evidence_mode: direct` or a pass-quality source section directly supports the point, and the current query can resolve its provenance.
 - `source-backed`: converted source text supports the point, but no durable card exists yet.
 - `needs-qa`: formula, engineering parameter, cross-page table, figure internal, or section marked `qa_required`/bundle warning affects the point.
 - `gap`: no adequate governed or source evidence found in the current vault.
+
+Treat `evidence_mode: index` as governed navigation: use its evidence table to select documents and sections, but do not promote section-title or coverage evidence into a detailed factual claim. Treat `evidence_mode: relational` and standalone `[[wikilinks]]` as query expansion and graph navigation, never as source proof. When legacy artifacts have no `evidence_mode`, classify their provenance before assigning an evidence level.
 
 Do not promote `needs-qa` evidence into an authoritative reusable fact. State the limitation and what page/table/figure should be checked next.
 
