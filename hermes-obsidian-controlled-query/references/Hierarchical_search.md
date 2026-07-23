@@ -131,9 +131,8 @@ python3 hermes-obsidian-controlled-ingest/scripts/build_section_query_index.py \
 Locate candidates:
 
 ```bash
-QUERY_SKILL_ROOT=/root/.hermes/skills/domain/hermes-obsidian-controlled-query
-python3 "$QUERY_SKILL_ROOT/scripts/locate_source_sections.py" \
+python3 "<query-skill-root>/scripts/locate_source_sections.py" \
   /path/to/vault "query text"
 ```
 
-If the active Skill is installed elsewhere, set `QUERY_SKILL_ROOT` to the directory containing its `SKILL.md`; never resolve it inside the Vault. The build step should run after ledger initialization/reconciliation or completed source ingest. Its failure is a warning only. The query step must always re-open the authoritative source before using any result.
+Resolve `<query-skill-root>` from the location of the active `SKILL.md` supplied by the runtime's Skill loader. Do not hard-code or guess an installation directory, and never resolve it inside the Vault. The build step should run after ledger initialization/reconciliation or completed source ingest. Its failure is a warning only. The query step must always re-open the authoritative source before using any result.

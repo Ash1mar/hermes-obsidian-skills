@@ -15,28 +15,27 @@ The default is one trace per controlled query. This is a required operational si
 
 ## Runtime path
 
-Run the trace manager from the active Query Skill installation, not from the Vault. In the standard Hermes deployment:
+Run the trace manager from the active Query Skill installation, not from the Vault. Resolve `<query-skill-root>` from the location of the active `SKILL.md` supplied by the runtime's Skill loader, then substitute that absolute directory in the commands below:
 
 ```bash
-QUERY_SKILL_ROOT=/root/.hermes/skills/domain/hermes-obsidian-controlled-query
-test -f "$QUERY_SKILL_ROOT/scripts/manage_query_trace.py"
+test -f "<query-skill-root>/scripts/manage_query_trace.py"
 ```
 
-If the active Skill is installed elsewhere, set `QUERY_SKILL_ROOT` to the directory containing its `SKILL.md`. Do not probe `<vault>/_system/skills`, `<vault>/_system/templates`, or `<vault>/scripts` for these runtime files.
+Do not hard-code or guess an installation directory. Do not probe `<vault>/_system/skills`, `<vault>/_system/templates`, or `<vault>/scripts` for these runtime files.
 
 ## Lifecycle
 
 Start immediately after resolving the Vault, query type, and Hermes session ID, before the first governed-artifact search:
 
 ```bash
-python3 "$QUERY_SKILL_ROOT/scripts/manage_query_trace.py" start <vault-root> "<question>" \
+python3 "<query-skill-root>/scripts/manage_query_trace.py" start <vault-root> "<question>" \
   --session-id <hermes-session-id> --query-type <type>
 ```
 
 Retain the returned `trace_id`. Append an event after each attempted retrieval layer, including zero-hit and failed stages:
 
 ```bash
-python3 "$QUERY_SKILL_ROOT/scripts/manage_query_trace.py" event <vault-root> <trace-id> \
+python3 "<query-skill-root>/scripts/manage_query_trace.py" event <vault-root> <trace-id> \
   --stage governed-artifact-lookup --route governed-artifacts \
   --hit-count 3 --accepted-count 1 \
   --summary "Cards and concepts checked; one card retained for source follow-up." \
@@ -59,7 +58,7 @@ Pass `--trace-id` to `locate_source_sections.py`; it records the actual hierarch
 Finish before returning the answer:
 
 ```bash
-python3 "$QUERY_SKILL_ROOT/scripts/manage_query_trace.py" finish <vault-root> <trace-id> \
+python3 "<query-skill-root>/scripts/manage_query_trace.py" finish <vault-root> <trace-id> \
   --status completed --evidence-level source-backed \
   --conclusion "Short statement of what the checked evidence supports." \
   --unresolved "Table image still requires visual QA."
