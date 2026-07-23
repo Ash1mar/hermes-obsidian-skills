@@ -9,6 +9,7 @@ BUILD = ROOT / "hermes-obsidian-controlled-ingest" / "scripts" / "build_section_
 LOCATE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "locate_source_sections.py"
 TRACE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "manage_query_trace.py"
 QUERY_SKILL = ROOT / "hermes-obsidian-controlled-query" / "SKILL.md"
+INGEST_SKILL = ROOT / "hermes-obsidian-controlled-ingest" / "SKILL.md"
 TRACE_REFERENCE = ROOT / "hermes-obsidian-controlled-query" / "references" / "query-tracing.md"
 
 
@@ -266,3 +267,14 @@ def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:
     assert "<query-skill-root>/scripts/manage_query_trace.py" in reference
     assert "/root/.hermes/skills" not in skill
     assert "/root/.hermes/skills" not in reference
+
+
+def test_evidence_modes_and_relationship_pass_are_governed() -> None:
+    query_skill = QUERY_SKILL.read_text(encoding="utf-8")
+    ingest_skill = INGEST_SKILL.read_text(encoding="utf-8")
+    assert "`evidence_mode: index`" in query_skill
+    assert "`evidence_mode: relational`" in query_skill
+    assert "## Evidence Modes" in ingest_skill
+    assert "## Knowledge-Graph Relation Pass" in ingest_skill
+    assert "do not finish with zero links" in ingest_skill
+    assert "Never leave template or generator expressions" in ingest_skill

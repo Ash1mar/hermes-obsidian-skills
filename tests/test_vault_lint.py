@@ -235,6 +235,61 @@ class VaultLintTest(unittest.TestCase):
             data = self.run_lint(vault)
             self.assertIn("synthesis.multi_source_unstructured", {issue["code"] for issue in data["issues"]})
 
+    def test_index_contract_and_relationship_are_accepted(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            vault = self.create_vault(Path(temporary))
+            second_bundle = self.add_second_source(vault)
+            (vault / "30_Cards" / "index.md").write_text(
+                "---\n"
+                "type: knowledge-card\n"
+                "status: draft\n"
+                "evidence_mode: index\n"
+                "evidence_scope: multi-source\n"
+                "evidence_coverage: representative\n"
+                "evidence_authority: navigation\n"
+                "source_reports:\n"
+                "  - _system/reports/sample.source-map.md\n"
+                "  - _system/reports/second.source-map.md\n"
+                "---\n"
+                "# Index\n\n"
+                "| source | bundle | section | pages | owned lines |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| A | `bundle-v2-aaaaaaaaaaaaaaaa` | `one` | 1 | 2-3 |\n"
+                f"| B | `{second_bundle}` | `two` | 2 | 4-5 |\n\n"
+                "This is representative; the source maps and ledgers govern the complete set.\n\n"
+                "## Related knowledge\n\n"
+                "- `direct-evidence`: [[one]]\n",
+                encoding="utf-8",
+            )
+            data = self.run_lint(vault)
+            index_issues = [issue for issue in data["issues"] if issue["path"] == "30_Cards/index.md"]
+            codes = {issue["code"] for issue in index_issues}
+            self.assertNotIn("evidence.index_contract", codes)
+            self.assertNotIn("evidence.coverage_ambiguous", codes)
+            self.assertNotIn("relationship.missing", codes)
+
+    def test_ingest_reconciliation_defects_are_detected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            vault = self.create_vault(Path(temporary))
+            second_bundle = self.add_second_source(vault)
+            (vault / "30_Cards" / "index.md").write_text(
+                "---\ntype: knowledge-card\nstatus: draft\n---\n"
+                "# Index\n\n"
+                "| source | bundle | section | pages | owned lines |\n"
+                "| --- | --- | --- | --- | --- |\n"
+                "| A | `bundle-v2-aaaaaaaaaaaaaaaa` | `one` | 1 | 2-3 |\n"
+                f"| B | `{second_bundle}` | `two` | 2 | 4-5 |\n"
+                "| … | … | … | … | … |\n\n"
+                "- Keywords compared: {', '.join(used)}\n",
+                encoding="utf-8",
+            )
+            data = self.run_lint(vault)
+            codes = {issue["code"] for issue in data["issues"]}
+            self.assertIn("artifact.generator_placeholder", codes)
+            self.assertIn("evidence.mode_missing", codes)
+            self.assertIn("evidence.coverage_ambiguous", codes)
+            self.assertIn("relationship.missing", codes)
+
     def test_qa_evidence_cannot_be_promoted_as_clear(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             vault = self.create_vault(Path(temporary))

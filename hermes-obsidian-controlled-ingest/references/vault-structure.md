@@ -194,6 +194,25 @@ Later ingest must re-check the cited source evidence and existing artifacts befo
 
 Use Obsidian `[[wikilinks]]` for navigation between existing governed artifacts, not for raw evidence or speculative graph density.
 
+For every new or reconciled knowledge card, include:
+
+```yaml
+evidence_mode: direct | index | relational
+```
+
+An index or cross-source synthesis card also includes:
+
+```yaml
+evidence_scope: multi-source
+evidence_coverage: complete | representative
+evidence_authority: navigation
+source_reports:
+  - "_system/reports/<source>.source-map.md"
+  - "_system/reports/<source>.section-ledger.json"
+```
+
+Use concrete paths when the source set is bounded. A glob is acceptable only for a batch-wide index whose body contains a structured row-level evidence table. When `evidence_coverage` is `representative`, state that explicitly next to the table and identify where the complete set is governed. Never encode omitted evidence as a table row containing only `…`.
+
 Good wikilink targets:
 
 - existing `30_Cards/` files
@@ -209,6 +228,8 @@ Avoid wikilinking:
 - evidence assets such as table/image files; cite these as source paths instead
 
 If a target would be useful but does not exist, record it as a possible future card, candidate concept, or QA/review item rather than creating an empty link.
+
+After a source or batch has created all artifacts, revisit the completed set and add typed links among existing governed knowledge. Deferring a Concept is not a reason to omit Card-to-Card or Card-to-index relationships.
 
 ## Bundle Source Map and Section Ledger
 

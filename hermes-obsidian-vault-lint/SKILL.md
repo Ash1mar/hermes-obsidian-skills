@@ -82,6 +82,10 @@ Rules cover:
 - source citation fields for single-source governed artifacts
 - ledger output paths resolving to existing governed files
 - structured evidence tables for multi-source synthesis
+- explicit direct/index/relational evidence modes for knowledge cards
+- representative-versus-complete evidence coverage declarations
+- unresolved generator placeholders in governed Markdown
+- missing knowledge-graph links when multiple related governed cards exist
 - bundle/section validity for row-level synthesis evidence
 - explicit `needs-qa` boundaries around QA-affected evidence
 - rejection of authoritative status or evidence levels over QA-affected sections

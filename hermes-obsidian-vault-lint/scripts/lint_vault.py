@@ -33,6 +33,9 @@ GOVERNED_MARKDOWN_DIRS = ["30_Cards", "40_Concepts", "50_Projects", "_system/rep
 SOURCE_MAP_SUFFIX = ".source-map.md"
 LEDGER_SUFFIX = ".section-ledger.json"
 BUNDLE_ID_PATTERN = re.compile(r"bundle-v2-[0-9a-fA-F]{16,64}")
+WIKILINK_PATTERN = re.compile(r"\[\[[^\[\]\r\n|#]+(?:[|#][^\[\]\r\n]+)?\]\]")
+GENERATOR_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}\r\n]*\.join\([^{}\r\n]*\)[^{}\r\n]*\}")
+ELLIPSIS_EVIDENCE_ROW_PATTERN = re.compile(r"(?m)^\s*\|\s*(?:…|\.\.\.)\s*\|")
 QA_BOUNDARY_TERMS = (
     "needs-qa",
     "qa_required",
@@ -623,6 +626,13 @@ def lint_markdown_artifacts(
     paths = iter_governed_markdown(vault)
     metrics["governed_markdown_files"] = len(paths)
     known_sections = section_lookup(ledgers_by_bundle)
+    knowledge_card_count = sum(1 for path in paths if path.parent.name == "30_Cards")
+    governed_targets: set[str] = set()
+    for candidate in paths:
+        governed_targets.add(candidate.stem.casefold())
+        governed_targets.add(rel(candidate, vault).removesuffix(".md").casefold())
+    metrics["knowledge_cards"] = knowledge_card_count
+    metrics["linked_knowledge_cards"] = 0
 
     for path in paths:
         if path.name.endswith(SOURCE_MAP_SUFFIX):
@@ -638,6 +648,7 @@ def lint_markdown_artifacts(
                 add_issue(issues, "frontmatter.missing_field", "warning", relative, f"Frontmatter field is missing: {field_name}")
 
         artifact_type = str(frontmatter.get("type", ""))
+        evidence_mode = str(frontmatter.get("evidence_mode", "")).casefold()
         source_bundle_value = frontmatter.get("source_bundle_id", "")
         if isinstance(source_bundle_value, list):
             bundle_ids = [str(item).strip() for item in source_bundle_value if str(item).strip()]
@@ -645,6 +656,105 @@ def lint_markdown_artifacts(
             bundle_ids = [str(source_bundle_value).strip()] if str(source_bundle_value).strip() else []
         if artifact_type == "report" and path.name.endswith(".controlled-ingest-log.md"):
             continue
+
+        if GENERATOR_PLACEHOLDER_PATTERN.search(body):
+            add_issue(
+                issues,
+                "artifact.generator_placeholder",
+                semantic_warning_severity(profile),
+                relative,
+                "Governed Markdown contains an unresolved generator expression.",
+                "Run controlled-ingest reconciliation to resolve or remove the placeholder before using this artifact.",
+            )
+
+        rows = structured_evidence_rows(body)
+        body_bundle_ids = sorted(set(BUNDLE_ID_PATTERN.findall(body)))
+        all_bundle_ids = sorted(set(bundle_ids) | set(body_bundle_ids))
+
+        if artifact_type == "knowledge-card":
+            wikilinks = WIKILINK_PATTERN.findall(body)
+            has_wikilink = bool(wikilinks)
+            if has_wikilink:
+                metrics["linked_knowledge_cards"] = int(metrics.get("linked_knowledge_cards", 0)) + 1
+                unresolved: list[str] = []
+                for link in wikilinks:
+                    target = link[2:-2].split("|", 1)[0].split("#", 1)[0].strip().replace("\\", "/")
+                    if target and target.casefold() not in governed_targets:
+                        unresolved.append(target)
+                if unresolved:
+                    add_issue(
+                        issues,
+                        "relationship.unresolved",
+                        semantic_warning_severity(profile),
+                        relative,
+                        "Knowledge card contains wikilinks that do not resolve to governed Markdown artifacts.",
+                        "Repair or remove unresolved links through controlled ingest.",
+                        targets=sorted(set(unresolved)),
+                    )
+            elif knowledge_card_count > 1:
+                add_issue(
+                    issues,
+                    "relationship.missing",
+                    semantic_warning_severity(profile),
+                    relative,
+                    "Knowledge card has no governed wikilink although the Vault contains multiple cards.",
+                    "Run the controlled-ingest knowledge-graph relation pass; add typed links or record why all candidate relations were rejected.",
+                )
+
+            if not evidence_mode:
+                add_issue(
+                    issues,
+                    "evidence.mode_missing",
+                    semantic_warning_severity(profile),
+                    relative,
+                    "Knowledge card has no evidence_mode.",
+                    "Classify it through controlled ingest as direct, index, or relational.",
+                )
+
+            if evidence_mode == "direct" and not bundle_ids:
+                add_issue(
+                    issues,
+                    "evidence.direct_contract",
+                    semantic_warning_severity(profile),
+                    relative,
+                    "Direct-evidence card has no source_bundle_id.",
+                    "Reconcile direct source provenance through controlled ingest.",
+                    missing=["source_bundle_id"],
+                )
+
+            if evidence_mode == "index":
+                missing_contract: list[str] = []
+                if str(frontmatter.get("evidence_scope", "")).casefold() != "multi-source":
+                    missing_contract.append("evidence_scope: multi-source")
+                if str(frontmatter.get("evidence_coverage", "")).casefold() not in {"complete", "representative"}:
+                    missing_contract.append("evidence_coverage: complete|representative")
+                if str(frontmatter.get("evidence_authority", "")).casefold() != "navigation":
+                    missing_contract.append("evidence_authority: navigation")
+                source_reports = frontmatter.get("source_reports", [])
+                if not isinstance(source_reports, list) or not source_reports:
+                    missing_contract.append("source_reports")
+                if not rows:
+                    missing_contract.append("structured evidence table")
+                if missing_contract:
+                    add_issue(
+                        issues,
+                        "evidence.index_contract",
+                        semantic_warning_severity(profile),
+                        relative,
+                        "Index card does not satisfy the multi-source navigation contract.",
+                        "Reconcile the card through controlled ingest.",
+                        missing=missing_contract,
+                    )
+
+            if ELLIPSIS_EVIDENCE_ROW_PATTERN.search(body):
+                add_issue(
+                    issues,
+                    "evidence.coverage_ambiguous",
+                    semantic_warning_severity(profile),
+                    relative,
+                    "Evidence table contains an ellipsis pseudo-row instead of an explicit coverage declaration.",
+                    "Remove the pseudo-row, set evidence_coverage to representative, and name the complete source-map/ledger authority in prose.",
+                )
 
         lint_semantic_boundaries(
             relative,
