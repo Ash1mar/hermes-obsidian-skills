@@ -18,7 +18,6 @@ Standard folders:
 _system/metadata/
 _system/prompts/
 _system/reports/
-_system/skills/
 _system/templates/
 ```
 

@@ -18,6 +18,12 @@ On the `intranet` branch, the governed vault path is fixed by this skill's confi
 
 Use this configured path as the vault root for all controlled queries. If the server vault path changes, update `config/intranet.json`; do not switch vaults by prompt wording.
 
+## Runtime Skill Boundary
+
+Resolve `<query-skill-root>` as the directory containing this active `SKILL.md`. On the standard Hermes deployment it is `/root/.hermes/skills/domain/hermes-obsidian-controlled-query`. Treat every `scripts/` and `references/` path in this Skill as relative to `<query-skill-root>`, never to the Vault or the shell's current working directory.
+
+Before running a bundled script, verify it under `<query-skill-root>`. Never search for runtime Skill files under `<vault>/_system/skills`, `<vault>/_system/templates`, or `<vault>/scripts`, and never create replacement Skill scripts inside the Vault. If the installed Skill is incomplete, report the missing runtime resource and continue with the documented non-blocking fallback where one exists.
+
 ```text
 user question
 -> vault rules and query type
@@ -52,9 +58,9 @@ If the answer suggests a durable artifact, do not create it during query. Record
 
 ## Query Trace
 
-After resolving the Vault and classifying the question, but before searching governed artifacts, run `scripts/manage_query_trace.py start` with the question, query type, and Hermes session ID when available. Do not postpone this until the end and do not infer an opt-out from read-only wording. Retain its `trace_id` and append an event after every attempted retrieval layer, including zero-hit, skipped, fallback, and failed stages. Record paths, counts, concise selection/exclusion reasons, and evidence checks; never record hidden reasoning, credentials, unrestricted tool output, or long source passages.
+After resolving the Vault and classifying the question, but before searching governed artifacts, run `<query-skill-root>/scripts/manage_query_trace.py start` with the question, query type, and Hermes session ID when available. Do not postpone this until the end and do not infer an opt-out from read-only wording. Retain its `trace_id` and append an event after every attempted retrieval layer, including zero-hit, skipped, fallback, and failed stages. Record paths, counts, concise selection/exclusion reasons, and evidence checks; never record hidden reasoning, credentials, unrestricted tool output, or long source passages.
 
-Pass `--trace-id <id>` to `scripts/locate_source_sections.py` so actual hierarchical candidates and match data are recorded directly. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
+Pass `--trace-id <id>` to `<query-skill-root>/scripts/locate_source_sections.py` so actual hierarchical candidates and match data are recorded directly. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `<query-skill-root>/references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
 
 ## Minimal Prompt Contract
 
@@ -158,7 +164,7 @@ Use the most governed layer that can answer the question, then descend only as n
 
 For layered MinerU bundles, prefer `document.md` plus source map/ledger navigation. Open `_evidence/` only for targeted QA of page order, formulas, tables, figures, or extraction disputes.
 
-When governed artifacts do not fully answer the question or source evidence is required, run `scripts/locate_source_sections.py <vault-root> <query> --trace-id <id>` as a parallel candidate locator beside the existing report-navigation search. Merge and deduplicate both candidate sets, then continue through the existing converted-source and page-evidence verification steps. Treat query-index output only as navigation: never quote it or promote it to evidence. If the projection is absent, stale, or invalid, record the fallback and continue with the existing search order without failing the query. Read `references/Hierarchical_search.md` for the design and migration boundary.
+When governed artifacts do not fully answer the question or source evidence is required, run `<query-skill-root>/scripts/locate_source_sections.py <vault-root> <query> --trace-id <id>` as a parallel candidate locator beside the existing report-navigation search. Merge and deduplicate both candidate sets, then continue through the existing converted-source and page-evidence verification steps. Treat query-index output only as navigation: never quote it or promote it to evidence. If the projection is absent, stale, or invalid, record the fallback and continue with the existing search order without failing the query. Read `<query-skill-root>/references/Hierarchical_search.md` for the design and migration boundary.
 
 ## Evidence Quality
 

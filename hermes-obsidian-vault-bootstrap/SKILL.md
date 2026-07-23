@@ -52,7 +52,6 @@ Useful options:
 - `--template-vault <path>`
 - `--copy-obsidian-config`
 - `--copy-base-concepts`
-- `--copy-skill-note`
 - `--force-empty`
 
 Read `references/script-usage.md` before using advanced options.
