@@ -76,15 +76,24 @@ question 2: classify -> start trace 2 -> retrieve -> verify -> synthesize -> fin
 ...
 ```
 
+- Generate one safe request ID for the user message. Pass the same `--request-id` and the one-based `--question-index` to each sequential `start` call:
+
+  ```bash
+  python3 "<query-skill-root>/scripts/manage_query_trace.py" start <vault-root> "<question-1>" \
+    --session-id <hermes-session-id> --request-id <request-id> --question-index 1 \
+    --query-type <type>
+  ```
+
+  The command returns a unique `trace_id`, the grouped `note_path`, and `request_summary`. Reuse the request ID only for questions from that user message; reuse each returned trace ID only for its own locator, events, and finish call.
 - Start the next question only after the previous trace is `completed`, `failed`, or `incomplete`, or after recording that its trace was explicitly skipped or unavailable.
-- Reuse the Hermes session ID for correlation when appropriate, but never reuse a `trace_id` across independent questions.
+- Reuse the Hermes session ID for correlation when appropriate, but never use it as a trace ID and never reuse a `trace_id` across independent questions.
 - Do not combine independent questions into one trace solely because they share a prompt, source document, or session.
 - Do not create an ad hoc Python, shell, or other batch-orchestration script and do not execute separate questions concurrently.
 - Keep documented candidate-recall parallelism inside the active question and attach every locator call to that question's trace.
 - If one question fails, close its trace when possible and keep its failure, evidence, and uncertainty separate from later questions.
 - Use one trace for tightly coupled subparts only when they require one shared evidence set to support one composite conclusion.
 
-In the final response, map each numbered answer to its own trace path or to its own `skipped` or `unavailable` status.
+For grouped questions, the trace manager stores visible notes under `_system/reports/query-traces/<request-id>/`, keeps JSON state sidecars under `_system/reports/query-traces/_data/` for backward-compatible lookup by trace ID, and updates `<request-id>/Request Summary.md`. The request summary is a navigation aid and never evidence. In the final response, report the request folder and map each numbered answer to its own trace path or to its own `skipped` or `unavailable` status.
 
 Always include a compact audit status in the final answer:
 

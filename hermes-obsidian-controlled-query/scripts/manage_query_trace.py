@@ -16,7 +16,7 @@ from typing import Any
 
 TRACE_RELATIVE_DIR = Path("_system/reports/query-traces")
 DATA_DIR_NAME = "_data"
-SCHEMA_VERSION = "1.0"
+SCHEMA_VERSION = "1.1"
 
 
 def now_iso() -> str:
@@ -47,17 +47,19 @@ def atomic_write(path: Path, text: str) -> None:
             os.unlink(temporary)
 
 
-def trace_paths(vault_root: Path, trace_id: str) -> tuple[Path, Path]:
+def trace_paths(vault_root: Path, trace_id: str, request_id: str | None = None) -> tuple[Path, Path]:
     root = vault_root.resolve() / TRACE_RELATIVE_DIR
     safe = safe_id(trace_id)
-    return root / DATA_DIR_NAME / f"{safe}.query-trace.json", root / f"{safe}.query-trace.md"
+    note_root = root / safe_id(request_id) if request_id else root
+    return root / DATA_DIR_NAME / f"{safe}.query-trace.json", note_root / f"{safe}.query-trace.md"
 
 
 def load_state(vault_root: Path, trace_id: str) -> tuple[dict[str, Any], Path, Path]:
-    state_path, note_path = trace_paths(vault_root, trace_id)
+    state_path, _ = trace_paths(vault_root, trace_id)
     data = json.loads(state_path.read_text(encoding="utf-8"))
     if not isinstance(data, dict) or data.get("type") != "query-trace":
         raise ValueError(f"Invalid query trace state: {state_path}")
+    _, note_path = trace_paths(vault_root, trace_id, data.get("request_id"))
     return data, state_path, note_path
 
 
@@ -86,6 +88,8 @@ def render_note(state: dict[str, Any]) -> str:
         f"created: {yaml_string(state.get('created'))}",
         f"updated: {yaml_string(state.get('updated'))}",
         f"session_id: {yaml_string(state.get('session_id'))}",
+        f"request_id: {yaml_string(state.get('request_id'))}",
+        f"question_index: {yaml_string(state.get('question_index'))}",
         f"trace_id: {yaml_string(state.get('trace_id'))}",
         f"query_type: {yaml_string(state.get('query_type'))}",
         f"evidence_level: {yaml_string(state.get('evidence_level'))}",
@@ -113,6 +117,8 @@ def render_note(state: dict[str, Any]) -> str:
             f"- Query type: `{state.get('query_type') or 'unclassified'}`",
             f"- Evidence level: `{state.get('evidence_level') or 'pending'}`",
             f"- Hermes session: `{state.get('session_id') or 'unavailable'}`",
+            f"- Request group: `{state.get('request_id') or 'single query'}`",
+            f"- Question index: `{state.get('question_index') or 'not grouped'}`",
             f"- Hierarchical search: `{'used' if hierarchical else 'not used'}`",
             "",
             "## Retrieval timeline",
@@ -175,11 +181,87 @@ def render_note(state: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def request_summary_path(vault_root: Path, request_id: str) -> Path:
+    return vault_root.resolve() / TRACE_RELATIVE_DIR / safe_id(request_id) / "Request Summary.md"
+
+
+def grouped_states(vault_root: Path, request_id: str) -> list[dict[str, Any]]:
+    data_root = vault_root.resolve() / TRACE_RELATIVE_DIR / DATA_DIR_NAME
+    states = []
+    for path in data_root.glob("*.query-trace.json"):
+        try:
+            state = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(state, dict) and state.get("type") == "query-trace" and state.get("request_id") == request_id:
+            states.append(state)
+    return sorted(
+        states,
+        key=lambda state: (
+            state.get("question_index") is None,
+            state.get("question_index") or 0,
+            state.get("created") or "",
+            state.get("trace_id") or "",
+        ),
+    )
+
+
+def markdown_cell(value: Any, limit: int = 240) -> str:
+    return shorten(str(value or ""), limit).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
+
+
+def write_request_summary(vault_root: Path, request_id: str) -> Path:
+    safe_request = safe_id(request_id)
+    states = grouped_states(vault_root, safe_request)
+    updated = max((str(state.get("updated") or "") for state in states), default=now_iso())
+    session_ids = list(
+        dict.fromkeys(str(state["session_id"]) for state in states if state.get("session_id"))
+    )
+    lines = [
+        "---",
+        "type: query-trace-request",
+        f"schema_version: {yaml_string(SCHEMA_VERSION)}",
+        "authority: non-authoritative-runtime-log",
+        f"request_id: {yaml_string(safe_request)}",
+        f"updated: {yaml_string(updated)}",
+        "---",
+        "",
+        f"# Query Request · {safe_request}",
+        "",
+        "> [!warning] Runtime trace group, not evidence",
+        "> This folder groups independently auditable question traces from one user request. Process order remains sequential.",
+        "",
+        f"- Hermes sessions: `{', '.join(session_ids) or 'unavailable'}`",
+        f"- Questions recorded: `{len(states)}`",
+        "",
+        "| # | Status | Trace | Question |",
+        "| ---: | --- | --- | --- |",
+    ]
+    for state in states:
+        trace_id = str(state.get("trace_id") or "")
+        question_index = state.get("question_index") or "-"
+        note = TRACE_RELATIVE_DIR / safe_request / f"{safe_id(trace_id)}.query-trace"
+        lines.append(
+            f"| {question_index} | `{markdown_cell(state.get('status'), 40)}` | "
+            f"[[{note.as_posix()}|{markdown_cell(trace_id, 120)}]] | "
+            f"{markdown_cell(state.get('question'))} |"
+        )
+    path = request_summary_path(vault_root, safe_request)
+    atomic_write(path, "\n".join(lines) + "\n")
+    return path
+
+
 def write_state(vault_root: Path, state: dict[str, Any]) -> tuple[Path, Path]:
     state["updated"] = now_iso()
-    state_path, note_path = trace_paths(vault_root, str(state["trace_id"]))
+    state_path, note_path = trace_paths(
+        vault_root,
+        str(state["trace_id"]),
+        state.get("request_id"),
+    )
     atomic_write(state_path, json.dumps(state, ensure_ascii=False, indent=2) + "\n")
     atomic_write(note_path, render_note(state))
+    if state.get("request_id"):
+        write_request_summary(vault_root, str(state["request_id"]))
     return state_path, note_path
 
 
@@ -208,15 +290,32 @@ def start_trace(
     session_id: str | None = None,
     query_type: str | None = None,
     trace_id: str | None = None,
+    request_id: str | None = None,
+    question_index: int | None = None,
 ) -> dict[str, Any]:
     created = now_iso()
-    generated = trace_id or session_id or f"{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}"
+    if question_index is not None and question_index < 1:
+        raise ValueError("question index must be at least 1")
+    if question_index is not None and not request_id:
+        raise ValueError("question index requires request id")
+    safe_request = safe_id(request_id) if request_id else None
+    if safe_request:
+        question_label = f"q{question_index:02d}" if question_index is not None else "q"
+        generated = trace_id or f"{safe_request}_{question_label}_{uuid.uuid4().hex[:8]}"
+    else:
+        generated = trace_id or f"{datetime.now():%Y%m%d_%H%M%S}_{uuid.uuid4().hex[:8]}"
+    safe_trace = safe_id(generated)
+    state_path, _ = trace_paths(vault_root, safe_trace)
+    if state_path.exists():
+        raise FileExistsError(f"query trace already exists: {state_path}")
     state = {
         "schema_version": SCHEMA_VERSION,
         "type": "query-trace",
         "authority": "non-authoritative-runtime-log",
-        "trace_id": safe_id(generated),
+        "trace_id": safe_trace,
         "session_id": session_id,
+        "request_id": safe_request,
+        "question_index": question_index,
         "status": "in_progress",
         "created": created,
         "updated": created,
@@ -229,7 +328,16 @@ def start_trace(
     }
     state_path, note_path = write_state(vault_root, state)
     dashboard = ensure_dashboard(vault_root)
-    return {"trace_id": state["trace_id"], "state_path": str(state_path), "note_path": str(note_path), "dashboard": str(dashboard)}
+    summary = request_summary_path(vault_root, safe_request) if safe_request else None
+    return {
+        "trace_id": state["trace_id"],
+        "request_id": safe_request,
+        "question_index": question_index,
+        "state_path": str(state_path),
+        "note_path": str(note_path),
+        "request_summary": str(summary) if summary else None,
+        "dashboard": str(dashboard),
+    }
 
 
 def append_event(vault_root: Path, trace_id: str, event: dict[str, Any]) -> dict[str, Any]:
@@ -262,7 +370,15 @@ def parse_rejected(items: list[str]) -> list[dict[str, str]]:
 
 
 def command_start(args: argparse.Namespace) -> dict[str, Any]:
-    return start_trace(args.vault_root, args.question, args.session_id, args.query_type, args.trace_id)
+    return start_trace(
+        args.vault_root,
+        args.question,
+        args.session_id,
+        args.query_type,
+        args.trace_id,
+        args.request_id,
+        args.question_index,
+    )
 
 
 def command_event(args: argparse.Namespace) -> dict[str, Any]:
@@ -304,6 +420,8 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("question")
     start.add_argument("--session-id")
     start.add_argument("--trace-id")
+    start.add_argument("--request-id")
+    start.add_argument("--question-index", type=int)
     start.add_argument("--query-type")
     start.set_defaults(handler=command_start)
 
