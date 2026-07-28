@@ -1,11 +1,17 @@
 ---
 name: hermes-obsidian-controlled-ingest
-description: Governed Obsidian vault ingestion for Markdown, engineering PDFs, standalone image sources, layered MinerU/image document bundles, query-writeback candidates, and other source files. Use when asked to onboard or resume sources, preserve 10_Raw, convert PDFs/images with quality gates, create source maps and section ledgers, ingest bounded ranges, process query-derived writebacks, synthesize cards or candidate concepts, route projects/spec indexes/QA logs, reconcile existing artifacts, retain page/table/figure evidence, add conservative Obsidian wikilinks, maintain Dataview metadata, and record ingest logs.
+description: On Hermes, MUST call skill_view for hermes-obsidian-controlled-ingest before any governed Vault ingest; on other runtimes, load this skill's full instructions before acting. Use to onboard or resume sources, preserve 10_Raw, convert PDFs/images with quality gates, create source maps and section ledgers, process query writebacks, synthesize governed knowledge, reconcile artifacts, retain page/table/figure evidence, and record ingest logs.
 ---
 
 # Hermes Obsidian Controlled Ingest
 
 Turn source files into governed Obsidian artifacts without rewriting raw material or overcreating concepts.
+
+## Runtime Skill Boundary
+
+Use `<ingest-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-controlled-ingest")`; on another runtime, use its equivalent active-skill directory.
+
+Resolve bundled `scripts/` and `references/` against `<ingest-skill-root>`. Never infer installation from `~/.hermes/skills` or another conventional path. On Hermes, inspect `skill_view` and `linked_files.scripts` before declaring a script uninstalled; a terminal sandbox path failure may instead mean the host Skill directory is not mounted. Never copy replacement Skill scripts into the Vault.
 
 ```text
 external or vault source

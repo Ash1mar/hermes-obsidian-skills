@@ -1,11 +1,17 @@
 ---
 name: hermes-obsidian-vault-lint
-description: Read-only governance linting for Hermes + Obsidian vaults. Use when asked to check vault health, validate post-ingest acceptance, audit Bundle v2 and section-ledger state, verify source-map alignment, inspect artifact frontmatter and citation contracts, find stale or in-progress ingestion state, review QA boundaries, or decide whether a governed vault is query-ready without ingesting new sources or writing durable artifacts by default.
+description: On Hermes, MUST call skill_view for hermes-obsidian-vault-lint before governed Vault linting; on other runtimes, load this skill's full instructions before acting. Use to check vault health, validate post-ingest acceptance, audit Bundle v2 and section-ledger state, verify source-map alignment, inspect evidence contracts, find stale ingestion state, review QA boundaries, or decide whether a governed vault is query-ready.
 ---
 
 # Hermes Obsidian Vault Lint
 
 Audit a governed Hermes + Obsidian vault without changing it.
+
+## Runtime Skill Boundary
+
+Use `<lint-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-vault-lint")`; on another runtime, use its equivalent active-skill directory.
+
+Resolve bundled `scripts/` and `references/` against `<lint-skill-root>`. Never infer installation from `~/.hermes/skills` or another conventional path. On Hermes, inspect `skill_view` and `linked_files.scripts` before declaring the lint script uninstalled; a terminal sandbox path failure may instead be a missing mount. Lint remains read-only and must not repair the Vault itself.
 
 ```text
 prompt scope

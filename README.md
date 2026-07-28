@@ -32,6 +32,17 @@ This repository stores local skills and tool-integration notes for the Hermes + 
   - Can copy `.obsidian/`, base concept pages, and skill notes from a template vault.
   - Does not copy raw sources, test cards, test projects, or historical reports by default.
 
+## Hermes Slash Aliases
+
+The `hermes-skill-bundles/` directory contains single-skill Hermes bundles that provide deterministic short slash commands:
+
+- `/v-query` loads `hermes-obsidian-controlled-query`
+- `/v-ingest` loads `hermes-obsidian-controlled-ingest`
+- `/v-bootstrap` loads `hermes-obsidian-vault-bootstrap`
+- `/v-lint` loads `hermes-obsidian-vault-lint`
+
+Hermes normalizes bundle names to lowercase slugs, so use the lowercase forms above. Deploy these YAML files to the active instance's `<HERMES_HOME>/skill-bundles/` directory and run `hermes bundles reload`. The aliases are runtime adapters; canonical skill names and cross-runtime skill-root placeholders remain unchanged.
+
 ## Repository Layout
 
 ```text

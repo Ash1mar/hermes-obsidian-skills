@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-vault-bootstrap
-description: Initialize governed Obsidian vaults for Hermes workflows. Use when asked to create, configure, clone, prepare, bootstrap, or reset an Obsidian vault structure with standard folders, raw-source protection, Dataview dashboards, metadata registries, prompts, templates, optional base concept pages, optional Obsidian config copying, and profile-specific layouts such as meeting-minutes vaults.
+description: On Hermes, MUST call skill_view for hermes-obsidian-vault-bootstrap before governed Vault setup; on other runtimes, load this skill's full instructions before acting. Use to create, configure, clone, prepare, bootstrap, or reset an Obsidian vault structure with standard folders, raw-source protection, Dataview dashboards, metadata registries, prompts, templates, and profile-specific layouts.
 ---
 
 # Hermes Obsidian Vault Bootstrap
@@ -8,6 +8,12 @@ description: Initialize governed Obsidian vaults for Hermes workflows. Use when 
 ## Core Rule
 
 Use this skill for vault setup only. Use `hermes-obsidian-controlled-ingest` for processing source files after the vault exists.
+
+## Runtime Skill Boundary
+
+Use `<bootstrap-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-vault-bootstrap")`; on another runtime, use its equivalent active-skill directory.
+
+Resolve bundled `scripts/`, `references/`, and templates against `<bootstrap-skill-root>`. Never infer installation from `~/.hermes/skills` or another conventional path. On Hermes, inspect `skill_view` and its linked files before declaring the package incomplete. Never copy replacement Skill resources into the target Vault.
 
 ## Workflow
 

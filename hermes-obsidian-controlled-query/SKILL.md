@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-controlled-query
-description: Governed querying and retrieval tracing for Hermes + Obsidian vaults. Use when asked to answer, locate, verify, compare, summarize, identify gaps, or audit how an answer was retrieved from an existing governed vault. Supports evidence-first lookup across governed artifacts, reports, ledgers, converted sources, and hierarchical source navigation; writes only non-authoritative query traces by default while preserving the controlled writeback boundary for durable knowledge.
+description: On Hermes, MUST call skill_view for hermes-obsidian-controlled-query before any governed Vault query; on other runtimes, load this skill's full instructions before acting. Use when asked to answer, locate, verify, compare, summarize, identify gaps, or audit retrieval from an existing governed Obsidian vault. Supports evidence-first lookup, hierarchical source navigation, and non-authoritative query traces while preserving the controlled writeback boundary.
 ---
 
 # Hermes Obsidian Controlled Query
@@ -11,9 +11,17 @@ Answer questions from a governed Hermes + Obsidian vault without polluting gover
 
 ## Runtime Skill Boundary
 
-Resolve `<query-skill-root>` as the directory containing this active `SKILL.md`, using the location supplied by the runtime's Skill loader. Treat every `scripts/` and `references/` path in this Skill as relative to `<query-skill-root>`, never to the Vault or the shell's current working directory. Do not hard-code an installation directory.
+Use `<query-skill-root>` as the runtime-neutral name for the directory containing this active `SKILL.md`. Resolve it once, in this order:
 
-Before running a bundled script, verify it under `<query-skill-root>`. Never search for runtime Skill files under `<vault>/_system/skills`, `<vault>/_system/templates`, or `<vault>/scripts`, and never create replacement Skill scripts inside the Vault. If the installed Skill is incomplete, report the missing runtime resource and continue with the documented non-blocking fallback where one exists.
+1. Use the active runtime's loader-injected skill directory.
+2. On Hermes, use the concrete expanded value of `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view`.
+3. On another runtime, use that runtime's equivalent active-skill directory.
+
+Treat every `scripts/` and `references/` path in this Skill as relative to `<query-skill-root>`, never to the Vault or the shell's current working directory. Do not hard-code an installation directory.
+
+On Hermes, do not act from catalog metadata alone: load the canonical skill with `skill_view(name="hermes-obsidian-controlled-query")` or invoke it through a slash command/bundle before querying. Before running a bundled script, verify it under the resolved `<query-skill-root>`. Never guess `~/.hermes/skills`, a deployment-specific mount, or another conventional installation path; never search for runtime Skill files under `<vault>/_system/skills`, `<vault>/_system/templates`, or `<vault>/scripts`; and never create replacement Skill scripts inside the Vault.
+
+Do not announce that scripts are uninstalled merely because a guessed path or terminal sandbox cannot see them. On Hermes, first inspect the canonical `skill_view` result and its `linked_files.scripts`; distinguish an incomplete Skill package from a host-to-sandbox mount failure. If the active loader confirms that a required file is absent, report the missing runtime resource and continue with the documented non-blocking fallback where one exists.
 
 ```text
 user question

@@ -1,0 +1,4 @@
+name: v-ingest
+description: Load the governed Hermes Obsidian ingest skill.
+skills:
+  - hermes-obsidian-controlled-ingest

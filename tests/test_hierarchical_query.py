@@ -259,14 +259,48 @@ def test_skill_name_alone_activates_complete_query_contract() -> None:
 def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:
     skill = QUERY_SKILL.read_text(encoding="utf-8")
     reference = TRACE_REFERENCE.read_text(encoding="utf-8")
-    assert "directory containing this active `SKILL.md`" in skill
-    assert "location supplied by the runtime's Skill loader" in skill
+    assert "runtime-neutral name for the directory containing this active `SKILL.md`" in skill
+    assert "${HERMES_SKILL_DIR}" in skill
+    assert "skill_dir` returned by `skill_view" in skill
     assert "Do not hard-code an installation directory" in skill
     assert "never to the Vault or the shell's current working directory" in skill
+    assert "do not announce that scripts are uninstalled" in skill.lower()
+    assert "linked_files.scripts" in skill
     assert "<vault>/_system/skills" in skill
     assert "<query-skill-root>/scripts/manage_query_trace.py" in reference
     assert "/root/.hermes/skills" not in skill
     assert "/root/.hermes/skills" not in reference
+
+
+def test_hermes_descriptions_frontload_full_skill_loading() -> None:
+    skill_paths = [
+        ROOT / "hermes-obsidian-controlled-query" / "SKILL.md",
+        ROOT / "hermes-obsidian-controlled-ingest" / "SKILL.md",
+        ROOT / "hermes-obsidian-vault-bootstrap" / "SKILL.md",
+        ROOT / "hermes-obsidian-vault-lint" / "SKILL.md",
+    ]
+    for path in skill_paths:
+        frontmatter = path.read_text(encoding="utf-8").split("---", 2)[1]
+        description = next(
+            line.removeprefix("description: ").strip()
+            for line in frontmatter.splitlines()
+            if line.startswith("description: ")
+        )
+        assert description.startswith("On Hermes, MUST call skill_view")
+        assert "on other runtimes, load this skill's full instructions" in description
+
+
+def test_short_hermes_bundle_aliases_are_deployable() -> None:
+    expected = {
+        "v-query": "hermes-obsidian-controlled-query",
+        "v-ingest": "hermes-obsidian-controlled-ingest",
+        "v-bootstrap": "hermes-obsidian-vault-bootstrap",
+        "v-lint": "hermes-obsidian-vault-lint",
+    }
+    for alias, skill_name in expected.items():
+        content = (ROOT / "hermes-skill-bundles" / f"{alias}.yaml").read_text(encoding="utf-8")
+        assert f"name: {alias}" in content
+        assert f"  - {skill_name}" in content
 
 
 def test_evidence_modes_and_relationship_pass_are_governed() -> None:
