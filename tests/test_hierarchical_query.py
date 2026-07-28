@@ -256,6 +256,18 @@ def test_skill_name_alone_activates_complete_query_contract() -> None:
     assert "never disables the default query trace" in skill
 
 
+def test_multiple_questions_are_sequential_and_trace_isolated() -> None:
+    skill = QUERY_SKILL.read_text(encoding="utf-8")
+    reference = TRACE_REFERENCE.read_text(encoding="utf-8")
+    assert "complete them strictly one at a time" in skill
+    assert "only then start the next question" in skill
+    assert "Do not keep more than one question trace open" in skill
+    assert "Do not create an ad hoc Python, shell, or other orchestration script" in skill
+    assert "each independently answerable question is a controlled query" in reference
+    assert "never reuse a `trace_id` across independent questions" in reference
+    assert "map each numbered answer to its own trace path" in reference
+
+
 def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:
     skill = QUERY_SKILL.read_text(encoding="utf-8")
     reference = TRACE_REFERENCE.read_text(encoding="utf-8")

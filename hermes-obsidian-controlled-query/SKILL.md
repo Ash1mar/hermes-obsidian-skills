@@ -61,6 +61,14 @@ After resolving the Vault and classifying the question, but before searching gov
 
 Pass `--trace-id <id>` to `<query-skill-root>/scripts/locate_source_sections.py` so actual hierarchical candidates and match data are recorded directly. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `<query-skill-root>/references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
 
+## Multiple Questions
+
+When one user message contains multiple independently answerable questions, preserve the user's order and complete them strictly one at a time. Treat each question as its own controlled query: classify it, start its own trace, perform retrieval and source verification, synthesize its answer, finish and verify its trace, and only then start the next question. Do not keep more than one question trace open, combine independent questions into one trace merely because they share a prompt or Hermes session, or run the questions concurrently.
+
+Do not create an ad hoc Python, shell, or other orchestration script to batch the questions. Invoke the existing Skill scripts separately for each question. The documented parallel candidate locator may operate only within the current question; it does not authorize parallel question answering. If processing stops or a question fails after its trace starts, finish that trace as `failed` or `incomplete` when possible before continuing. Report a separate trace path or trace status for every question in the final response.
+
+Treat tightly coupled subparts that require one shared body of evidence to support a single conclusion as one composite question and one trace. Otherwise prefer separate questions and separate traces.
+
 ## Minimal Prompt Contract
 
 Treat an explicit request to use `hermes-obsidian-controlled-query` as sufficient activation of the complete controlled-query contract. The user does not need to add "read-only", "controlled", "create a trace", or equivalent operational wording. Absence of those phrases never relaxes governed-artifact protection and never disables the default query trace.
