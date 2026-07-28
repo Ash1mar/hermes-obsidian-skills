@@ -1,0 +1,4 @@
+name: v-lint
+description: Load the governed Hermes Obsidian lint skill.
+skills:
+  - hermes-obsidian-vault-lint

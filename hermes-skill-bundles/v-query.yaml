@@ -1,0 +1,4 @@
+name: v-query
+description: Load the governed Hermes Obsidian query skill.
+skills:
+  - hermes-obsidian-controlled-query

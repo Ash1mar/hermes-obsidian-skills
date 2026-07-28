@@ -1,0 +1,4 @@
+name: v-bootstrap
+description: Load the governed Hermes Obsidian bootstrap skill.
+skills:
+  - hermes-obsidian-vault-bootstrap
