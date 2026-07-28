@@ -11,7 +11,7 @@ Use query traces to audit retrieval navigation without turning runtime history i
 - Keep the rest of the Vault read-only unless the user separately authorizes controlled writeback.
 - Logging failure must not block or weaken the answer. Mention the failure in the answer only when auditability was explicitly requested.
 
-The default is one trace per controlled query. This is a required operational side effect of the Query Skill, including when the user calls the query "read-only" or asks not to modify/沉淀 governed knowledge. Those phrases protect knowledge artifacts; they do not disable runtime audit logging. Skip the trace only when the user explicitly requests no query trace/log, or the Vault cannot be written.
+The default is one trace per controlled query. For trace purposes, each independently answerable question is a controlled query even when several questions arrive in one user message. This is a required operational side effect of the Query Skill, including when the user calls the query "read-only" or asks not to modify/沉淀 governed knowledge. Those phrases protect knowledge artifacts; they do not disable runtime audit logging. Skip the trace only when the user explicitly requests no query trace/log, or the Vault cannot be written.
 
 ## Runtime path
 
@@ -65,6 +65,26 @@ python3 "<query-skill-root>/scripts/manage_query_trace.py" finish <vault-root> <
 ```
 
 If execution stops after a trace starts, finish it as `failed` or `incomplete` when possible. Because every event is persisted immediately, a crash still leaves a readable partial trace. Before answering, check that the Markdown path returned by `finish` exists; never substitute a prose reconstruction for a missing trace.
+
+## Multiple-question sequencing
+
+Process independently answerable questions in the user's order with no overlap:
+
+```text
+question 1: classify -> start trace 1 -> retrieve -> verify -> synthesize -> finish and verify trace 1
+question 2: classify -> start trace 2 -> retrieve -> verify -> synthesize -> finish and verify trace 2
+...
+```
+
+- Start the next question only after the previous trace is `completed`, `failed`, or `incomplete`, or after recording that its trace was explicitly skipped or unavailable.
+- Reuse the Hermes session ID for correlation when appropriate, but never reuse a `trace_id` across independent questions.
+- Do not combine independent questions into one trace solely because they share a prompt, source document, or session.
+- Do not create an ad hoc Python, shell, or other batch-orchestration script and do not execute separate questions concurrently.
+- Keep documented candidate-recall parallelism inside the active question and attach every locator call to that question's trace.
+- If one question fails, close its trace when possible and keep its failure, evidence, and uncertainty separate from later questions.
+- Use one trace for tightly coupled subparts only when they require one shared evidence set to support one composite conclusion.
+
+In the final response, map each numbered answer to its own trace path or to its own `skipped` or `unavailable` status.
 
 Always include a compact audit status in the final answer:
 
