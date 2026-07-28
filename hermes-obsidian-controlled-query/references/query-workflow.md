@@ -41,7 +41,7 @@ Use this layer for:
 - project context
 - prior synthesis
 
-If this layer answers the question clearly, cite it and stop unless the user asked for source proof.
+Treat a governed-layer hit as a conclusion or navigation lead, not as permission to stop source tracing. For every substantive PDF-backed conclusion, continue until the original PDF identity, original PDF page, and relevant passage are resolved. Stop at the governed layer only for an explicitly requested governance/meta answer that does not claim source-document facts.
 
 ## 4. Search Control Reports
 
@@ -56,7 +56,7 @@ Use reports to decide which converted source files and line ranges to open. Do n
 
 In parallel with this report-navigation pass, use `<query-skill-root>/scripts/locate_source_sections.py <vault-root> <query> --trace-id <id>` when `_system/reports/query-index/` is available. Resolve `<query-skill-root>` from the active Skill installation, never from the Vault. Merge candidates by document path and section ID. Keep the strongest match reasons and the strictest quality/status flags. The locator is optional and non-authoritative; missing or stale projections must fall back to this existing report search rather than block the query. Record both the attempt and fallback in the active query trace.
 
-## 5. Verify Converted Sources
+## 5. Verify Internally and Resolve Original PDF Evidence
 
 For evidence queries, open targeted converted sources:
 
@@ -68,25 +68,27 @@ Prefer section ranges from the ledger/source map. Do not read every converted bu
 
 For engineering values, formulas, table rows, or figure internals, compare the text with source map quality. If extraction quality is uncertain, state that the source page or image must be checked.
 
+Record every source-map, ledger, converted-text, table, image, and page-image path used during verification in the active query trace. Do not return those conversion or verification carrier paths in the user-facing answer unless the user explicitly asks for retrieval debugging or Vault maintenance details.
+
 When forming an answer, build an evidence packet for each conclusion:
 
-- document name from the source map, spec index, bundle manifest, or raw PDF name
-- original PDF page from the source map/ledger `Pages` field
-- relevant original paragraph from `document.md` or the selected table Markdown
-- figure/table location from the source page plus `images/`, `tables/*.md`, or `*_source.jpg`
+- original PDF filename and original PDF path resolved through the source map, ledger, Bundle manifest, or `10_Raw/`
+- original PDF page from a verified source-map/ledger page mapping
+- relevant passage anchored to that original PDF page; use converted text internally, but present the passage as PDF evidence rather than as a Markdown citation
+- figure/image/table location as original PDF page plus number or caption, containing section, and page region; include a bounding box only when reliably mapped to the original PDF
 
-If only converted line numbers are available, do not imply they are original page numbers. Report them as converted-source lines and mark the page requirement as unresolved.
+If only converted paths or line numbers are available, do not return them as a substitute citation. Mark the original PDF identity or page as unresolved and label the evidence `needs-qa` or `gap`.
 
 ## 6. Synthesize
 
 Separate:
 
 - what the vault explicitly says
-- what the converted source explicitly says
+- what the original PDF evidence supports
 - what the agent infers from those sources
 - what remains missing or unsafe to conclude
 
-When sources conflict, report the conflict and list the paths instead of forcing a single answer.
+When sources conflict, report the conflict using original PDF identities and pages instead of conversion paths, and do not force a single answer.
 
 ## 7. Decide Candidate Status
 

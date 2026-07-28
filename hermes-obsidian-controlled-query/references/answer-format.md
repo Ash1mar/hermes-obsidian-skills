@@ -4,19 +4,19 @@ Use this format for non-trivial controlled queries.
 
 ```text
 Query type: <locating | explanatory | synthesis | evidence | gap>
-Query scope: <folders/files searched>
+Original-PDF scope: <source PDF documents covered>
 Main hits:
-- <path> - <why it matters> - <evidence label>
+- <original PDF name, original PDF page> - <why it matters> - <evidence label>
 
 Answer:
 <concise answer, separating explicit vault/source content from inference>
 
 Evidence:
-- Document: <source PDF/manual name>
+- Original PDF: <source PDF filename>
+  Original PDF path: <original PDF path or unresolved>
   Original PDF page: <page number or unresolved>
-  Relevant original paragraph: <short quote or tight summary from converted source>
-  Figure/table: <none | original PDF page + converted asset path>
-  Vault/source path: <source map/ledger/document/table/image path>
+  Relevant passage: <short quote or tight summary anchored to that PDF page>
+  Figure/image/table location: <none | original PDF page + number/caption + section + page region, with reliable coordinates when available>
   Quality: <clear/source-backed/needs-qa/gap>
 
 Uncertainty / gaps:
@@ -25,6 +25,7 @@ Uncertainty / gaps:
 
 Do not include writeback recommendations in the user-facing answer by default.
 If the user explicitly asks whether to persist the result, briefly state the candidate decision and likely artifact type.
+Do not include source-map, ledger, Bundle, `document.md`, table Markdown, extracted-image, or page-image paths in the user-facing answer. Record those verification carriers in the query trace. The trace path itself may still be reported as the required audit status.
 
 ## Short Locating Answer
 
@@ -32,10 +33,10 @@ For "where did we mention X?" style questions:
 
 ```text
 Found these main hits:
-- <path>: <short context>
-- <path>: <short context>
+- <original PDF name>, page <original PDF page>: <short context>
+- <original PDF name>, page <original PDF page>: <short context>
 
-Best starting point: <path>, because <reason>.
+Best starting point: <original PDF name and page>, because <reason>.
 Evidence quality: <clear/source-backed/needs-qa/gap>.
 ```
 
@@ -47,9 +48,10 @@ For engineering values, formulas, equipment composition, or code-like requiremen
 Conclusion: <answer or guarded answer>
 
 Evidence chain:
-- Navigation: <source map/spec index/ledger path, section id, page, quality>
-- Source text: <document.md/table/image path and excerpt summary>
-- User-facing evidence packet: <document name, original PDF page, paragraph, figure/table location>
+- Original PDF: <source PDF filename and original PDF path>
+- Original PDF page: <page number>
+- Relevant passage: <short quote or tight summary anchored to that page>
+- Figure/image/table location: <none | original PDF page + number/caption + section + page region, with reliable coordinates when available>
 
 QA status: <clear/source-backed/needs-qa/gap>
 ```
@@ -73,7 +75,7 @@ why_not_direct_write: <missing authorization, QA risk, duplicate risk, or bounda
 evidence_packets:
   - document: <source PDF/manual name>
     original_pdf_page: <page or unresolved>
-    source_path: <source map/ledger/document/table/image path>
+    original_pdf_path: <original PDF path or unresolved>
     quality: <clear | source-backed | needs-qa | gap>
 existing_artifacts_checked:
   - <path or none>

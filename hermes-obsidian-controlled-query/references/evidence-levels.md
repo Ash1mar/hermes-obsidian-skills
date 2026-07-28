@@ -6,8 +6,8 @@ Use evidence labels to prevent a query answer from overstating weak or extractio
 
 | Label | Meaning | Allowed use |
 | --- | --- | --- |
-| `clear` | A governed card/concept/project or pass-quality source section directly supports the answer. | Can answer directly with citation. |
-| `source-backed` | Converted source text supports the answer, but no durable card or concept has captured it yet. | Can answer, but note it is not yet synthesized into a governed artifact. |
+| `clear` | A governed artifact or pass-quality source section supports the answer and resolves to an original PDF identity and page. | Can answer with original-PDF evidence. |
+| `source-backed` | Internally checked converted text supports the answer and resolves to an original PDF identity and page, but no durable card or concept has captured it yet. | Can answer with original-PDF evidence; do not cite the conversion carrier. |
 | `needs-qa` | The answer depends on formula OCR, engineering values, cross-page tables, figure internals, image evidence, or a section marked `qa_required`/warning-affected. | Do not present as final authority; recommend page/table/figure verification. |
 | `gap` | The vault lacks enough evidence in governed layers and converted sources. | Answer with missing material and next lookup/ingest action. |
 
@@ -16,10 +16,10 @@ Use evidence labels to prevent a query answer from overstating weak or extractio
 - Do not promote formulas, table rows, figure internals, or parameters from a `qa_required` section into reusable facts.
 - Do not treat an ingest log or spec index as the final source for a design value unless it quotes or points to checked source evidence.
 - Do not collapse project-specific values into a cross-project rule without comparing multiple sources and noting exceptions.
-- For source maps and ledgers, cite status, section id, title, page, and quality when relevant.
-- For converted source text, cite the bundle/source path and line or section when possible.
-- For user-facing engineering answers, prefer original PDF page numbers from source maps/ledgers over converted Markdown line numbers.
-- If a figure/table is part of the evidence, include both its original PDF page and converted asset path. If the asset exists but its internals were not reviewed, mark it `needs-qa`.
+- Use source maps and ledgers internally to resolve status, section, original PDF identity, page, and quality; record their paths in the query trace.
+- Record converted source, table, image, and page-image paths and line/section locations in the query trace only. Do not expose them as user-facing evidence sources.
+- For every user-facing substantive answer, cite the original PDF identity and original PDF page rather than converted Markdown lines.
+- If a figure, page image, or table is part of the evidence, include its original PDF page, number or caption, containing section, and page region. Include coordinates only when reliably mapped to the original PDF. Keep converted asset paths in the trace. If its internals were not reviewed, mark it `needs-qa`.
 
 ## Conflict Handling
 
@@ -38,3 +38,4 @@ Use `gap` when:
 - only table/figure images exist and they have not been reviewed
 - the relevant source has not been ingested or converted
 - the governed layer has a candidate note but no confirmed artifact
+- the answer cannot be traced to an original PDF identity and original PDF page

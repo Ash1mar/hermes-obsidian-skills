@@ -68,6 +68,8 @@ If the answer suggests a durable artifact, do not create it during query. Record
 
 After resolving the Vault and classifying the question, but before searching governed artifacts, run `<query-skill-root>/scripts/manage_query_trace.py start` with the question, query type, and Hermes session ID when available. Do not postpone this until the end and do not infer an opt-out from read-only wording. Retain its `trace_id` and append an event after every attempted retrieval layer, including zero-hit, skipped, fallback, and failed stages. Record paths, counts, concise selection/exclusion reasons, and evidence checks; never record hidden reasoning, credentials, unrestricted tool output, or long source passages.
 
+Record source maps, ledgers, `document.md`, table Markdown, extracted images, page images, and other conversion or verification carrier paths in the trace only. They are internal retrieval and QA details, not user-facing evidence sources. Do not expose those carrier paths in the answer unless the user explicitly asks for retrieval debugging or Vault maintenance details.
+
 Pass `--trace-id <id>` to `<query-skill-root>/scripts/locate_source_sections.py` so actual hierarchical candidates and match data are recorded directly. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `<query-skill-root>/references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
 
 ## Multiple Questions
@@ -201,27 +203,27 @@ Read `references/evidence-levels.md` when the question involves formulas, parame
 
 For each substantive conclusion, include an evidence packet with:
 
-1. Document name: the source PDF/manual/report name, not only the converted bundle path.
-2. Original PDF page: use source map/ledger page numbers when available; call it "original PDF page" only when the source map ties the section to source pages.
-3. Original relevant paragraph: quote or tightly summarize the supporting paragraph from `document.md`; keep quotes short and preserve enough wording for verification.
-4. Figure/table location: if a figure or table is used or needed, give its original PDF page and converted asset path such as `tables/*.md`, `*_source.jpg`, or `images/*`. If no figure is involved, state "none found/needed".
+1. Original PDF: give the source PDF filename and its original PDF path when resolvable. Never substitute a Bundle, Markdown, source-map, ledger, or extracted-asset path.
+2. Original PDF page: use source map/ledger page mappings only when they tie the checked section to the source PDF.
+3. Relevant passage: quote or tightly summarize the passage anchored to that original PDF page. Converted text may assist internal verification, but do not identify the converted file as the source. Use a direct quote only when extraction quality supports it; otherwise summarize and mark the limitation.
+4. Figure/image/table location: if a figure, page image, or table is used or needed, give its original PDF page, number or caption, containing section, and specific page region such as upper/lower page or left/right column. Include a bounding box or equivalent region only when the Vault provides a reliable mapping. Do not return a converted table/image/page-image path. If none is involved, state "none found/needed".
 
-If any of these fields cannot be established from the current vault, say so explicitly and mark the evidence `needs-qa` or `gap`.
+If the original PDF identity, page mapping, or relevant passage cannot be established from the current Vault, do not fall back to citing `document.md` or another conversion carrier. Say which original-PDF field is unresolved and mark the evidence `needs-qa` or `gap`.
 
 ## Answer Shape
 
 Return concise answers with these parts when the query is non-trivial:
 
 1. Query type
-2. Query scope
-3. Main hits
+2. Original-PDF query scope
+3. Main original-PDF hits
 4. Answer
-5. Evidence packets with document name, original PDF page, original paragraph, and figure/table location
+5. Evidence packets with original PDF identity/path, original PDF page, relevant passage, and original-PDF figure/image/table location
 6. Uncertainty / gaps
 
 Do not include a user-facing writeback recommendation by default. If the user asks whether the result should be persisted, summarize the writeback candidate decision in plain language.
 
-For quick locating queries, a shorter answer is acceptable if it still includes file paths and evidence quality.
+For quick locating queries, a shorter answer is acceptable if it still identifies the original PDF, original PDF page, and evidence quality. Do not replace them with internal Vault conversion paths.
 
 Read `references/answer-format.md` for the full response contract.
 
