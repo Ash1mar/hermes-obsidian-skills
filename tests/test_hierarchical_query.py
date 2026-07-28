@@ -215,6 +215,95 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
     assert "```dataview" in dashboard
 
 
+def test_same_session_creates_unique_single_query_traces(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    results = []
+    for question in ("First question", "Second question"):
+        completed = subprocess.run(
+            [
+                sys.executable,
+                str(TRACE),
+                "start",
+                str(vault),
+                question,
+                "--session-id",
+                "shared-session",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        results.append(json.loads(completed.stdout))
+
+    assert results[0]["trace_id"] != results[1]["trace_id"]
+    assert results[0]["trace_id"] != "shared-session"
+    assert Path(results[0]["state_path"]).is_file()
+    assert Path(results[1]["state_path"]).is_file()
+
+
+def test_multiple_question_traces_share_request_folder_but_not_trace_id(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    request_id = "request-20260728"
+    results = []
+    for index, question in enumerate(("First question", "Second question"), start=1):
+        started = subprocess.run(
+            [
+                sys.executable,
+                str(TRACE),
+                "start",
+                str(vault),
+                question,
+                "--session-id",
+                "shared-session",
+                "--request-id",
+                request_id,
+                "--question-index",
+                str(index),
+                "--query-type",
+                "evidence",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        result = json.loads(started.stdout)
+        subprocess.run(
+            [
+                sys.executable,
+                str(TRACE),
+                "finish",
+                str(vault),
+                result["trace_id"],
+                "--status",
+                "completed",
+                "--evidence-level",
+                "source-backed",
+                "--conclusion",
+                f"Completed question {index}.",
+            ],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        results.append(result)
+
+    trace_root = vault / "_system" / "reports" / "query-traces"
+    request_root = trace_root / request_id
+    assert results[0]["trace_id"] != results[1]["trace_id"]
+    assert Path(results[0]["note_path"]).parent == request_root
+    assert Path(results[1]["note_path"]).parent == request_root
+    assert Path(results[0]["request_summary"]) == request_root / "Request Summary.md"
+    assert (trace_root / "_data" / f"{results[0]['trace_id']}.query-trace.json").is_file()
+    assert (trace_root / "_data" / f"{results[1]['trace_id']}.query-trace.json").is_file()
+
+    summary = (request_root / "Request Summary.md").read_text(encoding="utf-8")
+    assert "type: query-trace-request" in summary
+    assert "| 1 | `completed` |" in summary
+    assert "| 2 | `completed` |" in summary
+    assert results[0]["trace_id"] in summary
+    assert results[1]["trace_id"] in summary
+
+
 def test_trace_failure_does_not_block_hierarchical_retrieval(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
@@ -262,8 +351,11 @@ def test_multiple_questions_are_sequential_and_trace_isolated() -> None:
     assert "complete them strictly one at a time" in skill
     assert "only then start the next question" in skill
     assert "Do not keep more than one question trace open" in skill
+    assert "shared `--request-id` and its one-based `--question-index`" in skill
+    assert "Do not use a Hermes session ID as a trace ID" in skill
     assert "Do not create an ad hoc Python, shell, or other orchestration script" in skill
     assert "each independently answerable question is a controlled query" in reference
+    assert "stores visible notes under `_system/reports/query-traces/<request-id>/`" in reference
     assert "never reuse a `trace_id` across independent questions" in reference
     assert "map each numbered answer to its own trace path" in reference
 
