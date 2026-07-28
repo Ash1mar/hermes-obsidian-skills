@@ -107,6 +107,7 @@ Record:
 
 - query classification and scope;
 - searched layers and paths;
+- internal verification carriers, including source maps, ledgers, `document.md`, table Markdown, extracted images, and page images, with relevant line/section/region details;
 - hit and accepted counts;
 - hierarchical candidate scores and matched terms;
 - source/page/table/figure verification decisions;
@@ -115,6 +116,8 @@ Record:
 - Hermes session ID for correlation with `/root/.hermes/logs/agent.log`.
 
 Do not record chain-of-thought or hidden reasoning. Record short operational decisions that a reviewer can verify, such as "rejected because section status is qa_required".
+
+Verification-carrier paths belong in this trace, not in the user-facing evidence packet. The user-facing packet identifies the original PDF, original PDF page, relevant passage, and the figure/image/table location within that PDF.
 
 ## Obsidian view
 

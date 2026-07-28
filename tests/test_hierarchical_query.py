@@ -11,6 +11,9 @@ TRACE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "manage_query_tr
 QUERY_SKILL = ROOT / "hermes-obsidian-controlled-query" / "SKILL.md"
 INGEST_SKILL = ROOT / "hermes-obsidian-controlled-ingest" / "SKILL.md"
 TRACE_REFERENCE = ROOT / "hermes-obsidian-controlled-query" / "references" / "query-tracing.md"
+ANSWER_FORMAT = ROOT / "hermes-obsidian-controlled-query" / "references" / "answer-format.md"
+EVIDENCE_LEVELS = ROOT / "hermes-obsidian-controlled-query" / "references" / "evidence-levels.md"
+QUERY_WORKFLOW = ROOT / "hermes-obsidian-controlled-query" / "references" / "query-workflow.md"
 
 
 def write_json(path: Path, value: dict) -> None:
@@ -358,6 +361,29 @@ def test_multiple_questions_are_sequential_and_trace_isolated() -> None:
     assert "stores visible notes under `_system/reports/query-traces/<request-id>/`" in reference
     assert "never reuse a `trace_id` across independent questions" in reference
     assert "map each numbered answer to its own trace path" in reference
+
+
+def test_user_facing_evidence_uses_original_pdf_and_logs_conversion_carriers() -> None:
+    skill = QUERY_SKILL.read_text(encoding="utf-8")
+    answer_format = ANSWER_FORMAT.read_text(encoding="utf-8")
+    evidence_levels = EVIDENCE_LEVELS.read_text(encoding="utf-8")
+    workflow = QUERY_WORKFLOW.read_text(encoding="utf-8")
+    trace_reference = TRACE_REFERENCE.read_text(encoding="utf-8")
+
+    assert "Never substitute a Bundle, Markdown, source-map, ledger, or extracted-asset path" in skill
+    assert "Record source maps, ledgers, `document.md`" in skill
+    assert "They are internal retrieval and QA details, not user-facing evidence sources" in skill
+    assert "Original PDF path: <original PDF path or unresolved>" in answer_format
+    assert "Figure/image/table location:" in answer_format
+    assert "section + page region, with reliable coordinates when available" in answer_format
+    assert "Vault/source path:" not in answer_format
+    assert "Source text: <document.md/table/image path" not in answer_format
+    assert "Record those verification carriers in the query trace" in answer_format
+    assert "record their paths in the query trace" in evidence_levels
+    assert "continue until the original PDF identity, original PDF page, and relevant passage are resolved" in workflow
+    assert "Report them as converted-source lines" not in workflow
+    assert "internal verification carriers, including source maps, ledgers, `document.md`" in trace_reference
+    assert "Verification-carrier paths belong in this trace" in trace_reference
 
 
 def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:
