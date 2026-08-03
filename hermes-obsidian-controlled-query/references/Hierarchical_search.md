@@ -57,7 +57,7 @@ Existing artifacts are not modified:
 
 ### Query-side candidate locator
 
-`hermes-obsidian-controlled-query/scripts/locate_source_sections.py` reads the projections, scores document routing and section title/path matches, and dynamically scans the authoritative `document.md` owned ranges. It emits candidate JSON containing paths, section IDs, line ranges, pages, quality/status, matched terms, and scores.
+`hermes-obsidian-controlled-query/scripts/locate_source_sections.py` reads the projections, scores document routing and section title/path matches, and dynamically scans the authoritative `document.md` owned ranges. It emits candidate JSON containing paths, document and section IDs, `match_start_line` / `match_end_line`, pages, quality/status, matched terms, and scores. On the intranet branch it also composes a deployment-local `viewer_url` from those four positioning fields and `config/intranet.json`; this URL remains a navigation aid rather than evidence.
 
 The controlled-query workflow merges these hits with its existing report-navigation hits. It then verifies the original converted source and page/table/figure evidence exactly as before. If no projection is present, the locator is skipped and the original query path continues unchanged.
 

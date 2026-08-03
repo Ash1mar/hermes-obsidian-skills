@@ -32,7 +32,7 @@ This repository stores local skills and tool-integration notes for the Hermes + 
   - Can copy `.obsidian/`, base concept pages, and skill notes from a template vault.
   - Does not copy raw sources, test cards, test projects, or historical reports by default.
 
-On the `intranet` branch, bootstrap, ingest, query, and lint use the vault path configured in each skill's `config/intranet.json`, currently `/opt/data/phq/testVault`. Change that config file if the server vault location changes.
+On the `intranet` branch, bootstrap, ingest, query, and lint use the vault path configured in each skill's `config/intranet.json`, currently `/opt/data/phq/testVault`. Change that config file if the server vault location changes. The controlled-query config also defines `viewer_base_url`; verified query hits are returned with `doc`, `section`, `from`, and `to` parameters so answers can end with clickable `原文定位` links into the intranet Bundle Markdown viewer.
 
 ## Hermes Slash Aliases
 

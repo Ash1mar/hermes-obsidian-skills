@@ -128,6 +128,12 @@ def test_locator_scans_owned_content_and_returns_navigation_only(tmp_path: Path)
     assert result["design_origin"] == "hanyu"
     assert result["candidates"][0]["section_id"] == "spray"
     assert "60" in result["candidates"][0]["matched_terms"]["content"]
+    assert result["candidates"][0]["document_id"] == "bundle-0712"
+    assert result["candidates"][0]["match_start_line"] == 3
+    assert result["candidates"][0]["match_end_line"] == 4
+    assert result["candidates"][0]["viewer_url"] == (
+        "http://10.27.13.12:8765/viewer?doc=bundle-0712&section=spray&from=3&to=4"
+    )
 
 
 def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_path: Path) -> None:
@@ -384,6 +390,21 @@ def test_user_facing_evidence_uses_original_pdf_and_logs_conversion_carriers() -
     assert "Report them as converted-source lines" not in workflow
     assert "internal verification carriers, including source maps, ledgers, `document.md`" in trace_reference
     assert "Verification-carrier paths belong in this trace" in trace_reference
+
+
+def test_intranet_answers_append_verified_viewer_links() -> None:
+    skill = QUERY_SKILL.read_text(encoding="utf-8")
+    answer_format = ANSWER_FORMAT.read_text(encoding="utf-8")
+    config = json.loads(
+        (ROOT / "hermes-obsidian-controlled-query" / "config" / "intranet.json").read_text(encoding="utf-8")
+    )
+
+    assert config["viewer_base_url"] == "http://10.27.13.12:8765/viewer"
+    assert "Use only locator-returned `viewer_url` values" in skill
+    assert "doc=<document_id>&section=<section_id>&from=<match_start_line>&to=<match_end_line>" in skill
+    assert "a final `原文定位` list" in skill
+    assert "append `原文定位` as the final answer section" in answer_format
+    assert "does not replace the original-PDF evidence packet" in answer_format
 
 
 def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:

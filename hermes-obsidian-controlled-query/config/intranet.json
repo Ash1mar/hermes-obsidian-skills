@@ -1,3 +1,4 @@
 {
-  "vault_path": "/opt/data/phq/testVault"
+  "vault_path": "/opt/data/phq/testVault",
+  "viewer_base_url": "http://10.27.13.12:8765/viewer"
 }

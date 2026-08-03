@@ -70,6 +70,8 @@ After resolving the Vault and classifying the question, but before searching gov
 
 Record source maps, ledgers, `document.md`, table Markdown, extracted images, page images, and other conversion or verification carrier paths in the trace only. They are internal retrieval and QA details, not user-facing evidence sources. Do not expose those carrier paths in the answer unless the user explicitly asks for retrieval debugging or Vault maintenance details.
 
+On deployments whose active Skill config defines `viewer_base_url`, a viewer URL is the one permitted user-facing exception to that carrier-path rule. The URL is a navigation aid, not evidence: it identifies the verified Bundle document and section and highlights the checked Markdown line range without exposing a filesystem path. Use only locator-returned `viewer_url` values; never invent a document ID or line range from filenames or prose.
+
 Pass `--trace-id <id>` to `<query-skill-root>/scripts/locate_source_sections.py` so actual hierarchical candidates and match data are recorded directly. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `<query-skill-root>/references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
 
 ## Multiple Questions
@@ -220,10 +222,13 @@ Return concise answers with these parts when the query is non-trivial:
 4. Answer
 5. Evidence packets with original PDF identity/path, original PDF page, relevant passage, and original-PDF figure/image/table location
 6. Uncertainty / gaps
+7. On viewer-enabled deployments, a final `原文定位` list containing the verified hits actually used in the answer
 
 Do not include a user-facing writeback recommendation by default. If the user asks whether the result should be persisted, summarize the writeback candidate decision in plain language.
 
 For quick locating queries, a shorter answer is acceptable if it still identifies the original PDF, original PDF page, and evidence quality. Do not replace them with internal Vault conversion paths.
+
+For each `原文定位` item, use a concise label such as `<original PDF filename> §<section_id>` and the locator-returned URL. The URL parameters are `doc=<document_id>&section=<section_id>&from=<match_start_line>&to=<match_end_line>`. Omit hits with a missing field or invalid line range, deduplicate identical URLs, and keep this list after the normal answer and uncertainty sections. Do not treat the viewer link as a substitute for the original-PDF evidence packet.
 
 Read `references/answer-format.md` for the full response contract.
 

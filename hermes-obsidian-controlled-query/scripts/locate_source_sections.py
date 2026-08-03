@@ -13,6 +13,7 @@ import re
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -60,6 +61,55 @@ def display_path(path: Path, root: Path) -> str:
         return path.resolve().as_posix()
 
 
+def load_viewer_base_url(explicit_url: str | None) -> str | None:
+    """Resolve the optional deployment-local source viewer URL."""
+    if explicit_url:
+        return explicit_url.rstrip("?")
+    config_path = Path(__file__).resolve().parents[1] / "config" / "intranet.json"
+    if not config_path.is_file():
+        return None
+    try:
+        config = load_json(config_path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return None
+    value = str(config.get("viewer_base_url") or "").strip()
+    return value.rstrip("?") or None
+
+
+def match_line_range(section: dict[str, Any]) -> tuple[int | None, int | None]:
+    """Return the complete matched section range used for viewer highlighting."""
+    try:
+        start = int(section.get("start_line"))
+        end = int(section.get("end_line"))
+    except (TypeError, ValueError):
+        starts: list[int] = []
+        ends: list[int] = []
+        for item in section.get("content_ranges", []):
+            try:
+                starts.append(int(item["start_line"]))
+                ends.append(int(item["end_line"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if not starts or not ends:
+            return None, None
+        start, end = min(starts), max(ends)
+    if start < 1 or end < start:
+        return None, None
+    return start, end
+
+
+def build_viewer_url(
+    base_url: str | None,
+    document_id: Any,
+    section_id: Any,
+    start_line: int | None,
+    end_line: int | None,
+) -> str | None:
+    if not base_url or not document_id or not section_id or start_line is None or end_line is None:
+        return None
+    return f"{base_url}?{urlencode({'doc': document_id, 'section': section_id, 'from': start_line, 'to': end_line})}"
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("vault_root", type=Path)
@@ -69,10 +119,12 @@ def main() -> int:
     parser.add_argument("--index-dir", type=Path, help="Defaults to <vault>/_system/reports/query-index")
     parser.add_argument("--no-content-scan", action="store_true", help="Score only document routing and section paths")
     parser.add_argument("--trace-id", help="Append actual candidates to an active query trace")
+    parser.add_argument("--viewer-base-url", help="Override the optional deployment-local source viewer URL")
     args = parser.parse_args()
 
     vault_root = args.vault_root.resolve()
     index_dir = (args.index_dir or vault_root / "_system" / "reports" / "query-index").resolve()
+    viewer_base_url = load_viewer_base_url(args.viewer_base_url)
     terms = query_terms(args.query)
     documents: list[tuple[int, Path, dict[str, Any], list[str]]] = []
     errors: list[str] = []
@@ -95,6 +147,7 @@ def main() -> int:
         document = projection.get("document", {})
         source_document = vault_root / str(document.get("document_path", ""))
         for section in projection.get("sections", []):
+            match_start_line, match_end_line = match_line_range(section)
             title_score, title_matches = match_score(terms, str(section.get("title", "")), 9)
             path_score, path_matches = match_score(terms, " / ".join(section.get("path_titles", [])), 4)
             content_score = 0
@@ -124,6 +177,15 @@ def main() -> int:
                     "path_titles": section.get("path_titles", []),
                     "start_line": section.get("start_line"),
                     "end_line": section.get("end_line"),
+                    "match_start_line": match_start_line,
+                    "match_end_line": match_end_line,
+                    "viewer_url": build_viewer_url(
+                        viewer_base_url,
+                        document.get("document_id"),
+                        section.get("section_id"),
+                        match_start_line,
+                        match_end_line,
+                    ),
                     "content_ranges": section.get("content_ranges", []),
                     "pages": section.get("pages", []),
                     "assets": section.get("assets", []),
