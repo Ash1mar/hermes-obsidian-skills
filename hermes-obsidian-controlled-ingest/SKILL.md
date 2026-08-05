@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-controlled-ingest
-description: On Hermes, MUST call skill_view for hermes-obsidian-controlled-ingest before any governed Vault ingest; on other runtimes, load this skill's full instructions before acting. Use to onboard or resume sources, preserve 10_Raw, convert PDFs/images with quality gates, create source maps and section ledgers, process query writebacks, synthesize governed knowledge, reconcile artifacts, retain page/table/figure evidence, and record ingest logs.
+description: 受控摄取 / Controlled Ingest：新增、导入、恢复、继续或批量处理受治理 Obsidian Vault 的 PDF、图片及其他来源时使用，包括保护 10_Raw、转换、质量门禁、source map、section ledger、证据定位、知识合成、双链和查询回写。On Hermes, MUST call skill_view for hermes-obsidian-controlled-ingest and load its complete scripts before ingesting; on other runtimes, load the full skill first.
 ---
 
 # Hermes Obsidian Controlled Ingest
@@ -13,14 +13,18 @@ On the `intranet` branch, the governed vault path is fixed by this skill's confi
 
 - config file: `config/intranet.json`
 - configured vault path: `/opt/data/phq/testVault`
+- Hermes-visible Skills parent directory: `/opt/data/skills`
+- configured ingest Skill directory: `/opt/data/skills/hermes-obsidian-controlled-ingest`
 
 Use this configured path as the vault root for source onboarding, conversion output, source maps, section ledgers, governed artifacts, and ingest reports. If the server vault path changes, update `config/intranet.json`; do not switch vaults by prompt wording.
 
 ## Runtime Skill Boundary
 
-Use `<ingest-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-controlled-ingest")`; on another runtime, use its equivalent active-skill directory.
+Use `<ingest-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`, not the parent directory that contains multiple Skills. The package layout is `<ingest-skill-root>/SKILL.md`, `<ingest-skill-root>/scripts/*.py`, `<ingest-skill-root>/references/*.md`, and optional `<ingest-skill-root>/config/*.json`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-controlled-ingest")`; on another runtime, use its equivalent active-skill directory.
 
-Resolve bundled `scripts/` and `references/` against `<ingest-skill-root>`. Never infer installation from `~/.hermes/skills` or another conventional path. On Hermes, inspect `skill_view` and `linked_files.scripts` before declaring a script uninstalled; a terminal sandbox path failure may instead mean the host Skill directory is not mounted. Never copy replacement Skill scripts into the Vault.
+Resolve bundled `scripts/`, `references/`, and `config/` against `<ingest-skill-root>`. Execute Python entry points as `python3 "<ingest-skill-root>/scripts/<script>.py"`. Never infer a conventional installation path. On Hermes, inspect `skill_view` and `linked_files.scripts` before declaring a script uninstalled; a terminal sandbox path failure may instead mean the host Skill directory is not mounted. Never copy replacement Skill scripts into the Vault.
+
+On this branch, `/opt/data/skills` from `config/intranet.json` is the parent containing all Skills, not `<ingest-skill-root>`. The expected package is `/opt/data/skills/hermes-obsidian-controlled-ingest/`, containing `SKILL.md`, `scripts/`, `references/`, and `config/`. Prefer the loader-returned `skill_dir`; use the configured package as a fallback and consistency check when linked scripts are omitted. Never interpret `/opt/data/skills/scripts` as this Skill's script directory.
 
 ```text
 external or vault source
@@ -87,7 +91,7 @@ When the source is outside the vault:
 - Reuse a raw file only when its SHA-256 matches the external source; stop on mismatch.
 - Never treat an empty bundle directory as completed work.
 - Never skip conversion only because a bundle folder exists.
-- A usable Bundle must pass `scripts/validate_document_bundle.py` as `pass` or `warn`; `fail` is not usable.
+- A usable Bundle must pass `python3 "<ingest-skill-root>/scripts/validate_document_bundle.py"` as `pass` or `warn`; `fail` is not usable.
 - If a Bundle validates as `warn`, continue with QA restrictions and do not promote affected formulas, tables, figures, or parameters as authoritative facts.
 - If a Bundle is empty, missing required files, or fails validation, remove or replace only the derived bundle output, never the raw source, and retry once with a skill-supported MinerU parameter change such as `pipeline` backend or `txt` method when available.
 - If retry still fails, record the failed source, raw SHA, bundle path, command, validator output, and recommended manual check.
@@ -110,7 +114,7 @@ document_bundle/
   _evidence/
 ```
 
-Use `scripts/convert_pdf_with_mineru_bundle.py`. On the `intranet` branch, the helper defaults to the MinerU HTTP API at `http://10.27.17.35:7861` and requests a ZIP result containing Markdown, content lists, middle/model JSON, and images. Do not require prompts to restate the API URL unless the service address changes. If a local MinerU CLI must be used instead, pass `--mineru-invocation cli` and use `--model-source local` in the repaired offline MinerU environment. Read `references/mineru-pdf-bundle.md` before conversion or validation. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
+Use `python3 "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py"`. On the `intranet` branch, the helper defaults to the MinerU HTTP API at `http://10.27.17.35:7861` and requests a ZIP result containing Markdown, content lists, middle/model JSON, and images. Do not require prompts to restate the API URL unless the service address changes. If a local MinerU CLI must be used instead, pass `--mineru-invocation cli` and use `--model-source local` in the repaired offline MinerU environment. Read `references/mineru-pdf-bundle.md` before conversion or validation. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
 
 For standalone image sources (`.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.gif`, `.tif`, `.tiff`) where the image itself is the source material, create an image Bundle v2 instead of treating the image like a PDF figure:
 
@@ -123,11 +127,11 @@ image_document_bundle/
   _evidence/
 ```
 
-Use `scripts/convert_image_with_ocr_bundle.py`. If OCR text is already available, pass `--ocr-text-file`; if an OCR command is available, pass `--ocr-command`. Without OCR text, still create the bundle as visual evidence with `quality: warn` and `qa_required` sections. Read `references/image-bundle.md` before converting or ingesting standalone image sources.
+Use `python3 "<ingest-skill-root>/scripts/convert_image_with_ocr_bundle.py"`. If OCR text is already available, pass `--ocr-text-file`; if an OCR command is available, pass `--ocr-command`. Without OCR text, still create the bundle as visual evidence with `quality: warn` and `qa_required` sections. Read `references/image-bundle.md` before converting or ingesting standalone image sources.
 
 For Word, PowerPoint, Excel, HTML, CSV, JSON, XML, audio, EPUB, ZIP, URL, or a simple PDF when MinerU is unavailable:
 
-1. Convert the source to Markdown with `scripts/convert_with_markitdown.py` when available.
+1. Convert the source to Markdown with `python3 "<ingest-skill-root>/scripts/convert_with_markitdown.py"` when available.
 2. Save converted Markdown under `10_Raw/converted/`.
 3. Keep the original unchanged.
 4. Record conversion metadata in the ingest log.
@@ -139,8 +143,8 @@ See `references/markitdown.md` and `references/mcp-markitdown.md` when using tho
 Keep the agent-facing path small. Do not recursively scan a bundle.
 
 1. Read `manifest.json` first.
-2. Run `scripts/validate_document_bundle.py <bundle>` before downstream writes.
-3. Run `scripts/manage_bundle_ingest.py init <bundle> --reports-dir /opt/data/phq/testVault/_system/reports` at the start of every session. This creates or reconciles the source map and section ledger.
+2. Run `python3 "<ingest-skill-root>/scripts/validate_document_bundle.py" <bundle>` before downstream writes.
+3. Run `python3 "<ingest-skill-root>/scripts/manage_bundle_ingest.py" init <bundle> --reports-dir /opt/data/phq/testVault/_system/reports` at the start of every session. This creates or reconciles the source map and section ledger.
 4. Use recovery rules when validation returns `fail`; stop at an ingest log or QA report when recovery is unavailable or retry fails.
 5. Allow a source map when status is `warn`, but do not promote affected formulas, tables, figures, or parameters as authoritative facts.
 6. Select an eligible ledger section. Do not duplicate an `ingested` section or reuse a `stale` section without review.
@@ -150,7 +154,7 @@ Keep the agent-facing path small. Do not recursively scan a bundle.
 10. Record every created output and finish the section as `ingested`, `qa_required`, or `skipped`. Never leave a successful run only in prose logs.
 11. Do not read `_evidence/` by default. Open it only for targeted QA of layout, page order, formulas, tables, or extraction disputes.
 
-After ledger initialization, reconciliation, or completed source ingestion, optionally run `scripts/build_section_query_index.py <vault-root> --bundle <bundle>`. It writes only a disposable, non-authoritative projection under `_system/reports/query-index/`; failure must not change Bundle, ledger, source-map, spec-index, or ingest status. The projection contains no generated section summaries. See `../hermes-obsidian-controlled-query/references/Hierarchical_search.md`.
+After ledger initialization, reconciliation, or completed source ingestion, optionally run `python3 "<ingest-skill-root>/scripts/build_section_query_index.py" <vault-root> --bundle <bundle>`. It writes only a disposable, non-authoritative projection under `_system/reports/query-index/`; failure must not change Bundle, ledger, source-map, spec-index, or ingest status. The projection contains no generated section summaries. See `../hermes-obsidian-controlled-query/references/Hierarchical_search.md`.
 
 Treat `document.md` as the single normalized text source. Do not duplicate every section into separate Markdown files. Use the ledger's non-overlapping `content_ranges` for staged ingestion and the JSON ledger as the section-state authority.
 

@@ -29,10 +29,10 @@ This repository stores local skills and tool-integration notes for the Hermes + 
   - Initializes governed Obsidian vaults.
   - Creates the standard folder layout, prompts, templates, metadata registries, Dataview indexes, and setup report.
   - Supports `general` and `meeting` profiles.
-  - Can copy `.obsidian/`, base concept pages, and skill notes from a template vault.
+  - Can copy `.obsidian/` and base concept pages from a template vault; runtime Skills and their installation paths stay outside the Vault.
   - Does not copy raw sources, test cards, test projects, or historical reports by default.
 
-On the `intranet` branch, bootstrap, ingest, query, and lint use the vault path configured in each skill's `config/intranet.json`, currently `/opt/data/phq/testVault`. Change that config file if the server vault location changes. The controlled-query config also defines `viewer_base_url`; verified query hits are returned with `doc`, `section`, `from`, and `to` parameters so answers can end with clickable `原文定位` links into the intranet Bundle Markdown viewer.
+On the `intranet` branch, bootstrap, ingest, query, and lint use the vault path configured in each skill's `config/intranet.json`, currently `/opt/data/phq/testVault`. The same config records the Hermes-visible Skills parent as `/opt/data/skills`; each package remains a child such as `/opt/data/skills/hermes-obsidian-controlled-query/`, with its own `SKILL.md` and `scripts/`. The controlled-query config also defines `domain_query_terms` for deployment-specific subject triggers and `viewer_base_url`; verified query hits are returned with `doc`, `section`, `from`, and `to` parameters so answers can end with clickable `原文定位` links into the intranet Bundle Markdown viewer.
 
 ## Hermes Slash Aliases
 
@@ -169,5 +169,6 @@ Two integration modes are planned:
 - Keep `SKILL.md` concise and stable.
 - Put longer operational details in `references/`.
 - Put reusable helper code in `scripts/`.
+- Give every Python or shell entry point under a Skill's `scripts/` directory a shebang and commit it with Git mode `100755` (`chmod +x`). Use explicit `python3 "<skill-dir>/scripts/<script>.py"` commands in instructions so execution does not depend on shell dispatch.
 - Do not store secrets, local API keys, or machine-specific credentials in this repository.
 - Preserve raw source files; conversion output should go to the intended vault conversion area, such as `10_Raw/converted/`.

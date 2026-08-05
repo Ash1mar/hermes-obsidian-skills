@@ -3,7 +3,7 @@
 ## Basic Meeting Vault
 
 ```powershell
-python scripts/init_obsidian_vault.py `
+python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" `
   --profile meeting
 ```
 
@@ -13,7 +13,7 @@ Change that config file if the server path changes.
 ## Use A Template Vault
 
 ```powershell
-python scripts/init_obsidian_vault.py `
+python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" `
   --profile meeting `
   --template-vault "C:\Users\vimdr\Desktop\hermes-workspace\Hermes-Obsidian-TestVault" `
   --copy-obsidian-config `

@@ -201,13 +201,28 @@ def main() -> int:
             )
 
     candidates.sort(key=lambda item: (-int(item["score"]), str(item["source_filename"]), str(item["section_id"])))
+    selected_candidates = candidates[: max(1, args.top_sections)]
+    eligible_viewer_urls = list(
+        dict.fromkeys(str(item["viewer_url"]) for item in selected_candidates if item.get("viewer_url"))
+    )
     result = {
         "status": "warn" if errors else "ok",
         "authority": "candidate-navigation-only",
         "design_origin": "hanyu",
         "query": args.query,
         "terms": terms,
-        "candidates": candidates[: max(1, args.top_sections)],
+        "candidates": selected_candidates,
+        "answer_contract": {
+            "viewer_enabled": bool(viewer_base_url),
+            "final_section": "原文定位",
+            "eligible_viewer_urls": eligible_viewer_urls,
+            "required_action": (
+                "Append 原文定位 as the final answer section for verified candidates actually used; "
+                "if none has a complete locator, state source positioning is unavailable under uncertainty/gaps."
+                if viewer_base_url
+                else "No viewer section is required because viewer_base_url is not configured."
+            ),
+        },
         "errors": errors,
         "next_step": "Merge with existing report-navigation hits, then verify document.md and page/table/figure evidence before answering.",
     }

@@ -27,7 +27,7 @@ The hierarchical locator returns only candidate documents and sections. It does 
 
 ### Ingest-side query projection
 
-`hermes-obsidian-controlled-ingest/scripts/build_section_query_index.py` reads existing Bundle v2 and control artifacts and writes a per-source projection under:
+`python3 "<ingest-skill-root>/scripts/build_section_query_index.py"` reads existing Bundle v2 and control artifacts and writes a per-source projection under:
 
 ```text
 _system/reports/query-index/<source>.section-query-index.json
@@ -57,7 +57,7 @@ Existing artifacts are not modified:
 
 ### Query-side candidate locator
 
-`hermes-obsidian-controlled-query/scripts/locate_source_sections.py` reads the projections, scores document routing and section title/path matches, and dynamically scans the authoritative `document.md` owned ranges. It emits candidate JSON containing paths, document and section IDs, `match_start_line` / `match_end_line`, pages, quality/status, matched terms, and scores. On the intranet branch it also composes a deployment-local `viewer_url` from those four positioning fields and `config/intranet.json`; this URL remains a navigation aid rather than evidence.
+`python3 "<query-skill-root>/scripts/locate_source_sections.py"` reads the projections, scores document routing and section title/path matches, and dynamically scans the authoritative `document.md` owned ranges. It emits candidate JSON containing paths, document and section IDs, `match_start_line` / `match_end_line`, pages, quality/status, matched terms, and scores. On the intranet branch it also composes a deployment-local `viewer_url` from those four positioning fields and `config/intranet.json`; this URL remains a navigation aid rather than evidence.
 
 The controlled-query workflow merges these hits with its existing report-navigation hits. It then verifies the original converted source and page/table/figure evidence exactly as before. If no projection is present, the locator is skipped and the original query path continues unchanged.
 
@@ -117,14 +117,14 @@ The main branch accepts an explicit Vault root. The intranet branch continues to
 Build or validate projections without touching existing artifacts:
 
 ```bash
-python3 hermes-obsidian-controlled-ingest/scripts/build_section_query_index.py \
+python3 "<ingest-skill-root>/scripts/build_section_query_index.py" \
   /path/to/vault --check
 ```
 
 Build projections:
 
 ```bash
-python3 hermes-obsidian-controlled-ingest/scripts/build_section_query_index.py \
+python3 "<ingest-skill-root>/scripts/build_section_query_index.py" \
   /path/to/vault
 ```
 

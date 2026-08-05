@@ -191,7 +191,7 @@ manifest.json
 Validate with:
 
 ```bash
-python hermes-obsidian-controlled-ingest/scripts/validate_document_bundle.py \
+python3 "<ingest-skill-root>/scripts/validate_document_bundle.py" \
   "/path/to/document_bundle"
 ```
 
@@ -201,7 +201,7 @@ The validator exits:
 - `1` for warn
 - `2` for fail
 
-For staged ingestion, resumption, deduplication, and Bundle change detection, continue with `scripts/manage_bundle_ingest.py` and read `bundle-source-map-ledger.md`.
+For staged ingestion, resumption, deduplication, and Bundle change detection, continue with `python3 "<ingest-skill-root>/scripts/manage_bundle_ingest.py"` and read `bundle-source-map-ledger.md`.
 
 ## Conversion Commands
 
@@ -211,7 +211,7 @@ Run from WSL. Keep the heavy MinerU/vLLM environment on the WSL native filesyste
 cd /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills
 
 python3 \
-  hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
+  "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py" \
   "/mnt/c/path/to/input.pdf" \
   -o "/opt/data/phq/testVault/10_Raw/converted/input_document_bundle" \
   --mineru-command "/usr/local/bin/mineru" \
@@ -229,7 +229,7 @@ For a CPU fallback:
 
 ```bash
 python3 \
-  hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
+  "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py" \
   "/mnt/c/path/to/input.pdf" \
   -o "/opt/data/phq/testVault/10_Raw/converted/input_document_bundle" \
   --mineru-command "/usr/local/bin/mineru" \
@@ -249,7 +249,7 @@ For an intranet MinerU HTTP API:
 
 ```bash
 python3 \
-  hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
+  "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py" \
   "/path/to/input.pdf" \
   -o "/opt/data/phq/testVault/10_Raw/converted/input_document_bundle" \
   --mineru-api-mode sync \
@@ -285,7 +285,7 @@ the asynchronous task API:
 
 ```bash
 python3 \
-  hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
+  "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py" \
   "/path/to/input.pdf" \
   -o "/opt/data/phq/testVault/10_Raw/converted/input_document_bundle" \
   --mineru-api-mode async \
@@ -315,7 +315,7 @@ Reuse existing MinerU output without reparsing:
 
 ```bash
 python3 \
-  hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
+  "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py" \
   "/mnt/c/path/to/input.pdf" \
   -o "/mnt/c/path/to/input_document_bundle" \
   --from-mineru-output "/mnt/c/path/to/mineru/output" \

@@ -32,6 +32,8 @@ Do not include source-map, ledger, Bundle, `document.md`, table Markdown, extrac
 
 When the active deployment config defines `viewer_base_url`, append `原文定位` as the final answer section. Include only deduplicated `viewer_url` values returned by the locator for source hits actually used in the answer. A viewer URL is a navigation aid and the sole permitted user-facing Bundle-carrier exception; it does not replace the original-PDF evidence packet. If no verified hit has a complete `document_id`, `section_id`, `match_start_line`, and `match_end_line`, omit the list and state that source positioning is unavailable under uncertainty/gaps.
 
+Use the locator result's top-level `answer_contract` as the final pre-return gate. When `viewer_enabled` is true, returning neither eligible links for used verified hits nor an explicit unavailable explanation is invalid and must be corrected before the answer is sent.
+
 ## Short Locating Answer
 
 For "where did we mention X?" style questions:

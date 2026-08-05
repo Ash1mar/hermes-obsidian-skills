@@ -1,4 +1,4 @@
 interface:
   display_name: "Hermes Obsidian Controlled Ingest"
-  short_description: "Governed ingest for PDFs, images, vault sources, and query writebacks"
-  default_prompt: "Use $hermes-obsidian-controlled-ingest with the intranet vault configured in config/intranet.json, currently /opt/data/phq/testVault. Detect the source/bundle/candidate state, recover or resume as needed, convert PDF or standalone image sources with quality gates, process query-derived writeback candidates, ingest eligible content, add conservative wikilinks, and synthesize high-confidence knowledge into the governed Obsidian vault. On the intranet branch, PDF Bundle conversion defaults to the MinerU HTTP API at http://10.27.17.35:7861 unless overridden."
+  short_description: "受控摄取 PDF、图片、来源和查询回写"
+  default_prompt: "使用 $hermes-obsidian-controlled-ingest 在内网固定 Vault /opt/data/phq/testVault 判断来源、Bundle 或候选状态，默认通过 MinerU HTTP API 按质量门禁恢复、转换和摄取，并生成可追溯知识及保守双链。"

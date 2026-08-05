@@ -134,6 +134,10 @@ def test_locator_scans_owned_content_and_returns_navigation_only(tmp_path: Path)
     assert result["candidates"][0]["viewer_url"] == (
         "http://10.27.13.12:8765/viewer?doc=bundle-0712&section=spray&from=3&to=4"
     )
+    assert result["answer_contract"]["viewer_enabled"] is True
+    assert result["answer_contract"]["final_section"] == "原文定位"
+    assert result["candidates"][0]["viewer_url"] in result["answer_contract"]["eligible_viewer_urls"]
+    assert "Append 原文定位" in result["answer_contract"]["required_action"]
 
 
 def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_path: Path) -> None:
@@ -400,11 +404,15 @@ def test_intranet_answers_append_verified_viewer_links() -> None:
     )
 
     assert config["viewer_base_url"] == "http://10.27.13.12:8765/viewer"
+    assert config["hermes_skills_root"] == "/opt/data/skills"
+    assert config["domain_query_terms"] == ["消防系统"]
     assert "Use only locator-returned `viewer_url` values" in skill
     assert "doc=<document_id>&section=<section_id>&from=<match_start_line>&to=<match_end_line>" in skill
     assert "a final `原文定位` list" in skill
     assert "append `原文定位` as the final answer section" in answer_format
     assert "does not replace the original-PDF evidence packet" in answer_format
+    assert "top-level `answer_contract`" in skill
+    assert "silent omission" in skill
 
 
 def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:
@@ -414,7 +422,7 @@ def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:
     assert "${HERMES_SKILL_DIR}" in skill
     assert "skill_dir` returned by `skill_view" in skill
     assert "Do not hard-code an installation directory" in skill
-    assert "never to the Vault or the shell's current working directory" in skill
+    assert "never to the Vault, the parent Skills catalog, or the shell's current working directory" in skill
     assert "do not announce that scripts are uninstalled" in skill.lower()
     assert "linked_files.scripts" in skill
     assert "<vault>/_system/skills" in skill
@@ -424,21 +432,53 @@ def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:
 
 
 def test_hermes_descriptions_frontload_full_skill_loading() -> None:
-    skill_paths = [
-        ROOT / "hermes-obsidian-controlled-query" / "SKILL.md",
-        ROOT / "hermes-obsidian-controlled-ingest" / "SKILL.md",
-        ROOT / "hermes-obsidian-vault-bootstrap" / "SKILL.md",
-        ROOT / "hermes-obsidian-vault-lint" / "SKILL.md",
-    ]
-    for path in skill_paths:
+    expected_prefixes = {
+        ROOT / "hermes-obsidian-controlled-query" / "SKILL.md": "受控查询 / Controlled Query",
+        ROOT / "hermes-obsidian-controlled-ingest" / "SKILL.md": "受控摄取 / Controlled Ingest",
+        ROOT / "hermes-obsidian-vault-bootstrap" / "SKILL.md": "Vault 初始化 / Vault Bootstrap",
+        ROOT / "hermes-obsidian-vault-lint" / "SKILL.md": "Vault 只读审计 / Read-only Vault Lint",
+    }
+    for path, prefix in expected_prefixes.items():
         frontmatter = path.read_text(encoding="utf-8").split("---", 2)[1]
         description = next(
             line.removeprefix("description: ").strip()
             for line in frontmatter.splitlines()
             if line.startswith("description: ")
         )
-        assert description.startswith("On Hermes, MUST call skill_view")
-        assert "on other runtimes, load this skill's full instructions" in description
+        assert description.startswith(prefix)
+        assert "MUST call skill_view" in description
+        assert "load the full skill first" in description
+
+
+def test_query_domain_terms_are_configuration_not_frontmatter() -> None:
+    skill = QUERY_SKILL.read_text(encoding="utf-8")
+    config = json.loads(
+        (ROOT / "hermes-obsidian-controlled-query" / "config" / "intranet.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    description = next(line for line in skill.splitlines() if line.startswith("description: "))
+    assert config["domain_query_terms"] == ["消防系统"]
+    assert "消防系统" not in description
+    assert "config/intranet.json" in skill
+    assert "domain_query_terms" in skill
+
+
+def test_intranet_skill_parent_and_package_layout_are_unambiguous() -> None:
+    expected = {
+        "hermes-obsidian-controlled-query": "query",
+        "hermes-obsidian-controlled-ingest": "ingest",
+        "hermes-obsidian-vault-bootstrap": "bootstrap",
+        "hermes-obsidian-vault-lint": "lint",
+    }
+    for skill_name in expected:
+        skill_dir = ROOT / skill_name
+        config = json.loads((skill_dir / "config" / "intranet.json").read_text(encoding="utf-8"))
+        skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+        assert config["hermes_skills_root"] == "/opt/data/skills"
+        assert f"/opt/data/skills/{skill_name}/" in skill
+        assert (skill_dir / "scripts").is_dir()
+        assert (skill_dir / "SKILL.md").is_file()
 
 
 def test_short_hermes_bundle_aliases_are_deployable() -> None:

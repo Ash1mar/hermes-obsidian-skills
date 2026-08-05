@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-vault-lint
-description: On Hermes, MUST call skill_view for hermes-obsidian-vault-lint before governed Vault linting; on other runtimes, load this skill's full instructions before acting. Use to check vault health, validate post-ingest acceptance, audit Bundle v2 and section-ledger state, verify source-map alignment, inspect evidence contracts, find stale ingestion state, review QA boundaries, or decide whether a governed vault is query-ready.
+description: Vault 只读审计 / Read-only Vault Lint：检查受治理 Obsidian Vault 健康、摄取验收、Bundle、section ledger、source map、证据链、过期状态、QA 边界或查询就绪状态时使用。On Hermes, MUST call skill_view for hermes-obsidian-vault-lint and load its complete scripts before linting; on other runtimes, load the full skill first.
 ---
 
 # Hermes Obsidian Vault Lint
@@ -9,9 +9,11 @@ Audit a governed Hermes + Obsidian vault without changing it.
 
 ## Runtime Skill Boundary
 
-Use `<lint-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-vault-lint")`; on another runtime, use its equivalent active-skill directory.
+Use `<lint-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`, not the parent directory that contains multiple Skills. The package layout is `<lint-skill-root>/SKILL.md`, `<lint-skill-root>/scripts/*.py`, `<lint-skill-root>/references/*.md`, and optional `<lint-skill-root>/config/*.json`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-vault-lint")`; on another runtime, use its equivalent active-skill directory.
 
-Resolve bundled `scripts/` and `references/` against `<lint-skill-root>`. Never infer installation from `~/.hermes/skills` or another conventional path. On Hermes, inspect `skill_view` and `linked_files.scripts` before declaring the lint script uninstalled; a terminal sandbox path failure may instead be a missing mount. Lint remains read-only and must not repair the Vault itself.
+Resolve bundled `scripts/`, `references/`, and `config/` against `<lint-skill-root>`. Execute Python entry points as `python3 "<lint-skill-root>/scripts/<script>.py"`. Never infer a conventional installation path. On Hermes, inspect `skill_view` and `linked_files.scripts` before declaring the lint script uninstalled; a terminal sandbox path failure may instead be a missing mount. Lint remains read-only and must not repair the Vault itself.
+
+On this branch, `/opt/data/skills` from `config/intranet.json` is the parent containing all Skills, not `<lint-skill-root>`. The expected package is `/opt/data/skills/hermes-obsidian-vault-lint/`, with the script at `/opt/data/skills/hermes-obsidian-vault-lint/scripts/lint_vault.py`. Prefer `skill_view.skill_dir`; use the configured package only as a fallback and consistency check.
 
 ```text
 prompt scope
@@ -34,14 +36,14 @@ prompt scope
 Run:
 
 ```bash
-python hermes-obsidian-vault-lint/scripts/lint_vault.py \
+python3 "<lint-skill-root>/scripts/lint_vault.py" \
   --profile post-ingest \
   --json
 ```
 
 ## Intranet Vault Configuration
 
-Use `config/intranet.json` as the default lint target on this branch. It currently defines `/opt/data/phq/testVault`.
+Use `config/intranet.json` as the default lint target on this branch. It defines Vault `/opt/data/phq/testVault` and Hermes Skills parent `/opt/data/skills`.
 
 Use `--vault` only as an explicit operational override. Do not select another vault from prompt wording alone.
 
