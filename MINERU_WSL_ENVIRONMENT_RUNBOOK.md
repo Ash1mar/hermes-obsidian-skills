@@ -26,8 +26,9 @@ WSL 原生文件系统
 /root/.cache/huggingface/hub/...   # pipeline 与 VLM 模型
 /root/mineru.json                  # 本地模型路径配置
 /usr/local/bin/mineru              # 统一 CLI 包装器
-/root/.hermes/skills/domain/
-  └─ hermes-obsidian-controlled-ingest/
+<skill_view 返回的 ingest skill_dir>/
+  ├─ SKILL.md
+  └─ scripts/
 ```
 
 当前已验证：
@@ -450,10 +451,11 @@ grep -RIl \
 
 ## 10. Hermes 和 skill 集成
 
-Hermes 注册目录：
+Hermes 技能目录必须从 `skill_view(name="hermes-obsidian-controlled-ingest")` 返回的 `skill_dir` 解析。该值是包含当前 `SKILL.md` 的技能目录，不是多个技能共用的父目录，也不能从历史默认路径推断：
 
 ```text
-/root/.hermes/skills/domain/hermes-obsidian-controlled-ingest
+<ingest-skill-root>/SKILL.md
+<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py
 ```
 
 验证命令：
@@ -476,13 +478,10 @@ skill 中不再推荐使用 `/mnt/c/.../.venv-mineru/bin/mineru`，统一改为�
 
 Bundle 转换和验证脚本主要使用 Python 标准库，可以由 WSL 系统 Python 执行；真正沉重的 MinerU、Torch 和 vLLM 依赖通过 `/usr/local/bin/mineru` 进入原生 venv。
 
-推荐调用形式：
+推荐调用形式（不依赖 shell 当前目录）：
 
 ```bash
-cd /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills
-
-python3 \
-  hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py \
+python3 "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py" \
   "/mnt/c/path/to/input.pdf" \
   -o "/mnt/c/path/to/output_document_bundle" \
   --mineru-command /usr/local/bin/mineru \

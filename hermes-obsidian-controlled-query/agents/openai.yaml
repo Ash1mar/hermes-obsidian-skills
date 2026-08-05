@@ -1,4 +1,4 @@
 interface:
   display_name: "Hermes Obsidian Controlled Query"
-  short_description: "Run governed vault queries with auditable retrieval traces."
-  default_prompt: "Use $hermes-obsidian-controlled-query. Provide the vault path and question."
+  short_description: "受控查询 Vault，返回原始证据与审计追踪"
+  default_prompt: "使用 $hermes-obsidian-controlled-query 从当前或指定的受治理 Vault 回答问题；自动应用证据、原始 PDF 定位、不确定性和查询追踪要求。"

@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-vault-bootstrap
-description: On Hermes, MUST call skill_view for hermes-obsidian-vault-bootstrap before governed Vault setup; on other runtimes, load this skill's full instructions before acting. Use to create, configure, clone, prepare, bootstrap, or reset an Obsidian vault structure with standard folders, raw-source protection, Dataview dashboards, metadata registries, prompts, templates, and profile-specific layouts.
+description: Vault 初始化 / Vault Bootstrap：创建、配置、准备、克隆或重置受治理 Obsidian Vault 结构时使用，包括标准目录、原始来源保护、Dataview、注册表、提示和模板。On Hermes, MUST call skill_view for hermes-obsidian-vault-bootstrap and load its complete scripts before setup; on other runtimes, load the full skill first. Do not use for ordinary source ingest.
 ---
 
 # Hermes Obsidian Vault Bootstrap
@@ -11,9 +11,9 @@ Use this skill for vault setup only. Use `hermes-obsidian-controlled-ingest` for
 
 ## Runtime Skill Boundary
 
-Use `<bootstrap-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-vault-bootstrap")`; on another runtime, use its equivalent active-skill directory.
+Use `<bootstrap-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`, not the parent directory that contains multiple Skills. The package layout is `<bootstrap-skill-root>/SKILL.md`, `<bootstrap-skill-root>/scripts/*.py`, `<bootstrap-skill-root>/references/*.md`, and optional `<bootstrap-skill-root>/config/*.json`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-vault-bootstrap")`; on another runtime, use its equivalent active-skill directory.
 
-Resolve bundled `scripts/`, `references/`, and templates against `<bootstrap-skill-root>`. Never infer installation from `~/.hermes/skills` or another conventional path. On Hermes, inspect `skill_view` and its linked files before declaring the package incomplete. Never copy replacement Skill resources into the target Vault.
+Resolve bundled `scripts/`, `references/`, `config/`, and templates against `<bootstrap-skill-root>`. Execute Python entry points as `python3 "<bootstrap-skill-root>/scripts/<script>.py"`. Never infer a conventional installation path. On Hermes, inspect `skill_view` and its linked files before declaring the package incomplete. Never copy replacement Skill resources or runtime installation paths into the target Vault.
 
 ## Workflow
 
@@ -39,7 +39,7 @@ Profile details are in `references/profiles.md`.
 Prefer the bundled script for repeatable initialization:
 
 ```powershell
-python scripts/init_obsidian_vault.py --vault-path "<target-vault>" --profile meeting --template-vault "<template-vault>" --copy-obsidian-config --copy-base-concepts
+python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" --vault-path "<target-vault>" --profile meeting --template-vault "<template-vault>" --copy-obsidian-config --copy-base-concepts
 ```
 
 Useful options:

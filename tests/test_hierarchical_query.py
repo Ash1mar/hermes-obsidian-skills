@@ -393,7 +393,7 @@ def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:
     assert "${HERMES_SKILL_DIR}" in skill
     assert "skill_dir` returned by `skill_view" in skill
     assert "Do not hard-code an installation directory" in skill
-    assert "never to the Vault or the shell's current working directory" in skill
+    assert "never to the Vault, the parent Skills catalog, or the shell's current working directory" in skill
     assert "do not announce that scripts are uninstalled" in skill.lower()
     assert "linked_files.scripts" in skill
     assert "<vault>/_system/skills" in skill
@@ -403,21 +403,36 @@ def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:
 
 
 def test_hermes_descriptions_frontload_full_skill_loading() -> None:
-    skill_paths = [
-        ROOT / "hermes-obsidian-controlled-query" / "SKILL.md",
-        ROOT / "hermes-obsidian-controlled-ingest" / "SKILL.md",
-        ROOT / "hermes-obsidian-vault-bootstrap" / "SKILL.md",
-        ROOT / "hermes-obsidian-vault-lint" / "SKILL.md",
-    ]
-    for path in skill_paths:
+    expected_prefixes = {
+        ROOT / "hermes-obsidian-controlled-query" / "SKILL.md": "受控查询 / Controlled Query",
+        ROOT / "hermes-obsidian-controlled-ingest" / "SKILL.md": "受控摄取 / Controlled Ingest",
+        ROOT / "hermes-obsidian-vault-bootstrap" / "SKILL.md": "Vault 初始化 / Vault Bootstrap",
+        ROOT / "hermes-obsidian-vault-lint" / "SKILL.md": "Vault 只读审计 / Read-only Vault Lint",
+    }
+    for path, prefix in expected_prefixes.items():
         frontmatter = path.read_text(encoding="utf-8").split("---", 2)[1]
         description = next(
             line.removeprefix("description: ").strip()
             for line in frontmatter.splitlines()
             if line.startswith("description: ")
         )
-        assert description.startswith("On Hermes, MUST call skill_view")
-        assert "on other runtimes, load this skill's full instructions" in description
+        assert description.startswith(prefix)
+        assert "MUST call skill_view" in description
+        assert "load the full skill first" in description
+
+
+def test_query_domain_terms_are_configuration_not_frontmatter() -> None:
+    skill = QUERY_SKILL.read_text(encoding="utf-8")
+    config = json.loads(
+        (ROOT / "hermes-obsidian-controlled-query" / "config" / "domain-routing.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    description = next(line for line in skill.splitlines() if line.startswith("description: "))
+    assert config["domain_query_terms"] == ["消防系统"]
+    assert "消防系统" not in description
+    assert "config/domain-routing.json" in skill
+    assert "domain_query_terms" in skill
 
 
 def test_short_hermes_bundle_aliases_are_deployable() -> None:

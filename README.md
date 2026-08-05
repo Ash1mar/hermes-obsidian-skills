@@ -171,5 +171,6 @@ Two integration modes are planned:
 - Keep `SKILL.md` concise and stable.
 - Put longer operational details in `references/`.
 - Put reusable helper code in `scripts/`.
+- Give every Python or shell entry point under a Skill's `scripts/` directory a shebang and commit it with Git mode `100755` (`chmod +x`). Use explicit `python3 "<skill-dir>/scripts/<script>.py"` commands in instructions so execution does not depend on shell dispatch.
 - Do not store secrets, local API keys, or machine-specific credentials in this repository.
 - Preserve raw source files; conversion output should go to the intended vault conversion area, such as `10_Raw/converted/`.

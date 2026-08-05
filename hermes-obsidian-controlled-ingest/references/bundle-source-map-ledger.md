@@ -48,7 +48,7 @@ Run:
 
 ```bash
 python3 \
-  hermes-obsidian-controlled-ingest/scripts/manage_bundle_ingest.py \
+  "<ingest-skill-root>/scripts/manage_bundle_ingest.py" \
   init "/path/to/input_document_bundle" \
   --reports-dir "/path/to/vault/_system/reports"
 ```
@@ -109,7 +109,7 @@ Do not use `--force-transition` during ordinary Hermes operation.
 Run `init` at the beginning of every new session, then inspect:
 
 ```bash
-python3 hermes-obsidian-controlled-ingest/scripts/manage_bundle_ingest.py \
+python3 "<ingest-skill-root>/scripts/manage_bundle_ingest.py" \
   status "/path/to/vault/_system/reports/<source>.section-ledger.json"
 ```
 
@@ -131,7 +131,7 @@ Parent and child sections are both safe ingest units because the ledger assigns 
 Read the current ledger revision, then run:
 
 ```bash
-python3 hermes-obsidian-controlled-ingest/scripts/manage_bundle_ingest.py \
+python3 "<ingest-skill-root>/scripts/manage_bundle_ingest.py" \
   update "/path/to/<source>.section-ledger.json" \
   --section "section-id" \
   --status in_progress \
@@ -156,7 +156,7 @@ Apply the existing classification, routing, concept-governance, raw-source prote
 Successful completion requires at least one output path:
 
 ```bash
-python3 hermes-obsidian-controlled-ingest/scripts/manage_bundle_ingest.py \
+python3 "<ingest-skill-root>/scripts/manage_bundle_ingest.py" \
   update "/path/to/<source>.section-ledger.json" \
   --section "section-id" \
   --status ingested \
@@ -168,7 +168,7 @@ python3 hermes-obsidian-controlled-ingest/scripts/manage_bundle_ingest.py \
 If evidence is insufficient:
 
 ```bash
-python3 hermes-obsidian-controlled-ingest/scripts/manage_bundle_ingest.py \
+python3 "<ingest-skill-root>/scripts/manage_bundle_ingest.py" \
   update "/path/to/<source>.section-ledger.json" \
   --section "section-id" \
   --status qa_required \

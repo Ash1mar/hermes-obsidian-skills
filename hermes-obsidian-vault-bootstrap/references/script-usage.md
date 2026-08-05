@@ -3,7 +3,7 @@
 ## Basic Meeting Vault
 
 ```powershell
-python scripts/init_obsidian_vault.py `
+python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" `
   --vault-path "C:\Users\vimdr\Desktop\hermes-workspace\Hermes-MeetingVault" `
   --profile meeting
 ```
@@ -11,7 +11,7 @@ python scripts/init_obsidian_vault.py `
 ## Use A Template Vault
 
 ```powershell
-python scripts/init_obsidian_vault.py `
+python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" `
   --vault-path "C:\Users\vimdr\Desktop\hermes-workspace\Hermes-MeetingVault" `
   --profile meeting `
   --template-vault "C:\Users\vimdr\Desktop\hermes-workspace\Hermes-Obsidian-TestVault" `

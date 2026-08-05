@@ -240,7 +240,7 @@ For Bundle v2, generate these paired control files under `_system/reports/`:
 <source-stem>.section-ledger.json
 ```
 
-Create and refresh them with `scripts/manage_bundle_ingest.py`; do not hand-copy the generic report template. The Markdown source map is the human-readable view, while the JSON ledger is the authority for section status, revisions, hashes, outputs, and resumption.
+Create and refresh them with `python3 "<ingest-skill-root>/scripts/manage_bundle_ingest.py"`; do not hand-copy the generic report template. The Markdown source map is the human-readable view, while the JSON ledger is the authority for section status, revisions, hashes, outputs, and resumption.
 
 Every governed artifact created from a Bundle section must include:
 

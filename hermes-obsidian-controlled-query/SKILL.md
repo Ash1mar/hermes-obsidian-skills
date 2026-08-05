@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-controlled-query
-description: On Hermes, MUST call skill_view for hermes-obsidian-controlled-query before any governed Vault query; on other runtimes, load this skill's full instructions before acting. Use when asked to answer, locate, verify, compare, summarize, identify gaps, or audit retrieval from an existing governed Obsidian vault. Supports evidence-first lookup, hierarchical source navigation, and non-authoritative query traces while preserving the controlled writeback boundary.
+description: 受控查询 / Controlled Query：当用户要求从当前、指定或受治理的 Obsidian Vault 回答、检索、定位、核验、比较、总结任何业务领域、工程系统、设备、规范、设计参数或技术要求时使用。领域词由部署配置扩展，不需要逐项修改本描述。On Hermes, MUST call skill_view for hermes-obsidian-controlled-query and load its complete scripts before querying; on other runtimes, load the full skill first. Provides evidence-first retrieval, original-PDF citations, hierarchical navigation, uncertainty reporting, and auditable query traces.
 ---
 
 # Hermes Obsidian Controlled Query
@@ -11,17 +11,21 @@ Answer questions from a governed Hermes + Obsidian vault without polluting gover
 
 ## Runtime Skill Boundary
 
-Use `<query-skill-root>` as the runtime-neutral name for the directory containing this active `SKILL.md`. Resolve it once, in this order:
+Use `<query-skill-root>` as the runtime-neutral name for the directory containing this active `SKILL.md`, not the parent directory that contains multiple Skills. The required package layout is `<query-skill-root>/SKILL.md`, `<query-skill-root>/scripts/*.py`, `<query-skill-root>/references/*.md`, and optional `<query-skill-root>/config/*.json`. Resolve it once, in this order:
 
 1. Use the active runtime's loader-injected skill directory.
 2. On Hermes, use the concrete expanded value of `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view`.
 3. On another runtime, use that runtime's equivalent active-skill directory.
 
-Treat every `scripts/` and `references/` path in this Skill as relative to `<query-skill-root>`, never to the Vault or the shell's current working directory. Do not hard-code an installation directory.
+Treat every `scripts/`, `references/`, and `config/` path in this Skill as relative to `<query-skill-root>`, never to the Vault, the parent Skills catalog, or the shell's current working directory. Execute Python entry points as `python3 "<query-skill-root>/scripts/<script>.py"`. Do not hard-code an installation directory.
 
-On Hermes, do not act from catalog metadata alone: load the canonical skill with `skill_view(name="hermes-obsidian-controlled-query")` or invoke it through a slash command/bundle before querying. Before running a bundled script, verify it under the resolved `<query-skill-root>`. Never guess `~/.hermes/skills`, a deployment-specific mount, or another conventional installation path; never search for runtime Skill files under `<vault>/_system/skills`, `<vault>/_system/templates`, or `<vault>/scripts`; and never create replacement Skill scripts inside the Vault.
+On Hermes, do not act from catalog metadata alone: load the canonical skill with `skill_view(name="hermes-obsidian-controlled-query")` or invoke it through a slash command/bundle before querying. Before running a bundled script, verify it under the resolved `<query-skill-root>`. Never guess a conventional or deployment-specific installation path; never search for runtime Skill files under `<vault>/_system/skills`, `<vault>/_system/templates`, or `<vault>/scripts`; and never create replacement Skill scripts inside the Vault.
 
 Do not announce that scripts are uninstalled merely because a guessed path or terminal sandbox cannot see them. On Hermes, first inspect the canonical `skill_view` result and its `linked_files.scripts`; distinguish an incomplete Skill package from a host-to-sandbox mount failure. If the active loader confirms that a required file is absent, report the missing runtime resource and continue with the documented non-blocking fallback where one exists.
+
+## Configurable Domain Routing
+
+Keep the frontmatter description broad and domain-neutral. After this Skill is loaded, read `config/domain-routing.json` when present and treat its `domain_query_terms` as optional routing hints for questions that may omit words such as Vault, query, or retrieval. Terms such as a current system name belong in this configuration, not permanently in the description. They help classify and route a question but are never evidence and never relax source verification.
 
 ```text
 user question
@@ -57,11 +61,11 @@ If the answer suggests a durable artifact, do not create it during query. Record
 
 ## Query Trace
 
-After resolving the Vault and classifying the question, but before searching governed artifacts, run `<query-skill-root>/scripts/manage_query_trace.py start` with the question, query type, and Hermes session ID when available. Do not postpone this until the end and do not infer an opt-out from read-only wording. Retain its `trace_id` and append an event after every attempted retrieval layer, including zero-hit, skipped, fallback, and failed stages. Record paths, counts, concise selection/exclusion reasons, and evidence checks; never record hidden reasoning, credentials, unrestricted tool output, or long source passages.
+After resolving the Vault and classifying the question, but before searching governed artifacts, run `python3 "<query-skill-root>/scripts/manage_query_trace.py" start` with the question, query type, and Hermes session ID when available. Do not postpone this until the end and do not infer an opt-out from read-only wording. Retain its `trace_id` and append an event after every attempted retrieval layer, including zero-hit, skipped, fallback, and failed stages. Record paths, counts, concise selection/exclusion reasons, and evidence checks; never record hidden reasoning, credentials, unrestricted tool output, or long source passages.
 
 Record source maps, ledgers, `document.md`, table Markdown, extracted images, page images, and other conversion or verification carrier paths in the trace only. They are internal retrieval and QA details, not user-facing evidence sources. Do not expose those carrier paths in the answer unless the user explicitly asks for retrieval debugging or Vault maintenance details.
 
-Pass `--trace-id <id>` to `<query-skill-root>/scripts/locate_source_sections.py` so actual hierarchical candidates and match data are recorded directly. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `<query-skill-root>/references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
+Pass `--trace-id <id>` to `python3 "<query-skill-root>/scripts/locate_source_sections.py"` so actual hierarchical candidates and match data are recorded directly. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `<query-skill-root>/references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
 
 ## Multiple Questions
 
@@ -174,7 +178,7 @@ Use the most governed layer that can answer the question, then descend only as n
 
 For layered MinerU bundles, prefer `document.md` plus source map/ledger navigation. Open `_evidence/` only for targeted QA of page order, formulas, tables, figures, or extraction disputes.
 
-When governed artifacts do not fully answer the question or source evidence is required, run `<query-skill-root>/scripts/locate_source_sections.py <vault-root> <query> --trace-id <id>` as a parallel candidate locator beside the existing report-navigation search. Merge and deduplicate both candidate sets, then continue through the existing converted-source and page-evidence verification steps. Treat query-index output only as navigation: never quote it or promote it to evidence. If the projection is absent, stale, or invalid, record the fallback and continue with the existing search order without failing the query. Read `<query-skill-root>/references/Hierarchical_search.md` for the design and migration boundary.
+When governed artifacts do not fully answer the question or source evidence is required, run `python3 "<query-skill-root>/scripts/locate_source_sections.py" <vault-root> <query> --trace-id <id>` as a parallel candidate locator beside the existing report-navigation search. Merge and deduplicate both candidate sets, then continue through the existing converted-source and page-evidence verification steps. Treat query-index output only as navigation: never quote it or promote it to evidence. If the projection is absent, stale, or invalid, record the fallback and continue with the existing search order without failing the query. Read `<query-skill-root>/references/Hierarchical_search.md` for the design and migration boundary.
 
 ## Evidence Quality
 

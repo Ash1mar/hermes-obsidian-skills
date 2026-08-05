@@ -234,8 +234,7 @@ domains:
 """
 
 
-def ingest_rules(profile: str, vault: Path, skill_repo: str | None) -> str:
-    skill_text = skill_repo or "<external skill repository path>"
+def ingest_rules(profile: str, vault: Path) -> str:
     if profile == "meeting":
         return f"""
 # Hermes Meeting Ingest Rules
@@ -245,9 +244,6 @@ def ingest_rules(profile: str, vault: Path, skill_repo: str | None) -> str:
 
 Vault 路径：
 {vault}
-
-外部 skill 仓库：
-{skill_text}
 
 基本规则：
 1. 10_Raw 是只读原始材料区，不允许覆盖、改写、重命名、移动或删除。
@@ -268,9 +264,6 @@ Vault 路径：
 Vault 路径：
 {vault}
 
-外部 skill 仓库：
-{skill_text}
-
 基本规则：
 1. 10_Raw 是只读原始材料区，不允许覆盖、改写、重命名、移动或删除。
 2. 只有我明确要求写入知识库或生成具体 vault 产物时，才允许写入。
@@ -283,8 +276,7 @@ Vault 路径：
 """
 
 
-def meeting_prompt(vault: Path, skill_repo: str | None) -> str:
-    skill = skill_repo or "<external skill repository path>"
+def meeting_prompt(vault: Path) -> str:
     return f"""
 # Hermes Meeting Ingest Prompt
 
@@ -295,9 +287,6 @@ def meeting_prompt(vault: Path, skill_repo: str | None) -> str:
 
 Vault 路径：
 {vault}
-
-外部 skill 仓库：
-{skill}
 
 请先阅读：
 {vault}\\AGENTS.md
@@ -635,9 +624,9 @@ def setup(args: argparse.Namespace) -> None:
 
     write_text(vault / "README.md", readme(args.profile, vault))
     write_text(vault / "AGENTS.md", agents(args.profile))
-    write_text(vault / "_system/prompts/hermes-ingest-rules.md", ingest_rules(args.profile, vault, args.skill_repo))
+    write_text(vault / "_system/prompts/hermes-ingest-rules.md", ingest_rules(args.profile, vault))
     if args.profile == "meeting":
-        write_text(vault / "_system/prompts/hermes-meeting-ingest-prompt.md", meeting_prompt(vault, args.skill_repo))
+        write_text(vault / "_system/prompts/hermes-meeting-ingest-prompt.md", meeting_prompt(vault))
 
     for rel, content in dataview_files(args.profile).items():
         write_text(vault / rel, content)
@@ -690,7 +679,6 @@ def main() -> int:
     parser.add_argument("--vault-path", required=True, help="Target vault path")
     parser.add_argument("--profile", choices=["general", "meeting"], default="general")
     parser.add_argument("--template-vault", help="Optional template vault path")
-    parser.add_argument("--skill-repo", help="Optional external skill repository path to write into prompts")
     parser.add_argument("--copy-obsidian-config", action="store_true")
     parser.add_argument("--copy-base-concepts", action="store_true")
     parser.add_argument("--force-empty", action="store_true", help="Allow writing into an existing non-empty target")
