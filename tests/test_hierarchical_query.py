@@ -464,6 +464,19 @@ def test_query_domain_terms_are_configuration_not_frontmatter() -> None:
     assert "domain_query_terms" in skill
 
 
+def test_query_description_maps_short_query_phrases_to_the_canonical_skill() -> None:
+    description = next(
+        line.removeprefix("description: ")
+        for line in QUERY_SKILL.read_text(encoding="utf-8").splitlines()
+        if line.startswith("description: ")
+    )
+    assert "请使用 query 回答" in description[:160]
+    assert "请使用query回答" in description[:160]
+    assert "使用 query 查询" in description[:160]
+    assert "用 query 查 Vault" in description[:160]
+    assert "必须选择 hermes-obsidian-controlled-query" in description[:200]
+
+
 def test_intranet_skill_parent_and_package_layout_are_unambiguous() -> None:
     expected = {
         "hermes-obsidian-controlled-query": "query",

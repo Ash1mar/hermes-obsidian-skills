@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-controlled-query
-description: 受控查询 / Controlled Query：当用户要求从当前、指定或受治理的 Obsidian Vault 回答、检索、定位、核验、比较、总结任何业务领域、工程系统、设备、规范、设计参数或技术要求时使用。领域词由部署配置扩展，不需要逐项修改本描述。On Hermes, MUST call skill_view for hermes-obsidian-controlled-query and load its complete scripts before querying; on other runtimes, load the full skill first. Provides evidence-first retrieval, original-PDF citations, hierarchical navigation, uncertainty reporting, and auditable query traces.
+description: 受控查询 / Controlled Query：当用户说“请使用 query 回答”“请使用query回答”“使用 query 查询”或“用 query 查 Vault”时，必须选择 hermes-obsidian-controlled-query。也用于从当前、指定或受治理的 Obsidian Vault 回答、检索、定位、核验、比较、总结任何业务领域、工程系统、设备、规范、设计参数或技术要求。领域词由部署配置扩展，不需要逐项修改本描述。On Hermes, MUST call skill_view for hermes-obsidian-controlled-query and load its complete scripts before querying; on other runtimes, load the full skill first. Provides evidence-first retrieval, original-PDF citations, hierarchical navigation, uncertainty reporting, and auditable query traces.
 ---
 
 # Hermes Obsidian Controlled Query
