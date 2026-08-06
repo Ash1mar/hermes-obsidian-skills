@@ -156,6 +156,8 @@ Keep the agent-facing path small. Do not recursively scan a bundle.
 
 After ledger initialization, reconciliation, or completed source ingestion, optionally run `python3 "<ingest-skill-root>/scripts/build_section_query_index.py" <vault-root> --bundle <bundle>`. It writes only a disposable, non-authoritative projection under `_system/reports/query-index/`; failure must not change Bundle, ledger, source-map, spec-index, or ingest status. The projection contains no generated section summaries. See `../hermes-obsidian-controlled-query/references/Hierarchical_search.md`.
 
+After a completed source ingest or at the end of a related batch, run `python3 "<ingest-skill-root>/scripts/sync_retrieval_index.py" <vault-root>`. This is the only Skill-side path that may update the configured coarse-recall Provider. It writes a portable status record to `_system/reports/retrieval-index-manifest.json`; Provider databases, model files, caches, and locks remain on the Provider host outside the Vault. Index failure is a retrieval warning and must not change Bundle, ledger, source-map, governed artifact, or ingest completion status. Use `--rebuild` only for an explicit maintenance request, configuration/model incompatibility, or unrecoverable index state. Read `references/retrieval-indexing.md` before configuring local versus HTTP transport.
+
 Treat `document.md` as the single normalized text source. Do not duplicate every section into separate Markdown files. Use the ledger's non-overlapping `content_ranges` for staged ingestion and the JSON ledger as the section-state authority.
 
 Honor `manifest.quality.review_required`. Verify engineering formulas, table structure, and figure internals against page evidence before turning them into reusable rules or parameters.
@@ -355,5 +357,6 @@ Report every run with:
 14. Batch synthesis decisions: sections compared, cards created or updated, candidate concepts, and rejected candidates.
 15. Failed bundle recovery attempts and remaining manual checks.
 16. Extraction QA items and recommended next step.
-17. Evidence-mode reconciliation: direct/index/relational classification, coverage declaration, source-report authority, and unresolved placeholders removed.
-18. Knowledge-graph relation pass: typed links added, targets verified, or explicit zero-link rejection rationale.
+17. Coarse-recall index sync status, Provider/version and fingerprints, or the reason sync was skipped/unavailable.
+18. Evidence-mode reconciliation: direct/index/relational classification, coverage declaration, source-report authority, and unresolved placeholders removed.
+19. Knowledge-graph relation pass: typed links added, targets verified, or explicit zero-link rejection rationale.

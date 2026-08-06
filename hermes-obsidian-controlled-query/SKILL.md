@@ -45,7 +45,8 @@ user question
 -> vault rules and query type
 -> start query trace (default required)
 -> governed layer lookup
--> source-map / ledger navigation
+-> coarse recall + hierarchical routing
+-> scoped traditional search
 -> targeted converted-source verification
 -> finish query trace
 -> answer with evidence quality and gaps
@@ -80,7 +81,7 @@ Record source maps, ledgers, `document.md`, table Markdown, extracted images, pa
 
 On deployments whose active Skill config defines `viewer_base_url`, a viewer URL is the one permitted user-facing exception to that carrier-path rule. The URL is a navigation aid, not evidence: it identifies the verified Bundle document and section and highlights the checked Markdown line range without exposing a filesystem path. Use only locator-returned `viewer_url` values; never invent a document ID or line range from filenames or prose.
 
-Pass `--trace-id <id>` to `python3 "<query-skill-root>/scripts/locate_source_sections.py"` so actual hierarchical candidates and match data are recorded directly. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `<query-skill-root>/references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
+Pass `--trace-id <id>` to both `python3 "<query-skill-root>/scripts/retrieve_candidates.py"` and `python3 "<query-skill-root>/scripts/locate_source_sections.py"` so actual coarse-recall and hierarchical candidates are recorded directly. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `<query-skill-root>/references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
 
 ## Multiple Questions
 
@@ -192,7 +193,16 @@ Use the most governed layer that can answer the question, then descend only as n
 
 For layered MinerU bundles, prefer `document.md` plus source map/ledger navigation. Open `_evidence/` only for targeted QA of page order, formulas, tables, figures, or extraction disputes.
 
-When governed artifacts do not fully answer the question or source evidence is required, run `python3 "<query-skill-root>/scripts/locate_source_sections.py" <vault-root> <query> --trace-id <id>` as a parallel candidate locator beside the existing report-navigation search. Merge and deduplicate both candidate sets, then continue through the existing converted-source and page-evidence verification steps. Treat query-index output only as navigation: never quote it or promote it to evidence. If the projection is absent, stale, or invalid, record the fallback and continue with the existing search order without failing the query. Read `<query-skill-root>/references/Hierarchical_search.md` for the design and migration boundary.
+When governed artifacts do not fully answer the question or source evidence is required, treat source retrieval as a coarse-to-fine pipeline:
+
+1. For semantic, explanatory, synthesis, and ordinary evidence questions, run `python3 "<query-skill-root>/scripts/retrieve_candidates.py" <vault-root> <query> --trace-id <id>` and `python3 "<query-skill-root>/scripts/locate_source_sections.py" <vault-root> <query> --trace-id <id>` as parallel scope locators.
+2. Merge their Vault-relative files and overlapping line/section ranges. Expand coarse-recall chunks to their complete ledger-owned sections before reading content.
+3. Run exact/lexical search only within the merged scope, then re-open the current authoritative source and original-PDF evidence.
+4. For exact identifiers or verbatim phrases, allow direct traditional/hierarchical lookup without coarse recall. For gap, completeness, or audit questions, never let Provider top-k bound the search; use broad hierarchical and traditional coverage.
+5. Treat Provider and query-index outputs only as navigation. Never quote them or promote them to evidence. Retrieval status and extraction QA labels are verification metadata, not relevance boosts or penalties.
+6. If the Provider is absent, stale, invalid, or unavailable, record the fallback and continue with the existing hierarchical plus traditional route without failing the query. Query must never run Provider `sync` or rebuild operations.
+
+Read `<query-skill-root>/references/coarse-retrieval.md` for the Provider contract, transport configuration, scope fusion, and main/intranet boundary. Read `<query-skill-root>/references/Hierarchical_search.md` for the hierarchical design and migration boundary.
 
 ## Evidence Quality
 
@@ -260,3 +270,4 @@ Use `hermes-obsidian-controlled-ingest` only when the user explicitly asks to pe
 - `references/evidence-levels.md`: evidence quality labels and QA restrictions.
 - `references/answer-format.md`: standard answer templates.
 - `references/query-tracing.md`: incremental trace lifecycle, event schema, privacy boundary, and Obsidian dashboard.
+- `references/coarse-retrieval.md`: qmd-like-rag Provider contract, local/HTTP transports, scope fusion, and fallbacks.
