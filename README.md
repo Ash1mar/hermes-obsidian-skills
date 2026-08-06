@@ -1,6 +1,6 @@
 # Hermes Obsidian Skills
 
-This repository stores local skills and tool-integration notes for the Hermes + Obsidian knowledge workflow.
+This repository stores local skills and tool-integration notes for the Hermes + Obsidian knowledge workflow. It also maintains `qmd-like-rag/`, the independently installed coarse-recall Provider used by the ingest/query Skills; it is repository code, not a fifth Skill.
 
 ## Skills
 
@@ -63,6 +63,14 @@ hermes-obsidian-skills/
     ├── references/
     └── scripts/
 ```
+
+## qmd-like-rag Provider
+
+`qmd-like-rag/` is derived from the earlier `qmd-rag-v2.1` prototype and retains Markdown chunking, Chroma, BM25, RRF, deduplication, parent expansion, reranking, and incremental fingerprints. Standalone LLM answer generation and the prototype Skill wrapper were removed because controlled-query owns answer synthesis and evidence verification.
+
+The package exposes the `qmd-like-rag` CLI and an optional HTTP server. On `main`, install it into a WSL-native virtual environment and use the Skill adapters' command transport. On `intranet`, do not deploy QMD; install the same tagged qmd-like-rag release locally or configure the branch's Skill adapters to call its HTTP transport.
+
+Provider source and Skills share one Git revision, but deployment remains separate: copying Skill folders does not install qmd-like-rag or its model dependencies. See `qmd-like-rag/README.md`.
 
 ## Validation
 

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "qmd-like-rag"
+version = "0.1.0"
+description = "Pluggable Markdown coarse-recall provider for Hermes"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{name = "Hermes Obsidian Skills maintainers"}]
+dependencies = [
+  "chromadb>=1.0,<2",
+  "rank-bm25>=0.2.2,<1",
+  "sentence-transformers>=3.4,<4",
+  "tiktoken>=0.9,<1",
+]
+
+[project.scripts]
+qmd-like-rag = "qmd_like_rag.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

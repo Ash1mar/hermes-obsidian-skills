@@ -1,0 +1,6 @@
+{
+  "provider": "qmd-like-rag",
+  "transport": "command",
+  "command": ["qmd-like-rag"],
+  "timeout_seconds": 60
+}
