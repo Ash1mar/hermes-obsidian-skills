@@ -11,6 +11,7 @@ import argparse
 import json
 import re
 import sys
+import time
 from pathlib import Path
 from typing import Any
 
@@ -70,6 +71,7 @@ def main() -> int:
     parser.add_argument("--no-content-scan", action="store_true", help="Score only document routing and section paths")
     parser.add_argument("--trace-id", help="Append actual candidates to an active query trace")
     args = parser.parse_args()
+    started = time.monotonic_ns()
 
     vault_root = args.vault_root.resolve()
     index_dir = (args.index_dir or vault_root / "_system" / "reports" / "query-index").resolve()
@@ -147,8 +149,9 @@ def main() -> int:
         "terms": terms,
         "candidates": candidates[: max(1, args.top_sections)],
         "errors": errors,
-        "next_step": "Merge with existing report-navigation hits, then verify document.md and page/table/figure evidence before answering.",
+        "next_step": "Fuse with optional coarse-recall candidates, inspect governed candidates first, then run supplemental scoped exact/lexical search and verify current source/PDF evidence.",
     }
+    result["duration_ms"] = round((time.monotonic_ns() - started) / 1_000_000, 3)
     if args.trace_id:
         try:
             from manage_query_trace import append_event
@@ -162,7 +165,7 @@ def main() -> int:
                     "status": result["status"],
                     "summary": "Located document/section candidates; results remain navigation-only until source verification.",
                     "hit_count": len(result["candidates"]),
-                    "accepted_count": None,
+                    "duration_ms": result.get("duration_ms"),
                     "inspected_paths": sorted(
                         {str(item.get("index_path")) for item in result["candidates"] if item.get("index_path")}
                     ),

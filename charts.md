@@ -93,13 +93,13 @@ flowchart LR
         direction TB
         Q0["解析 Vault 和问题类型<br/>intranet 固定使用 /opt/data/phq/testVault"]
         QT["默认在 _system/reports/query-traces 启动本次 trace<br/>只有用户明确 no-trace 或 Vault 不可写时才跳过"]
-        QG["读 AGENTS.md 和相关查询规则<br/>搜索 30_Cards、40_Concepts 和 50_Projects 中的已有结论"]
-        QN{"问题是否只询问 Vault 治理/元数据，<br/>不包含任何源文档事实？"}
-        QR["原有报告导航<br/>搜索 source map、spec index、section ledger 和 ingest log<br/>取得文档、section、页码和 QA 状态"]
-        QC["粗召回<br/>retrieve_candidates.py 调用 qmd-like-rag<br/>返回候选 Vault 文件和行范围"]
+        QG["普通检索第一层<br/>优先检查 Cards、Concepts、Projects 候选<br/>并补充治理层精确搜索"]
+        QN{"治理层候选是否足以确定<br/>当前来源、版本、section、页码和段落？"}
+        QR["证据解析与核验<br/>用 source map、section ledger 和 ingest log<br/>取得完整范围、版本、页码和 QA 状态"]
+        QC["可选粗召回<br/>qmd-like-rag 不可用时记录 unavailable<br/>不阻塞层次检索"]
         QH["分层定位<br/>locate_source_sections.py 读 query-index<br/>按文档和 section 标题/路径定位候选"]
-        QM["合并三路候选，按文档、section 和重叠行范围去重<br/>将粗召回 chunk 扩展到 ledger 中完整 section"]
-        QX["只在合并后的范围内做精确词搜索<br/>重新打开当前 document.md，不把 Provider/query-index 当证据"]
+        QM["retrieve_query_scope.py 归一化并取两路并集<br/>扩展完整 section；按文档/标题/范围去重<br/>保留路由分数、RRF 排名和淘汰原因"]
+        QX["普通检索第二层<br/>治理层不足时，在融合范围内按标准号、文件名、条款号、<br/>原文、数值和同义词做精确词法搜索"]
         QV["核对原 PDF 文件名、原 PDF 页码、相关段落<br/>需要时核对图/表标题和页面位置"]
         QA["将每条结论标记为 clear、source-backed、needs-qa 或 gap<br/>生成带原 PDF 证据包的答案"]
         QI["intranet 且 locator 返回有效 viewer_url 时<br/>在答案末尾附上已实际使用命中的「原文定位」链接"]
@@ -107,15 +107,15 @@ flowchart LR
         QW{"用户是否明确要求把结果沉淀到 Vault？"}
         QWC["生成 query-writeback candidate<br/>后续必须由 Controlled Ingest 重新核对来源后才能写卡片/概念"]
 
-        Q0 --> QT --> QG --> QN
-        QN -- "否：回答源文档事实" --> QR
-        QN -- "否：需要查找源文档" --> QC
-        QN -- "否：需要查找源文档" --> QH
-        QR --> QM
+        Q0 --> QT
+        QT --> QC
+        QT --> QH
         QC --> QM
         QH --> QM
-        QM --> QX --> QV --> QA
-        QN -- "是：可直接回答治理/元数据问题" --> QA
+        QM --> QG --> QN
+        QN -- "是：定点核验" --> QR
+        QN -- "否：继续下钻" --> QX --> QR
+        QR --> QV --> QA
         QA --> QI --> QF --> QW
         QW -- "是" --> QWC
     end

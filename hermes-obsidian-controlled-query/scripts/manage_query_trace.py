@@ -8,6 +8,7 @@ import json
 import os
 import re
 import tempfile
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -16,7 +17,7 @@ from typing import Any
 
 TRACE_RELATIVE_DIR = Path("_system/reports/query-traces")
 DATA_DIR_NAME = "_data"
-SCHEMA_VERSION = "1.1"
+SCHEMA_VERSION = "1.2"
 
 
 def now_iso() -> str:
@@ -33,6 +34,19 @@ def safe_id(value: str) -> str:
 def shorten(value: str | None, limit: int = 1200) -> str:
     text = (value or "").strip()
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def evidence_by_id(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        str(item.get("evidence_id")): item
+        for item in state.get("evidence", [])
+        if item.get("evidence_id")
+    }
+
+
+def derived_event_evidence(state: dict[str, Any], event: dict[str, Any]) -> list[dict[str, Any]]:
+    index = evidence_by_id(state)
+    return [index[item] for item in event.get("evidence_ids", []) if item in index]
 
 
 def atomic_write(path: Path, text: str) -> None:
@@ -142,14 +156,28 @@ def render_note(state: dict[str, Any]) -> str:
             lines.append(f"> - Summary: {shorten(event.get('summary')).replace(chr(10), ' ')}")
         if event.get("hit_count") is not None:
             lines.append(f"> - Hits: `{event.get('hit_count')}`")
-        if event.get("accepted_count") is not None:
-            lines.append(f"> - Accepted: `{event.get('accepted_count')}`")
+        accepted_evidence = derived_event_evidence(state, event)
+        if event.get("evidence_ids"):
+            lines.append(f"> - Accepted evidence: `{len(accepted_evidence)}`")
         if event.get("duration_ms") is not None:
             lines.append(f"> - Duration: `{event.get('duration_ms')} ms`")
         for path in event.get("inspected_paths", []):
             lines.append(f"> - Inspected: {markdown_path(str(path))}")
-        for path in event.get("accepted_paths", []):
-            lines.append(f"> - Accepted: {markdown_path(str(path))}")
+        for evidence in accepted_evidence:
+            location = ", ".join(
+                value
+                for value in (
+                    f"section {evidence.get('section_id')}" if evidence.get("section_id") else "",
+                    f"pages {evidence.get('pages')}" if evidence.get("pages") else "",
+                    f"block {evidence.get('block_id')}" if evidence.get("block_id") else "",
+                )
+                if value
+            )
+            lines.append(
+                f"> - Evidence `{evidence.get('evidence_id')}`: "
+                f"{markdown_path(str(evidence.get('path') or ''))}"
+                f"{f' — {location}' if location else ''}"
+            )
         for item in event.get("rejected", []):
             lines.append(f"> - Rejected: {markdown_path(str(item.get('path', '')))} — {shorten(item.get('reason'), 400)}")
         candidates = event.get("candidates", [])
@@ -157,13 +185,54 @@ def render_note(state: dict[str, Any]) -> str:
             lines.append("> - Top candidates:")
             for candidate in candidates[:10]:
                 title = candidate.get("title") or candidate.get("section_id") or "untitled"
-                source = candidate.get("document_path") or candidate.get("source_filename") or "unknown"
+                source = (
+                    candidate.get("document_path")
+                    or candidate.get("vault_path")
+                    or candidate.get("source_filename")
+                    or "unknown"
+                )
                 matched = candidate.get("matched_terms") or {}
                 terms = sorted({term for values in matched.values() if isinstance(values, list) for term in values})
+                score = candidate.get("fusion_score", candidate.get("score", "?"))
+                route_scores = candidate.get("route_scores") or {}
+                score_detail = f"; route scores: {route_scores}" if route_scores else ""
                 lines.append(
-                    f">   - `{candidate.get('score', '?')}` {title} — {markdown_path(str(source))}; matched: {', '.join(terms) or 'none'}"
+                    f">   - `{score}` {title} — {markdown_path(str(source))}; "
+                    f"matched: {', '.join(terms) or 'none'}{score_detail}"
                 )
         lines.append(">")
+    lines.extend(["", "## Claim–Evidence map", ""])
+    claims = state.get("claims", [])
+    if not claims:
+        lines.append("_No claim recorded yet._")
+    for claim in claims:
+        evidence_ids = ", ".join(f"`{item}`" for item in claim.get("evidence_ids", [])) or "none"
+        lines.extend(
+            [
+                f"### {claim.get('claim_id')} · {claim.get('status', 'supported')}",
+                "",
+                shorten(str(claim.get("text") or ""), 2000),
+                "",
+                f"- Evidence: {evidence_ids}",
+            ]
+        )
+        if claim.get("qualification"):
+            lines.append(f"- Qualification: {shorten(str(claim.get('qualification')), 800)}")
+        lines.append("")
+    lines.extend(["## Evidence records", ""])
+    evidence = state.get("evidence", [])
+    if not evidence:
+        lines.append("_No evidence record accepted yet._")
+    for item in evidence:
+        lines.extend(
+            [
+                f"- `{item.get('evidence_id')}` {markdown_path(str(item.get('path') or ''))}",
+                f"  - Version: `{item.get('document_version') or 'unresolved'}`; section: `{item.get('section_id') or 'unresolved'}`; pages: `{item.get('pages') or 'unresolved'}`; block: `{item.get('block_id') or 'unresolved'}`",
+                f"  - Original asset: `{item.get('original_asset_status') or 'not-checked'}`",
+            ]
+        )
+        if item.get("original_asset_path"):
+            lines.append(f"  - Original asset path: {markdown_path(str(item['original_asset_path']))}")
     lines.extend(["", "## Conclusion", "", state.get("conclusion") or "_Pending._", "", "## Unresolved / QA", ""])
     unresolved = state.get("unresolved", [])
     lines.extend(f"- {shorten(item)}" for item in unresolved)
@@ -323,6 +392,9 @@ def start_trace(
         "query_type": query_type,
         "evidence_level": None,
         "events": [],
+        "evidence": [],
+        "claims": [],
+        "open_stages": {},
         "conclusion": None,
         "unresolved": [],
     }
@@ -342,6 +414,12 @@ def start_trace(
 
 def append_event(vault_root: Path, trace_id: str, event: dict[str, Any]) -> dict[str, Any]:
     state, _, _ = load_state(vault_root, trace_id)
+    known_evidence = evidence_by_id(state)
+    requested_evidence = [safe_id(str(item)) for item in event.get("evidence_ids", [])]
+    evidence_ids = list(dict.fromkeys(requested_evidence))
+    missing = [item for item in evidence_ids if item not in known_evidence]
+    if missing:
+        raise ValueError(f"event references unknown evidence: {', '.join(missing)}")
     clean_event = {
         "at": now_iso(),
         "stage": shorten(str(event.get("stage") or "unspecified"), 120),
@@ -349,10 +427,9 @@ def append_event(vault_root: Path, trace_id: str, event: dict[str, Any]) -> dict
         "status": shorten(str(event.get("status") or "completed"), 40),
         "summary": shorten(str(event.get("summary") or "")),
         "hit_count": event.get("hit_count"),
-        "accepted_count": event.get("accepted_count"),
         "duration_ms": event.get("duration_ms"),
         "inspected_paths": [shorten(str(item), 500) for item in event.get("inspected_paths", [])],
-        "accepted_paths": [shorten(str(item), 500) for item in event.get("accepted_paths", [])],
+        "evidence_ids": evidence_ids,
         "rejected": event.get("rejected", []),
         "candidates": event.get("candidates", [])[:20],
     }
@@ -367,6 +444,120 @@ def parse_rejected(items: list[str]) -> list[dict[str, str]]:
         path, separator, reason = item.partition("::")
         result.append({"path": path.strip(), "reason": reason.strip() if separator else "not selected"})
     return result
+
+
+def parse_pages(items: list[int]) -> list[int]:
+    return sorted(set(item for item in items if item >= 1))
+
+
+def validate_vault_path(vault_root: Path, value: str) -> str:
+    normalized = value.replace("\\", "/").strip("/")
+    relative = Path(normalized)
+    if not normalized or relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"evidence path must be Vault-relative: {value!r}")
+    resolved = (vault_root.resolve() / relative).resolve()
+    resolved.relative_to(vault_root.resolve())
+    if not resolved.exists():
+        raise FileNotFoundError(f"evidence path does not exist: {resolved}")
+    return relative.as_posix()
+
+
+def record_evidence(vault_root: Path, trace_id: str, evidence: dict[str, Any]) -> dict[str, Any]:
+    state, _, _ = load_state(vault_root, trace_id)
+    evidence_id = safe_id(str(evidence.get("evidence_id") or ""))
+    if evidence_id in evidence_by_id(state):
+        raise ValueError(f"evidence id already exists: {evidence_id}")
+    path = validate_vault_path(vault_root, str(evidence.get("path") or ""))
+    asset_path = evidence.get("original_asset_path")
+    if asset_path:
+        asset_path = validate_vault_path(vault_root, str(asset_path))
+    document_version = shorten(str(evidence.get("document_version") or ""), 300)
+    if not document_version:
+        raise ValueError("evidence document version must not be empty")
+    original_asset_status = str(evidence.get("original_asset_status") or "not-checked")
+    if original_asset_status not in {"verified", "not-required", "not-checked", "failed"}:
+        raise ValueError(f"unsupported original asset status: {original_asset_status}")
+    if original_asset_status == "verified" and not asset_path:
+        raise ValueError("verified original assets require an original asset path")
+    record = {
+        "evidence_id": evidence_id,
+        "path": path,
+        "document_version": document_version,
+        "section_id": shorten(str(evidence.get("section_id") or ""), 300) or None,
+        "pages": parse_pages([int(item) for item in evidence.get("pages", [])]),
+        "block_id": shorten(str(evidence.get("block_id") or ""), 300) or None,
+        "original_asset_status": original_asset_status,
+        "original_asset_path": asset_path,
+        "summary": shorten(str(evidence.get("summary") or ""), 1200),
+        "recorded_at": now_iso(),
+    }
+    state.setdefault("evidence", []).append(record)
+    write_state(vault_root, state)
+    return record
+
+
+def record_claim(vault_root: Path, trace_id: str, claim: dict[str, Any]) -> dict[str, Any]:
+    state, _, _ = load_state(vault_root, trace_id)
+    claim_id = safe_id(str(claim.get("claim_id") or ""))
+    if any(item.get("claim_id") == claim_id for item in state.get("claims", [])):
+        raise ValueError(f"claim id already exists: {claim_id}")
+    known = evidence_by_id(state)
+    evidence_ids = list(dict.fromkeys(safe_id(str(item)) for item in claim.get("evidence_ids", [])))
+    missing = [item for item in evidence_ids if item not in known]
+    if missing:
+        raise ValueError(f"claim references unknown evidence: {', '.join(missing)}")
+    if claim.get("status") == "supported" and not evidence_ids:
+        raise ValueError("supported claims require at least one evidence id")
+    record = {
+        "claim_id": claim_id,
+        "text": shorten(str(claim.get("text") or ""), 4000),
+        "status": str(claim.get("status") or "supported"),
+        "evidence_ids": evidence_ids,
+        "qualification": shorten(str(claim.get("qualification") or ""), 1200) or None,
+        "recorded_at": now_iso(),
+    }
+    state.setdefault("claims", []).append(record)
+    write_state(vault_root, state)
+    return record
+
+
+def begin_stage(vault_root: Path, trace_id: str, stage: str, route: str) -> dict[str, Any]:
+    state, _, _ = load_state(vault_root, trace_id)
+    stage_id = safe_id(f"{stage}-{uuid.uuid4().hex[:8]}")
+    record = {
+        "stage_id": stage_id,
+        "stage": shorten(stage, 120),
+        "route": shorten(route, 120),
+        "started_at": now_iso(),
+        "started_monotonic_ns": time.monotonic_ns(),
+        "started_wall_ns": time.time_ns(),
+    }
+    state.setdefault("open_stages", {})[stage_id] = record
+    write_state(vault_root, state)
+    return record
+
+
+def end_stage(vault_root: Path, trace_id: str, stage_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    state, _, _ = load_state(vault_root, trace_id)
+    timer = state.setdefault("open_stages", {}).pop(safe_id(stage_id), None)
+    if not timer:
+        raise ValueError(f"unknown open stage: {stage_id}")
+    current_monotonic = time.monotonic_ns()
+    if current_monotonic >= int(timer["started_monotonic_ns"]):
+        elapsed_ns = current_monotonic - int(timer["started_monotonic_ns"])
+    else:
+        elapsed_ns = time.time_ns() - int(timer["started_wall_ns"])
+    write_state(vault_root, state)
+    return append_event(
+        vault_root,
+        trace_id,
+        {
+            **event,
+            "stage": timer["stage"],
+            "route": timer["route"],
+            "duration_ms": round(max(0, elapsed_ns) / 1_000_000, 3),
+        },
+    )
 
 
 def command_start(args: argparse.Namespace) -> dict[str, Any]:
@@ -391,10 +582,65 @@ def command_event(args: argparse.Namespace) -> dict[str, Any]:
             "status": args.status,
             "summary": args.summary,
             "hit_count": args.hit_count,
-            "accepted_count": args.accepted_count,
             "duration_ms": args.duration_ms,
             "inspected_paths": args.inspected_path,
-            "accepted_paths": args.accepted_path,
+            "evidence_ids": args.evidence_id,
+            "rejected": parse_rejected(args.rejected),
+        },
+    )
+    return {"trace_id": args.trace_id, "event": event}
+
+
+def command_evidence(args: argparse.Namespace) -> dict[str, Any]:
+    evidence = record_evidence(
+        args.vault_root,
+        args.trace_id,
+        {
+            "evidence_id": args.evidence_id,
+            "path": args.path,
+            "document_version": args.document_version,
+            "section_id": args.section_id,
+            "pages": args.page,
+            "block_id": args.block_id,
+            "original_asset_status": args.original_asset_status,
+            "original_asset_path": args.original_asset_path,
+            "summary": args.summary,
+        },
+    )
+    return {"trace_id": args.trace_id, "evidence": evidence}
+
+
+def command_claim(args: argparse.Namespace) -> dict[str, Any]:
+    claim = record_claim(
+        args.vault_root,
+        args.trace_id,
+        {
+            "claim_id": args.claim_id,
+            "text": args.text,
+            "status": args.status,
+            "evidence_ids": args.evidence_id,
+            "qualification": args.qualification,
+        },
+    )
+    return {"trace_id": args.trace_id, "claim": claim}
+
+
+def command_stage_begin(args: argparse.Namespace) -> dict[str, Any]:
+    stage = begin_stage(args.vault_root, args.trace_id, args.stage, args.route)
+    return {"trace_id": args.trace_id, "stage": stage}
+
+
+def command_stage_end(args: argparse.Namespace) -> dict[str, Any]:
+    event = end_stage(
+        args.vault_root,
+        args.trace_id,
+        args.stage_id,
+        {
+            "status": args.status,
+            "summary": args.summary,
+            "hit_count": args.hit_count,
+            "inspected_paths": args.inspected_path,
+            "evidence_ids": args.evidence_id,
             "rejected": parse_rejected(args.rejected),
         },
     )
@@ -403,6 +649,11 @@ def command_event(args: argparse.Namespace) -> dict[str, Any]:
 
 def command_finish(args: argparse.Namespace) -> dict[str, Any]:
     state, _, _ = load_state(args.vault_root, args.trace_id)
+    if state.get("open_stages"):
+        raise ValueError(f"cannot finish trace with open stages: {', '.join(state['open_stages'])}")
+    if args.status == "completed" and args.evidence_level in {"clear", "source-backed", "needs-qa"}:
+        if not state.get("evidence") or not state.get("claims"):
+            raise ValueError("completed evidence-bearing traces require evidence records and claim mappings")
     state["status"] = args.status
     state["evidence_level"] = args.evidence_level
     state["conclusion"] = shorten(args.conclusion, 8000)
@@ -433,12 +684,58 @@ def build_parser() -> argparse.ArgumentParser:
     event.add_argument("--status", default="completed")
     event.add_argument("--summary", default="")
     event.add_argument("--hit-count", type=int)
-    event.add_argument("--accepted-count", type=int)
     event.add_argument("--duration-ms", type=float)
     event.add_argument("--inspected-path", action="append", default=[])
-    event.add_argument("--accepted-path", action="append", default=[])
+    event.add_argument("--evidence-id", action="append", default=[])
     event.add_argument("--rejected", action="append", default=[], metavar="PATH::REASON")
     event.set_defaults(handler=command_event)
+
+    evidence = subparsers.add_parser("evidence", help="Record one accepted evidence item")
+    evidence.add_argument("vault_root", type=Path)
+    evidence.add_argument("trace_id")
+    evidence.add_argument("--evidence-id", required=True)
+    evidence.add_argument("--path", required=True)
+    evidence.add_argument("--document-version", required=True)
+    evidence.add_argument("--section-id")
+    evidence.add_argument("--page", action="append", type=int, default=[])
+    evidence.add_argument("--block-id")
+    evidence.add_argument(
+        "--original-asset-status",
+        choices=("verified", "not-required", "not-checked", "failed"),
+        default="not-checked",
+    )
+    evidence.add_argument("--original-asset-path")
+    evidence.add_argument("--summary", default="")
+    evidence.set_defaults(handler=command_evidence)
+
+    claim = subparsers.add_parser("claim", help="Map one final claim to recorded evidence")
+    claim.add_argument("vault_root", type=Path)
+    claim.add_argument("trace_id")
+    claim.add_argument("--claim-id", required=True)
+    claim.add_argument("--text", required=True)
+    claim.add_argument("--status", choices=("supported", "qualified", "disputed", "gap"), default="supported")
+    claim.add_argument("--evidence-id", action="append", default=[])
+    claim.add_argument("--qualification")
+    claim.set_defaults(handler=command_claim)
+
+    stage_begin = subparsers.add_parser("stage-begin", help="Start a monotonic stage timer")
+    stage_begin.add_argument("vault_root", type=Path)
+    stage_begin.add_argument("trace_id")
+    stage_begin.add_argument("--stage", required=True)
+    stage_begin.add_argument("--route", required=True)
+    stage_begin.set_defaults(handler=command_stage_begin)
+
+    stage_end = subparsers.add_parser("stage-end", help="Finish a monotonic stage timer and append its event")
+    stage_end.add_argument("vault_root", type=Path)
+    stage_end.add_argument("trace_id")
+    stage_end.add_argument("stage_id")
+    stage_end.add_argument("--status", default="completed")
+    stage_end.add_argument("--summary", default="")
+    stage_end.add_argument("--hit-count", type=int)
+    stage_end.add_argument("--inspected-path", action="append", default=[])
+    stage_end.add_argument("--evidence-id", action="append", default=[])
+    stage_end.add_argument("--rejected", action="append", default=[], metavar="PATH::REASON")
+    stage_end.set_defaults(handler=command_stage_end)
 
     finish = subparsers.add_parser("finish", help="Finish or fail a query trace")
     finish.add_argument("vault_root", type=Path)

@@ -12,6 +12,8 @@ QUERY_ADAPTER = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "retriev
 INGEST_ADAPTER = ROOT / "hermes-obsidian-controlled-ingest" / "scripts" / "sync_retrieval_index.py"
 QUERY_SKILL = ROOT / "hermes-obsidian-controlled-query" / "SKILL.md"
 INGEST_SKILL = ROOT / "hermes-obsidian-controlled-ingest" / "SKILL.md"
+QUERY_CONFIG = ROOT / "hermes-obsidian-controlled-query" / "config" / "retrieval-provider.json"
+INGEST_CONFIG = ROOT / "hermes-obsidian-controlled-ingest" / "config" / "retrieval-provider.json"
 
 
 def write_fake_provider(path: Path) -> None:
@@ -87,6 +89,33 @@ def test_query_adapter_normalizes_provider_output(tmp_path: Path) -> None:
     assert result["candidates"][0]["retrieval_routes"] == ["qmd-like-rag"]
 
 
+def test_default_provider_configs_disable_query_and_sync_until_indexes_exist(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    query = subprocess.run(
+        [sys.executable, str(QUERY_ADAPTER), str(vault), "供电可用性"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    query_result = json.loads(query.stdout)
+    assert json.loads(QUERY_CONFIG.read_text(encoding="utf-8"))["enabled"] is False
+    assert json.loads(INGEST_CONFIG.read_text(encoding="utf-8"))["enabled"] is False
+    assert query_result["status"] == "disabled"
+    assert query_result["candidates"] == []
+
+    sync = subprocess.run(
+        [sys.executable, str(INGEST_ADAPTER), str(vault), "--no-write-manifest"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    sync_result = json.loads(sync.stdout)
+    assert sync.returncode == 2
+    assert sync_result["status"] == "warn"
+    assert sync_result["index"]["status"] == "disabled"
+    assert sync_result["index"]["errors"] == []
+
+
 def test_ingest_adapter_writes_portable_manifest(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     provider = tmp_path / "provider.py"
@@ -112,7 +141,9 @@ def test_ingest_adapter_writes_portable_manifest(tmp_path: Path) -> None:
 def test_skills_keep_provider_as_navigation_and_ingest_only_writer() -> None:
     query = QUERY_SKILL.read_text(encoding="utf-8")
     ingest = INGEST_SKILL.read_text(encoding="utf-8")
-    assert "coarse recall + hierarchical routing" in query
+    assert "optional coarse recall || hierarchical routing" in query
+    assert "retrieve_query_scope.py" in query
+    assert "governed-layer-first traditional search" in query
     assert "Query must never run Provider `sync`" in query
     assert "extraction QA labels are verification metadata, not relevance boosts or penalties" in query
     assert "sync_retrieval_index.py" in ingest

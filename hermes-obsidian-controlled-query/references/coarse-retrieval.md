@@ -6,9 +6,10 @@ Use the configured coarse-recall Provider to narrow a large Vault before traditi
 
 ```text
 question classification
--> coarse recall || hierarchical routing
--> merge and expand candidate scope
--> scoped traditional search
+-> optional coarse recall || hierarchical routing
+-> normalize, expand, union, deduplicate, and RRF-rank candidate scope
+-> governed-layer-first traditional search
+-> supplemental scoped exact/lexical search when needed
 -> current-source and original-PDF verification
 ```
 
@@ -16,12 +17,23 @@ Use direct traditional/hierarchical lookup for exact identifiers and verbatim ph
 
 ## Operation
 
+Use the deterministic parallel scope entry point:
+
+```bash
+python3 "<query-skill-root>/scripts/retrieve_query_scope.py" \
+  <vault-root> "<query>" --trace-id <trace-id>
+```
+
+It invokes the adapter below concurrently with hierarchical location, then expands Provider chunks to complete sections and fuses the union. Provider and hierarchical raw scores remain separate; fusion ordering uses route ranks. Candidate duplicates and their rejection reasons are retained in the result and trace.
+
+Call the Provider adapter directly only for an explicit diagnostic or fallback:
+
 ```bash
 python3 "<query-skill-root>/scripts/retrieve_candidates.py" \
   <vault-root> "<query>" --top-k 30 --trace-id <trace-id>
 ```
 
-The script reads `config/retrieval-provider.json` unless `--provider-config` or `HERMES_RETRIEVAL_PROVIDER_CONFIG` overrides it.
+The script reads `config/retrieval-provider.json` unless `--provider-config` or `HERMES_RETRIEVAL_PROVIDER_CONFIG` overrides it. `enabled: false` disables the Provider branch without failing the parallel scope workflow; hierarchical and traditional retrieval continue. Enable it only after the Provider runtime and its Chroma/BM25 indexes are ready.
 
 Main normally uses command transport:
 

@@ -17,7 +17,7 @@ See [`charts.md`](charts.md) for editable Mermaid diagrams of the complete boots
 
 - `hermes-obsidian-controlled-query/`
   - Governed read-only query workflow for existing Hermes + Obsidian vaults.
-  - Searches governed layers before source reports and converted raw bundles.
+  - Runs optional hybrid recall and hierarchical section location in parallel, fuses their union, then performs governed-layer-first traditional search and scoped exact/lexical fallback.
   - Distinguishes vault facts, source-backed evidence, agent inference, QA risks, and gaps.
   - Prevents query runs from creating or modifying cards, concepts, reports, or raw material unless writeback is explicitly requested.
 

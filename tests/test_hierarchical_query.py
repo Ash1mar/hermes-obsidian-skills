@@ -7,6 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "hermes-obsidian-controlled-ingest" / "scripts" / "build_section_query_index.py"
 LOCATE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "locate_source_sections.py"
+SCOPE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "retrieve_query_scope.py"
 TRACE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "manage_query_trace.py"
 QUERY_SKILL = ROOT / "hermes-obsidian-controlled-query" / "SKILL.md"
 INGEST_SKILL = ROOT / "hermes-obsidian-controlled-ingest" / "SKILL.md"
@@ -130,6 +131,99 @@ def test_locator_scans_owned_content_and_returns_navigation_only(tmp_path: Path)
     assert "60" in result["candidates"][0]["matched_terms"]["content"]
 
 
+def test_scope_retrieval_survives_missing_provider_and_keeps_hierarchical_results(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    missing_config = tmp_path / "missing-provider.json"
+    write_json(
+        missing_config,
+        {"provider": "qmd-like-rag", "transport": "command", "command": ["missing-qmd-like-rag"]},
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCOPE),
+            str(vault),
+            "水喷雾喷头 K=60",
+            "--provider-config",
+            str(missing_config),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = json.loads(completed.stdout)
+    assert result["status"] == "ok"
+    assert result["routes"]["coarse_recall"]["status"] == "unavailable"
+    assert result["routes"]["hierarchical_search"]["hit_count"] >= 1
+    assert result["candidates"][0]["section_id"] == "spray"
+    assert result["candidates"][0]["retrieval_routes"] == ["hierarchical-search"]
+    assert result["duration_ms"] >= 0
+
+
+def test_scope_fusion_expands_provider_chunk_and_records_duplicate_reason(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    started = subprocess.run(
+        [sys.executable, str(TRACE), "start", str(vault), "水喷雾喷头 K=60"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(started.stdout)["trace_id"]
+    provider = tmp_path / "provider.py"
+    provider.write_text(
+        """import argparse, json
+p=argparse.ArgumentParser(); p.add_argument('command'); p.add_argument('--vault-root'); p.add_argument('--query'); p.add_argument('--top-k'); a=p.parse_args()
+print(json.dumps({'protocol_version':'hermes-coarse-recall/v1','provider':'qmd-like-rag','provider_version':'test','status':'ok','authority':'candidate-navigation-only','index_fingerprint':'idx','warnings':[],'candidates':[{'vault_path':'10_Raw/converted/0712XFNPXTS02_document_bundle/document.md','line_start':3,'line_end':4,'heading':'水喷雾管网','score':0.9}]}))
+""",
+        encoding="utf-8",
+    )
+    provider_config = tmp_path / "provider.json"
+    write_json(
+        provider_config,
+        {
+            "provider": "qmd-like-rag",
+            "transport": "command",
+            "command": [sys.executable, str(provider)],
+            "timeout_seconds": 10,
+        },
+    )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SCOPE),
+            str(vault),
+            "水喷雾喷头 K=60",
+            "--provider-config",
+            str(provider_config),
+            "--trace-id",
+            trace_id,
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = json.loads(completed.stdout)
+    spray = next(item for item in result["candidates"] if item["section_id"] == "spray")
+    assert spray["retrieval_routes"] == ["hierarchical-search", "qmd-like-rag"]
+    assert set(spray["route_scores"]) == {"hierarchical-search", "qmd-like-rag"}
+    assert spray["fusion_score"] > 0
+    assert spray["rerank_score"] == spray["fusion_score"]
+    assert result["fusion"]["duration_ms"] >= 0
+    assert result["fusion"]["eliminated_count"] >= 1
+    assert any(item["reason"] == "duplicate-section-merged" for item in result["rejected"])
+    state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert [event["stage"] for event in state["events"]] == [
+        "coarse-recall",
+        "hierarchical-candidate-location",
+        "candidate-fusion",
+    ]
+    assert state["events"][2]["duration_ms"] >= 0
+    assert state["events"][2]["rejected"][0]["reason"] == "duplicate-section-merged"
+
+
 def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     started = subprocess.run(
@@ -167,6 +261,32 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
         [
             sys.executable,
             str(TRACE),
+            "evidence",
+            str(vault),
+            trace_id,
+            "--evidence-id",
+            "E1",
+            "--path",
+            "10_Raw/converted/0712XFNPXTS02_document_bundle/document.md",
+            "--document-version",
+            "doc-hash",
+            "--section-id",
+            "spray",
+            "--page",
+            "1",
+            "--block-id",
+            "spray-lines-3-4",
+            "--original-asset-status",
+            "not-required",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            str(TRACE),
             "event",
             str(vault),
             trace_id,
@@ -176,12 +296,28 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
             "converted-source",
             "--hit-count",
             "1",
-            "--accepted-count",
-            "1",
-            "--accepted-path",
-            "10_Raw/converted/0712XFNPXTS02_document_bundle/document.md",
+            "--evidence-id",
+            "E1",
             "--summary",
             "Verified the complete owned section.",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            sys.executable,
+            str(TRACE),
+            "claim",
+            str(vault),
+            trace_id,
+            "--claim-id",
+            "C1",
+            "--text",
+            "The checked section supports K=60.",
+            "--evidence-id",
+            "E1",
         ],
         check=True,
         capture_output=True,
@@ -210,6 +346,12 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
     dashboard = (trace_root / "Query Trace Dashboard.md").read_text(encoding="utf-8")
     assert state["authority"] == "non-authoritative-runtime-log"
     assert state["status"] == "completed"
+    assert state["schema_version"] == "1.2"
+    assert state["events"][1]["evidence_ids"] == ["E1"]
+    assert "accepted_count" not in state["events"][1]
+    assert state["claims"][0]["evidence_ids"] == ["E1"]
+    assert "Accepted evidence: `1`" in note
+    assert "## Claim–Evidence map" in note
     assert state["events"][0]["route"] == "hierarchical-search"
     assert state["events"][0]["candidates"][0]["section_id"] == "spray"
     assert "hierarchical_search_used: true" in note
@@ -242,6 +384,85 @@ def test_same_session_creates_unique_single_query_traces(tmp_path: Path) -> None
     assert results[0]["trace_id"] != "shared-session"
     assert Path(results[0]["state_path"]).is_file()
     assert Path(results[1]["state_path"]).is_file()
+
+
+def test_trace_stage_timer_uses_monotonic_duration(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    started = subprocess.run(
+        [sys.executable, str(TRACE), "start", str(vault), "Timed query"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(started.stdout)["trace_id"]
+    begun = subprocess.run(
+        [
+            sys.executable,
+            str(TRACE),
+            "stage-begin",
+            str(vault),
+            trace_id,
+            "--stage",
+            "document-reading",
+            "--route",
+            "converted-source",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    stage_id = json.loads(begun.stdout)["stage"]["stage_id"]
+    subprocess.run(
+        [
+            sys.executable,
+            str(TRACE),
+            "stage-end",
+            str(vault),
+            trace_id,
+            stage_id,
+            "--summary",
+            "Read one source section.",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["open_stages"] == {}
+    assert state["events"][0]["stage"] == "document-reading"
+    assert state["events"][0]["duration_ms"] >= 0
+
+
+def test_trace_rejects_event_links_to_unknown_evidence(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    started = subprocess.run(
+        [sys.executable, str(TRACE), "start", str(vault), "Evidence consistency"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(started.stdout)["trace_id"]
+    event = subprocess.run(
+        [
+            sys.executable,
+            str(TRACE),
+            "event",
+            str(vault),
+            trace_id,
+            "--stage",
+            "source-verification",
+            "--route",
+            "converted-source",
+            "--evidence-id",
+            "missing-evidence",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert event.returncode != 0
+    assert "event references unknown evidence" in event.stderr
 
 
 def test_multiple_question_traces_share_request_folder_but_not_trace_id(tmp_path: Path) -> None:
@@ -280,7 +501,7 @@ def test_multiple_question_traces_share_request_folder_but_not_trace_id(tmp_path
                 "--status",
                 "completed",
                 "--evidence-level",
-                "source-backed",
+                "gap",
                 "--conclusion",
                 f"Completed question {index}.",
             ],
@@ -338,6 +559,17 @@ def test_read_only_wording_does_not_disable_default_query_trace() -> None:
     assert "verify that the returned Markdown trace path exists" in skill
     assert "including when the user calls the query \"read-only\"" in reference
     assert "trace: unavailable" in reference
+
+
+def test_query_contract_fuses_parallel_scope_before_governed_first_search() -> None:
+    skill = QUERY_SKILL.read_text(encoding="utf-8")
+    workflow = QUERY_WORKFLOW.read_text(encoding="utf-8")
+    assert "retrieve_query_scope.py" in skill
+    assert "Consume the fused union" in skill
+    assert "Inspect retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` candidates first" in skill
+    assert "supplemental scoped exact/lexical search" in skill
+    assert "unavailable Provider" in workflow
+    assert "Claim–Evidence" in workflow
 
 
 def test_skill_name_alone_activates_complete_query_contract() -> None:

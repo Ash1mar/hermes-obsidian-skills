@@ -119,13 +119,22 @@ def main() -> int:
     previous = load_json(manifest_path) if manifest_path.is_file() else None
     try:
         _, config = provider_config(args.provider_config)
-        transport = str(config.get("transport") or "command")
-        if transport == "command":
-            payload = call_command(config, vault_root, args.rebuild)
-        elif transport == "http":
-            payload = call_http(config, args.rebuild)
+        if config.get("enabled", True) is False:
+            transport = "disabled"
+            payload = {
+                "provider": str(config.get("provider") or "qmd-like-rag"),
+                "protocol_version": PROTOCOL_VERSION,
+                "status": "disabled",
+                "errors": [],
+            }
         else:
-            raise ValueError(f"Unsupported Provider transport: {transport}")
+            transport = str(config.get("transport") or "command")
+            if transport == "command":
+                payload = call_command(config, vault_root, args.rebuild)
+            elif transport == "http":
+                payload = call_http(config, args.rebuild)
+            else:
+                raise ValueError(f"Unsupported Provider transport: {transport}")
     except Exception as exc:
         transport = "unavailable"
         payload = {

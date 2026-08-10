@@ -32,28 +32,77 @@ python3 "<query-skill-root>/scripts/manage_query_trace.py" start <vault-root> "<
   --session-id <hermes-session-id> --query-type <type>
 ```
 
-Retain the returned `trace_id`. Append an event after each attempted retrieval layer, including zero-hit and failed stages:
+Retain the returned `trace_id`. Run the deterministic parallel scope retriever. It serializes trace writes after concurrent retrieval and records route durations, fused ranking, and duplicate rejection reasons:
+
+```bash
+python3 "<query-skill-root>/scripts/retrieve_query_scope.py" \
+  <vault-root> "<question>" --trace-id <trace-id>
+```
+
+Append an event after each remaining attempted layer, including zero-hit, skipped, fallback, and failed stages:
 
 ```bash
 python3 "<query-skill-root>/scripts/manage_query_trace.py" event <vault-root> <trace-id> \
   --stage governed-artifact-lookup --route governed-artifacts \
-  --hit-count 3 --accepted-count 1 \
+  --hit-count 3 \
   --summary "Cards and concepts checked; one card retained for source follow-up." \
   --inspected-path 30_Cards/example.md \
-  --accepted-path 30_Cards/example.md \
   --rejected "40_Concepts/example.md::definition only; no parameter evidence"
+```
+
+Record every accepted evidence item explicitly:
+
+```bash
+python3 "<query-skill-root>/scripts/manage_query_trace.py" evidence <vault-root> <trace-id> \
+  --evidence-id E1 \
+  --path "10_Raw/converted/example_document_bundle/document.md" \
+  --document-version "bundle-v2-or-source-hash" \
+  --section-id "section-0042" --page 15 --block-id "table-3.1.2-row-cable" \
+  --original-asset-status verified \
+  --original-asset-path "10_Raw/converted/example_document_bundle/tables/table_3_1_2_source.jpg"
+```
+
+Link evidence IDs from verification events. Accepted counts and paths are derived from existing Evidence records and must never be entered independently:
+
+```bash
+python3 "<query-skill-root>/scripts/manage_query_trace.py" event <vault-root> <trace-id> \
+  --stage page-asset-verification --route page-asset-verification \
+  --hit-count 1 --evidence-id E1 --summary "Checked the original table row."
+```
+
+Map every final claim before finishing:
+
+```bash
+python3 "<query-skill-root>/scripts/manage_query_trace.py" claim <vault-root> <trace-id> \
+  --claim-id C1 --text "The applicable design value is 13 L/(min·m²)." \
+  --evidence-id E1 --status supported
 ```
 
 Use stable route names where applicable:
 
 - `governed-artifacts`
 - `report-navigation`
+- `qmd-like-rag`
 - `hierarchical-search`
+- `candidate-fusion`
+- `scoped-lexical-search`
 - `converted-source`
 - `page-asset-verification`
 - `answer-synthesis`
 
-Pass `--trace-id` to `locate_source_sections.py`; it records the actual hierarchical candidates, scores, match terms, paths, and errors directly.
+Prefer `retrieve_query_scope.py --trace-id`. Pass `--trace-id` to an individual locator only for a deliberate direct or fallback invocation.
+
+Measure document reading, table/figure verification, and answer synthesis with monotonic stage timers. Retrieval scripts report monotonic durations automatically:
+
+```bash
+python3 "<query-skill-root>/scripts/manage_query_trace.py" stage-begin <vault-root> <trace-id> \
+  --stage document-reading --route converted-source
+
+python3 "<query-skill-root>/scripts/manage_query_trace.py" stage-end <vault-root> <trace-id> <stage-id> \
+  --summary "Read two complete source sections." --hit-count 2
+```
+
+Do not finish a trace with an open timer. Wall-clock timestamps support runtime correlation; `duration_ms` is computed from a monotonic clock and is the duration authority inside the trace.
 
 Finish before returning the answer:
 
@@ -108,10 +157,13 @@ Record:
 - query classification and scope;
 - searched layers and paths;
 - internal verification carriers, including source maps, ledgers, `document.md`, table Markdown, extracted images, and page images, with relevant line/section/region details;
-- hit and accepted counts;
-- hierarchical candidate scores and matched terms;
+- hit counts; derive accepted counts and paths from Evidence records;
+- route-specific candidate ranks/scores, fusion RRF scores, hierarchical matched terms, title/document deduplication, and elimination reasons;
 - source/page/table/figure verification decisions;
-- accepted and rejected candidates with concise reasons;
+- accepted Evidence records with document version, section, pages, block ID, and original table/image verification status;
+- a Claim–Evidence mapping for every final claim;
+- monotonic durations for retrieval, document reading, table/figure verification, and answer synthesis;
+- retained and rejected candidates with concise reasons;
 - evidence level, short conclusion, gaps, and QA needs;
 - Hermes session ID for correlation with `/root/.hermes/logs/agent.log`.
 
