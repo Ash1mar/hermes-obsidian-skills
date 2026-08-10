@@ -25,38 +25,47 @@ Read:
 
 Avoid loading ingest prompts unless the query asks about ingestion behavior or writeback.
 
-## 3. Search Governed Layers
+## 3. Recall and Fuse Candidate Scope
 
-Start with:
+For ordinary semantic, explanatory, synthesis, and evidence questions, run:
+
+```bash
+python3 "<query-skill-root>/scripts/retrieve_query_scope.py" \
+  <vault-root> "<query>" --trace-id <trace-id>
+```
+
+The script runs optional qmd-like-rag recall and hierarchical document/section location concurrently. It then:
+
+- keeps an unavailable Provider non-blocking;
+- expands Provider chunks to complete projected/ledger-owned sections;
+- takes the union rather than the intersection;
+- merges duplicate document/section and overlapping same-title ranges;
+- preserves route-specific raw scores and ranks without adding incomparable scores;
+- calculates a fusion RRF score for ordering;
+- records retained candidates and duplicate rejection reasons.
+
+For exact identifiers, filenames, clauses, or verbatim phrases, a direct traditional/hierarchical route is allowed when cheaper. Record the skipped parallel route and reason. For gap, completeness, and audit questions, broaden beyond fused top-k scope.
+
+## 4. Run Governed-First Traditional Search
+
+After fusion, inspect retained candidates under `30_Cards/`, `40_Concepts/`, and `50_Projects/` first. Supplement them with exact governed-layer search when needed:
 
 ```bash
 rg -n "keyword|synonym|abbreviation" 30_Cards 40_Concepts 50_Projects
 ```
 
-Use this layer for:
+Use governed artifacts for existing conclusions, concept/project boundaries, version applicability, and precise evidence pointers. When one resolves the current source, version, section, original page, and passage, follow it directly to targeted source verification and record broad lexical search as skipped.
 
-- existing conclusions
-- reusable cards
-- concept definitions
-- project context
-- prior synthesis
+When governed evidence is insufficient, run exact/lexical search for identifiers, source filenames, clauses, verbatim phrases, values, units, and synonyms within the fused candidate scope. Do not scan the whole Vault by default. Widen deliberately for gaps, completeness, audit, or a weak/empty fused result.
 
-Treat a governed-layer hit as a conclusion or navigation lead, not as permission to stop source tracing. For every substantive PDF-backed conclusion, continue until the original PDF identity, original PDF page, and relevant passage are resolved. Stop at the governed layer only for an explicitly requested governance/meta answer that does not claim source-document facts.
+## 5. Resolve Control Metadata and Verify Evidence
 
-## 4. Search Control Reports
+Use `_system/reports/` after candidate selection:
 
-Search `_system/reports/` for navigation and quality state:
-
-- source maps identify sections, pages, status, quality, and outputs
-- section ledgers identify line ranges, status, and stale/QA states
-- spec indexes identify chapter objects and source navigation
-- ingest logs explain decisions and QA exclusions
-
-Use reports to decide which converted source files and line ranges to open. Do not treat spec indexes alone as final engineering facts when they explicitly say they are navigational.
-
-In parallel with this report-navigation pass, use `python3 "<query-skill-root>/scripts/locate_source_sections.py" <vault-root> <query> --trace-id <id>` when `_system/reports/query-index/` is available. Resolve `<query-skill-root>` from the active Skill installation, never from the Vault. Merge candidates by document path and section ID. Keep the strongest match reasons and the strictest quality/status flags. The locator is optional and non-authoritative; missing or stale projections must fall back to this existing report search rather than block the query. Record both the attempt and fallback in the active query trace.
-
-## 5. Verify Internally and Resolve Original PDF Evidence
+- source maps resolve source PDF identity, pages, quality, and outputs;
+- section ledgers resolve complete owned ranges, status, revisions, hashes, and stale/QA state;
+- spec indexes provide governed navigation and coverage, not final factual authority;
+- ingest logs explain exclusions and conversion decisions when QA requires them.
 
 For evidence queries, open targeted converted sources:
 
@@ -68,7 +77,9 @@ Prefer section ranges from the ledger/source map. Do not read every converted bu
 
 For engineering values, formulas, table rows, or figure internals, compare the text with source map quality. If extraction quality is uncertain, state that the source page or image must be checked.
 
-Record every source-map, ledger, converted-text, table, image, and page-image path used during verification in the active query trace. Do not return those conversion or verification carrier paths in the user-facing answer unless the user explicitly asks for retrieval debugging or Vault maintenance details.
+Record each accepted source as an Evidence record with document version, section, original page, block ID, and original table/image verification status. Link verification events to evidence IDs and maintain a Claim–Evidence mapping from every final claim to those IDs. Accepted counts and paths are derived from Evidence records. Do not return conversion or verification carrier paths in the user-facing answer unless the user explicitly asks for retrieval debugging or Vault maintenance details.
+
+Use monotonic stage timers for document reading, table/figure verification, and answer synthesis. Retrieval and fusion scripts record their own monotonic durations.
 
 When forming an answer, build an evidence packet for each conclusion:
 
@@ -78,6 +89,8 @@ When forming an answer, build an evidence packet for each conclusion:
 - figure/image/table location as original PDF page plus number or caption, containing section, and page region; include a bounding box only when reliably mapped to the original PDF
 
 If only converted paths or line numbers are available, do not return them as a substitute citation. Mark the original PDF identity or page as unresolved and label the evidence `needs-qa` or `gap`.
+
+continue until the original PDF identity, original PDF page, and relevant passage are resolved; otherwise preserve the unresolved state in both the Evidence record and final answer.
 
 ## 6. Synthesize
 

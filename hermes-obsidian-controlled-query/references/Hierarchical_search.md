@@ -12,11 +12,11 @@ The overall workflow remains sequential, while source-candidate recall becomes l
 
 ```text
 question
--> governed cards / concepts / projects
--> source evidence needed?
--> existing source-map / spec-index / ledger navigation
-   + hierarchical document / section locator (parallel candidate recall)
--> merge and deduplicate candidates
+-> optional coarse recall || hierarchical document / section locator
+-> normalize to complete sections, union, deduplicate, and RRF-rank candidates
+-> governed-layer-first traditional search
+-> supplemental scoped exact/lexical search when needed
+-> resolve source-map / ledger metadata
 -> verify document.md, tables, figures, and original pages
 -> apply existing evidence levels and answer contract
 ```
@@ -59,7 +59,7 @@ Existing artifacts are not modified:
 
 `python3 "<query-skill-root>/scripts/locate_source_sections.py"` reads the projections, scores document routing and section title/path matches, and dynamically scans the authoritative `document.md` owned ranges. It emits candidate JSON containing paths, document and section IDs, `match_start_line` / `match_end_line`, pages, quality/status, matched terms, and scores. On the intranet branch it also composes a deployment-local `viewer_url` from those four positioning fields and `config/intranet.json`; this URL remains a navigation aid rather than evidence.
 
-The controlled-query workflow merges these hits with its existing report-navigation hits. It then verifies the original converted source and page/table/figure evidence exactly as before. If no projection is present, the locator is skipped and the original query path continues unchanged.
+The controlled-query workflow merges these hits with optional Provider candidates through `retrieve_query_scope.py`. It expands Provider chunks to complete projected/ledger-owned sections, takes the union, merges duplicate document/section or overlapping same-title ranges, preserves route scores/ranks, and records RRF ordering plus rejection reasons. It then performs governed-layer-first traditional search and verifies original converted source and page/table/figure evidence. If no projection is present, the hierarchical route is recorded as empty/unavailable and traditional fallback continues unchanged.
 
 ## Routing Knowledge Ownership
 

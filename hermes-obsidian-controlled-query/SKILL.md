@@ -44,10 +44,13 @@ Keep the frontmatter description broad and domain-neutral. After this Skill is l
 user question
 -> vault rules and query type
 -> start query trace (default required)
--> governed layer lookup
--> coarse recall + hierarchical routing
--> scoped traditional search
+-> optional coarse recall || hierarchical routing
+-> deterministic candidate fusion and complete-section expansion
+-> governed-layer-first traditional search
+-> supplemental scoped exact/lexical search when governed evidence is insufficient
 -> targeted converted-source verification
+-> original-page/table/figure verification
+-> claim-evidence mapping
 -> finish query trace
 -> answer with evidence quality and gaps
 -> optional internal query-writeback candidate
@@ -81,7 +84,9 @@ Record source maps, ledgers, `document.md`, table Markdown, extracted images, pa
 
 On deployments whose active Skill config defines `viewer_base_url`, a viewer URL is the one permitted user-facing exception to that carrier-path rule. The URL is a navigation aid, not evidence: it identifies the verified Bundle document and section and highlights the checked Markdown line range without exposing a filesystem path. Use only locator-returned `viewer_url` values; never invent a document ID or line range from filenames or prose.
 
-Pass `--trace-id <id>` to both `python3 "<query-skill-root>/scripts/retrieve_candidates.py"` and `python3 "<query-skill-root>/scripts/locate_source_sections.py"` so actual coarse-recall and hierarchical candidates are recorded directly. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `<query-skill-root>/references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
+Run `python3 "<query-skill-root>/scripts/retrieve_query_scope.py" <vault-root> <query> --trace-id <id>` as the normal source-scope entry point. It launches optional coarse recall and hierarchical location in parallel, records both attempts without concurrent trace writes, expands Provider chunks to complete sections, fuses their union, and records duplicate/re-ranking decisions. An absent Provider is non-blocking; the hierarchical route continues. Use the individual locator scripts only for an explicit direct/fallback route.
+
+Record accepted evidence with `manage_query_trace.py evidence`, map every final claim with `manage_query_trace.py claim`, and link evidence IDs from verification events. Accepted counts and links are derived from those evidence records, never typed independently. Measure retrieval, document reading, table/figure verification, and answer synthesis with script-reported monotonic durations or `stage-begin`/`stage-end`. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `<query-skill-root>/references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
 
 ## Multiple Questions
 
@@ -180,27 +185,17 @@ Do not present this candidate in the user-facing answer unless the user asks for
 
 ## Search Order
 
-Use the most governed layer that can answer the question, then descend only as needed:
+Treat corpus layers, recall mechanisms, and evidence verification as separate concerns. The normal evidence-query route is:
 
-1. `30_Cards/`, `40_Concepts/`, `50_Projects/`
-2. `_system/reports/*.source-map.md`
-3. `_system/reports/*.spec-index.md`
-4. `_system/reports/*.section-ledger.json`
-5. `_system/reports/*controlled-ingest-log.md`
-6. `10_Raw/converted/*_document_bundle/document.md`
-7. `10_Raw/converted/*_document_bundle/tables/` or `images/` when the cited section requires them
-8. Original `10_Raw/` only for source-page verification, extraction disputes, or missing converted evidence
+1. Run `python3 "<query-skill-root>/scripts/retrieve_query_scope.py" <vault-root> <query> --trace-id <id>`. It runs configured coarse recall and hierarchical routing in parallel. Coarse recall is optional and may return `unavailable` without blocking the query.
+2. Consume the fused union. The script expands coarse chunks to complete projected/ledger-owned sections, merges duplicate document/section/title ranges, preserves route-specific scores and ranks, and reports RRF fusion scores plus rejection reasons. Never add raw Provider and hierarchical scores together.
+3. Inspect retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` candidates first and supplement them with exact governed-layer search. If a governed artifact fully identifies the current source, version, section, page, and relevant passage, follow it directly to targeted verification.
+4. When governed evidence is insufficient, run exact/lexical search for identifiers, filenames, clauses, phrases, values, and synonyms only within the fused scope. Broaden beyond that scope for gap, completeness, or audit questions; Provider top-k is never a completeness boundary.
+5. Use source maps and section ledgers after candidate selection to resolve complete ranges, current/stale state, original PDF identity/pages, assets, and content hashes. Treat spec indexes as governed navigation, not factual authority.
+6. Re-open current `document.md`, selected `tables/` or `images/`, and original `10_Raw/` pages. Open `_evidence/` only for targeted QA of page order, formulas, tables, figures, or extraction disputes.
+7. Record evidence and claim mappings, then synthesize the answer. Provider, fusion, query-index, source-map, ledger, and spec-index outputs remain navigation/verification metadata and are never answer evidence by themselves.
 
-For layered MinerU bundles, prefer `document.md` plus source map/ledger navigation. Open `_evidence/` only for targeted QA of page order, formulas, tables, figures, or extraction disputes.
-
-When governed artifacts do not fully answer the question or source evidence is required, treat source retrieval as a coarse-to-fine pipeline:
-
-1. For semantic, explanatory, synthesis, and ordinary evidence questions, run `python3 "<query-skill-root>/scripts/retrieve_candidates.py" <vault-root> <query> --trace-id <id>` and `python3 "<query-skill-root>/scripts/locate_source_sections.py" <vault-root> <query> --trace-id <id>` as parallel scope locators.
-2. Merge their Vault-relative files and overlapping line/section ranges. Expand coarse-recall chunks to their complete ledger-owned sections before reading content.
-3. Run exact/lexical search only within the merged scope, then re-open the current authoritative source and original-PDF evidence.
-4. For exact identifiers or verbatim phrases, allow direct traditional/hierarchical lookup without coarse recall. For gap, completeness, or audit questions, never let Provider top-k bound the search; use broad hierarchical and traditional coverage.
-5. Treat Provider and query-index outputs only as navigation. Never quote them or promote them to evidence. Retrieval status and extraction QA labels are verification metadata, not relevance boosts or penalties.
-6. If the Provider is absent, stale, invalid, or unavailable, record the fallback and continue with the existing hierarchical plus traditional route without failing the query. Query must never run Provider `sync` or rebuild operations.
+For exact identifiers or verbatim phrases, allow a direct governed/traditional/hierarchical route when cheaper, but record why parallel scope retrieval was skipped. If the Provider is absent, stale, invalid, or unavailable, keep the hierarchical-plus-traditional route. Query must never run Provider `sync` or rebuild operations.
 
 Read `<query-skill-root>/references/coarse-retrieval.md` for the Provider contract, transport configuration, scope fusion, and main/intranet boundary. Read `<query-skill-root>/references/Hierarchical_search.md` for the hierarchical design and migration boundary.
 
@@ -214,6 +209,8 @@ Before answering, label the usable evidence:
 - `gap`: no adequate governed or source evidence found in the current vault.
 
 Treat `evidence_mode: index` as governed navigation: use its evidence table to select documents and sections, but do not promote section-title or coverage evidence into a detailed factual claim. Treat `evidence_mode: relational` and standalone `[[wikilinks]]` as query expansion and graph navigation, never as source proof. When legacy artifacts have no `evidence_mode`, classify their provenance before assigning an evidence level.
+
+extraction QA labels are verification metadata, not relevance boosts or penalties.
 
 Do not promote `needs-qa` evidence into an authoritative reusable fact. State the limitation and what page/table/figure should be checked next.
 

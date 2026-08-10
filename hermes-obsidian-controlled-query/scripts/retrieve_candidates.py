@@ -9,6 +9,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any
 from urllib import request
@@ -125,7 +126,7 @@ def validate_response(payload: dict[str, Any], vault_root: Path) -> dict[str, An
         "index_fingerprint": payload.get("index_fingerprint"),
         "candidates": normalized,
         "warnings": sorted(set(warnings)),
-        "next_step": "Fuse these locations with hierarchical candidates, expand to complete ledger sections, then run scoped lexical search and verify current source/PDF evidence.",
+        "next_step": "Fuse with hierarchical candidates, inspect governed candidates first, then run supplemental scoped exact/lexical search and verify current source/PDF evidence.",
     }
 
 
@@ -142,7 +143,7 @@ def append_trace(vault_root: Path, trace_id: str, result: dict[str, Any]) -> Non
                 "status": result["status"],
                 "summary": "Located coarse-recall candidates; results remain navigation-only until current-source verification.",
                 "hit_count": len(result["candidates"]),
-                "accepted_count": None,
+                "duration_ms": result.get("duration_ms"),
                 "inspected_paths": sorted({item["vault_path"] for item in result["candidates"]}),
                 "candidates": result["candidates"],
             },
@@ -160,18 +161,30 @@ def main() -> int:
     parser.add_argument("--trace-id")
     args = parser.parse_args()
     vault_root = args.vault_root.resolve()
+    started = time.monotonic_ns()
     try:
         config_path, config = provider_config(args.provider_config)
-        transport = str(config.get("transport") or "command")
-        if transport == "command":
-            payload = call_command(config, vault_root, args.query, args.top_k)
-        elif transport == "http":
-            payload = call_http(config, args.query, args.top_k)
+        if config.get("enabled", True) is False:
+            result = {
+                "status": "disabled",
+                "authority": "candidate-navigation-only",
+                "provider": str(config.get("provider") or "qmd-like-rag"),
+                "provider_config": config_path.as_posix(),
+                "candidates": [],
+                "warnings": [],
+                "next_step": "Continue with hierarchical and traditional retrieval; the coarse-recall Provider is explicitly disabled.",
+            }
         else:
-            raise ValueError(f"Unsupported Provider transport: {transport}")
-        result = validate_response(payload, vault_root)
-        result["transport"] = transport
-        result["provider_config"] = config_path.as_posix()
+            transport = str(config.get("transport") or "command")
+            if transport == "command":
+                payload = call_command(config, vault_root, args.query, args.top_k)
+            elif transport == "http":
+                payload = call_http(config, args.query, args.top_k)
+            else:
+                raise ValueError(f"Unsupported Provider transport: {transport}")
+            result = validate_response(payload, vault_root)
+            result["transport"] = transport
+            result["provider_config"] = config_path.as_posix()
     except Exception as exc:
         result = {
             "status": "unavailable",
@@ -181,6 +194,7 @@ def main() -> int:
             "warnings": [f"{type(exc).__name__}: {exc}"],
             "next_step": "Continue with hierarchical and traditional retrieval; do not mutate or rebuild the index during query.",
         }
+    result["duration_ms"] = round((time.monotonic_ns() - started) / 1_000_000, 3)
     if args.trace_id:
         append_trace(vault_root, args.trace_id, result)
     print(json.dumps(result, ensure_ascii=False, indent=2))

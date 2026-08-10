@@ -8,7 +8,7 @@ Use `qmd-like-rag` as the current implementation of the replaceable coarse-recal
 python3 "<ingest-skill-root>/scripts/sync_retrieval_index.py" <vault-root>
 ```
 
-The script reads `config/retrieval-provider.json` unless `--provider-config` or `HERMES_RETRIEVAL_PROVIDER_CONFIG` overrides it. Main normally invokes the locally installed `qmd-like-rag` command. The intranet branch may use a locally installed command or an explicitly configured HTTP service; do not invent a service URL.
+The script reads `config/retrieval-provider.json` unless `--provider-config` or `HERMES_RETRIEVAL_PROVIDER_CONFIG` overrides it. `enabled: false` records the Provider as disabled and skips sync entirely. Set it to `true` only after the Provider runtime and Chroma/BM25 indexes are ready. When enabled, main invokes the locally installed `qmd-like-rag` command. The intranet branch may use a locally installed command or an explicitly configured HTTP service; do not invent a service URL.
 
 Run incremental sync after completed source ingest or at a related batch boundary. Do not sync after every intermediate section write. Use `--rebuild` only for explicit maintenance or an incompatible/corrupt index.
 
