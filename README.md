@@ -2,6 +2,8 @@
 
 This repository stores local skills and tool-integration notes for the Hermes + Obsidian knowledge workflow. It also maintains `qmd-like-rag/`, the independently installed coarse-recall Provider used by the ingest/query Skills; it is repository code, not a fifth Skill.
 
+See [`charts.md`](charts.md) for editable Mermaid diagrams of the complete bootstrap, ingest, lint, query, retrieval, and branch-specific deployment flow.
+
 ## Skills
 
 - `hermes-obsidian-controlled-ingest/`
