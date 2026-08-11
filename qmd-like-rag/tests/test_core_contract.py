@@ -8,6 +8,7 @@ import pytest
 
 
 SRC = Path(__file__).resolve().parents[1] / "src"
+PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SRC))
 
 from qmd_like_rag.chunker import chunk_markdown_file
@@ -73,3 +74,13 @@ def test_absent_status_does_not_load_heavy_runtime(tmp_path: Path) -> None:
 def test_short_vault_id_still_produces_valid_chroma_name(tmp_path: Path) -> None:
     config = ProviderConfig(vault_root=tmp_path / "vault", state_root=tmp_path / "state", vault_id="x")
     assert config.collection_name == "vault-x"
+
+
+def test_branch_examples_keep_provider_state_outside_the_vault() -> None:
+    main = json.loads((PACKAGE_ROOT / "config" / "main.example.json").read_text(encoding="utf-8"))
+    intranet = json.loads(
+        (PACKAGE_ROOT / "config" / "intranet.example.json").read_text(encoding="utf-8")
+    )
+    assert main["state_root"] == "/root/.local/state/qmd-like-rag"
+    assert intranet["state_root"] == "/opt/data/phq/qmd-like-rag-state"
+    assert not intranet["state_root"].startswith("/opt/data/phq/testVault/")

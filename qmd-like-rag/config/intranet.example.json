@@ -1,4 +1,5 @@
 {
+  "state_root": "/opt/data/phq/qmd-like-rag-state",
   "include_patterns": [
     "30_Cards/**/*.md",
     "40_Concepts/**/*.md",

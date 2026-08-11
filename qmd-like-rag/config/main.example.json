@@ -1,4 +1,5 @@
 {
+  "state_root": "/root/.local/state/qmd-like-rag",
   "include_patterns": [
     "30_Cards/**/*.md",
     "40_Concepts/**/*.md",

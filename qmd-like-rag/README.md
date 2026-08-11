@@ -40,9 +40,28 @@ Override patterns and models with a JSON config passed through `--config`. Machi
 
 ## main and intranet
 
-On `main`, install the package in the Hermes WSL environment and use the local command transport. The Vault remains under `/mnt/c/...`; provider state remains on the WSL-native filesystem.
+On `main`, install the package in the Hermes WSL environment and use the local command transport. The Vault remains under `/mnt/c/...`; provider state remains on the WSL-native filesystem. The deployed layout is:
 
-On `intranet`, do not deploy QMD. Install this package locally when the Hermes host can run it. If retrieval must run on another server, start the same package with `qmd-like-rag serve` and configure the Skill adapter to use HTTP. The initial HTTP `sync` route assumes that the provider process can read its configured Vault path; document-upload synchronization is a later extension.
+```text
+source       /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag
+environment  /root/.venvs/qmd-like-rag
+command      /usr/local/bin/qmd-like-rag
+state root   /root/.local/state/qmd-like-rag
+vault state  /root/.local/state/qmd-like-rag/<vault-id>/
+host config  /root/.config/qmd-like-rag/main.json
+```
+
+`/usr/local/bin/qmd-like-rag` is only a stable symlink to the virtual environment's console command; it is not another installation. The virtual environment contains replaceable software. The state root contains mutable, rebuildable indexes and must survive routine virtual-environment replacement. `config/main.example.json` is the source template for the host config.
+
+On `intranet`, do not deploy QMD. Install this package locally when the Hermes host can run it. The Vault is `/opt/data/phq/testVault`; the default example places Provider state beside that Vault but outside it:
+
+```text
+vault       /opt/data/phq/testVault
+state root  /opt/data/phq/qmd-like-rag-state
+vault state /opt/data/phq/qmd-like-rag-state/<vault-id>/
+```
+
+Set the actual Linux-local sibling path through `state_root` in the deployment's Provider config, using `config/intranet.example.json` as the template. Do not put the state root below `/opt/data/phq/testVault`, and exclude it from Obsidian, Vault synchronization, and governed-content backups. If retrieval must run on another server, start the same package with `qmd-like-rag serve` and configure the Skill adapter to use HTTP. The initial HTTP `sync` route assumes that the provider process can read its configured Vault path; document-upload synchronization is a later extension.
 
 ## HTTP transport
 
@@ -67,12 +86,22 @@ Bind beyond localhost only behind the intranet's authentication and network cont
 
 Build and install from a tagged repository revision. Do not run the heavy environment directly from a Windows-mounted virtual environment.
 
+For a CPU-first `main` deployment, install the CPU Torch wheel before this package. The preinstalled Torch satisfies Sentence Transformers and prevents pip from resolving the CUDA runtime packages. Upgrade Torch to a tested GPU build in a separate maintenance step later; do not mix qmd-like-rag with MinerU's Python environment.
+
 ```bash
 python3 -m venv /root/.venvs/qmd-like-rag
-/root/.venvs/qmd-like-rag/bin/python -m pip install ./qmd-like-rag
+/root/.venvs/qmd-like-rag/bin/python -m pip install torch \
+  --index-url https://download.pytorch.org/whl/cpu
+/root/.venvs/qmd-like-rag/bin/python -m pip install \
+  /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag
+install -d -m 0755 /root/.config/qmd-like-rag
+install -m 0644 \
+  /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag/config/main.example.json \
+  /root/.config/qmd-like-rag/main.json
+ln -s /root/.venvs/qmd-like-rag/bin/qmd-like-rag /usr/local/bin/qmd-like-rag
 ```
 
-Create a stable wrapper or symlink for the console command according to the deployment policy. Record `provider_version`, configuration/model fingerprints, and the indexed corpus fingerprint in the Vault index manifest.
+Replace an existing stable link only after confirming its resolved target belongs to the prior qmd-like-rag deployment. `qmd-like-rag doctor` should report all packages available; a CPU-first runtime should additionally report `torch.version.cuda == None` and `torch.cuda.is_available() == False` when inspected with its virtual-environment Python. Record `provider_version`, configuration/model fingerprints, and the indexed corpus fingerprint in the Vault index manifest.
 
 ## Removed prototype features
 
