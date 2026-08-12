@@ -82,5 +82,12 @@ def test_branch_examples_keep_provider_state_outside_the_vault() -> None:
         (PACKAGE_ROOT / "config" / "intranet.example.json").read_text(encoding="utf-8")
     )
     assert main["state_root"] == "/root/.local/state/qmd-like-rag"
+    assert main["device"] == "cuda"
     assert intranet["state_root"] == "/opt/data/phq/qmd-like-rag-state"
+    assert intranet["device"] == "cpu"
     assert not intranet["state_root"].startswith("/opt/data/phq/testVault/")
+
+
+def test_provider_rejects_unknown_execution_device(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="device"):
+        ProviderConfig(vault_root=tmp_path / "vault", device="automatic")

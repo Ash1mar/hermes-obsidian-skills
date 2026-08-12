@@ -16,7 +16,8 @@ class ChromaStore:
         self.path = config.chroma_path()
         self.path.mkdir(parents=True, exist_ok=True)
         self.embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=config.embedding_model
+            model_name=config.embedding_model,
+            device=config.device,
         )
         self.client = chromadb.PersistentClient(
             path=str(self.path), settings=Settings(anonymized_telemetry=False)

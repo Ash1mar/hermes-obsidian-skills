@@ -43,6 +43,7 @@ class ProviderConfig:
     include_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_INCLUDE_PATTERNS))
     embedding_model: str = "BAAI/bge-m3"
     reranker_model: str = "BAAI/bge-reranker-large"
+    device: str = "cpu"
     use_reranker: bool = True
     chunk_size: int = 800
     chunk_overlap: float = 0.15
@@ -62,6 +63,8 @@ class ProviderConfig:
             raise ValueError("chunk_overlap must be in [0, 1)")
         if self.chunk_size < 1 or self.top_k < 1 or self.rerank_top_k < 1:
             raise ValueError("chunk_size and retrieval limits must be positive")
+        if self.device not in {"cpu", "cuda", "mps"}:
+            raise ValueError("device must be one of: cpu, cuda, mps")
 
     @property
     def persist_dir(self) -> Path:

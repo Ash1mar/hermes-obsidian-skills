@@ -54,7 +54,7 @@ def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict
     warnings: list[str] = []
     if config.use_reranker and raw:
         try:
-            raw = BgeReranker(config.reranker_model).rerank(query, raw, limit)
+            raw = BgeReranker(config.reranker_model, config.device).rerank(query, raw, limit)
         except Exception as exc:
             warnings.append(f"reranker-unavailable:{type(exc).__name__}")
             raw = raw[:limit]
@@ -74,10 +74,31 @@ def doctor() -> dict[str, Any]:
         name: importlib.util.find_spec(name) is not None
         for name in ("chromadb", "rank_bm25", "sentence_transformers", "tiktoken")
     }
+    torch_runtime: dict[str, Any] = {
+        "version": None,
+        "cuda_available": False,
+        "cuda_version": None,
+        "device_name": None,
+    }
+    if packages["sentence_transformers"]:
+        try:
+            import torch
+
+            torch_runtime.update(
+                {
+                    "version": torch.__version__,
+                    "cuda_available": torch.cuda.is_available(),
+                    "cuda_version": torch.version.cuda,
+                    "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+                }
+            )
+        except Exception as exc:
+            torch_runtime["error"] = f"{type(exc).__name__}: {exc}"
     return {
         "protocol_version": PROTOCOL_VERSION,
         "provider": PROVIDER_ID,
         "provider_version": __version__,
         "status": "ok" if all(packages.values()) else "unavailable",
         "packages": packages,
+        "torch": torch_runtime,
     }

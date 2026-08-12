@@ -10,5 +10,6 @@
   ],
   "embedding_model": "BAAI/bge-m3",
   "reranker_model": "BAAI/bge-reranker-large",
+  "device": "cuda",
   "use_reranker": true
 }

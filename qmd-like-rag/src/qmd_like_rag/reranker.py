@@ -4,10 +4,10 @@ from typing import Any
 
 
 class BgeReranker:
-    def __init__(self, model_name: str) -> None:
+    def __init__(self, model_name: str, device: str) -> None:
         from sentence_transformers import CrossEncoder
 
-        self.model = CrossEncoder(model_name)
+        self.model = CrossEncoder(model_name, device=device)
 
     def rerank(self, query: str, candidates: list[dict[str, Any]], top_k: int) -> list[dict[str, Any]]:
         if not candidates:

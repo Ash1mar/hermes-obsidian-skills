@@ -86,12 +86,12 @@ Bind beyond localhost only behind the intranet's authentication and network cont
 
 Build and install from a tagged repository revision. Do not run the heavy environment directly from a Windows-mounted virtual environment.
 
-For a CPU-first `main` deployment, install the CPU Torch wheel before this package. The preinstalled Torch satisfies Sentence Transformers and prevents pip from resolving the CUDA runtime packages. Upgrade Torch to a tested GPU build in a separate maintenance step later; do not mix qmd-like-rag with MinerU's Python environment.
+The tested `main` GPU runtime is pinned in `requirements-gpu-cu130.txt`. Install that runtime into qmd-like-rag's own virtual environment before installing the Provider. Do not add qmd-like-rag to MinerU's Python environment and do not add MinerU's site-packages directory to qmd-like-rag's import path.
 
 ```bash
 python3 -m venv /root/.venvs/qmd-like-rag
-/root/.venvs/qmd-like-rag/bin/python -m pip install torch \
-  --index-url https://download.pytorch.org/whl/cpu
+/root/.venvs/qmd-like-rag/bin/python -m pip install \
+  -r /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag/requirements-gpu-cu130.txt
 /root/.venvs/qmd-like-rag/bin/python -m pip install \
   /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag
 install -d -m 0755 /root/.config/qmd-like-rag
@@ -101,7 +101,11 @@ install -m 0644 \
 ln -s /root/.venvs/qmd-like-rag/bin/qmd-like-rag /usr/local/bin/qmd-like-rag
 ```
 
-Replace an existing stable link only after confirming its resolved target belongs to the prior qmd-like-rag deployment. `qmd-like-rag doctor` should report all packages available; a CPU-first runtime should additionally report `torch.version.cuda == None` and `torch.cuda.is_available() == False` when inspected with its virtual-environment Python. Record `provider_version`, configuration/model fingerprints, and the indexed corpus fingerprint in the Vault index manifest.
+The CUDA 13.0 lock was validated on WSL with Torch `2.11.0+cu130` and an NVIDIA GeForce RTX 5070 Ti Laptop GPU. Reusing locally installed wheel payloads to avoid a second large download is an installation optimization only: copy them into the independent qmd-like-rag environment by their wheel `RECORD` manifests, then require `pip check` and a real CUDA tensor operation to pass. Never make qmd-like-rag import MinerU's environment at runtime.
+
+Replace an existing stable link only after confirming its resolved target belongs to the prior qmd-like-rag deployment. `qmd-like-rag doctor` must report Provider `0.2.0`, `cuda_available: true`, CUDA `13.0`, and the expected GPU on the tested `main` host. The `main` host config sets `device` to `cuda`, which is passed explicitly to both the embedding model and reranker.
+
+For a CPU-only deployment, install a CPU Torch build and set `device` to `cpu`; do not use the CUDA `main` example unchanged. A successful doctor report proves package and accelerator readiness only. It does not prove that models are downloaded or that a Vault index exists. Record `provider_version`, configuration/model fingerprints, and the indexed corpus fingerprint in the Vault index manifest only after a successful model-resolved index build.
 
 ## Removed prototype features
 
