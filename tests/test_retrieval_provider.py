@@ -40,7 +40,7 @@ if args.command == 'recall':
   base.update({'status':'ok','authority':'candidate-navigation-only','index_fingerprint':'idx','warnings':[],
     'candidates':[{'vault_path':'10_Raw/converted/example/document.md','line_start':2,'line_end':3,'source_sha256':digest,'snippet':'供水'}]})
 else:
-  base.update({'status':'ready','configuration_fingerprint':'cfg','model_fingerprint':'model','corpus_fingerprint':'corpus','index_fingerprint':'idx','document_count':1,'chunk_count':2,'errors':[]})
+  base.update({'status':'ready','configuration':{'chunk_size':800,'include_patterns':['30_Cards/**/*.md']},'configuration_fingerprint':'cfg','model_fingerprint':'model','models':{'embedding':{'identity':'BAAI/bge-m3','revision':'0'*40,'dimension':1024},'reranker':None},'corpus_fingerprint':'corpus','index_fingerprint':'idx','document_count':1,'chunk_count':2,'errors':[]})
 print(json.dumps(base, ensure_ascii=False))
 """,
         encoding="utf-8",
@@ -100,6 +100,8 @@ def test_default_provider_configs_disable_query_and_sync_until_indexes_exist(tmp
     query_result = json.loads(query.stdout)
     assert json.loads(QUERY_CONFIG.read_text(encoding="utf-8"))["enabled"] is False
     assert json.loads(INGEST_CONFIG.read_text(encoding="utf-8"))["enabled"] is False
+    assert json.loads(QUERY_CONFIG.read_text(encoding="utf-8"))["provider_config"] == "/root/.config/qmd-like-rag/main.json"
+    assert json.loads(INGEST_CONFIG.read_text(encoding="utf-8"))["provider_config"] == "/root/.config/qmd-like-rag/main.json"
     assert query_result["status"] == "disabled"
     assert query_result["candidates"] == []
 
@@ -132,6 +134,8 @@ def test_ingest_adapter_writes_portable_manifest(tmp_path: Path) -> None:
     assert result["status"] == "ok"
     assert manifest["status"] == "ready"
     assert manifest["provider_version"] == "test"
+    assert manifest["configuration"]["chunk_size"] == 800
+    assert manifest["models"]["embedding"]["dimension"] == 1024
     assert manifest["last_success"]
     serialized = json.dumps(manifest)
     assert str(tmp_path) not in serialized

@@ -43,6 +43,11 @@ class ProviderConfig:
     include_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_INCLUDE_PATTERNS))
     embedding_model: str = "BAAI/bge-m3"
     reranker_model: str = "BAAI/bge-reranker-large"
+    embedding_revision: str | None = None
+    reranker_revision: str | None = None
+    embedding_dimension: int | None = None
+    local_files_only: bool = False
+    require_immutable_model_revisions: bool = False
     device: str = "cpu"
     use_reranker: bool = True
     chunk_size: int = 800
@@ -65,6 +70,18 @@ class ProviderConfig:
             raise ValueError("chunk_size and retrieval limits must be positive")
         if self.device not in {"cpu", "cuda", "mps"}:
             raise ValueError("device must be one of: cpu, cuda, mps")
+        if self.embedding_dimension is not None and self.embedding_dimension < 1:
+            raise ValueError("embedding_dimension must be positive")
+        if self.require_immutable_model_revisions:
+            revision_pattern = re.compile(r"^[0-9a-f]{40}$")
+            for name, revision in (
+                ("embedding_revision", self.embedding_revision),
+                ("reranker_revision", self.reranker_revision),
+            ):
+                if not revision or not revision_pattern.fullmatch(revision):
+                    raise ValueError(f"{name} must be a full 40-character commit hash")
+            if self.embedding_dimension is None:
+                raise ValueError("embedding_dimension is required for immutable model audit")
 
     @property
     def persist_dir(self) -> Path:
@@ -104,15 +121,26 @@ class ProviderConfig:
         return "sha256:" + hashlib.sha256(payload).hexdigest()
 
     def model_fingerprint(self) -> str:
-        payload = json.dumps(
-            {
-                "embedding_model": self.embedding_model,
-                "reranker_model": self.reranker_model if self.use_reranker else None,
+        payload = json.dumps(self.model_manifest(), ensure_ascii=False, sort_keys=True).encode("utf-8")
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    def model_manifest(self) -> dict[str, Any]:
+        return {
+            "embedding": {
+                "identity": self.embedding_model,
+                "revision": self.embedding_revision,
+                "dimension": self.embedding_dimension,
             },
-            ensure_ascii=False,
-            sort_keys=True,
-        ).encode("utf-8")
-        return "identity-sha256:" + hashlib.sha256(payload).hexdigest()
+            "reranker": (
+                {
+                    "identity": self.reranker_model,
+                    "revision": self.reranker_revision,
+                }
+                if self.use_reranker
+                else None
+            ),
+            "local_files_only": self.local_files_only,
+        }
 
 
 def load_config(

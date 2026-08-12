@@ -15,7 +15,7 @@ from qmd_like_rag.chunker import chunk_markdown_file
 from qmd_like_rag.config import ProviderConfig
 from qmd_like_rag.contract import normalize_candidate
 from qmd_like_rag.corpus import resolve_sources
-from qmd_like_rag.runtime import read_status
+from qmd_like_rag.runtime import read_status, recall
 
 
 def test_default_corpus_selects_governed_and_document_markdown(tmp_path: Path) -> None:
@@ -68,7 +68,9 @@ def test_absent_status_does_not_load_heavy_runtime(tmp_path: Path) -> None:
     result = read_status(config)
     assert result["status"] == "absent"
     assert result["protocol_version"] == "hermes-coarse-recall/v1"
-    assert result["model_fingerprint"].startswith("identity-sha256:")
+    assert result["configuration"]["embedding_model"] == "BAAI/bge-m3"
+    assert result["model_fingerprint"].startswith("sha256:")
+    assert result["models"]["embedding"]["identity"] == "BAAI/bge-m3"
 
 
 def test_short_vault_id_still_produces_valid_chroma_name(tmp_path: Path) -> None:
@@ -83,6 +85,10 @@ def test_branch_examples_keep_provider_state_outside_the_vault() -> None:
     )
     assert main["state_root"] == "/root/.local/state/qmd-like-rag"
     assert main["device"] == "cuda"
+    assert main["local_files_only"] is True
+    assert len(main["embedding_revision"]) == 40
+    assert len(main["reranker_revision"]) == 40
+    assert main["embedding_dimension"] == 1024
     assert intranet["state_root"] == "/opt/data/phq/qmd-like-rag-state"
     assert intranet["device"] == "cpu"
     assert not intranet["state_root"].startswith("/opt/data/phq/testVault/")
@@ -91,3 +97,41 @@ def test_branch_examples_keep_provider_state_outside_the_vault() -> None:
 def test_provider_rejects_unknown_execution_device(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="device"):
         ProviderConfig(vault_root=tmp_path / "vault", device="automatic")
+
+
+def test_immutable_model_audit_requires_full_revisions_and_dimension(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="embedding_revision"):
+        ProviderConfig(
+            vault_root=tmp_path / "vault",
+            require_immutable_model_revisions=True,
+            embedding_revision="main",
+            reranker_revision="0" * 40,
+            embedding_dimension=1024,
+        )
+    with pytest.raises(ValueError, match="embedding_dimension"):
+        ProviderConfig(
+            vault_root=tmp_path / "vault",
+            require_immutable_model_revisions=True,
+            embedding_revision="0" * 40,
+            reranker_revision="1" * 40,
+        )
+
+
+def test_recall_rejects_an_index_built_with_different_models(tmp_path: Path) -> None:
+    config = ProviderConfig(vault_root=tmp_path / "vault", state_root=tmp_path / "state")
+    config.ensure_dirs()
+    state = read_status(config)
+    state.update(
+        {
+            "status": "ready",
+            "configuration_fingerprint": config.config_fingerprint(),
+            "model_fingerprint": "sha256:stale",
+            "index_fingerprint": "sha256:index",
+        }
+    )
+    config.state_path().write_text(json.dumps(state), encoding="utf-8")
+
+    result = recall(config, "test")
+
+    assert result["candidates"] == []
+    assert result["warnings"] == ["index-model-mismatch"]

@@ -3,5 +3,6 @@
   "enabled": false,
   "transport": "command",
   "command": ["qmd-like-rag"],
+  "provider_config": "/root/.config/qmd-like-rag/main.json",
   "timeout_seconds": 1800
 }

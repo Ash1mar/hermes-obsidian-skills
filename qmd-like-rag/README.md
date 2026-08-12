@@ -103,7 +103,9 @@ ln -s /root/.venvs/qmd-like-rag/bin/qmd-like-rag /usr/local/bin/qmd-like-rag
 
 The CUDA 13.0 lock was validated on WSL with Torch `2.11.0+cu130` and an NVIDIA GeForce RTX 5070 Ti Laptop GPU. Reusing locally installed wheel payloads to avoid a second large download is an installation optimization only: copy them into the independent qmd-like-rag environment by their wheel `RECORD` manifests, then require `pip check` and a real CUDA tensor operation to pass. Never make qmd-like-rag import MinerU's environment at runtime.
 
-Replace an existing stable link only after confirming its resolved target belongs to the prior qmd-like-rag deployment. `qmd-like-rag doctor` must report Provider `0.2.0`, `cuda_available: true`, CUDA `13.0`, and the expected GPU on the tested `main` host. The `main` host config sets `device` to `cuda`, which is passed explicitly to both the embedding model and reranker.
+Replace an existing stable link only after confirming its resolved target belongs to the prior qmd-like-rag deployment. `qmd-like-rag doctor` must report Provider `0.3.0`, `cuda_available: true`, CUDA `13.0`, and the expected GPU on the tested `main` host. The `main` host config sets `device` to `cuda`, which is passed explicitly to both the embedding model and reranker.
+
+Pin Hugging Face models to full commit hashes in Provider configuration. Download them as a separate deployment step, then keep `local_files_only: true` during sync and recall so a running Provider cannot silently move to a newer model revision. The model audit record includes identity, immutable revision, embedding dimension, and a fingerprint derived from those values.
 
 For a CPU-only deployment, install a CPU Torch build and set `device` to `cpu`; do not use the CUDA `main` example unchanged. A successful doctor report proves package and accelerator readiness only. It does not prove that models are downloaded or that a Vault index exists. Record `provider_version`, configuration/model fingerprints, and the indexed corpus fingerprint in the Vault index manifest only after a successful model-resolved index build.
 

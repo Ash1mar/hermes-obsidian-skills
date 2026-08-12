@@ -18,7 +18,18 @@ class ChromaStore:
         self.embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
             model_name=config.embedding_model,
             device=config.device,
+            revision=config.embedding_revision,
+            local_files_only=config.local_files_only,
         )
+        self.embedding_dimension = int(self.embed_fn._model.get_sentence_embedding_dimension())
+        if (
+            config.embedding_dimension is not None
+            and self.embedding_dimension != config.embedding_dimension
+        ):
+            raise RuntimeError(
+                "Embedding dimension mismatch: "
+                f"expected {config.embedding_dimension}, got {self.embedding_dimension}"
+            )
         self.client = chromadb.PersistentClient(
             path=str(self.path), settings=Settings(anonymized_telemetry=False)
         )

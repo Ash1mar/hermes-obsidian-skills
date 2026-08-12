@@ -42,9 +42,14 @@ Main normally uses command transport:
   "provider": "qmd-like-rag",
   "transport": "command",
   "command": ["qmd-like-rag"],
-  "timeout_seconds": 60
+  "provider_config": "/root/.config/qmd-like-rag/main.json",
+  "timeout_seconds": 300
 }
 ```
+
+Keep `enabled: false` while the Provider has no ready index. After ingest performs the first
+successful sync, enable both the ingest and query adapters together. The host config pins the
+models and host-local state location; it is not Vault content.
 
 The intranet branch may replace that file or point its existing `config/intranet.json` deployment policy at HTTP:
 
