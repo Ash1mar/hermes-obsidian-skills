@@ -17,7 +17,16 @@ from typing import Any
 
 TRACE_RELATIVE_DIR = Path("_system/reports/query-traces")
 DATA_DIR_NAME = "_data"
-SCHEMA_VERSION = "1.2"
+SCHEMA_VERSION = "1.3"
+INACTIVE_ROUTE_STATUSES = {"disabled", "unavailable", "skipped", "failed"}
+RETRIEVAL_STAGES = {
+    "coarse-recall",
+    "hierarchical-candidate-location",
+    "candidate-fusion",
+    "scope-retrieval",
+    "governed-artifact-lookup",
+    "scoped-lexical-search",
+}
 
 
 def now_iso() -> str:
@@ -91,8 +100,31 @@ def markdown_path(value: str) -> str:
 
 def render_note(state: dict[str, Any]) -> str:
     events = state.get("events", [])
-    routes = list(dict.fromkeys(str(event.get("route")) for event in events if event.get("route")))
+    route_events = [event for event in events if event.get("stage") in RETRIEVAL_STAGES]
+    attempted_routes = list(dict.fromkeys(str(event.get("route")) for event in route_events if event.get("route")))
+    effective_routes = list(
+        dict.fromkeys(
+            str(event.get("route"))
+            for event in route_events
+            if event.get("route") and str(event.get("status") or "").casefold() not in INACTIVE_ROUTE_STATUSES
+        )
+    )
     hierarchical = any(event.get("route") == "hierarchical-search" for event in events)
+    metrics = state.get("metrics", {})
+    session_duration = metrics.get("query_session_duration_ms")
+    accounted_duration = round(
+        sum(
+            float(event.get("duration_ms") or 0)
+            for event in events
+            if event.get("accounting", "primary") == "primary"
+        ),
+        3,
+    )
+    unaccounted_duration = (
+        round(max(0.0, float(session_duration) - accounted_duration), 3)
+        if session_duration is not None
+        else None
+    )
     lines = [
         "---",
         "type: query-trace",
@@ -108,10 +140,18 @@ def render_note(state: dict[str, Any]) -> str:
         f"query_type: {yaml_string(state.get('query_type'))}",
         f"evidence_level: {yaml_string(state.get('evidence_level'))}",
         f"hierarchical_search_used: {'true' if hierarchical else 'false'}",
-        "retrieval_route:",
+        "attempted_routes:",
     ]
-    lines.extend(f"  - {yaml_string(route)}" for route in routes)
-    if not routes:
+    lines.extend(f"  - {yaml_string(route)}" for route in attempted_routes)
+    if not attempted_routes:
+        lines.append("  - none")
+    lines.append("effective_routes:")
+    lines.extend(f"  - {yaml_string(route)}" for route in effective_routes)
+    if not effective_routes:
+        lines.append("  - none")
+    lines.append("retrieval_route:")
+    lines.extend(f"  - {yaml_string(route)}" for route in effective_routes)
+    if not effective_routes:
         lines.append("  - none")
     lines.extend(
         [
@@ -134,6 +174,9 @@ def render_note(state: dict[str, Any]) -> str:
             f"- Request group: `{state.get('request_id') or 'single query'}`",
             f"- Question index: `{state.get('question_index') or 'not grouped'}`",
             f"- Hierarchical search: `{'used' if hierarchical else 'not used'}`",
+            f"- Query-session duration: `{session_duration if session_duration is not None else 'unavailable'} ms`",
+            f"- Accounted stage duration: `{accounted_duration} ms`",
+            f"- Unaccounted query-session duration: `{unaccounted_duration if unaccounted_duration is not None else 'unavailable'} ms`",
             "",
             "## Retrieval timeline",
             "",
@@ -148,7 +191,8 @@ def render_note(state: dict[str, Any]) -> str:
         lines.extend(
             [
                 f"> [!info]- {index}. {stage} · {status}",
-                f"> - At: `{event.get('at')}`",
+                f"> - Started: `{event.get('started_at') or 'unavailable'}`",
+                f"> - Ended: `{event.get('ended_at') or event.get('at')}`",
                 f"> - Route: `{route}`",
             ]
         )
@@ -183,7 +227,7 @@ def render_note(state: dict[str, Any]) -> str:
         candidates = event.get("candidates", [])
         if candidates:
             lines.append("> - Top candidates:")
-            for candidate in candidates[:10]:
+            for candidate in candidates[:5]:
                 title = candidate.get("title") or candidate.get("section_id") or "untitled"
                 source = (
                     candidate.get("document_path")
@@ -192,7 +236,15 @@ def render_note(state: dict[str, Any]) -> str:
                     or "unknown"
                 )
                 matched = candidate.get("matched_terms") or {}
-                terms = sorted({term for values in matched.values() if isinstance(values, list) for term in values})
+                if isinstance(matched, dict):
+                    terms = sorted(
+                        {term for values in matched.values() if isinstance(values, list) for term in values},
+                        key=lambda value: (-len(value), value),
+                    )[:8]
+                elif isinstance(matched, list):
+                    terms = [str(term) for term in matched[:8]]
+                else:
+                    terms = []
                 score = candidate.get("fusion_score", candidate.get("score", "?"))
                 route_scores = candidate.get("route_scores") or {}
                 score_detail = f"; route scores: {route_scores}" if route_scores else ""
@@ -214,6 +266,7 @@ def render_note(state: dict[str, Any]) -> str:
                 shorten(str(claim.get("text") or ""), 2000),
                 "",
                 f"- Evidence: {evidence_ids}",
+                f"- Recorded: `{claim.get('recorded_at') or 'unavailable'}`",
             ]
         )
         if claim.get("qualification"):
@@ -229,6 +282,7 @@ def render_note(state: dict[str, Any]) -> str:
                 f"- `{item.get('evidence_id')}` {markdown_path(str(item.get('path') or ''))}",
                 f"  - Version: `{item.get('document_version') or 'unresolved'}`; section: `{item.get('section_id') or 'unresolved'}`; pages: `{item.get('pages') or 'unresolved'}`; block: `{item.get('block_id') or 'unresolved'}`",
                 f"  - Original asset: `{item.get('original_asset_status') or 'not-checked'}`",
+                f"  - Recorded: `{item.get('recorded_at') or 'unavailable'}`",
             ]
         )
         if item.get("original_asset_path"):
@@ -361,6 +415,7 @@ def start_trace(
     trace_id: str | None = None,
     request_id: str | None = None,
     question_index: int | None = None,
+    workflow: str | None = None,
 ) -> dict[str, Any]:
     created = now_iso()
     if question_index is not None and question_index < 1:
@@ -390,11 +445,13 @@ def start_trace(
         "updated": created,
         "question": shorten(question, 8000),
         "query_type": query_type,
+        "workflow": workflow,
         "evidence_level": None,
         "events": [],
         "evidence": [],
         "claims": [],
         "open_stages": {},
+        "metrics": {},
         "conclusion": None,
         "unresolved": [],
     }
@@ -412,30 +469,45 @@ def start_trace(
     }
 
 
-def append_event(vault_root: Path, trace_id: str, event: dict[str, Any]) -> dict[str, Any]:
-    state, _, _ = load_state(vault_root, trace_id)
+def clean_event(state: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
     known_evidence = evidence_by_id(state)
     requested_evidence = [safe_id(str(item)) for item in event.get("evidence_ids", [])]
     evidence_ids = list(dict.fromkeys(requested_evidence))
     missing = [item for item in evidence_ids if item not in known_evidence]
     if missing:
         raise ValueError(f"event references unknown evidence: {', '.join(missing)}")
-    clean_event = {
-        "at": now_iso(),
+    ended_at = str(event.get("ended_at") or event.get("at") or now_iso())
+    return {
+        "at": ended_at,
+        "started_at": shorten(str(event.get("started_at") or ""), 80) or None,
+        "ended_at": shorten(ended_at, 80),
         "stage": shorten(str(event.get("stage") or "unspecified"), 120),
         "route": shorten(str(event.get("route") or "unspecified"), 120),
         "status": shorten(str(event.get("status") or "completed"), 40),
         "summary": shorten(str(event.get("summary") or "")),
         "hit_count": event.get("hit_count"),
         "duration_ms": event.get("duration_ms"),
+        "accounting": "diagnostic" if event.get("accounting") == "diagnostic" else "primary",
         "inspected_paths": [shorten(str(item), 500) for item in event.get("inspected_paths", [])],
         "evidence_ids": evidence_ids,
         "rejected": event.get("rejected", []),
         "candidates": event.get("candidates", [])[:20],
     }
-    state.setdefault("events", []).append(clean_event)
+
+
+def append_events(vault_root: Path, trace_id: str, events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    state, _, _ = load_state(vault_root, trace_id)
+    cleaned: list[dict[str, Any]] = []
+    for event in events:
+        item = clean_event(state, event)
+        state.setdefault("events", []).append(item)
+        cleaned.append(item)
     write_state(vault_root, state)
-    return clean_event
+    return cleaned
+
+
+def append_event(vault_root: Path, trace_id: str, event: dict[str, Any]) -> dict[str, Any]:
+    return append_events(vault_root, trace_id, [event])[0]
 
 
 def parse_rejected(items: list[str]) -> list[dict[str, str]]:
@@ -462,8 +534,7 @@ def validate_vault_path(vault_root: Path, value: str) -> str:
     return relative.as_posix()
 
 
-def record_evidence(vault_root: Path, trace_id: str, evidence: dict[str, Any]) -> dict[str, Any]:
-    state, _, _ = load_state(vault_root, trace_id)
+def normalize_evidence(vault_root: Path, state: dict[str, Any], evidence: dict[str, Any]) -> dict[str, Any]:
     evidence_id = safe_id(str(evidence.get("evidence_id") or ""))
     if evidence_id in evidence_by_id(state):
         raise ValueError(f"evidence id already exists: {evidence_id}")
@@ -491,13 +562,18 @@ def record_evidence(vault_root: Path, trace_id: str, evidence: dict[str, Any]) -
         "summary": shorten(str(evidence.get("summary") or ""), 1200),
         "recorded_at": now_iso(),
     }
+    return record
+
+
+def record_evidence(vault_root: Path, trace_id: str, evidence: dict[str, Any]) -> dict[str, Any]:
+    state, _, _ = load_state(vault_root, trace_id)
+    record = normalize_evidence(vault_root, state, evidence)
     state.setdefault("evidence", []).append(record)
     write_state(vault_root, state)
     return record
 
 
-def record_claim(vault_root: Path, trace_id: str, claim: dict[str, Any]) -> dict[str, Any]:
-    state, _, _ = load_state(vault_root, trace_id)
+def normalize_claim(state: dict[str, Any], claim: dict[str, Any]) -> dict[str, Any]:
     claim_id = safe_id(str(claim.get("claim_id") or ""))
     if any(item.get("claim_id") == claim_id for item in state.get("claims", [])):
         raise ValueError(f"claim id already exists: {claim_id}")
@@ -516,6 +592,12 @@ def record_claim(vault_root: Path, trace_id: str, claim: dict[str, Any]) -> dict
         "qualification": shorten(str(claim.get("qualification") or ""), 1200) or None,
         "recorded_at": now_iso(),
     }
+    return record
+
+
+def record_claim(vault_root: Path, trace_id: str, claim: dict[str, Any]) -> dict[str, Any]:
+    state, _, _ = load_state(vault_root, trace_id)
+    record = normalize_claim(state, claim)
     state.setdefault("claims", []).append(record)
     write_state(vault_root, state)
     return record
@@ -555,6 +637,8 @@ def end_stage(vault_root: Path, trace_id: str, stage_id: str, event: dict[str, A
             **event,
             "stage": timer["stage"],
             "route": timer["route"],
+            "started_at": timer["started_at"],
+            "ended_at": now_iso(),
             "duration_ms": round(max(0, elapsed_ns) / 1_000_000, 3),
         },
     )
@@ -569,6 +653,7 @@ def command_start(args: argparse.Namespace) -> dict[str, Any]:
         args.trace_id,
         args.request_id,
         args.question_index,
+        args.workflow,
     )
 
 
@@ -647,19 +732,95 @@ def command_stage_end(args: argparse.Namespace) -> dict[str, Any]:
     return {"trace_id": args.trace_id, "event": event}
 
 
-def command_finish(args: argparse.Namespace) -> dict[str, Any]:
-    state, _, _ = load_state(args.vault_root, args.trace_id)
+def required_stage_gaps(state: dict[str, Any], evidence_level: str | None) -> list[str]:
+    if state.get("workflow") != "query-session/v1" or state.get("query_type") != "evidence":
+        return []
+    required = {
+        "candidate-review",
+        "document-reading",
+        "table-figure-resolution",
+        "provenance-resolution",
+        "answer-synthesis",
+        "claim-evidence-mapping",
+    }
+    if evidence_level in {"clear", "source-backed", "needs-qa"} and any(
+        item.get("original_asset_status") == "verified" for item in state.get("evidence", [])
+    ):
+        required.add("page-asset-verification")
+    observed = {str(event.get("stage")) for event in state.get("events", [])}
+    return sorted(required - observed)
+
+
+def finish_state(
+    vault_root: Path,
+    state: dict[str, Any],
+    *,
+    status: str,
+    evidence_level: str | None,
+    conclusion: str,
+    unresolved: list[str],
+) -> dict[str, Any]:
+    if status not in {"completed", "failed", "incomplete"}:
+        raise ValueError(f"unsupported trace status: {status}")
+    if evidence_level not in {None, "clear", "source-backed", "needs-qa", "gap"}:
+        raise ValueError(f"unsupported evidence level: {evidence_level}")
     if state.get("open_stages"):
         raise ValueError(f"cannot finish trace with open stages: {', '.join(state['open_stages'])}")
-    if args.status == "completed" and args.evidence_level in {"clear", "source-backed", "needs-qa"}:
+    if status == "completed" and evidence_level in {"clear", "source-backed", "needs-qa"}:
         if not state.get("evidence") or not state.get("claims"):
             raise ValueError("completed evidence-bearing traces require evidence records and claim mappings")
-    state["status"] = args.status
-    state["evidence_level"] = args.evidence_level
-    state["conclusion"] = shorten(args.conclusion, 8000)
-    state["unresolved"] = [shorten(item) for item in args.unresolved]
-    state_path, note_path = write_state(args.vault_root, state)
-    return {"trace_id": args.trace_id, "status": state["status"], "state_path": str(state_path), "note_path": str(note_path)}
+    gaps = required_stage_gaps(state, evidence_level) if status == "completed" else []
+    if gaps:
+        raise ValueError(f"completed query-session trace is missing required stages: {', '.join(gaps)}")
+    state["status"] = status
+    state["evidence_level"] = evidence_level
+    state["conclusion"] = shorten(conclusion, 8000)
+    state["unresolved"] = [shorten(item) for item in unresolved]
+    state_path, note_path = write_state(vault_root, state)
+    return {
+        "trace_id": state["trace_id"],
+        "status": state["status"],
+        "state_path": str(state_path),
+        "note_path": str(note_path),
+        "coverage_gaps": gaps,
+    }
+
+
+def finalize_trace(vault_root: Path, trace_id: str, manifest: dict[str, Any]) -> dict[str, Any]:
+    """Validate and persist final evidence, claims, events, and completion in one write."""
+    state, _, _ = load_state(vault_root, trace_id)
+    if state.get("status") != "in_progress":
+        raise ValueError(f"query trace is not in progress: {state.get('status')}")
+    for evidence in manifest.get("evidence", []):
+        record = normalize_evidence(vault_root, state, evidence)
+        state.setdefault("evidence", []).append(record)
+    for claim in manifest.get("claims", []):
+        record = normalize_claim(state, claim)
+        state.setdefault("claims", []).append(record)
+    for event in manifest.get("events", []):
+        state.setdefault("events", []).append(clean_event(state, event))
+    if manifest.get("metrics"):
+        state.setdefault("metrics", {}).update(manifest["metrics"])
+    return finish_state(
+        vault_root,
+        state,
+        status=str(manifest.get("status") or "completed"),
+        evidence_level=manifest.get("evidence_level"),
+        conclusion=str(manifest.get("conclusion") or ""),
+        unresolved=[str(item) for item in manifest.get("unresolved", [])],
+    )
+
+
+def command_finish(args: argparse.Namespace) -> dict[str, Any]:
+    state, _, _ = load_state(args.vault_root, args.trace_id)
+    return finish_state(
+        args.vault_root,
+        state,
+        status=args.status,
+        evidence_level=args.evidence_level,
+        conclusion=args.conclusion,
+        unresolved=args.unresolved,
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -674,6 +835,7 @@ def build_parser() -> argparse.ArgumentParser:
     start.add_argument("--request-id")
     start.add_argument("--question-index", type=int)
     start.add_argument("--query-type")
+    start.add_argument("--workflow")
     start.set_defaults(handler=command_start)
 
     event = subparsers.add_parser("event", help="Append a retrieval or decision event")

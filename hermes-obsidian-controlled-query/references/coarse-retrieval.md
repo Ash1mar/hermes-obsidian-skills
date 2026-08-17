@@ -17,14 +17,16 @@ Use direct traditional/hierarchical lookup for exact identifiers and verbatim ph
 
 ## Operation
 
-Use the deterministic parallel scope entry point:
+The normal fast path invokes parallel scope retrieval through:
 
 ```bash
-python3 "<query-skill-root>/scripts/retrieve_query_scope.py" \
-  <vault-root> "<query>" --trace-id <trace-id>
+python3 "<query-skill-root>/scripts/query_session.py" begin \
+  <vault-root> "<query>" --query-type <type> --session-id <session-id>
 ```
 
-It invokes the adapter below concurrently with hierarchical location, then expands Provider chunks to complete sections and fuses the union. Provider and hierarchical raw scores remain separate; fusion ordering uses route ranks. Candidate duplicates and their rejection reasons are retained in the result and trace.
+It starts the trace, invokes the adapter below concurrently with hierarchical location, expands Provider chunks to complete sections, and fuses the union. Provider and hierarchical raw scores remain separate; fusion ordering uses route ranks. Candidate duplicates and their rejection reasons are retained in the trace sidecar while stdout stays compact.
+
+Call `retrieve_query_scope.py` directly only for an explicit diagnostic or legacy fallback.
 
 Call the Provider adapter directly only for an explicit diagnostic or fallback:
 

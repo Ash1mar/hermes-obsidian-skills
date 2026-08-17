@@ -15,6 +15,7 @@ from typing import Any
 
 
 RRF_K = 60
+DEFAULT_COMPACT_LIMIT = 5
 
 
 def run_json(command: list[str]) -> dict[str, Any]:
@@ -278,6 +279,48 @@ def fuse_candidates(
     return retained, rejected
 
 
+def compact_candidate(candidate: dict[str, Any], rank: int | None = None) -> dict[str, Any]:
+    matched = candidate.get("matched_terms") or {}
+    terms = sorted(
+        {term for values in matched.values() if isinstance(values, list) for term in values},
+        key=lambda value: (-len(value), value),
+    )[:8]
+    result = {
+        "rank": rank,
+        "document_path": candidate.get("document_path") or candidate.get("vault_path"),
+        "source_filename": candidate.get("source_filename"),
+        "section_id": candidate.get("section_id"),
+        "title": candidate.get("title") or candidate.get("heading"),
+        "pages": candidate.get("pages", []),
+        "quality": candidate.get("quality"),
+        "ingest_status": candidate.get("ingest_status"),
+        "viewer_url": candidate.get("viewer_url"),
+        "retrieval_routes": candidate.get("retrieval_routes", []),
+        "fusion_score": candidate.get("fusion_score"),
+        "matched_terms": terms,
+    }
+    return {key: value for key, value in result.items() if value not in (None, [], {})}
+
+
+def compact_result(result: dict[str, Any], limit: int = DEFAULT_COMPACT_LIMIT) -> dict[str, Any]:
+    candidates = result.get("candidates", [])
+    return {
+        "status": result.get("status"),
+        "authority": result.get("authority"),
+        "query": result.get("query"),
+        "duration_ms": result.get("duration_ms"),
+        "routes": result.get("routes", {}),
+        "fusion": result.get("fusion", {}),
+        "candidate_count": len(candidates),
+        "candidates": [
+            compact_candidate(candidate, rank)
+            for rank, candidate in enumerate(candidates[: max(1, limit)], start=1)
+        ],
+        "warnings": result.get("warnings", []),
+        "next_step": result.get("next_step"),
+    }
+
+
 def append_trace_events(
     vault_root: Path,
     trace_id: str,
@@ -288,84 +331,80 @@ def append_trace_events(
     fusion_duration_ms: float,
 ) -> None:
     try:
-        from manage_query_trace import append_event
+        from manage_query_trace import append_events
 
-        append_event(
+        append_events(
             vault_root,
             trace_id,
-            {
+            [
+                {
                 "stage": "coarse-recall",
                 "route": str(coarse.get("provider") or "qmd-like-rag"),
                 "status": coarse.get("status"),
                 "summary": "Optional coarse recall completed; unavailable Provider does not block the query.",
                 "hit_count": len(coarse.get("candidates", [])),
                 "duration_ms": coarse.get("duration_ms"),
-                "candidates": coarse.get("candidates", []),
-            },
-        )
-        append_event(
-            vault_root,
-            trace_id,
-            {
+                "accounting": "diagnostic",
+                "candidates": coarse.get("candidates", [])[:3],
+                },
+                {
                 "stage": "hierarchical-candidate-location",
                 "route": "hierarchical-search",
                 "status": hierarchical.get("status"),
                 "summary": "Hierarchical document/section candidates located for scope fusion.",
                 "hit_count": len(hierarchical.get("candidates", [])),
                 "duration_ms": hierarchical.get("duration_ms"),
-                "candidates": hierarchical.get("candidates", []),
-            },
-        )
-        append_event(
-            vault_root,
-            trace_id,
-            {
+                "accounting": "diagnostic",
+                "candidates": hierarchical.get("candidates", [])[:3],
+                },
+                {
                 "stage": "candidate-fusion",
                 "route": "candidate-fusion",
                 "status": "ok" if fused else "empty",
                 "summary": f"Normalized and fused candidates; retained {len(fused)}, merged {len(rejected)} duplicates.",
                 "hit_count": len(fused),
                 "duration_ms": fusion_duration_ms,
+                "accounting": "diagnostic",
                 "rejected": rejected,
                 "candidates": fused,
-            },
+                },
+            ],
         )
     except Exception as exc:
         print(f"warning: query trace append failed: {exc}", file=sys.stderr)
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("vault_root", type=Path)
-    parser.add_argument("query")
-    parser.add_argument("--top-k", type=int, default=30)
-    parser.add_argument("--top-documents", type=int, default=8)
-    parser.add_argument("--top-sections", type=int, default=20)
-    parser.add_argument("--provider-config", type=Path)
-    parser.add_argument("--trace-id")
-    args = parser.parse_args()
-
-    vault_root = args.vault_root.resolve()
+def retrieve_scope(
+    vault_root: Path,
+    query: str,
+    *,
+    top_k: int = 30,
+    top_documents: int = 8,
+    top_sections: int = 20,
+    provider_config: Path | None = None,
+    trace_id: str | None = None,
+) -> dict[str, Any]:
+    vault_root = vault_root.resolve()
     script_root = Path(__file__).resolve().parent
     coarse_command = [
         sys.executable,
         str(script_root / "retrieve_candidates.py"),
         str(vault_root),
-        args.query,
+        query,
         "--top-k",
-        str(args.top_k),
+        str(top_k),
     ]
-    if args.provider_config:
-        coarse_command.extend(["--provider-config", str(args.provider_config)])
+    if provider_config:
+        coarse_command.extend(["--provider-config", str(provider_config)])
     hierarchical_command = [
         sys.executable,
         str(script_root / "locate_source_sections.py"),
         str(vault_root),
-        args.query,
+        query,
         "--top-documents",
-        str(args.top_documents),
+        str(top_documents),
         "--top-sections",
-        str(args.top_sections),
+        str(top_sections),
     ]
     started = time.monotonic_ns()
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -377,10 +416,10 @@ def main() -> int:
     fused, rejected = fuse_candidates(hierarchical, coarse, projections)
     fusion_duration_ms = round((time.monotonic_ns() - fusion_started) / 1_000_000, 3)
     duration_ms = round((time.monotonic_ns() - started) / 1_000_000, 3)
-    if args.trace_id:
+    if trace_id:
         append_trace_events(
             vault_root,
-            args.trace_id,
+            trace_id,
             coarse,
             hierarchical,
             fused,
@@ -391,7 +430,7 @@ def main() -> int:
     result = {
         "status": "ok" if fused else "warn",
         "authority": "candidate-navigation-only",
-        "query": args.query,
+        "query": query,
         "duration_ms": duration_ms,
         "routes": {
             "coarse_recall": {
@@ -416,7 +455,39 @@ def main() -> int:
         "warnings": warnings,
         "next_step": "Inspect governed candidates first; when insufficient, run exact lexical search within this fused scope, then verify current source/PDF evidence.",
     }
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("vault_root", type=Path)
+    parser.add_argument("query")
+    parser.add_argument("--top-k", type=int, default=30)
+    parser.add_argument("--top-documents", type=int, default=8)
+    parser.add_argument("--top-sections", type=int, default=20)
+    parser.add_argument("--provider-config", type=Path)
+    parser.add_argument("--trace-id")
+    parser.add_argument("--compact", action="store_true", help="Print a bounded agent-facing result")
+    parser.add_argument("--compact-limit", type=int, default=DEFAULT_COMPACT_LIMIT)
+    parser.add_argument("--full-result-path", type=Path, help="Also save the complete JSON result")
+    args = parser.parse_args()
+    result = retrieve_scope(
+        args.vault_root,
+        args.query,
+        top_k=args.top_k,
+        top_documents=args.top_documents,
+        top_sections=args.top_sections,
+        provider_config=args.provider_config,
+        trace_id=args.trace_id,
+    )
+    if args.full_result_path:
+        args.full_result_path.parent.mkdir(parents=True, exist_ok=True)
+        args.full_result_path.write_text(
+            json.dumps(result, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+    output = compact_result(result, args.compact_limit) if args.compact else result
+    print(json.dumps(output, ensure_ascii=False, indent=2))
     return 0
 
 

@@ -1,176 +1,123 @@
 # Query Trace Contract
 
-Use query traces to audit retrieval navigation without turning runtime history into source evidence.
+Query traces audit navigation and timing without becoming evidence.
 
 ## Authority and write boundary
 
 - Write only under `_system/reports/query-traces/`.
-- Treat Markdown traces and JSON sidecars as non-authoritative, disposable runtime records.
-- Never cite a query trace as evidence and never retrieve it as a governed answer source.
-- Do not copy long source passages, credentials, hidden prompts, or unrestricted tool output into a trace.
-- Keep the rest of the Vault read-only unless the user separately authorizes controlled writeback.
-- Logging failure must not block or weaken the answer. Mention the failure in the answer only when auditability was explicitly requested.
-
-The default is one trace per controlled query. For trace purposes, each independently answerable question is a controlled query even when several questions arrive in one user message. This is a required operational side effect of the Query Skill, including when the user calls the query "read-only" or asks not to modify/沉淀 governed knowledge. Those phrases protect knowledge artifacts; they do not disable runtime audit logging. Skip the trace only when the user explicitly requests no query trace/log, or the Vault cannot be written.
+- Treat Markdown traces and JSON sidecars as disposable, non-authoritative runtime records.
+- Never cite a trace, query index, source map, ledger, or conversion carrier as factual evidence.
+- Do not record hidden reasoning, credentials, unrestricted tool output, or long source passages.
+- A read-only controlled query still creates its trace unless the user explicitly opts out or the Vault is unwritable.
+- Logging failure never blocks the answer or permits governed writeback.
 
 ## Runtime path
 
-Run the trace manager from the active Query Skill installation, not from the Vault. Resolve `<query-skill-root>` from the location of the active `SKILL.md` supplied by the runtime's Skill loader, then substitute that absolute directory in the commands below:
+Resolve `<query-skill-root>` from the active Skill loader. On Hermes use `skill_view(name="hermes-obsidian-controlled-query")`, then verify `linked_files.scripts` contains `query_session.py`. Execute the bundled script without loading its source during normal operation.
 
-```bash
-test -f "<query-skill-root>/scripts/manage_query_trace.py"
-```
+The fast entry point is `<query-skill-root>/scripts/query_session.py`.
 
-Do not hard-code or guess an installation directory. Do not probe `<vault>/_system/skills`, `<vault>/_system/templates`, or `<vault>/scripts` for these runtime files.
+Never search for runtime scripts under the Vault or hard-code `/root/.hermes/skills`.
 
-## Lifecycle
+## Fast lifecycle
 
-Start immediately after resolving the Vault, query type, and Hermes session ID, before the first governed-artifact search:
-
-```bash
-python3 "<query-skill-root>/scripts/manage_query_trace.py" start <vault-root> "<question>" \
-  --session-id <hermes-session-id> --query-type <type>
-```
-
-Retain the returned `trace_id`. Run the deterministic parallel scope retriever. It serializes trace writes after concurrent retrieval and records route durations, fused ranking, and duplicate rejection reasons:
-
-```bash
-python3 "<query-skill-root>/scripts/retrieve_query_scope.py" \
-  <vault-root> "<question>" --trace-id <trace-id>
-```
-
-Append an event after each remaining attempted layer, including zero-hit, skipped, fallback, and failed stages:
-
-```bash
-python3 "<query-skill-root>/scripts/manage_query_trace.py" event <vault-root> <trace-id> \
-  --stage governed-artifact-lookup --route governed-artifacts \
-  --hit-count 3 \
-  --summary "Cards and concepts checked; one card retained for source follow-up." \
-  --inspected-path 30_Cards/example.md \
-  --rejected "40_Concepts/example.md::definition only; no parameter evidence"
-```
-
-Record every accepted evidence item explicitly:
-
-```bash
-python3 "<query-skill-root>/scripts/manage_query_trace.py" evidence <vault-root> <trace-id> \
-  --evidence-id E1 \
-  --path "10_Raw/converted/example_document_bundle/document.md" \
-  --document-version "bundle-v2-or-source-hash" \
-  --section-id "section-0042" --page 15 --block-id "table-3.1.2-row-cable" \
-  --original-asset-status verified \
-  --original-asset-path "10_Raw/converted/example_document_bundle/tables/table_3_1_2_source.jpg"
-```
-
-Link evidence IDs from verification events. Accepted counts and paths are derived from existing Evidence records and must never be entered independently:
-
-```bash
-python3 "<query-skill-root>/scripts/manage_query_trace.py" event <vault-root> <trace-id> \
-  --stage page-asset-verification --route page-asset-verification \
-  --hit-count 1 --evidence-id E1 --summary "Checked the original table row."
-```
-
-Map every final claim before finishing:
-
-```bash
-python3 "<query-skill-root>/scripts/manage_query_trace.py" claim <vault-root> <trace-id> \
-  --claim-id C1 --text "The applicable design value is 13 L/(min·m²)." \
-  --evidence-id E1 --status supported
-```
-
-Use stable route names where applicable:
-
-- `governed-artifacts`
-- `report-navigation`
-- `qmd-like-rag`
-- `hierarchical-search`
-- `candidate-fusion`
-- `scoped-lexical-search`
-- `converted-source`
-- `page-asset-verification`
-- `answer-synthesis`
-
-Prefer `retrieve_query_scope.py --trace-id`. Pass `--trace-id` to an individual locator only for a deliberate direct or fallback invocation.
-
-Measure document reading, table/figure verification, and answer synthesis with monotonic stage timers. Retrieval scripts report monotonic durations automatically:
-
-```bash
-python3 "<query-skill-root>/scripts/manage_query_trace.py" stage-begin <vault-root> <trace-id> \
-  --stage document-reading --route converted-source
-
-python3 "<query-skill-root>/scripts/manage_query_trace.py" stage-end <vault-root> <trace-id> <stage-id> \
-  --summary "Read two complete source sections." --hit-count 2
-```
-
-Do not finish a trace with an open timer. Wall-clock timestamps support runtime correlation; `duration_ms` is computed from a monotonic clock and is the duration authority inside the trace.
-
-Finish before returning the answer:
-
-```bash
-python3 "<query-skill-root>/scripts/manage_query_trace.py" finish <vault-root> <trace-id> \
-  --status completed --evidence-level source-backed \
-  --conclusion "Short statement of what the checked evidence supports." \
-  --unresolved "Table image still requires visual QA."
-```
-
-If execution stops after a trace starts, finish it as `failed` or `incomplete` when possible. Because every event is persisted immediately, a crash still leaves a readable partial trace. Before answering, check that the Markdown path returned by `finish` exists; never substitute a prose reconstruction for a missing trace.
-
-## Multiple-question sequencing
-
-Process independently answerable questions in the user's order with no overlap:
+The normal lifecycle is handled by:
 
 ```text
-question 1: classify -> start trace 1 -> retrieve -> verify -> synthesize -> finish and verify trace 1
-question 2: classify -> start trace 2 -> retrieve -> verify -> synthesize -> finish and verify trace 2
-...
+query_session.py begin
+query_session.py inspect
+query_session.py finalize
 ```
 
-- Generate one safe request ID for the user message. Pass the same `--request-id` and the one-based `--question-index` to each sequential `start` call:
+These three calls automatically record:
 
-  ```bash
-  python3 "<query-skill-root>/scripts/manage_query_trace.py" start <vault-root> "<question-1>" \
-    --session-id <hermes-session-id> --request-id <request-id> --question-index 1 \
-    --query-type <type>
-  ```
+- query preflight;
+- coarse and hierarchical route attempts;
+- aggregate parallel scope retrieval;
+- candidate-review interval between `begin` and `inspect`;
+- document reading;
+- table/figure resolution;
+- provenance resolution;
+- answer-synthesis interval between `inspect` and `finalize`;
+- claim–evidence validation;
+- query-session duration and command count.
 
-  The command returns a unique `trace_id`, the grouped `note_path`, and `request_summary`. Reuse the request ID only for questions from that user message; reuse each returned trace ID only for its own locator, events, and finish call.
-- Start the next question only after the previous trace is `completed`, `failed`, or `incomplete`, or after recording that its trace was explicitly skipped or unavailable.
-- Reuse the Hermes session ID for correlation when appropriate, but never use it as a trace ID and never reuse a `trace_id` across independent questions.
-- Do not combine independent questions into one trace solely because they share a prompt, source document, or session.
-- Do not create an ad hoc Python, shell, or other batch-orchestration script and do not execute separate questions concurrently.
-- Keep documented candidate-recall parallelism inside the active question and attach every locator call to that question's trace.
-- If one question fails, close its trace when possible and keep its failure, evidence, and uncertainty separate from later questions.
-- Use one trace for tightly coupled subparts only when they require one shared evidence set to support one composite conclusion.
+Original-page visual verification is agent-driven. Include it as a `page-asset-verification` event in the finalization manifest so it is written without an additional trace command.
 
-For grouped questions, the trace manager stores visible notes under `_system/reports/query-traces/<request-id>/`, keeps JSON state sidecars under `_system/reports/query-traces/_data/` for backward-compatible lookup by trace ID, and updates `<request-id>/Request Summary.md`. The request summary is a navigation aid and never evidence. In the final response, report the request folder and map each numbered answer to its own trace path or to its own `skipped` or `unavailable` status.
+For query-session evidence traces, `completed` requires these stages to exist:
 
-Always include a compact audit status in the final answer:
+- `candidate-review`;
+- `document-reading`;
+- `table-figure-resolution`;
+- `provenance-resolution`;
+- `answer-synthesis`;
+- `claim-evidence-mapping`.
 
-- `trace: <vault-relative Markdown path>` when written;
-- `trace: skipped (explicit user opt-out)` when explicitly disabled;
-- `trace: unavailable (<short reason>)` when the Vault or logger could not be written.
+A stage may be explicitly `skipped` when genuinely inapplicable. The trace cannot finish with open legacy timers.
+
+## Timing interpretation
+
+Schema 1.3 stores `started_at`, `ended_at`, `duration_ms`, and `accounting` on events. Diagnostic parallel-route timings are not added to the accounted total; the aggregate scope event is the primary interval. The Markdown note reports:
+
+- query-session duration;
+- accounted primary-stage duration;
+- unaccounted query-session duration.
+
+The measurement boundary begins when `query_session.py begin` starts and ends when `finalize` begins final persistence. It does not include time before the first tool invocation or after the final tool returns. Correlate the Hermes session ID with `agent.log` for true request-received-to-answer-emitted timing and approval waits.
+
+`attempted_routes` includes disabled/unavailable routes. `effective_routes` and the compatibility `retrieval_route` exclude them.
 
 ## What to record
 
-Record:
+Record concise, reviewable operational facts:
 
-- query classification and scope;
-- searched layers and paths;
-- internal verification carriers, including source maps, ledgers, `document.md`, table Markdown, extracted images, and page images, with relevant line/section/region details;
-- hit counts; derive accepted counts and paths from Evidence records;
-- route-specific candidate ranks/scores, fusion RRF scores, hierarchical matched terms, title/document deduplication, and elimination reasons;
-- source/page/table/figure verification decisions;
-- accepted Evidence records with document version, section, pages, block ID, and original table/image verification status;
-- a Claim–Evidence mapping for every final claim;
-- monotonic durations for retrieval, document reading, table/figure verification, and answer synthesis;
-- retained and rejected candidates with concise reasons;
-- evidence level, short conclusion, gaps, and QA needs;
-- Hermes session ID for correlation with `/root/.hermes/logs/agent.log`.
+- query classification and selected candidates;
+- attempted/effective routes and durations;
+- inspected governed and conversion-carrier paths;
+- source/version/page/table/figure checks;
+- rejected candidates with short reasons;
+- Evidence records and Claim–Evidence mapping;
+- evidence quality, gaps, and QA limitations;
+- Hermes session ID.
 
-Do not record chain-of-thought or hidden reasoning. Record short operational decisions that a reviewer can verify, such as "rejected because section status is qa_required".
+Record internal verification carriers, including source maps, ledgers, `document.md`, table Markdown, extracted images, and page images, in the trace only.
+Verification-carrier paths belong in this trace, not in the user-facing evidence citation.
 
-Verification-carrier paths belong in this trace, not in the user-facing evidence packet. The user-facing packet identifies the original PDF, original PDF page, relevant passage, and the figure/image/table location within that PDF.
+Evidence and claim records include `recorded_at` in both the sidecar and rendered Markdown.
 
-## Obsidian view
+## Multiple questions
 
-The trace manager creates `Query Trace Dashboard.md` once. Its Dataview table lists status, query type, route, hierarchical usage, and evidence level. Each trace note uses folded Obsidian callouts and links existing inspected Vault paths. The `_data/` JSON sidecars support deterministic incremental updates; ordinary readers can ignore them.
+Each independently answerable question receives its own trace. Reuse one request ID and increment `--question-index`, but finish and verify one trace before beginning the next. Never reuse a trace ID, keep traces open concurrently, or batch separate questions through an ad hoc script.
+
+Grouped notes live under `_system/reports/query-traces/<request-id>/`; sidecars remain under `_data/`. `Request Summary.md` is navigation only. Map every numbered final answer to its trace path or explicit skipped/unavailable status.
+
+## Legacy fallback
+
+Use the individual trace manager only when `query_session.py` fails or when debugging a partial trace:
+
+```bash
+python3 "<query-skill-root>/scripts/manage_query_trace.py" start \
+  <vault-root> "<question>" --session-id <id> --query-type <type>
+
+python3 "<query-skill-root>/scripts/manage_query_trace.py" event \
+  <vault-root> <trace-id> --stage <stage> --route <route> --summary "<summary>"
+
+python3 "<query-skill-root>/scripts/manage_query_trace.py" evidence \
+  <vault-root> <trace-id> --evidence-id E1 --path <vault-relative-path> \
+  --document-version <version> --section-id <id> --page <page>
+
+python3 "<query-skill-root>/scripts/manage_query_trace.py" claim \
+  <vault-root> <trace-id> --claim-id C1 --text "<claim>" --evidence-id E1
+
+python3 "<query-skill-root>/scripts/manage_query_trace.py" finish \
+  <vault-root> <trace-id> --status completed --evidence-level <level> \
+  --conclusion "<conclusion>"
+```
+
+Legacy `stage-begin`/`stage-end` remain available for debugging, but do not add them to the fast path; the session workflow collects timing automatically.
+
+Always report one compact audit status:
+
+- `trace: <vault-relative Markdown path>`;
+- `trace: skipped (explicit user opt-out)`;
+- `trace: unavailable (<short reason>)`.
