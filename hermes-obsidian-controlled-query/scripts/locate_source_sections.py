@@ -39,14 +39,25 @@ def query_terms(text: str) -> list[str]:
     return sorted(terms, key=lambda value: (-len(value), value))
 
 
+def compact_terms(values: list[str], limit: int = 8) -> list[str]:
+    """Keep the longest distinct matches so agent output is not flooded by n-grams."""
+    retained: list[str] = []
+    for value in sorted(set(values), key=lambda item: (-len(item), item)):
+        if any(value in existing for existing in retained):
+            continue
+        retained.append(value)
+        if len(retained) >= limit:
+            break
+    return retained
+
+
 def match_score(terms: list[str], text: str, weight: int) -> tuple[int, list[str]]:
     folded = text.casefold()
     matched = [term for term in terms if term in folded]
     return sum(weight * max(1, len(term) - 1) for term in matched), matched
 
 
-def read_ranges(document: Path, ranges: list[dict[str, Any]]) -> str:
-    lines = document.read_text(encoding="utf-8", errors="replace").splitlines()
+def read_ranges(lines: list[str], ranges: list[dict[str, Any]]) -> str:
     selected: list[str] = []
     for item in ranges:
         start = max(1, int(item.get("start_line") or 1))
@@ -148,18 +159,24 @@ def main() -> int:
     for document_score, index_path, projection, document_matches in documents[: max(1, args.top_documents)]:
         document = projection.get("document", {})
         source_document = vault_root / str(document.get("document_path", ""))
+        document_lines: list[str] | None = None
+        if not args.no_content_scan and source_document.is_file():
+            try:
+                # A projection can contain hundreds of sections. Reading the source
+                # once per document avoids multiplying WSL/NTFS boundary latency by
+                # the section count.
+                document_lines = source_document.read_text(encoding="utf-8", errors="replace").splitlines()
+            except OSError as exc:
+                errors.append(f"{source_document}: {exc}")
         for section in projection.get("sections", []):
             match_start_line, match_end_line = match_line_range(section)
             title_score, title_matches = match_score(terms, str(section.get("title", "")), 9)
             path_score, path_matches = match_score(terms, " / ".join(section.get("path_titles", [])), 4)
             content_score = 0
             content_matches: list[str] = []
-            if not args.no_content_scan and source_document.is_file():
-                try:
-                    content = read_ranges(source_document, section.get("content_ranges", []))
-                    content_score, content_matches = match_score(terms, content, 2)
-                except OSError as exc:
-                    errors.append(f"{source_document}: {exc}")
+            if document_lines is not None:
+                content = read_ranges(document_lines, section.get("content_ranges", []))
+                content_score, content_matches = match_score(terms, content, 2)
             score = document_score + title_score + path_score + content_score
             if score <= 0:
                 continue
@@ -194,10 +211,10 @@ def main() -> int:
                     "quality": section.get("quality"),
                     "ingest_status": status,
                     "matched_terms": {
-                        "document": document_matches,
-                        "title": title_matches,
-                        "path": path_matches,
-                        "content": content_matches,
+                        "document": compact_terms(document_matches),
+                        "title": compact_terms(title_matches),
+                        "path": compact_terms(path_matches),
+                        "content": compact_terms(content_matches),
                     },
                 }
             )
@@ -212,7 +229,7 @@ def main() -> int:
         "authority": "candidate-navigation-only",
         "design_origin": "hanyu",
         "query": args.query,
-        "terms": terms,
+        "terms": compact_terms(terms, limit=12),
         "candidates": selected_candidates,
         "answer_contract": {
             "viewer_enabled": bool(viewer_base_url),

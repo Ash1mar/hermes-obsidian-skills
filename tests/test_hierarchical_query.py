@@ -9,6 +9,7 @@ BUILD = ROOT / "hermes-obsidian-controlled-ingest" / "scripts" / "build_section_
 LOCATE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "locate_source_sections.py"
 SCOPE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "retrieve_query_scope.py"
 TRACE = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "manage_query_trace.py"
+SESSION = ROOT / "hermes-obsidian-controlled-query" / "scripts" / "query_session.py"
 QUERY_SKILL = ROOT / "hermes-obsidian-controlled-query" / "SKILL.md"
 INGEST_SKILL = ROOT / "hermes-obsidian-controlled-ingest" / "SKILL.md"
 TRACE_REFERENCE = ROOT / "hermes-obsidian-controlled-query" / "references" / "query-tracing.md"
@@ -30,6 +31,15 @@ def make_vault(tmp_path: Path) -> Path:
         "# 消防系统\n\n## 水喷雾管网\n喷头参数 K=60，动作温度为 68 摄氏度。\n",
         encoding="utf-8",
     )
+    (bundle / "tables").mkdir()
+    (bundle / "tables" / "table_spray.md").write_text(
+        "# 喷头参数表\n\n<!-- table-id: table_spray; source-page: 1 -->\n\n| K | 温度 |\n| --- | --- |\n| 60 | 68 ℃ |\n",
+        encoding="utf-8",
+    )
+    (bundle / "tables" / "table_spray_source.jpg").write_bytes(b"fixture-image")
+    source_pdf = vault / "10_Raw" / "0712XFNPXTS02.pdf"
+    source_pdf.parent.mkdir(parents=True, exist_ok=True)
+    source_pdf.write_bytes(b"%PDF-1.4 fixture")
     write_json(
         bundle / "manifest.json",
         {
@@ -38,6 +48,19 @@ def make_vault(tmp_path: Path) -> Path:
             "source": {"filename": "0712XFNPXTS02.pdf", "path": "10_Raw/0712XFNPXTS02.pdf"},
             "document": {"path": "document.md"},
             "outline": {"path": "outline.json"},
+            "tables": [
+                {
+                    "id": "table_spray",
+                    "caption": "喷头参数表",
+                    "page_start": 1,
+                    "page_end": 1,
+                    "path": "tables/table_spray.md",
+                    "evidence_path": "tables/table_spray_source.jpg",
+                    "bbox": [1, 2, 3, 4],
+                    "quality": "pass",
+                    "section_id": "spray",
+                }
+            ],
         },
     )
     write_json(
@@ -66,7 +89,7 @@ def make_vault(tmp_path: Path) -> Path:
                     "start_line": 3,
                     "end_line": 4,
                     "pages": [1],
-                    "assets": [],
+                    "assets": ["table_spray"],
                     "quality": "pass",
                 },
             ],
@@ -95,6 +118,11 @@ def make_vault(tmp_path: Path) -> Path:
                 },
             ],
         },
+    )
+    source_map = vault / "_system" / "reports" / "0712XFNPXTS02.source-map.md"
+    source_map.write_text(
+        "---\ntype: source-map\nvalidation_status: pass\nledger_revision: 2\n---\n",
+        encoding="utf-8",
     )
     return vault
 
@@ -237,6 +265,181 @@ print(json.dumps({'protocol_version':'hermes-coarse-recall/v1','provider':'qmd-l
     assert state["events"][2]["rejected"][0]["reason"] == "duplicate-section-merged"
 
 
+def test_locator_compacts_overlapping_query_ngrams(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    completed = subprocess.run(
+        [sys.executable, str(LOCATE), str(vault), "消防系统水喷雾喷头参数"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = json.loads(completed.stdout)
+    assert len(result["terms"]) <= 12
+    for values in result["candidates"][0]["matched_terms"].values():
+        assert len(values) <= 8
+        assert not any(left != right and left in right for left in values for right in values)
+
+
+def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+
+    begun = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "begin",
+            str(vault),
+            "水喷雾喷头 K=60 的参数是什么？",
+            "--session-id",
+            "session-fast",
+            "--query-type",
+            "evidence",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    begin_result = json.loads(begun.stdout)
+    trace_id = begin_result["trace"]["trace_id"]
+    assert len(begin_result["scope"]["candidates"]) <= 5
+    assert begin_result["scope"]["candidates"][0]["section_id"] == "spray"
+
+    inspected = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    inspect_result = json.loads(inspected.stdout)
+    packet = inspect_result["evidence_packets"][0]
+    assert "K=60" in packet["content"]
+    assert packet["source_exists"] is True
+    assert packet["source_path"] == "10_Raw/0712XFNPXTS02.pdf"
+    assert packet["assets"][0]["id"] == "table_spray"
+    assert "| 60 | 68 ℃ |" in packet["assets"][0]["content"]
+    assert packet["control"]["source_map"]["validation_status"] == "pass"
+
+    manifest = {
+        "status": "completed",
+        "evidence_level": "clear",
+        "evidence": [
+            {
+                "evidence_id": "E1",
+                "path": packet["document_path"],
+                "document_version": packet["document_version"],
+                "section_id": packet["section_id"],
+                "pages": packet["pages"],
+                "block_id": "spray-lines-3-4",
+                "original_asset_status": "verified",
+                "original_asset_path": packet["source_path"],
+                "summary": "Checked the complete section and source page.",
+            }
+        ],
+        "claims": [
+            {
+                "claim_id": "C1",
+                "text": "The checked section supports K=60.",
+                "status": "supported",
+                "evidence_ids": ["E1"],
+            }
+        ],
+        "events": [
+            {
+                "stage": "page-asset-verification",
+                "route": "original-pdf",
+                "status": "completed",
+                "summary": "Checked page 1 and the table evidence image.",
+                "evidence_ids": ["E1"],
+                "inspected_paths": [packet["source_path"], packet["assets"][0]["evidence_path"]],
+            }
+        ],
+        "conclusion": "The checked section supports K=60.",
+        "unresolved": [],
+    }
+    finalized = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            trace_id,
+            "--manifest-json",
+            json.dumps(manifest, ensure_ascii=False),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    final_result = json.loads(finalized.stdout)
+    assert final_result["status"] == "completed"
+    assert final_result["trace_verified"] is True
+    state_path = Path(final_result["state_path"])
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["metrics"]["command_count"] == 3
+    stages = {event["stage"] for event in state["events"]}
+    assert {
+        "candidate-review",
+        "document-reading",
+        "table-figure-resolution",
+        "provenance-resolution",
+        "answer-synthesis",
+        "claim-evidence-mapping",
+        "page-asset-verification",
+    } <= stages
+    note = Path(final_result["note_path"]).read_text(encoding="utf-8")
+    assert "Query-session duration:" in note
+    assert "Accounted stage duration:" in note
+    assert "Recorded:" in note
+    assert "qmd-like-rag" in note
+    assert 'effective_routes:\n  - "qmd-like-rag"' not in note
+
+
+def test_query_session_finalize_is_atomic_on_invalid_claim(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾参数"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    invalid = {
+        "status": "completed",
+        "evidence_level": "clear",
+        "evidence": [],
+        "claims": [{"claim_id": "C1", "text": "bad", "status": "supported", "evidence_ids": ["missing"]}],
+    }
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            trace_id,
+            "--manifest-json",
+            json.dumps(invalid),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode != 0
+    state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["status"] == "in_progress"
+    assert state["evidence"] == []
+    assert state["claims"] == []
+
+
 def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     started = subprocess.run(
@@ -359,7 +562,7 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
     dashboard = (trace_root / "Query Trace Dashboard.md").read_text(encoding="utf-8")
     assert state["authority"] == "non-authoritative-runtime-log"
     assert state["status"] == "completed"
-    assert state["schema_version"] == "1.2"
+    assert state["schema_version"] == "1.3"
     assert state["events"][1]["evidence_ids"] == ["E1"]
     assert "accepted_count" not in state["events"][1]
     assert state["claims"][0]["evidence_ids"] == ["E1"]
@@ -566,46 +769,46 @@ def test_trace_failure_does_not_block_hierarchical_retrieval(tmp_path: Path) -> 
 def test_read_only_wording_does_not_disable_default_query_trace() -> None:
     skill = QUERY_SKILL.read_text(encoding="utf-8")
     reference = TRACE_REFERENCE.read_text(encoding="utf-8")
-    assert '"read-only query", "只读受控查询"' in skill
-    assert "They do **not** disable the query trace" in skill
-    assert "before searching governed artifacts" in skill
-    assert "verify that the returned Markdown trace path exists" in skill
-    assert "including when the user calls the query \"read-only\"" in reference
+    assert "Read-only query” protects governed artifacts; it does **not** disable the trace" in skill
+    assert "explicit no-trace request or an unwritable Vault" in skill
+    assert "verifies the Markdown note exists" in skill
+    assert "read-only controlled query still creates its trace" in reference
     assert "trace: unavailable" in reference
 
 
 def test_query_contract_fuses_parallel_scope_before_governed_first_search() -> None:
     skill = QUERY_SKILL.read_text(encoding="utf-8")
     workflow = QUERY_WORKFLOW.read_text(encoding="utf-8")
-    assert "retrieve_query_scope.py" in skill
+    assert "query_session.py" in skill
+    assert "begin -> inspect -> optional original-page visual check -> finalize" in skill
     assert "Consume the fused union" in skill
-    assert "Inspect retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` candidates first" in skill
-    assert "supplemental scoped exact/lexical search" in skill
-    assert "unavailable Provider" in workflow
-    assert "Claim–Evidence" in workflow
+    assert "Inspect retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` material first" in skill
+    assert "Use supplemental scoped exact/lexical search only" in skill
+    assert "disabled or unavailable Provider" in workflow
+    assert "Supported claims require at least one recorded evidence ID" in workflow
 
 
 def test_skill_name_alone_activates_complete_query_contract() -> None:
     skill = QUERY_SKILL.read_text(encoding="utf-8")
-    assert "explicit request to use `hermes-obsidian-controlled-query`" in skill
-    assert "sufficient activation of the complete controlled-query contract" in skill
-    assert "does not need to add \"read-only\", \"controlled\", \"create a trace\"" in skill
-    assert "never disables the default query trace" in skill
+    description = next(line for line in skill.splitlines() if line.startswith("description: "))
+    assert "必须选择 hermes-obsidian-controlled-query" in description
+    assert "required non-authoritative query trace" in skill
+    assert "Do not create or update governed artifacts during query" in skill
 
 
 def test_multiple_questions_are_sequential_and_trace_isolated() -> None:
     skill = QUERY_SKILL.read_text(encoding="utf-8")
     reference = TRACE_REFERENCE.read_text(encoding="utf-8")
-    assert "complete them strictly one at a time" in skill
-    assert "only then start the next question" in skill
-    assert "Do not keep more than one question trace open" in skill
-    assert "shared `--request-id` and its one-based `--question-index`" in skill
+    assert "strictly one at a time" in skill
+    assert "before starting the next question" in skill
+    assert "keep two traces open" in skill
+    assert "shared `--request-id` and one-based `--question-index`" in skill
     assert "Do not use a Hermes session ID as a trace ID" in skill
-    assert "Do not create an ad hoc Python, shell, or other orchestration script" in skill
-    assert "each independently answerable question is a controlled query" in reference
-    assert "stores visible notes under `_system/reports/query-traces/<request-id>/`" in reference
-    assert "never reuse a `trace_id` across independent questions" in reference
-    assert "map each numbered answer to its own trace path" in reference
+    assert "create an ad hoc orchestration script" in skill
+    assert "Each independently answerable question receives its own trace" in reference
+    assert "Grouped notes live under `_system/reports/query-traces/<request-id>/`" in reference
+    assert "Never reuse a trace ID" in reference
+    assert "Map every numbered final answer to its trace path" in reference
 
 
 def test_user_facing_evidence_uses_original_pdf_and_logs_conversion_carriers() -> None:
@@ -615,7 +818,7 @@ def test_user_facing_evidence_uses_original_pdf_and_logs_conversion_carriers() -
     workflow = QUERY_WORKFLOW.read_text(encoding="utf-8")
     trace_reference = TRACE_REFERENCE.read_text(encoding="utf-8")
 
-    assert "Never substitute a Bundle, Markdown, source-map, ledger, or extracted-asset path" in skill
+    assert "Never substitute a Bundle, Markdown, source-map, ledger" in skill
     assert "Record source maps, ledgers, `document.md`" in skill
     assert "They are internal retrieval and QA details, not user-facing evidence sources" in skill
     assert "Original PDF path: <original PDF path or unresolved>" in answer_format
@@ -625,7 +828,7 @@ def test_user_facing_evidence_uses_original_pdf_and_logs_conversion_carriers() -
     assert "Source text: <document.md/table/image path" not in answer_format
     assert "Record those verification carriers in the query trace" in answer_format
     assert "record their paths in the query trace" in evidence_levels
-    assert "continue until the original PDF identity, original PDF page, and relevant passage are resolved" in workflow
+    assert "original PDF and page" in workflow
     assert "Report them as converted-source lines" not in workflow
     assert "internal verification carriers, including source maps, ledgers, `document.md`" in trace_reference
     assert "Verification-carrier paths belong in this trace" in trace_reference
@@ -653,20 +856,20 @@ def test_intranet_answers_append_verified_viewer_links() -> None:
 def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:
     skill = QUERY_SKILL.read_text(encoding="utf-8")
     reference = TRACE_REFERENCE.read_text(encoding="utf-8")
-    assert "runtime-neutral name for the directory containing this active `SKILL.md`" in skill
+    assert "Resolve `<query-skill-root>` from the active loader" in skill
     assert "${HERMES_SKILL_DIR}" in skill
-    assert "skill_dir` returned by `skill_view" in skill
+    assert "skill_dir` returned by `skill_view`" in skill
     assert "Do not hard-code an installation directory" in skill
-    assert "never to the Vault, the parent Skills catalog, or the shell's current working directory" in skill
-    assert "do not announce that scripts are uninstalled" in skill.lower()
+    assert "Never resolve scripts relative to the Vault" in skill
+    assert "Do not announce that scripts are missing" in skill
     assert "linked_files.scripts" in skill
     assert "<vault>/_system/skills" in skill
-    assert "<query-skill-root>/scripts/manage_query_trace.py" in reference
+    assert "<query-skill-root>/scripts/query_session.py" in reference
     assert "/root/.hermes/skills" not in skill
-    assert "/root/.hermes/skills" not in reference
+    assert "hard-code `/root/.hermes/skills`" in reference
 
 
-def test_hermes_descriptions_frontload_full_skill_loading() -> None:
+def test_hermes_descriptions_frontload_skill_loading_without_query_script_source() -> None:
     expected_prefixes = {
         ROOT / "hermes-obsidian-controlled-query" / "SKILL.md": "受控查询 / Controlled Query",
         ROOT / "hermes-obsidian-controlled-ingest" / "SKILL.md": "受控摄取 / Controlled Ingest",
@@ -682,7 +885,12 @@ def test_hermes_descriptions_frontload_full_skill_loading() -> None:
         )
         assert description.startswith(prefix)
         assert "MUST call skill_view" in description
-        assert "load the full skill first" in description
+        if path == QUERY_SKILL:
+            assert "verify linked_files.scripts includes query_session.py" in description
+            assert "without loading their source" in description
+            assert "load this full skill first" in description
+        else:
+            assert "load the full skill first" in description
 
 
 def test_query_domain_terms_are_configuration_not_frontmatter() -> None:

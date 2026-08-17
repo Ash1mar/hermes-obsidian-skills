@@ -1,270 +1,173 @@
 ---
 name: hermes-obsidian-controlled-query
-description: 受控查询 / Controlled Query：当用户说“请使用 query 回答”“请使用query回答”“使用 query 查询”或“用 query 查 Vault”时，必须选择 hermes-obsidian-controlled-query。也用于从当前、指定或受治理的 Obsidian Vault 回答、检索、定位、核验、比较、总结任何业务领域、工程系统、设备、规范、设计参数或技术要求。领域词由部署配置扩展，不需要逐项修改本描述。On Hermes, MUST call skill_view for hermes-obsidian-controlled-query and load its complete scripts before querying; on other runtimes, load the full skill first. Provides evidence-first retrieval, original-PDF citations, hierarchical navigation, uncertainty reporting, and auditable query traces.
+description: 受控查询 / Controlled Query：当用户说“请使用 query 回答”“请使用query回答”“使用 query 查询”或“用 query 查 Vault”时，必须选择 hermes-obsidian-controlled-query。也用于从当前、指定或受治理的 Obsidian Vault 回答、检索、定位、核验、比较、总结业务、工程系统、设备、规范、设计参数或技术要求。领域词由部署配置扩展。On Hermes, MUST call skill_view for hermes-obsidian-controlled-query, resolve its skill_dir, and verify linked_files.scripts includes query_session.py; execute bundled scripts without loading their source unless a script fails or is being debugged. On other runtimes, load this full skill first.
 ---
 
 # Hermes Obsidian Controlled Query
 
-Answer questions from a governed Hermes + Obsidian vault without polluting governed knowledge. Query is not ingest: keep evidence and knowledge artifacts read-only while writing the required append-only, non-authoritative query trace.
+Answer from a governed Vault with original-PDF evidence while keeping governed knowledge read-only. Write only the required non-authoritative query trace unless the user explicitly opts out or the Vault is unwritable.
 
-> **Mandatory interpretation:** "read-only query", "只读受控查询", and similar wording mean that governed evidence and knowledge artifacts must not change. They do **not** disable the query trace. Treat trace creation as required operational audit logging, not knowledge writeback. Skip it only for an explicit no-trace request or an unwritable Vault.
+## Intranet deployment
 
-## Intranet Vault Configuration
+On the `intranet` branch, read `config/intranet.json` and use its `vault_path` as the governed Vault root. The current deployment uses `/opt/data/phq/testVault`. If the server path changes, update the config; do not switch Vaults from prompt wording.
 
-On the `intranet` branch, the governed vault path is fixed by this skill's config:
+`hermes_skills_root` is the parent containing all Skills, not `<query-skill-root>`. Prefer the loader-returned Skill directory; use `/opt/data/skills/hermes-obsidian-controlled-query/` only as the configured deployment fallback and consistency check. Report a loader/config mismatch instead of searching the Vault.
 
-- config file: `config/intranet.json`
-- configured vault path: `/opt/data/phq/testVault`
-- Hermes-visible Skills parent directory: `/opt/data/skills`
-- configured query Skill directory: `/opt/data/skills/hermes-obsidian-controlled-query`
+Treat `domain_query_terms` as routing hints, never evidence. When `viewer_base_url` is configured, preserve the locator-returned viewer URLs for the final `原文定位` section.
 
-Use this configured path as the vault root for all controlled queries. If the server vault path changes, update `config/intranet.json`; do not switch vaults by prompt wording.
+## Runtime boundary
 
-## Runtime Skill Boundary
+Resolve `<query-skill-root>` from the active loader:
 
-Use `<query-skill-root>` as the runtime-neutral name for the directory containing this active `SKILL.md`, not the parent directory that contains multiple Skills. The required package layout is `<query-skill-root>/SKILL.md`, `<query-skill-root>/scripts/*.py`, `<query-skill-root>/references/*.md`, and optional `<query-skill-root>/config/*.json`. Resolve it once, in this order:
+1. Use the loader-injected skill directory.
+2. On Hermes, use `${HERMES_SKILL_DIR}` or `skill_dir` returned by `skill_view`.
+3. Verify `linked_files.scripts` contains `query_session.py` and the other bundled entry points.
 
-1. Use the active runtime's loader-injected skill directory.
-2. On Hermes, use the concrete expanded value of `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view`.
-3. On another runtime, use that runtime's equivalent active-skill directory.
+Run Python entry points as `python3 "<query-skill-root>/scripts/<script>.py"`. Never resolve scripts relative to the Vault, parent skill catalog, or shell working directory. Do not search `<vault>/_system/skills`, `<vault>/_system/templates`, or `<vault>/scripts`. Do not hard-code an installation directory.
 
-Treat every `scripts/`, `references/`, and `config/` path in this Skill as relative to `<query-skill-root>`, never to the Vault, the parent Skills catalog, or the shell's current working directory. Execute Python entry points as `python3 "<query-skill-root>/scripts/<script>.py"`. Do not hard-code an installation directory.
+Do not read bundled script source during a normal query. Read it only after a concrete failure or when modifying/debugging the Skill. Do not announce that scripts are missing until `skill_view` confirms the active package is incomplete rather than merely unmounted in a shell sandbox.
 
-On Hermes, do not act from catalog metadata alone: load the canonical skill with `skill_view(name="hermes-obsidian-controlled-query")` or invoke it through a slash command/bundle before querying. Before running a bundled script, verify it under the resolved `<query-skill-root>`. Never guess a conventional or deployment-specific installation path; never search for runtime Skill files under `<vault>/_system/skills`, `<vault>/_system/templates`, or `<vault>/scripts`; and never create replacement Skill scripts inside the Vault.
+Read `config/domain-routing.json` or `config/intranet.json` when present. Treat configured domain terms as routing hints, never evidence. The retrieval Provider configuration remains deployment-specific; do not invent an intranet endpoint.
 
-Do not announce that scripts are uninstalled merely because a guessed path or terminal sandbox cannot see them. On Hermes, first inspect the canonical `skill_view` result and its `linked_files.scripts`; distinguish an incomplete Skill package from a host-to-sandbox mount failure. If the active loader confirms that a required file is absent, report the missing runtime resource and continue with the documented non-blocking fallback where one exists.
+## Fast path
 
-On this branch, `config/intranet.json` supplies `hermes_skills_root` only as a deployment fallback and consistency check. Its value `/opt/data/skills` is the parent containing all Skills; it is not `<query-skill-root>`. The expected package is `/opt/data/skills/hermes-obsidian-controlled-query/`, with `SKILL.md` and `scripts/` inside that directory. Prefer the loader-returned `skill_dir`; if it exposes only the Skill document or omits linked scripts, validate this configured package before declaring the scripts absent. Report a mismatch between loader and configured paths instead of searching the Vault.
-
-## Configurable Domain Routing
-
-Keep the frontmatter description broad and domain-neutral. After this Skill is loaded, read `domain_query_terms` from `config/intranet.json` and treat the values as optional routing hints for questions that may omit words such as Vault, query, or retrieval. Terms such as a current system name belong in this configuration, not permanently in the description. They help classify and route a question but are never evidence and never relax source verification.
+For one ordinary question, target three script invocations:
 
 ```text
-user question
--> vault rules and query type
--> start query trace (default required)
--> optional coarse recall || hierarchical routing
--> deterministic candidate fusion and complete-section expansion
--> governed-layer-first traditional search
--> supplemental scoped exact/lexical search when governed evidence is insufficient
--> targeted converted-source verification
--> original-page/table/figure verification
--> claim-evidence mapping
--> finish query trace
--> answer with evidence quality and gaps
--> optional internal query-writeback candidate
+begin -> inspect -> optional original-page visual check -> finalize
 ```
 
-## Non-Writing Contract
+Do not enumerate old traces for a new question, probe stable CLI help, run inline Python, create temporary formatter/helper scripts, or narrate every internal step. Look for an old trace only when the user explicitly asks to resume one.
 
-During a controlled query, do not create, modify, rename, move, or delete governed Vault files. The current run's non-authoritative trace under `_system/reports/query-traces/` is a required operational write, not an optional knowledge write. Skip it only when the user explicitly says not to record/write a query trace (or equivalent), or when the Vault is actually not writable. A generic request for "read-only", "controlled query", "do not modify knowledge", or "不要沉淀" is not a trace opt-out.
+### 1. Begin
 
-Treat these paths as read-only by default:
+Resolve the Vault, classify the question, and run:
 
-- `10_Raw/`
-- `10_Raw/converted/`
-- `30_Cards/`
-- `40_Concepts/`
-- `50_Projects/`
-- `90_Dataview/`
-- `_system/metadata/`
-- `_system/prompts/`
-- `_system/reports/`
-
-Within `_system/reports/`, write only the query trace exception. Do not edit ingest logs, source maps, spec indexes, ledgers, query indexes, or other reports.
-
-If the answer suggests a durable artifact, do not create it during query. Record only an internal query-writeback candidate when the user or vault policy explicitly allows candidates; otherwise keep the candidate in the current conversation for a possible later ingest handoff. A query trace is not a writeback candidate and must never be promoted or cited as evidence.
-
-## Query Trace
-
-After resolving the Vault and classifying the question, but before searching governed artifacts, run `python3 "<query-skill-root>/scripts/manage_query_trace.py" start` with the question, query type, and Hermes session ID when available. Do not postpone this until the end and do not infer an opt-out from read-only wording. Retain its `trace_id` and append an event after every attempted retrieval layer, including zero-hit, skipped, fallback, and failed stages. Record paths, counts, concise selection/exclusion reasons, and evidence checks; never record hidden reasoning, credentials, unrestricted tool output, or long source passages.
-
-Record source maps, ledgers, `document.md`, table Markdown, extracted images, page images, and other conversion or verification carrier paths in the trace only. They are internal retrieval and QA details, not user-facing evidence sources. Do not expose those carrier paths in the answer unless the user explicitly asks for retrieval debugging or Vault maintenance details.
-
-On deployments whose active Skill config defines `viewer_base_url`, a viewer URL is the one permitted user-facing exception to that carrier-path rule. The URL is a navigation aid, not evidence: it identifies the verified Bundle document and section and highlights the checked Markdown line range without exposing a filesystem path. Use only locator-returned `viewer_url` values; never invent a document ID or line range from filenames or prose.
-
-Run `python3 "<query-skill-root>/scripts/retrieve_query_scope.py" <vault-root> <query> --trace-id <id>` as the normal source-scope entry point. It launches optional coarse recall and hierarchical location in parallel, records both attempts without concurrent trace writes, expands Provider chunks to complete sections, fuses their union, and records duplicate/re-ranking decisions. An absent Provider is non-blocking; the hierarchical route continues. Use the individual locator scripts only for an explicit direct/fallback route.
-
-Record accepted evidence with `manage_query_trace.py evidence`, map every final claim with `manage_query_trace.py claim`, and link evidence IDs from verification events. Accepted counts and links are derived from those evidence records, never typed independently. Measure retrieval, document reading, table/figure verification, and answer synthesis with script-reported monotonic durations or `stage-begin`/`stage-end`. Before returning, finish the trace as `completed`, `failed`, or `incomplete` and verify that the returned Markdown trace path exists. Never claim that a trace was written without this check. Logging errors never block the answer, but report `trace: skipped`, `trace: unavailable`, or the created trace path in the final answer. Read `<query-skill-root>/references/query-tracing.md` for commands, route names, schema, privacy boundary, and Obsidian rendering.
-
-## Multiple Questions
-
-When one user message contains multiple independently answerable questions, generate one request ID for that message, preserve the user's order, and complete them strictly one at a time. Treat each question as its own controlled query: classify it, start its own trace with the shared `--request-id` and its one-based `--question-index`, perform retrieval and source verification, synthesize its answer, finish and verify its trace, and only then start the next question. The trace manager places the visible trace notes in one request folder and maintains `Request Summary.md`; this grouping does not merge their trace lifecycles. Do not keep more than one question trace open, combine independent questions into one trace merely because they share a prompt or Hermes session, or run the questions concurrently.
-
-Do not use a Hermes session ID as a trace ID. Retain the unique `trace_id` returned by each `start` call and pass it to that question's locator, events, and `finish` call. Do not create an ad hoc Python, shell, or other orchestration script to batch the questions. Invoke the existing Skill scripts separately for each question. The documented parallel candidate locator may operate only within the current question; it does not authorize parallel question answering. If processing stops or a question fails after its trace starts, finish that trace as `failed` or `incomplete` when possible before continuing. Report the request folder and a separate trace path or trace status for every question in the final response.
-
-Treat tightly coupled subparts that require one shared body of evidence to support a single conclusion as one composite question and one trace. Otherwise prefer separate questions and separate traces.
-
-## Minimal Prompt Contract
-
-Treat an explicit request to use `hermes-obsidian-controlled-query` as sufficient activation of the complete controlled-query contract. The user does not need to add "read-only", "controlled", "create a trace", or equivalent operational wording. Absence of those phrases never relaxes governed-artifact protection and never disables the default query trace.
-
-Users should only need to provide:
-
-1. The question or list of questions.
-2. Any explicit scope preference, such as "only use ingested FNP manuals" or "include source-page evidence".
-
-Do not require users to restate the vault path, read-only boundaries, trace requirements, search order, evidence packet fields, QA labels, or writeback restrictions in every prompt. Infer and apply those rules from this skill.
-
-If the user asks for an engineering answer and does not specify an output format, use the full controlled-query answer shape with evidence packets.
-
-## First Reads
-
-At the start of a vault query, read only the minimum governance files needed:
-
-1. `AGENTS.md`
-2. `_system/metadata/concept-registry.md` when concepts or concept boundaries matter
-3. `_system/prompts/hermes-ingest-rules.md` or query/workflow prompts when present and relevant
-
-Do not recursively load the whole vault. Use `rg` and targeted file reads.
-
-## Query Types
-
-Classify the question before searching:
-
-| Type | Use for | Preferred path |
-| --- | --- | --- |
-| locating | "Where did we mention X?" | cards/concepts/projects, then reports |
-| explanatory | "What is X?" | concepts/cards, then source reports |
-| synthesis | "Compare X and Y" | cards/concepts/projects plus selected reports |
-| evidence | "Why do we say X?" | reports and converted sources required |
-| gap | "Do we already have X?" | governed layers plus reports; answer with missing pieces |
-
-For engineering parameter, formula, table, or figure questions, treat the query as evidence type even if it is phrased as a simple lookup.
-
-## Post-Query Writeback Candidate
-
-Default to no candidate. Create a candidate only when the answer reveals reusable knowledge that is not already covered by a governed artifact, or when the query exposes an evidence gap, QA risk, or source conflict worth later review.
-
-High-value candidate triggers include:
-
-- a source-backed answer with no existing durable card/spec index coverage
-- repeated or workflow-relevant parameter, formula, design value, interface, review checklist, validation rule, or code-like requirement
-- cross-source synthesis that creates a new useful comparison or boundary
-- a gap, conflict, stale conclusion, or QA-sensitive table/figure/formula needed for future work
-- a user explicitly asks to log, persist, queue, or later ingest query findings
-
-Do not create a candidate for:
-
-- one-off locating questions
-- answers fully covered by an existing card/concept/project/spec index
-- weak evidence that only supports speculation
-- ordinary chat summaries with no vault evidence
-- every user question by default
-
-Candidate question types are broad heuristics, not fixed domain labels:
-
-| Candidate type | Use for | Likely later artifact |
-| --- | --- | --- |
-| `parameter-or-design-value` | values, formulas, pressures, flow rates, intensities, levels, durations, classifications | parameter card, design check, or QA item |
-| `review-checklist` | review points, acceptance checks, equipment checks | checklist card or object index |
-| `interface-or-handoff` | inter-discipline inputs/outputs, fields, source boundaries | interface spec index or interface card |
-| `code-or-principle` | standard applicability, design principles, rule-to-scenario mapping | code/scenario/spec crosswalk |
-| `object-or-equipment` | equipment composition, system objects, reusable object boundaries | object index, equipment card, or candidate concept |
-| `gap-or-conflict` | missing evidence, conflicting sources, QA-sensitive evidence | QA item, gap log, or candidate review |
-
-When a candidate is allowed, include only a compact handoff:
-
-```yaml
-type: query-writeback-candidate
-status: candidate
-user_question:
-answer_summary:
-candidate_type:
-evidence_level: clear | source-backed | needs-qa | gap
-possible_artifact: none | card | spec-index-update | qa-item | candidate-concept-review | project-note | dataview
-why_candidate:
-why_not_direct_write:
-evidence_packets:
-existing_artifacts_checked:
-qa_risks:
+```bash
+python3 "<query-skill-root>/scripts/query_session.py" begin \
+  <vault-root> "<question>" --query-type <type> --session-id <session-id>
 ```
 
-Do not present this candidate in the user-facing answer unless the user asks for writeback reasoning. If persisted, write it only under `_system/reports/query-writeback-candidates/` and treat it as a review queue, not a knowledge artifact.
+`begin` creates the required trace, runs optional coarse recall and hierarchical routing in parallel, fuses candidates, records route timings, and returns at most five compact candidates. The complete fused scope remains in the trace sidecar. An unavailable or disabled Provider is non-blocking.
 
-## Search Order
+The retrieval structure remains `optional coarse recall || hierarchical routing`; both branches are navigation-only and query never mutates either Provider or Vault evidence.
 
-Treat corpus layers, recall mechanisms, and evidence verification as separate concerns. The normal evidence-query route is:
+### 2. Inspect
 
-1. Run `python3 "<query-skill-root>/scripts/retrieve_query_scope.py" <vault-root> <query> --trace-id <id>`. It runs configured coarse recall and hierarchical routing in parallel. Coarse recall is optional and may return `unavailable` without blocking the query.
-2. Consume the fused union. The script expands coarse chunks to complete projected/ledger-owned sections, merges duplicate document/section/title ranges, preserves route-specific scores and ranks, and reports RRF fusion scores plus rejection reasons. Never add raw Provider and hierarchical scores together.
-3. Inspect retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` candidates first and supplement them with exact governed-layer search. If a governed artifact fully identifies the current source, version, section, page, and relevant passage, follow it directly to targeted verification.
-4. When governed evidence is insufficient, run exact/lexical search for identifiers, filenames, clauses, phrases, values, and synonyms only within the fused scope. Broaden beyond that scope for gap, completeness, or audit questions; Provider top-k is never a completeness boundary.
-5. Use source maps and section ledgers after candidate selection to resolve complete ranges, current/stale state, original PDF identity/pages, assets, and content hashes. Treat spec indexes as governed navigation, not factual authority.
-6. Re-open current `document.md`, selected `tables/` or `images/`, and original `10_Raw/` pages. Open `_evidence/` only for targeted QA of page order, formulas, tables, figures, or extraction disputes.
-7. Record evidence and claim mappings, then synthesize the answer. Provider, fusion, query-index, source-map, ledger, and spec-index outputs remain navigation/verification metadata and are never answer evidence by themselves.
+Select only the candidates needed to answer and inspect them together:
 
-For exact identifiers or verbatim phrases, allow a direct governed/traditional/hierarchical route when cheaper, but record why parallel scope retrieval was skipped. If the Provider is absent, stale, invalid, or unavailable, keep the hierarchical-plus-traditional route. Query must never run Provider `sync` or rebuild operations.
+```bash
+python3 "<query-skill-root>/scripts/query_session.py" inspect \
+  <vault-root> <trace-id> --candidate 1 --candidate 4
+```
 
-Read `<query-skill-root>/references/coarse-retrieval.md` for the Provider contract, transport configuration, scope fusion, and main/intranet boundary. Read `<query-skill-root>/references/Hierarchical_search.md` for the hierarchical design and migration boundary.
+`inspect` reads complete section-owned ranges in one batch and resolves related governed outputs, table/image Markdown, verification images, manifest, ledger, source-map, original PDF path/pages, QA status, and viewer URL when available. Prefer one inspection call. Use a second only for a real gap, conflict, or missed source.
 
-## Evidence Quality
+For engineering values, formulas, tables, or figure internals, open the returned original-page or evidence image and verify the relevant row/region. The packet is an internal verification carrier; the original PDF remains the user-facing source.
 
-Before answering, label the usable evidence:
+### 3. Finalize
 
-- `clear`: a governed artifact with `evidence_mode: direct` or a pass-quality source section directly supports the point, and the current query can resolve its provenance.
-- `source-backed`: converted source text supports the point, but no durable card exists yet.
-- `needs-qa`: formula, engineering parameter, cross-page table, figure internal, or section marked `qa_required`/bundle warning affects the point.
-- `gap`: no adequate governed or source evidence found in the current vault.
+After synthesizing claims, run one atomic finalization call with either `--manifest-json` or a JSON file:
 
-Treat `evidence_mode: index` as governed navigation: use its evidence table to select documents and sections, but do not promote section-title or coverage evidence into a detailed factual claim. Treat `evidence_mode: relational` and standalone `[[wikilinks]]` as query expansion and graph navigation, never as source proof. When legacy artifacts have no `evidence_mode`, classify their provenance before assigning an evidence level.
+```bash
+python3 "<query-skill-root>/scripts/query_session.py" finalize \
+  <vault-root> <trace-id> --manifest-json '<json-object>'
+```
 
-extraction QA labels are verification metadata, not relevance boosts or penalties.
+The manifest contains `status`, `evidence_level`, `evidence`, `claims`, optional verification `events`, `conclusion`, and `unresolved`. `finalize` validates paths and claim links, records the answer-synthesis interval, writes all final records once, enforces required stage coverage for query-session evidence traces, finishes the trace, and verifies the Markdown note exists.
 
-Do not promote `needs-qa` evidence into an authoritative reusable fact. State the limitation and what page/table/figure should be checked next.
+Read `references/query-workflow.md` for selectors and the finalization manifest. Read `references/query-tracing.md` only for trace schema, legacy fallback, grouped questions, or debugging.
 
-Read `references/evidence-levels.md` when the question involves formulas, parameters, tables, figures, QA sections, or conflicting sources.
+## Query rules
 
-## Answer Evidence Packet
+### Non-writing contract
 
-For each substantive conclusion, include an evidence packet with:
+Treat `10_Raw/`, `30_Cards/`, `40_Concepts/`, `50_Projects/`, `90_Dataview/`, and `_system/` as read-only except the current trace under `_system/reports/query-traces/`. “Read-only query” protects governed artifacts; it does **not** disable the trace. Skip the trace only for an explicit no-trace request or an unwritable Vault.
 
-1. Original PDF: give the source PDF filename and its original PDF path when resolvable. Never substitute a Bundle, Markdown, source-map, ledger, or extracted-asset path.
-2. Original PDF page: use source map/ledger page mappings only when they tie the checked section to the source PDF.
-3. Relevant passage: quote or tightly summarize the passage anchored to that original PDF page. Converted text may assist internal verification, but do not identify the converted file as the source. Use a direct quote only when extraction quality supports it; otherwise summarize and mark the limitation.
-4. Figure/image/table location: if a figure, page image, or table is used or needed, give its original PDF page, number or caption, containing section, and specific page region such as upper/lower page or left/right column. Include a bounding box or equivalent region only when the Vault provides a reliable mapping. Do not return a converted table/image/page-image path. If none is involved, state "none found/needed".
+Never rebuild or sync a retrieval Provider during query. Provider indexes, source maps, ledgers, Bundles, spec indexes, and traces are navigation or verification carriers, not answer evidence.
 
-If the original PDF identity, page mapping, or relevant passage cannot be established from the current Vault, do not fall back to citing `document.md` or another conversion carrier. Say which original-PDF field is unresolved and mark the evidence `needs-qa` or `gap`.
+### Minimal first reads
 
-## Answer Shape
+Read only:
 
-Return concise answers with these parts when the query is non-trivial:
+1. Vault `AGENTS.md`;
+2. concept registry when concept boundaries matter;
+3. a query-specific governance prompt when relevant.
 
-1. Query type
-2. Original-PDF query scope
-3. Main original-PDF hits
-4. Answer
-5. Evidence packets with original PDF identity/path, original PDF page, relevant passage, and original-PDF figure/image/table location
-6. Uncertainty / gaps
-7. On viewer-enabled deployments, a final `原文定位` list containing the verified hits actually used in the answer
+Do not recursively load the Vault or ingest prompts.
 
-Do not include a user-facing writeback recommendation by default. If the user asks whether the result should be persisted, summarize the writeback candidate decision in plain language.
+### Query types
 
-For quick locating queries, a shorter answer is acceptable if it still identifies the original PDF, original PDF page, and evidence quality. Do not replace them with internal Vault conversion paths.
+| Type | Use |
+| --- | --- |
+| `locating` | Find where something is mentioned |
+| `explanatory` | Explain one governed concept |
+| `synthesis` | Compare or combine sources |
+| `evidence` | Verify a claim, parameter, formula, table, or figure |
+| `gap` | Determine whether adequate evidence exists |
 
-For each `原文定位` item, use a concise label such as `<original PDF filename> §<section_id>` and the locator-returned URL. The URL parameters are `doc=<document_id>&section=<section_id>&from=<match_start_line>&to=<match_end_line>`. Omit hits with a missing field or invalid line range, deduplicate identical URLs, and keep this list after the normal answer and uncertainty sections. Do not treat the viewer link as a substitute for the original-PDF evidence packet.
+Treat engineering parameters, formulas, tables, and figures as `evidence` even when phrased as simple lookups.
 
-Before returning on this branch, inspect the locator result's top-level `answer_contract`. If `viewer_enabled` is true, perform a mandatory final-answer check: every verified candidate actually used that has an eligible `viewer_url` must appear in the final `原文定位` section. If no used hit has an eligible URL, explicitly state under uncertainty/gaps that source positioning is unavailable. Treat silent omission of both the links and this unavailable status as an incomplete answer and correct it before returning.
+### Search and verification
 
-Read `references/answer-format.md` for the full response contract.
+Consume the fused union. Inspect retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` material first when the evidence packet includes it. Use supplemental scoped exact/lexical search only when the packet is insufficient. Broaden beyond the fused scope only for gap, completeness, conflict, or audit questions.
 
-## Writeback Boundary
+This is governed-layer-first traditional search after candidate fusion. Query must never run Provider `sync` or rebuild operations. extraction QA labels are verification metadata, not relevance boosts or penalties.
 
-If a query reveals a reusable result, do not write it automatically. At most, create or retain an internal query-writeback candidate for later controlled ingest:
+Use source maps and ledgers to resolve current/stale status, complete ranges, source identity, pages, hashes, and QA. Treat `evidence_mode: index` as navigation, `evidence_mode: relational` and standalone wikilinks as expansion, and neither as factual proof.
 
-- create or update a `30_Cards/` knowledge card
-- create a candidate concept review
-- update a spec index or project note
-- record a query log
-- run controlled ingest or controlled writeback
+### Evidence quality
 
-Use `hermes-obsidian-controlled-ingest` only when the user explicitly asks to persist, reconcile, or create governed artifacts, or when a later controlled ingest run is explicitly processing the query-writeback candidate queue.
+- `clear`: pass-quality governed/source evidence resolves to an original PDF and page.
+- `source-backed`: checked source evidence resolves to an original PDF and page but lacks a durable governed conclusion.
+- `needs-qa`: the claim depends on formula OCR, engineering values, table/figure internals, cross-page structure, or a warning/QA section.
+- `gap`: adequate original-PDF evidence is unavailable.
+
+Read `references/evidence-levels.md` for parameters, formulas, tables, figures, conflicts, or QA warnings. Never promote `needs-qa` evidence into an authoritative reusable fact.
+
+### User-facing evidence
+
+For each substantive conclusion provide:
+
+1. original PDF filename and Vault-relative PDF path;
+2. original PDF page;
+3. relevant passage, quoted or tightly summarized;
+4. table/figure number or caption, section, page region, and reliable coordinates when available;
+5. evidence quality and unresolved limits.
+
+Never substitute a Bundle, Markdown, source-map, ledger, spec index, trace, or extracted-asset path for the original PDF citation. Record source maps, ledgers, `document.md`, tables, extracted images, and page images only in the trace. They are internal retrieval and QA details, not user-facing evidence sources.
+
+Inspect the top-level `answer_contract`. When `viewer_enabled` is true, produce a final `原文定位` list. Use only locator-returned `viewer_url` values for every verified candidate actually used, deduplicate identical URLs, and label each with the original PDF filename and section ID. The URL shape is `doc=<document_id>&section=<section_id>&from=<match_start_line>&to=<match_end_line>`; never invent a document ID or line range. Viewer URLs are navigation aids, not evidence. If no used hit has an eligible URL, state under uncertainty/gaps that source positioning is unavailable; do not allow silent omission of both the links and the unavailable status.
+
+Read `references/answer-format.md` only when a non-trivial answer needs the full response template.
+
+## Multiple questions
+
+Process independently answerable questions strictly one at a time. Generate one request ID, pass the shared `--request-id` and one-based `--question-index` to each `begin`, then inspect, synthesize, finalize, and verify that trace before starting the next question. Do not use a Hermes session ID as a trace ID, keep two traces open, answer questions concurrently, or create an ad hoc orchestration script. Report each trace separately.
+
+Use one trace only for tightly coupled subparts requiring the same evidence set.
+
+## Failure and legacy fallback
+
+If `query_session.py` fails, keep the trace failure non-blocking where possible and use the existing individual scripts as a recorded fallback:
+
+- `manage_query_trace.py`
+- `retrieve_query_scope.py`
+- `locate_source_sections.py`
+- `retrieve_candidates.py`
+
+Finish an opened trace as `failed` or `incomplete` when possible. Never claim a trace was written without checking the returned note path.
+
+## Writeback boundary
+
+Do not create or update governed artifacts during query. Retain a compact internal writeback candidate only when the result exposes reusable knowledge, a material gap/conflict, stale coverage, or a QA risk. Use `hermes-obsidian-controlled-ingest` only after an explicit persistence or reconciliation request.
 
 ## References
 
-- `references/query-workflow.md`: full workflow, search tactics, and FNP-style engineering query guidance.
-- `references/evidence-levels.md`: evidence quality labels and QA restrictions.
-- `references/answer-format.md`: standard answer templates.
-- `references/query-tracing.md`: incremental trace lifecycle, event schema, privacy boundary, and Obsidian dashboard.
-- `references/coarse-retrieval.md`: qmd-like-rag Provider contract, local/HTTP transports, scope fusion, and fallbacks.
+- `references/query-workflow.md`: fast-path commands, manifest schema, evidence-packet use, and fallback search.
+- `references/evidence-levels.md`: evidence and QA restrictions.
+- `references/answer-format.md`: full user-facing response template.
+- `references/query-tracing.md`: trace schema, timing, grouped questions, and legacy commands.
+- `references/query-performance-optimization.md`: latency sources, three-call design, benchmarks, and intranet A/B acceptance.
+- `references/coarse-retrieval.md`: Provider contract and main/intranet boundary.
+- `references/Hierarchical_search.md`: projection and hierarchical locator design.
