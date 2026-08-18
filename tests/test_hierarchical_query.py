@@ -391,6 +391,128 @@ def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path
     assert request_result["metrics"]["measurement_boundary"] == "first query-session begin through last finalized trace"
 
 
+def test_query_session_rejects_multiple_questions_before_trace_creation(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    question = "喷水强度是多少？通信接口应注意什么？喷头审查关注什么？"
+    rejected = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), question],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected.returncode != 0
+    assert "multiple questions detected before trace creation" in rejected.stderr
+    data_root = vault / "_system" / "reports" / "query-traces" / "_data"
+    assert not data_root.exists() or not list(data_root.glob("*.query-trace.json"))
+
+    numbered = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), "1. 查询参数\n2. 查询接口"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert numbered.returncode != 0
+    assert "multiple questions detected before trace creation" in numbered.stderr
+
+    missing_reason = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), question, "--coupled"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert missing_reason.returncode != 0
+    assert "--coupled requires a non-empty --coupled-reason" in missing_reason.stderr
+
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    allowed = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "begin",
+            str(vault),
+            question,
+            "--coupled",
+            "--coupled-reason",
+            "All subparts require the same source section and evidence set.",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(allowed.stdout)["trace"]["trace_id"]
+    state_path = data_root / f"{trace_id}.query-trace.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["workflow_state"]["question_shape"]["multiple_detected"] is True
+    assert state["workflow_state"]["coupled_question"] is True
+    assert state["workflow_state"]["coupled_reason"].startswith("All subparts")
+
+
+def test_query_session_rejects_empty_claim_then_accepts_text_alias(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾参数"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    inspected = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    evidence_ref = json.loads(inspected.stdout)["evidence_packets"][0]["evidence_ref"]
+    empty_decision = {
+        "evidence_level": "source-backed",
+        "claims": [{"evidence_refs": [evidence_ref]}],
+    }
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            trace_id,
+            "--decision-json",
+            json.dumps(empty_decision),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected.returncode != 0
+    assert "decision claim 1 text must not be empty" in rejected.stderr
+    state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["status"] == "in_progress"
+    assert state["evidence"] == []
+    assert state["claims"] == []
+
+    repaired_decision = {
+        "evidence_level": "source-backed",
+        "claims": [{"statement": "The inspected source supports the water-spray parameter.", "evidence_refs": [evidence_ref]}],
+    }
+    finalized = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            trace_id,
+            "--decision-json",
+            json.dumps(repaired_decision),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    final_state = json.loads(Path(json.loads(finalized.stdout)["state_path"]).read_text(encoding="utf-8"))
+    assert final_state["claims"][0]["text"] == "The inspected source supports the water-spray parameter."
+    assert final_state["answer_capsule"]["claims"][0]["text"] == final_state["claims"][0]["text"]
+
+
 def test_query_session_finalize_is_atomic_on_invalid_claim(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)

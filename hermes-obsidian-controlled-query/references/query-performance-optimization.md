@@ -116,6 +116,7 @@ trace 同时记录：
 - command count 与 inspection count。
 - Hermes session ID、message ID 与 platform，由运行时环境自动继承。
 - 多题 request summary 的 controlled request duration（首个 begin 到最后一个 finalize）。
+- begin 在任何检索前拒绝未分组的明显多问题输入；finalize 原子拒绝空 claim 文本。
 
 计时边界从 `query_session.py begin` 调用开始，到 `finalize` 开始最终持久化为止。用户请求到第一条工具调用之前、最后工具返回到答案发出之后、模型服务排队以及审批等待，需要通过 Hermes session ID 和 `agent.log` 补齐，不能伪装成脚本阶段耗时。
 
@@ -142,7 +143,7 @@ trace 同时记录：
 - attempted/effective route 区分；
 - evidence/claim 时间戳和请求级计时输出；
 - 紧凑候选和 n-gram 限制；
-- 全套测试 51 项通过；
+- main 分支全套测试 53 项通过；
 - Skill 结构校验通过；
 - 所有 Python 入口保持 Git executable mode `100755`。
 

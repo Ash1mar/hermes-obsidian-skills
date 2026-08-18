@@ -46,6 +46,14 @@ def shorten(value: str | None, limit: int = 1200) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def resolve_claim_text(claim: dict[str, Any], label: str = "claim") -> str:
+    for key in ("text", "claim", "statement", "claim_text"):
+        value = claim.get(key)
+        if isinstance(value, str) and value.strip():
+            return shorten(value, 4000)
+    raise ValueError(f"{label} text must not be empty")
+
+
 def evidence_by_id(state: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
         str(item.get("evidence_id")): item
@@ -621,7 +629,7 @@ def normalize_claim(state: dict[str, Any], claim: dict[str, Any]) -> dict[str, A
         raise ValueError("supported claims require at least one evidence id")
     record = {
         "claim_id": claim_id,
-        "text": shorten(str(claim.get("text") or ""), 4000),
+        "text": resolve_claim_text(claim, f"claim {claim_id}"),
         "status": str(claim.get("status") or "supported"),
         "evidence_ids": evidence_ids,
         "qualification": shorten(str(claim.get("qualification") or ""), 1200) or None,

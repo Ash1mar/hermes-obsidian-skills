@@ -70,7 +70,7 @@ python3 "<query-skill-root>/scripts/query_session.py" finalize \
   <vault-root> <trace-id> --decision-json '<json-object>'
 ```
 
-The decision contains `claims` with `evidence_refs`, plus evidence level, conclusion, unresolved items, and optional verification events. The script assigns evidence/claim IDs, inherits all provenance from inspected packets, and verifies the Markdown note exists. Do not create, write, or patch a temporary manifest. Legacy `--manifest-json` and `--manifest` exist only for compatibility/debugging.
+The decision contains `claims` with non-empty `text` and `evidence_refs`, plus evidence level, conclusion, unresolved items, and optional verification events. `claim`, `statement`, and `claim_text` are accepted as compatibility aliases for `text`; finalization rejects a claim that remains blank without changing the in-progress trace. The script assigns evidence/claim IDs, inherits all provenance from inspected packets, and verifies the Markdown note exists. Do not create, write, or patch a temporary manifest. Legacy `--manifest-json` and `--manifest` exist only for compatibility/debugging.
 
 If the first evidence packet is insufficient, run `supplement` with an explicit gap reason and then run `inspect` again. Finalization is blocked until that second inspection records `evidence-gap-review`:
 
@@ -144,11 +144,11 @@ Read `references/answer-format.md` only when a non-trivial answer needs the full
 
 ## Multiple questions
 
-Process independently answerable questions strictly one at a time. Generate one request ID, pass the shared `--request-id` and one-based `--question-index` to each `begin`, then inspect, synthesize, finalize, and verify that trace before starting the next question. Do not use a Hermes session ID as a trace ID, keep two traces open, answer questions concurrently, or create an ad hoc orchestration script. Report each trace separately.
+Process independently answerable questions strictly one at a time. Generate one request ID, pass the shared `--request-id` and one-based `--question-index` to each `begin`, then inspect, synthesize, finalize, and verify that trace before starting the next question. `begin` rejects multiple question marks or multiple numbered question items before creating a trace. Split the request and retry sequentially when this occurs. Do not use a Hermes session ID as a trace ID, keep two traces open, answer questions concurrently, or create an ad hoc orchestration script. Report each trace separately.
 
 After all questions finish, call `query_session.py request-summary <vault-root> <request-id>` once. Carry only its answer capsules into the combined response; do not reload completed evidence packets.
 
-Use one trace only for tightly coupled subparts requiring the same evidence set.
+Use one trace only for tightly coupled subparts requiring the same evidence set. In that exceptional case pass both `--coupled` and a concrete `--coupled-reason`; the reason is stored in trace state for audit.
 
 ## Failure and legacy fallback
 

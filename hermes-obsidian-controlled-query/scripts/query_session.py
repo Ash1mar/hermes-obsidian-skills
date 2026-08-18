@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ from manage_query_trace import (
     grouped_states,
     load_state,
     now_iso,
+    resolve_claim_text,
     start_trace,
     write_state,
 )
@@ -25,6 +27,10 @@ from retrieve_query_scope import compact_result, load_projections, retrieve_scop
 
 
 WORKFLOW = "query-session/v2"
+QUESTION_MARK_RE = re.compile(r"[?？]")
+NUMBERED_QUESTION_RE = re.compile(
+    r"(?m)^\s*(?:\d{1,2}[.)、．]|[（(]\d{1,2}[)）]|[一二三四五六七八九十]{1,3}[、.．])\s*\S+"
+)
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -44,6 +50,34 @@ def file_sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def question_shape(question: str) -> dict[str, int | bool]:
+    question_marks = len(QUESTION_MARK_RE.findall(question))
+    numbered_items = len(NUMBERED_QUESTION_RE.findall(question))
+    detected_count = max(question_marks, numbered_items)
+    return {
+        "question_marks": question_marks,
+        "numbered_items": numbered_items,
+        "detected_count": detected_count,
+        "multiple_detected": detected_count >= 2,
+    }
+
+
+def validate_question_boundary(args: argparse.Namespace) -> dict[str, int | bool]:
+    shape = question_shape(args.question)
+    reason = str(args.coupled_reason or "").strip()
+    if args.coupled and not reason:
+        raise ValueError("--coupled requires a non-empty --coupled-reason")
+    if reason and not args.coupled:
+        raise ValueError("--coupled-reason requires --coupled")
+    if shape["multiple_detected"] and not args.coupled:
+        raise ValueError(
+            "multiple questions detected before trace creation; use one shared --request-id and call begin "
+            "once per question with --question-index, or use --coupled with --coupled-reason only when all "
+            "subparts require the same evidence set"
+        )
+    return shape
 
 
 def elapsed_ms(started_monotonic_ns: int, started_wall_ns: int) -> float:
@@ -89,6 +123,7 @@ def begin(args: argparse.Namespace) -> dict[str, Any]:
     vault_root = args.vault_root.resolve()
     if not vault_root.is_dir():
         raise FileNotFoundError(f"vault root does not exist: {vault_root}")
+    shape = validate_question_boundary(args)
     preflight_finished_monotonic = time.monotonic_ns()
     runtime_session_id = os.environ.get("HERMES_SESSION_ID") or args.session_id
     started = start_trace(
@@ -159,6 +194,9 @@ def begin(args: argparse.Namespace) -> dict[str, Any]:
         "command_count": 1,
         "evidence_catalog": {},
         "evidence_dirty": False,
+        "question_shape": shape,
+        "coupled_question": bool(args.coupled),
+        "coupled_reason": str(args.coupled_reason or "").strip() or None,
     }
     write_state(vault_root, state)
     return {
@@ -721,7 +759,7 @@ def decision_to_manifest(state: dict[str, Any], decision: dict[str, Any]) -> dic
         normalized_claims.append(
             {
                 "claim_id": f"C{index}",
-                "text": claim.get("text"),
+                "text": resolve_claim_text(claim, f"decision claim {index}"),
                 "status": claim.get("status", "supported"),
                 "evidence_ids": [handle_to_evidence[item] for item in refs],
                 "qualification": claim.get("qualification"),
@@ -772,7 +810,8 @@ def build_answer_capsule(state: dict[str, Any], manifest: dict[str, Any]) -> dic
     evidence = {str(item.get("evidence_id")): item for item in manifest.get("evidence", [])}
     claims: list[dict[str, Any]] = []
     markdown: list[str] = []
-    for claim in manifest.get("claims", []):
+    for index, claim in enumerate(manifest.get("claims", []), start=1):
+        claim_text = resolve_claim_text(claim, f"capsule claim {index}")
         sources = []
         for evidence_id in claim.get("evidence_ids", []):
             item = evidence.get(str(evidence_id), {})
@@ -788,7 +827,7 @@ def build_answer_capsule(state: dict[str, Any], manifest: dict[str, Any]) -> dic
                 }
             )
         claim_capsule = {
-            "text": claim.get("text"),
+            "text": claim_text,
             "status": claim.get("status"),
             "qualification": claim.get("qualification"),
             "sources": sources,
@@ -798,7 +837,7 @@ def build_answer_capsule(state: dict[str, Any], manifest: dict[str, Any]) -> dic
             f"{item.get('original_pdf') or 'unresolved'}, page {','.join(str(page) for page in item.get('pages', [])) or 'unresolved'}"
             for item in sources
         )
-        markdown.append(f"- {claim.get('text')}" + (f" ({citation})" if citation else ""))
+        markdown.append(f"- {claim_text}" + (f" ({citation})" if citation else ""))
     return {
         "trace_id": state.get("trace_id"),
         "question_index": state.get("question_index"),
@@ -919,6 +958,8 @@ def build_parser() -> argparse.ArgumentParser:
     begin_parser.add_argument("--trace-id")
     begin_parser.add_argument("--request-id")
     begin_parser.add_argument("--question-index", type=int)
+    begin_parser.add_argument("--coupled", action="store_true", help="Allow multiple subparts that require one evidence set")
+    begin_parser.add_argument("--coupled-reason", help="Auditable reason that multiple subparts share one evidence set")
     begin_parser.add_argument("--provider-config", type=Path)
     begin_parser.add_argument("--top-k", type=int, default=20)
     begin_parser.add_argument("--top-documents", type=int, default=6)
