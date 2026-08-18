@@ -17,7 +17,7 @@ from typing import Any
 
 TRACE_RELATIVE_DIR = Path("_system/reports/query-traces")
 DATA_DIR_NAME = "_data"
-SCHEMA_VERSION = "1.3"
+SCHEMA_VERSION = "1.4"
 INACTIVE_ROUTE_STATUSES = {"disabled", "unavailable", "skipped", "failed"}
 RETRIEVAL_STAGES = {
     "coarse-recall",
@@ -26,6 +26,7 @@ RETRIEVAL_STAGES = {
     "scope-retrieval",
     "governed-artifact-lookup",
     "scoped-lexical-search",
+    "supplemental-retrieval",
 }
 
 
@@ -134,6 +135,8 @@ def render_note(state: dict[str, Any]) -> str:
         f"created: {yaml_string(state.get('created'))}",
         f"updated: {yaml_string(state.get('updated'))}",
         f"session_id: {yaml_string(state.get('session_id'))}",
+        f"session_message_id: {yaml_string(state.get('session_message_id'))}",
+        f"session_platform: {yaml_string(state.get('session_platform'))}",
         f"request_id: {yaml_string(state.get('request_id'))}",
         f"question_index: {yaml_string(state.get('question_index'))}",
         f"trace_id: {yaml_string(state.get('trace_id'))}",
@@ -171,6 +174,7 @@ def render_note(state: dict[str, Any]) -> str:
             f"- Query type: `{state.get('query_type') or 'unclassified'}`",
             f"- Evidence level: `{state.get('evidence_level') or 'pending'}`",
             f"- Hermes session: `{state.get('session_id') or 'unavailable'}`",
+            f"- Hermes message: `{state.get('session_message_id') or 'unavailable'}`",
             f"- Request group: `{state.get('request_id') or 'single query'}`",
             f"- Question index: `{state.get('question_index') or 'not grouped'}`",
             f"- Hierarchical search: `{'used' if hierarchical else 'not used'}`",
@@ -297,7 +301,7 @@ def render_note(state: dict[str, Any]) -> str:
             "",
             "## Runtime linkage",
             "",
-            f"Use session ID `{state.get('session_id') or 'unavailable'}` to correlate this note with Hermes `agent.log`. Runtime logs remain the authority for tool timing and execution failures.",
+            f"Use session ID `{state.get('session_id') or 'unavailable'}` and message ID `{state.get('session_message_id') or 'unavailable'}` to correlate this note with Hermes `agent.log`. Runtime logs remain the authority for tool timing and execution failures.",
             "",
         ]
     )
@@ -432,12 +436,15 @@ def start_trace(
     state_path, _ = trace_paths(vault_root, safe_trace)
     if state_path.exists():
         raise FileExistsError(f"query trace already exists: {state_path}")
+    runtime_session_id = os.environ.get("HERMES_SESSION_ID") or session_id
     state = {
         "schema_version": SCHEMA_VERSION,
         "type": "query-trace",
         "authority": "non-authoritative-runtime-log",
         "trace_id": safe_trace,
-        "session_id": session_id,
+        "session_id": runtime_session_id,
+        "session_message_id": os.environ.get("HERMES_SESSION_MESSAGE_ID"),
+        "session_platform": os.environ.get("HERMES_SESSION_PLATFORM"),
         "request_id": safe_request,
         "question_index": question_index,
         "status": "in_progress",
@@ -733,7 +740,7 @@ def command_stage_end(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def required_stage_gaps(state: dict[str, Any], evidence_level: str | None) -> list[str]:
-    if state.get("workflow") != "query-session/v1" or state.get("query_type") != "evidence":
+    if state.get("workflow") not in {"query-session/v1", "query-session/v2"} or state.get("query_type") != "evidence":
         return []
     required = {
         "candidate-review",
@@ -801,6 +808,8 @@ def finalize_trace(vault_root: Path, trace_id: str, manifest: dict[str, Any]) ->
         state.setdefault("events", []).append(clean_event(state, event))
     if manifest.get("metrics"):
         state.setdefault("metrics", {}).update(manifest["metrics"])
+    if manifest.get("answer_capsule"):
+        state["answer_capsule"] = manifest["answer_capsule"]
     return finish_state(
         vault_root,
         state,

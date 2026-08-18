@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -283,6 +284,10 @@ def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path
             "session-fast",
             "--query-type",
             "evidence",
+            "--request-id",
+            "req-fast",
+            "--question-index",
+            "1",
         ],
         capture_output=True,
         text=True,
@@ -307,38 +312,26 @@ def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path
     assert packet["assets"][0]["id"] == "table_spray"
     assert "| 60 | 68 ℃ |" in packet["assets"][0]["content"]
     assert packet["control"]["source_map"]["validation_status"] == "pass"
+    assert packet["evidence_ref"] == "P1"
 
-    manifest = {
+    decision = {
         "status": "completed",
         "evidence_level": "clear",
-        "evidence": [
-            {
-                "evidence_id": "E1",
-                "path": packet["document_path"],
-                "document_version": packet["document_version"],
-                "section_id": packet["section_id"],
-                "pages": packet["pages"],
-                "block_id": "spray-lines-3-4",
-                "original_asset_status": "verified",
-                "original_asset_path": packet["source_path"],
-                "summary": "Checked the complete section and source page.",
-            }
-        ],
         "claims": [
             {
-                "claim_id": "C1",
                 "text": "The checked section supports K=60.",
                 "status": "supported",
-                "evidence_ids": ["E1"],
+                "evidence_refs": ["P1"],
             }
         ],
+        "verified_evidence_refs": ["P1"],
         "events": [
             {
                 "stage": "page-asset-verification",
                 "route": "original-pdf",
                 "status": "completed",
                 "summary": "Checked page 1 and the table evidence image.",
-                "evidence_ids": ["E1"],
+                "evidence_refs": ["P1"],
                 "inspected_paths": [packet["source_path"], packet["assets"][0]["evidence_path"]],
             }
         ],
@@ -352,8 +345,8 @@ def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path
             "finalize",
             str(vault),
             trace_id,
-            "--manifest-json",
-            json.dumps(manifest, ensure_ascii=False),
+            "--decision-json",
+            json.dumps(decision, ensure_ascii=False),
         ],
         capture_output=True,
         text=True,
@@ -365,6 +358,10 @@ def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path
     state_path = Path(final_result["state_path"])
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["metrics"]["command_count"] == 3
+    assert state["evidence"][0]["evidence_id"] == "E1"
+    assert state["evidence"][0]["document_version"] == packet["document_version"]
+    assert state["claims"][0]["claim_id"] == "C1"
+    assert state["answer_capsule"]["claims"][0]["text"] == "The checked section supports K=60."
     stages = {event["stage"] for event in state["events"]}
     assert {
         "candidate-review",
@@ -381,6 +378,15 @@ def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path
     assert "Recorded:" in note
     assert "qmd-like-rag" in note
     assert 'effective_routes:\n  - "qmd-like-rag"' not in note
+    summarized = subprocess.run(
+        [sys.executable, str(SESSION), "request-summary", str(vault), "req-fast"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    request_result = json.loads(summarized.stdout)
+    assert request_result["question_count"] == 1
+    assert "The checked section supports K=60." in request_result["answer_markdown"]
 
 
 def test_query_session_finalize_is_atomic_on_invalid_claim(tmp_path: Path) -> None:
@@ -425,6 +431,119 @@ def test_query_session_finalize_is_atomic_on_invalid_claim(tmp_path: Path) -> No
     assert state["status"] == "in_progress"
     assert state["evidence"] == []
     assert state["claims"] == []
+
+
+def test_query_session_requires_inspect_after_supplement(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾参数"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    inspected = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    packet_ref = json.loads(inspected.stdout)["evidence_packets"][0]["evidence_ref"]
+    subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "supplement",
+            str(vault),
+            trace_id,
+            "K=60 表格",
+            "--reason",
+            "Confirm the exact table value.",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    decision = {
+        "evidence_level": "source-backed",
+        "claims": [{"text": "K=60 is present.", "evidence_refs": [packet_ref]}],
+    }
+    blocked = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            trace_id,
+            "--decision-json",
+            json.dumps(decision),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert blocked.returncode != 0
+    assert "must be followed by inspect" in blocked.stderr
+    subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    finalized = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            trace_id,
+            "--decision-json",
+            json.dumps(decision),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    state = json.loads(Path(json.loads(finalized.stdout)["state_path"]).read_text(encoding="utf-8"))
+    stages = [event["stage"] for event in state["events"]]
+    assert "supplemental-retrieval" in stages
+    assert "evidence-gap-review" in stages
+    assert state["metrics"]["command_count"] == 5
+
+
+def test_query_session_inherits_hermes_session_context(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    env = os.environ.copy()
+    env.update(
+        {
+            "HERMES_SESSION_ID": "real-hermes-session",
+            "HERMES_SESSION_MESSAGE_ID": "message-42",
+            "HERMES_SESSION_PLATFORM": "cli",
+        }
+    )
+    begun = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "begin",
+            str(vault),
+            "水喷雾参数",
+            "--session-id",
+            "model-supplied-session",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["session_id"] == "real-hermes-session"
+    assert state["session_message_id"] == "message-42"
+    assert state["session_platform"] == "cli"
 
 
 def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_path: Path) -> None:
@@ -549,7 +668,7 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
     dashboard = (trace_root / "Query Trace Dashboard.md").read_text(encoding="utf-8")
     assert state["authority"] == "non-authoritative-runtime-log"
     assert state["status"] == "completed"
-    assert state["schema_version"] == "1.3"
+    assert state["schema_version"] == "1.4"
     assert state["events"][1]["evidence_ids"] == ["E1"]
     assert "accepted_count" not in state["events"][1]
     assert state["claims"][0]["evidence_ids"] == ["E1"]

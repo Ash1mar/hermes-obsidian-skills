@@ -37,10 +37,12 @@ Resolve the Vault, classify the question, and run:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" begin \
-  <vault-root> "<question>" --query-type <type> --session-id <session-id>
+  <vault-root> "<question>" --query-type <type>
 ```
 
 `begin` creates the required trace, runs optional coarse recall and hierarchical routing in parallel, fuses candidates, records route timings, and returns at most five compact candidates. The complete fused scope remains in the trace sidecar. An unavailable or disabled Provider is non-blocking.
+
+Hermes session and message IDs are inherited from `HERMES_SESSION_ID` and `HERMES_SESSION_MESSAGE_ID`. Do not invent or manually copy a session ID. Use `--session-id` only outside Hermes when no runtime session context exists.
 
 The retrieval structure remains `optional coarse recall || hierarchical routing`; both branches are navigation-only and query never mutates either Provider or Vault evidence.
 
@@ -55,20 +57,29 @@ python3 "<query-skill-root>/scripts/query_session.py" inspect \
 
 `inspect` reads complete section-owned ranges in one batch and resolves related governed outputs, table/image Markdown, verification images, manifest, ledger, source-map, original PDF path/pages, QA status, and viewer URL when available. Prefer one inspection call. Use a second only for a real gap, conflict, or missed source.
 
+Each returned packet has an ASCII `evidence_ref` such as `P1`. The trace stores the corresponding path, version, section, pages, original PDF, and viewer metadata. Retain only the packet reference when synthesizing claims; never copy those provenance fields into finalization input.
+
 For engineering values, formulas, tables, or figure internals, open the returned original-page or evidence image and verify the relevant row/region. The packet is an internal verification carrier; the original PDF remains the user-facing source.
 
 ### 3. Finalize
 
-After synthesizing claims, run one atomic finalization call with either `--manifest-json` or a JSON file:
+After synthesizing claims, run one atomic finalization call with compact decision JSON:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" finalize \
-  <vault-root> <trace-id> --manifest-json '<json-object>'
+  <vault-root> <trace-id> --decision-json '<json-object>'
 ```
 
-The manifest contains `status`, `evidence_level`, `evidence`, `claims`, optional verification `events`, `conclusion`, and `unresolved`. `finalize` validates paths and claim links, records the answer-synthesis interval, writes all final records once, enforces required stage coverage for query-session evidence traces, finishes the trace, and verifies the Markdown note exists.
+The decision contains `claims` with `evidence_refs`, plus evidence level, conclusion, unresolved items, and optional verification events. The script assigns evidence/claim IDs, inherits all provenance from inspected packets, and verifies the Markdown note exists. Do not create, write, or patch a temporary manifest. Legacy `--manifest-json` and `--manifest` exist only for compatibility/debugging.
 
-Read `references/query-workflow.md` for selectors and the finalization manifest. Read `references/query-tracing.md` only for trace schema, legacy fallback, grouped questions, or debugging.
+If the first evidence packet is insufficient, run `supplement` with an explicit gap reason and then run `inspect` again. Finalization is blocked until that second inspection records `evidence-gap-review`:
+
+```bash
+python3 "<query-skill-root>/scripts/query_session.py" supplement \
+  <vault-root> <trace-id> "<focused query>" --reason "<missing evidence>"
+```
+
+Read `references/query-workflow.md` for selectors and the finalization decision. Read `references/query-tracing.md` only for trace schema, legacy fallback, grouped questions, or debugging.
 
 ## Query rules
 
@@ -106,7 +117,7 @@ Consume the fused union. Inspect retained `30_Cards/`, `40_Concepts/`, and `50_P
 
 This is governed-layer-first traditional search after candidate fusion. Query must never run Provider `sync` or rebuild operations. extraction QA labels are verification metadata, not relevance boosts or penalties.
 
-Use source maps and ledgers to resolve current/stale status, complete ranges, source identity, pages, hashes, and QA. Treat `evidence_mode: index` as navigation, `evidence_mode: relational` and standalone wikilinks as expansion, and neither as factual proof.
+Use source maps and ledgers to resolve current/stale status, complete ranges, source identity, pages, hashes, and QA. Treat `evidence_mode: index` as navigation, `evidence_mode: relational` and standalone wikilinks as expansion, and neither as factual proof. Evidence discovered through other navigation tools must still enter a recorded `inspect` packet before it may be cited.
 
 ### Evidence quality
 
@@ -135,6 +146,8 @@ Read `references/answer-format.md` only when a non-trivial answer needs the full
 
 Process independently answerable questions strictly one at a time. Generate one request ID, pass the shared `--request-id` and one-based `--question-index` to each `begin`, then inspect, synthesize, finalize, and verify that trace before starting the next question. Do not use a Hermes session ID as a trace ID, keep two traces open, answer questions concurrently, or create an ad hoc orchestration script. Report each trace separately.
 
+After all questions finish, call `query_session.py request-summary <vault-root> <request-id>` once. Carry only its answer capsules into the combined response; do not reload completed evidence packets.
+
 Use one trace only for tightly coupled subparts requiring the same evidence set.
 
 ## Failure and legacy fallback
@@ -154,7 +167,7 @@ Do not create or update governed artifacts during query. Retain a compact intern
 
 ## References
 
-- `references/query-workflow.md`: fast-path commands, manifest schema, evidence-packet use, and fallback search.
+- `references/query-workflow.md`: fast-path commands, decision schema, evidence-packet use, and fallback search.
 - `references/evidence-levels.md`: evidence and QA restrictions.
 - `references/answer-format.md`: full user-facing response template.
 - `references/query-tracing.md`: trace schema, timing, grouped questions, and legacy commands.

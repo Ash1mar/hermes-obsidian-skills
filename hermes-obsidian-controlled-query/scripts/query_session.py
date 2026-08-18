@@ -4,16 +4,26 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
+import os
 import time
 from pathlib import Path
 from typing import Any
 
-from manage_query_trace import clean_event, finalize_trace, load_state, now_iso, start_trace, write_state
+from manage_query_trace import (
+    clean_event,
+    finalize_trace,
+    grouped_states,
+    load_state,
+    now_iso,
+    start_trace,
+    write_state,
+)
 from retrieve_query_scope import compact_result, load_projections, retrieve_scope
 
 
-WORKFLOW = "query-session/v1"
+WORKFLOW = "query-session/v2"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -25,6 +35,14 @@ def load_json(path: Path) -> dict[str, Any]:
 
 def vault_relative(path: Path, vault_root: Path) -> str:
     return path.resolve().relative_to(vault_root.resolve()).as_posix()
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def elapsed_ms(started_monotonic_ns: int, started_wall_ns: int) -> float:
@@ -71,10 +89,11 @@ def begin(args: argparse.Namespace) -> dict[str, Any]:
     if not vault_root.is_dir():
         raise FileNotFoundError(f"vault root does not exist: {vault_root}")
     preflight_finished_monotonic = time.monotonic_ns()
+    runtime_session_id = os.environ.get("HERMES_SESSION_ID") or args.session_id
     started = start_trace(
         vault_root,
         args.question,
-        args.session_id,
+        runtime_session_id,
         args.query_type,
         args.trace_id,
         args.request_id,
@@ -94,6 +113,8 @@ def begin(args: argparse.Namespace) -> dict[str, Any]:
         trace_id=started["trace_id"],
     )
     state, _, _ = load_state(vault_root, started["trace_id"])
+    state["session_message_id"] = os.environ.get("HERMES_SESSION_MESSAGE_ID")
+    state["session_platform"] = os.environ.get("HERMES_SESSION_PLATFORM")
     existing_events = list(state.get("events", []))
     state["events"] = [
             clean_event(
@@ -135,6 +156,8 @@ def begin(args: argparse.Namespace) -> dict[str, Any]:
         "candidate_review_started_monotonic_ns": time.monotonic_ns(),
         "candidate_review_started_wall_ns": time.time_ns(),
         "command_count": 1,
+        "evidence_catalog": {},
+        "evidence_dirty": False,
     }
     write_state(vault_root, state)
     return {
@@ -191,6 +214,52 @@ def read_ranges(path: Path, ranges: list[dict[str, Any]], max_chars: int) -> tup
         parts.append(f"<!-- lines {start}-{end} -->\n" + "\n".join(lines[start - 1 : end]))
     text = "\n\n".join(parts)
     return (text[:max_chars], len(text) > max_chars)
+
+
+def block_id_for_ranges(ranges: list[dict[str, Any]]) -> str | None:
+    spans = []
+    for item in ranges:
+        start = int(item.get("start_line") or 0)
+        end = int(item.get("end_line") or start)
+        if start > 0:
+            spans.append(f"{start}-{max(start, end)}")
+    return "lines-" + "+".join(spans) if spans else None
+
+
+def register_evidence_packets(
+    workflow: dict[str, Any],
+    packets: list[dict[str, Any]],
+    inspection_round: int,
+) -> None:
+    catalog = workflow.setdefault("evidence_catalog", {})
+    existing = {
+        (str(item.get("path")), str(item.get("section_id"))): handle
+        for handle, item in catalog.items()
+    }
+    for packet in packets:
+        key = (str(packet.get("document_path")), str(packet.get("section_id")))
+        handle = existing.get(key)
+        if not handle:
+            handle = f"P{len(catalog) + 1}"
+            catalog[handle] = {
+                "handle": handle,
+                "path": packet.get("document_path"),
+                "document_version": packet.get("document_version"),
+                "section_id": packet.get("section_id"),
+                "pages": packet.get("pages", []),
+                "block_id": block_id_for_ranges(packet.get("content_ranges", [])),
+                "original_asset_path": packet.get("source_path") if packet.get("source_exists") else None,
+                "source_filename": packet.get("source_filename"),
+                "viewer_url": packet.get("viewer_url"),
+                "quality": packet.get("quality"),
+                "ingest_status": packet.get("ingest_status"),
+                "inspection_rounds": [],
+            }
+            existing[key] = handle
+        rounds = catalog[handle].setdefault("inspection_rounds", [])
+        if inspection_round not in rounds:
+            rounds.append(inspection_round)
+        packet["evidence_ref"] = handle
 
 
 def source_map_frontmatter(path: Path) -> dict[str, str]:
@@ -336,13 +405,18 @@ def build_evidence_packet(
     viewer_url = candidate.get("viewer_url") or (
         routing.get("viewer_url") if isinstance(routing, dict) else None
     )
+    document_version = (
+        projection.get("source_state", {}).get("document_hash")
+        or manifest.get("source", {}).get("sha256")
+        or file_sha256(document_path)
+    )
     packet = {
         "document_path": vault_relative(document_path, vault_root),
         "source_filename": source_filename,
         "source_path": vault_relative(source_path, vault_root) if source_path.is_file() else str(document_meta.get("source_path") or "unresolved"),
         "source_exists": source_path.is_file(),
         "source_sha256": manifest.get("source", {}).get("sha256"),
-        "document_version": projection.get("source_state", {}).get("document_hash") or manifest.get("source", {}).get("sha256"),
+        "document_version": document_version,
         "section_id": candidate.get("section_id"),
         "title": candidate.get("title"),
         "pages": candidate.get("pages", []),
@@ -377,11 +451,17 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
     inspection_count = int(workflow.get("inspection_count") or 0)
     if inspection_count:
         review_stage = "evidence-gap-review"
-        review_route = "agent-follow-up-selection"
-        review_summary = "Selected additional candidates after reviewing the previous evidence packet."
-        review_started_at = workflow.get("answer_synthesis_started_at")
-        review_started_monotonic = workflow.get("answer_synthesis_started_monotonic_ns")
-        review_started_wall = workflow.get("answer_synthesis_started_wall_ns")
+        review_route = "supplemental-selection" if workflow.get("evidence_dirty") else "agent-follow-up-selection"
+        review_summary = "Inspected additional candidates to close a recorded evidence gap."
+        review_started_at = workflow.get("evidence_gap_review_started_at") or workflow.get("answer_synthesis_started_at")
+        review_started_monotonic = (
+            workflow.get("evidence_gap_review_started_monotonic_ns")
+            or workflow.get("answer_synthesis_started_monotonic_ns")
+        )
+        review_started_wall = (
+            workflow.get("evidence_gap_review_started_wall_ns")
+            or workflow.get("answer_synthesis_started_wall_ns")
+        )
     else:
         review_stage = "candidate-review"
         review_route = "agent-selection"
@@ -413,6 +493,7 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
         for key, value in packet_timings.items():
             timings[key] += value
         inspected_paths.extend(packet_paths)
+    register_evidence_packets(workflow, packets, inspection_count + 1)
     ended_at = now_iso()
     state.setdefault("events", []).extend(
         [
@@ -470,6 +551,11 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             "answer_synthesis_started_wall_ns": time.time_ns(),
             "command_count": int(workflow.get("command_count") or 1) + 1,
             "inspection_count": inspection_count + 1,
+            "evidence_dirty": False,
+            "supplemental_reason": None,
+            "evidence_gap_review_started_at": None,
+            "evidence_gap_review_started_monotonic_ns": None,
+            "evidence_gap_review_started_wall_ns": None,
         }
     )
     write_state(vault_root, state)
@@ -483,14 +569,250 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def candidate_key(candidate: dict[str, Any]) -> tuple[str, str]:
+    return (str(candidate.get("document_path") or ""), str(candidate.get("section_id") or ""))
+
+
+def supplement(args: argparse.Namespace) -> dict[str, Any]:
+    command_started_at = now_iso()
+    command_started_monotonic = time.monotonic_ns()
+    command_started_wall = time.time_ns()
+    vault_root = args.vault_root.resolve()
+    state, _, _ = load_state(vault_root, args.trace_id)
+    if state.get("workflow") != WORKFLOW:
+        raise ValueError(f"trace does not use {WORKFLOW}")
+    workflow = state.setdefault("workflow_state", {})
+    if int(workflow.get("inspection_count") or 0) < 1:
+        raise ValueError("supplement requires an initial inspect")
+    if workflow.get("evidence_dirty"):
+        raise ValueError("the previous supplement must be inspected before another supplement")
+    scope = retrieve_scope(
+        vault_root,
+        args.query,
+        top_k=args.top_k,
+        top_documents=args.top_documents,
+        top_sections=args.top_sections,
+        provider_config=args.provider_config,
+    )
+    previous = fused_candidates(state)
+    merged: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for candidate in [*scope.get("candidates", []), *previous]:
+        key = candidate_key(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(candidate)
+    ended_at = now_iso()
+    state.setdefault("events", []).extend(
+        [
+            clean_event(
+                state,
+                {
+                    "stage": "supplemental-retrieval",
+                    "route": "parallel-scope",
+                    "status": scope.get("status"),
+                    "summary": f"Searched for a recorded evidence gap: {args.reason}",
+                    "hit_count": len(scope.get("candidates", [])),
+                    "duration_ms": scope.get("duration_ms"),
+                    "started_at": command_started_at,
+                    "ended_at": ended_at,
+                    "candidates": scope.get("candidates", []),
+                },
+            ),
+            clean_event(
+                state,
+                {
+                    "stage": "candidate-fusion",
+                    "route": "supplemental-fusion",
+                    "status": "ok" if merged else "empty",
+                    "summary": f"Merged supplemental scope with the prior scope; retained {len(merged)} candidates.",
+                    "hit_count": len(merged),
+                    "duration_ms": 0.0,
+                    "started_at": ended_at,
+                    "ended_at": ended_at,
+                    "accounting": "diagnostic",
+                    "candidates": merged,
+                },
+            ),
+        ]
+    )
+    gap_review_started_at = now_iso()
+    gap_review_started_monotonic = time.monotonic_ns()
+    gap_review_started_wall = time.time_ns()
+    workflow.update(
+        {
+            "evidence_dirty": True,
+            "supplemental_reason": args.reason,
+            "evidence_gap_review_started_at": gap_review_started_at,
+            "evidence_gap_review_started_monotonic_ns": gap_review_started_monotonic,
+            "evidence_gap_review_started_wall_ns": gap_review_started_wall,
+            "command_count": int(workflow.get("command_count") or 2) + 1,
+        }
+    )
+    write_state(vault_root, state)
+    compact_scope = dict(scope)
+    compact_scope["candidates"] = merged
+    return {
+        "workflow": WORKFLOW,
+        "trace_id": args.trace_id,
+        "reason": args.reason,
+        "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
+        "scope": compact_result(compact_scope, args.compact_limit),
+        "next_command": "inspect",
+    }
+
+
+def referenced_packet_handles(claims: list[dict[str, Any]]) -> list[str]:
+    handles: list[str] = []
+    for claim in claims:
+        for value in claim.get("evidence_refs", []):
+            handle = str(value)
+            if handle not in handles:
+                handles.append(handle)
+    return handles
+
+
+def decision_to_manifest(state: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
+    workflow = state.get("workflow_state", {})
+    if workflow.get("evidence_dirty"):
+        raise ValueError("supplemental retrieval must be followed by inspect before finalize")
+    catalog = workflow.get("evidence_catalog", {})
+    claims = decision.get("claims", [])
+    if not isinstance(claims, list):
+        raise ValueError("decision claims must be a list")
+    handles = referenced_packet_handles(claims)
+    missing = [handle for handle in handles if handle not in catalog]
+    if missing:
+        raise ValueError(f"claims reference uninspected evidence handles: {', '.join(missing)}")
+    verified = {str(item) for item in decision.get("verified_evidence_refs", [])}
+    missing_verified = sorted(verified - set(catalog))
+    if missing_verified:
+        raise ValueError(f"verification references unknown evidence handles: {', '.join(missing_verified)}")
+    unused_verified = sorted(verified - set(handles))
+    if unused_verified:
+        raise ValueError(f"verification references handles not used by a claim: {', '.join(unused_verified)}")
+    handle_to_evidence = {handle: f"E{index}" for index, handle in enumerate(handles, start=1)}
+    evidence: list[dict[str, Any]] = []
+    for handle in handles:
+        entry = catalog[handle]
+        asset_path = entry.get("original_asset_path")
+        asset_status = "verified" if handle in verified else "not-checked"
+        evidence.append(
+            {
+                "evidence_id": handle_to_evidence[handle],
+                "path": entry.get("path"),
+                "document_version": entry.get("document_version"),
+                "section_id": entry.get("section_id"),
+                "pages": entry.get("pages", []),
+                "block_id": entry.get("block_id"),
+                "original_asset_status": asset_status,
+                "original_asset_path": asset_path,
+                "summary": f"Inspected {handle} and inherited its governed provenance metadata.",
+            }
+        )
+    normalized_claims: list[dict[str, Any]] = []
+    for index, claim in enumerate(claims, start=1):
+        refs = [str(item) for item in claim.get("evidence_refs", [])]
+        normalized_claims.append(
+            {
+                "claim_id": f"C{index}",
+                "text": claim.get("text"),
+                "status": claim.get("status", "supported"),
+                "evidence_ids": [handle_to_evidence[item] for item in refs],
+                "qualification": claim.get("qualification"),
+            }
+        )
+    events: list[dict[str, Any]] = []
+    for event in decision.get("events", []):
+        item = dict(event)
+        refs = [str(value) for value in item.pop("evidence_refs", [])]
+        unknown = [value for value in refs if value not in handle_to_evidence]
+        if unknown:
+            raise ValueError(f"event references unused evidence handles: {', '.join(unknown)}")
+        item["evidence_ids"] = [handle_to_evidence[value] for value in refs]
+        events.append(item)
+    conclusion = str(decision.get("conclusion") or "")
+    if not conclusion and normalized_claims:
+        conclusion = " ".join(str(item.get("text") or "") for item in normalized_claims)
+    return {
+        "status": decision.get("status", "completed"),
+        "evidence_level": decision.get("evidence_level", "source-backed" if handles else "gap"),
+        "evidence": evidence,
+        "claims": normalized_claims,
+        "events": events,
+        "conclusion": conclusion,
+        "unresolved": decision.get("unresolved", []),
+    }
+
+
+def validate_manifest_catalog(state: dict[str, Any], manifest: dict[str, Any]) -> None:
+    workflow = state.get("workflow_state", {})
+    if workflow.get("evidence_dirty"):
+        raise ValueError("supplemental retrieval must be followed by inspect before finalize")
+    catalog = workflow.get("evidence_catalog", {})
+    catalog_keys = {
+        (str(item.get("path")), str(item.get("section_id")))
+        for item in catalog.values()
+    }
+    outside = [
+        str(item.get("evidence_id") or "unnamed")
+        for item in manifest.get("evidence", [])
+        if (str(item.get("path")), str(item.get("section_id"))) not in catalog_keys
+    ]
+    if outside:
+        raise ValueError(f"legacy manifest contains evidence not registered by inspect: {', '.join(outside)}")
+
+
+def build_answer_capsule(state: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
+    evidence = {str(item.get("evidence_id")): item for item in manifest.get("evidence", [])}
+    claims: list[dict[str, Any]] = []
+    markdown: list[str] = []
+    for claim in manifest.get("claims", []):
+        sources = []
+        for evidence_id in claim.get("evidence_ids", []):
+            item = evidence.get(str(evidence_id), {})
+            sources.append(
+                {
+                    "evidence_id": evidence_id,
+                    "original_pdf": item.get("original_asset_path"),
+                    "pages": item.get("pages", []),
+                    "section_id": item.get("section_id"),
+                }
+            )
+        claim_capsule = {
+            "text": claim.get("text"),
+            "status": claim.get("status"),
+            "qualification": claim.get("qualification"),
+            "sources": sources,
+        }
+        claims.append(claim_capsule)
+        citation = "; ".join(
+            f"{item.get('original_pdf') or 'unresolved'}, page {','.join(str(page) for page in item.get('pages', [])) or 'unresolved'}"
+            for item in sources
+        )
+        markdown.append(f"- {claim.get('text')}" + (f" ({citation})" if citation else ""))
+    return {
+        "trace_id": state.get("trace_id"),
+        "question_index": state.get("question_index"),
+        "question": state.get("question"),
+        "evidence_level": manifest.get("evidence_level"),
+        "claims": claims,
+        "conclusion": manifest.get("conclusion"),
+        "unresolved": manifest.get("unresolved", []),
+        "answer_markdown": "\n".join(markdown),
+    }
+
+
 def load_manifest(args: argparse.Namespace) -> dict[str, Any]:
-    if bool(args.manifest) == bool(args.manifest_json):
-        raise ValueError("provide exactly one of --manifest or --manifest-json")
+    provided = sum(bool(value) for value in (args.manifest, args.manifest_json, args.decision_json))
+    if provided != 1:
+        raise ValueError("provide exactly one of --decision-json, --manifest, or --manifest-json")
     if args.manifest:
         return load_json(args.manifest)
-    value = json.loads(args.manifest_json)
+    value = json.loads(args.manifest_json or args.decision_json)
     if not isinstance(value, dict):
-        raise ValueError("--manifest-json must contain one JSON object")
+        raise ValueError("finalization input must contain one JSON object")
     return value
 
 
@@ -499,10 +821,15 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
     command_started_monotonic = time.monotonic_ns()
     command_started_wall = time.time_ns()
     vault_root = args.vault_root.resolve()
-    manifest = load_manifest(args)
     state, _, _ = load_state(vault_root, args.trace_id)
     if state.get("workflow") != WORKFLOW:
         raise ValueError(f"trace does not use {WORKFLOW}")
+    payload = load_manifest(args)
+    if args.decision_json:
+        manifest = decision_to_manifest(state, payload)
+    else:
+        manifest = payload
+        validate_manifest_catalog(state, manifest)
     workflow = state.get("workflow_state", {})
     manifest.setdefault("events", [])
     manifest["events"].append(
@@ -536,6 +863,8 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
             "measurement_boundary": "query-session begin invocation through finalize validation",
         }
     )
+    capsule = build_answer_capsule(state, manifest)
+    manifest["answer_capsule"] = capsule
     result = finalize_trace(vault_root, args.trace_id, manifest)
     note_path = Path(result["note_path"])
     if not note_path.is_file():
@@ -546,9 +875,28 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
             "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
             "query_session_duration_ms": manifest["metrics"]["query_session_duration_ms"],
             "trace_verified": True,
+            "answer_capsule": capsule,
         }
     )
     return result
+
+
+def request_summary(args: argparse.Namespace) -> dict[str, Any]:
+    states = grouped_states(args.vault_root.resolve(), args.request_id)
+    capsules = [state.get("answer_capsule") for state in states if state.get("answer_capsule")]
+    if not capsules:
+        raise ValueError(f"request has no finalized answer capsules: {args.request_id}")
+    sections = []
+    for index, capsule in enumerate(capsules, start=1):
+        label = capsule.get("question_index") or index
+        sections.append(f"## Question {label}\n\n{capsule.get('answer_markdown') or capsule.get('conclusion') or ''}")
+    return {
+        "workflow": WORKFLOW,
+        "request_id": args.request_id,
+        "question_count": len(capsules),
+        "answer_capsules": capsules,
+        "answer_markdown": "\n\n".join(sections),
+    }
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -577,12 +925,30 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("--max-chars-per-section", type=int, default=16000)
     inspect_parser.set_defaults(handler=inspect)
 
+    supplement_parser = subparsers.add_parser("supplement", help="Retrieve candidates for a recorded evidence gap")
+    supplement_parser.add_argument("vault_root", type=Path)
+    supplement_parser.add_argument("trace_id")
+    supplement_parser.add_argument("query")
+    supplement_parser.add_argument("--reason", required=True)
+    supplement_parser.add_argument("--provider-config", type=Path)
+    supplement_parser.add_argument("--top-k", type=int, default=20)
+    supplement_parser.add_argument("--top-documents", type=int, default=6)
+    supplement_parser.add_argument("--top-sections", type=int, default=12)
+    supplement_parser.add_argument("--compact-limit", type=int, default=5)
+    supplement_parser.set_defaults(handler=supplement)
+
     finalize_parser = subparsers.add_parser("finalize", help="Atomically record evidence, claims, events, and finish the trace")
     finalize_parser.add_argument("vault_root", type=Path)
     finalize_parser.add_argument("trace_id")
     finalize_parser.add_argument("--manifest", type=Path)
     finalize_parser.add_argument("--manifest-json")
+    finalize_parser.add_argument("--decision-json")
     finalize_parser.set_defaults(handler=finalize)
+
+    summary_parser = subparsers.add_parser("request-summary", help="Render compact capsules for a multi-question request")
+    summary_parser.add_argument("vault_root", type=Path)
+    summary_parser.add_argument("request_id")
+    summary_parser.set_defaults(handler=request_summary)
     return parser
 
 
