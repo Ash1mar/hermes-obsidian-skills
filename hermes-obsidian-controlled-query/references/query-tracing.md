@@ -93,7 +93,7 @@ Evidence and claim records include `recorded_at` in both the sidecar and rendere
 
 Each independently answerable question receives its own trace. Reuse one request ID and increment `--question-index`, but finish and verify one trace before beginning the next. Never reuse a trace ID, keep traces open concurrently, or batch separate questions through an ad hoc script. Each completed trace stores an answer capsule; `request-summary` combines capsules without reloading full evidence packets.
 
-Grouped notes live under `_system/reports/query-traces/<request-id>/`; sidecars remain under `_data/`. `Request Summary.md` is navigation only. Map every numbered final answer to its trace path or explicit skipped/unavailable status.
+Grouped notes live under `_system/reports/query-traces/<request-id>/`; sidecars remain under `_data/`. `Request Summary.md` is navigation only and reports the controlled request duration from the first query-session begin through the last finalized trace. Map every numbered final answer to its trace path or explicit skipped/unavailable status. True user-message-to-final-token time still comes from the correlated Hermes session/message log.
 
 ## Legacy fallback
 

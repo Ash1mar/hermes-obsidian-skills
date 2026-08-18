@@ -333,6 +333,27 @@ def grouped_states(vault_root: Path, request_id: str) -> list[dict[str, Any]]:
     )
 
 
+def grouped_request_metrics(states: list[dict[str, Any]]) -> dict[str, Any]:
+    starts: list[int] = []
+    ends: list[int] = []
+    for state in states:
+        workflow = state.get("workflow_state", {})
+        started_wall_ns = workflow.get("session_started_wall_ns")
+        duration_ms = state.get("metrics", {}).get("query_session_duration_ms")
+        if started_wall_ns is None or duration_ms is None:
+            continue
+        start = int(started_wall_ns)
+        starts.append(start)
+        ends.append(start + int(float(duration_ms) * 1_000_000))
+    return {
+        "controlled_request_duration_ms": round((max(ends) - min(starts)) / 1_000_000, 3)
+        if starts and ends
+        else None,
+        "measurement_boundary": "first query-session begin through last finalized trace",
+        "trace_count": len(states),
+    }
+
+
 def markdown_cell(value: Any, limit: int = 240) -> str:
     return shorten(str(value or ""), limit).replace("|", "\\|").replace("\r", " ").replace("\n", " ")
 
@@ -344,6 +365,7 @@ def write_request_summary(vault_root: Path, request_id: str) -> Path:
     session_ids = list(
         dict.fromkeys(str(state["session_id"]) for state in states if state.get("session_id"))
     )
+    request_metrics = grouped_request_metrics(states)
     lines = [
         "---",
         "type: query-trace-request",
@@ -351,6 +373,7 @@ def write_request_summary(vault_root: Path, request_id: str) -> Path:
         "authority: non-authoritative-runtime-log",
         f"request_id: {yaml_string(safe_request)}",
         f"updated: {yaml_string(updated)}",
+        f"controlled_request_duration_ms: {yaml_string(request_metrics['controlled_request_duration_ms'])}",
         "---",
         "",
         f"# Query Request · {safe_request}",
@@ -360,6 +383,8 @@ def write_request_summary(vault_root: Path, request_id: str) -> Path:
         "",
         f"- Hermes sessions: `{', '.join(session_ids) or 'unavailable'}`",
         f"- Questions recorded: `{len(states)}`",
+        f"- Controlled request duration: `{request_metrics['controlled_request_duration_ms'] if request_metrics['controlled_request_duration_ms'] is not None else 'unavailable'} ms`",
+        f"- Measurement boundary: `{request_metrics['measurement_boundary']}`",
         "",
         "| # | Status | Trace | Question |",
         "| ---: | --- | --- | --- |",
@@ -559,6 +584,7 @@ def normalize_evidence(vault_root: Path, state: dict[str, Any], evidence: dict[s
         raise ValueError("verified original assets require an original asset path")
     record = {
         "evidence_id": evidence_id,
+        "evidence_ref": shorten(str(evidence.get("evidence_ref") or ""), 40) or None,
         "path": path,
         "document_version": document_version,
         "section_id": shorten(str(evidence.get("section_id") or ""), 300) or None,
@@ -566,6 +592,8 @@ def normalize_evidence(vault_root: Path, state: dict[str, Any], evidence: dict[s
         "block_id": shorten(str(evidence.get("block_id") or ""), 300) or None,
         "original_asset_status": original_asset_status,
         "original_asset_path": asset_path,
+        "source_filename": shorten(str(evidence.get("source_filename") or ""), 500) or None,
+        "viewer_url": shorten(str(evidence.get("viewer_url") or ""), 2000) or None,
         "summary": shorten(str(evidence.get("summary") or ""), 1200),
         "recorded_at": now_iso(),
     }

@@ -387,6 +387,8 @@ def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path
     request_result = json.loads(summarized.stdout)
     assert request_result["question_count"] == 1
     assert "The checked section supports K=60." in request_result["answer_markdown"]
+    assert request_result["metrics"]["controlled_request_duration_ms"] >= 0
+    assert request_result["metrics"]["measurement_boundary"] == "first query-session begin through last finalized trace"
 
 
 def test_query_session_finalize_is_atomic_on_invalid_claim(tmp_path: Path) -> None:
