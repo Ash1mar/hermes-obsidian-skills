@@ -14,6 +14,7 @@ from typing import Any
 from manage_query_trace import (
     clean_event,
     finalize_trace,
+    grouped_request_metrics,
     grouped_states,
     load_state,
     now_iso,
@@ -701,6 +702,7 @@ def decision_to_manifest(state: dict[str, Any], decision: dict[str, Any]) -> dic
         evidence.append(
             {
                 "evidence_id": handle_to_evidence[handle],
+                "evidence_ref": handle,
                 "path": entry.get("path"),
                 "document_version": entry.get("document_version"),
                 "section_id": entry.get("section_id"),
@@ -708,6 +710,8 @@ def decision_to_manifest(state: dict[str, Any], decision: dict[str, Any]) -> dic
                 "block_id": entry.get("block_id"),
                 "original_asset_status": asset_status,
                 "original_asset_path": asset_path,
+                "source_filename": entry.get("source_filename"),
+                "viewer_url": entry.get("viewer_url"),
                 "summary": f"Inspected {handle} and inherited its governed provenance metadata.",
             }
         )
@@ -775,9 +779,12 @@ def build_answer_capsule(state: dict[str, Any], manifest: dict[str, Any]) -> dic
             sources.append(
                 {
                     "evidence_id": evidence_id,
+                    "evidence_ref": item.get("evidence_ref"),
+                    "original_pdf_filename": item.get("source_filename"),
                     "original_pdf": item.get("original_asset_path"),
                     "pages": item.get("pages", []),
                     "section_id": item.get("section_id"),
+                    "viewer_url": item.get("viewer_url"),
                 }
             )
         claim_capsule = {
@@ -896,6 +903,7 @@ def request_summary(args: argparse.Namespace) -> dict[str, Any]:
         "question_count": len(capsules),
         "answer_capsules": capsules,
         "answer_markdown": "\n\n".join(sections),
+        "metrics": grouped_request_metrics(states),
     }
 
 

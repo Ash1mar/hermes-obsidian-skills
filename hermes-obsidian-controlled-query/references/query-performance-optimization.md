@@ -115,6 +115,7 @@ trace 同时记录：
 - evidence 和 claim 的 `recorded_at`；
 - command count 与 inspection count。
 - Hermes session ID、message ID 与 platform，由运行时环境自动继承。
+- 多题 request summary 的 controlled request duration（首个 begin 到最后一个 finalize）。
 
 计时边界从 `query_session.py begin` 调用开始，到 `finalize` 开始最终持久化为止。用户请求到第一条工具调用之前、最后工具返回到答案发出之后、模型服务排队以及审批等待，需要通过 Hermes session ID 和 `agent.log` 补齐，不能伪装成脚本阶段耗时。
 
