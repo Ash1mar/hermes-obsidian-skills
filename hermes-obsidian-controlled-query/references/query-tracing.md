@@ -46,6 +46,8 @@ These three calls automatically record:
 
 `inspect` also registers compact evidence handles. `finalize --decision-json` inherits all provenance from those handles, creates deterministic ASCII evidence/claim IDs, and stores a compact answer capsule for later request aggregation.
 
+Before trace creation, `begin` rejects apparent multi-question input unless the caller explicitly records that the subparts share one evidence set. Finalization rejects empty claim text atomically, so completed Claim–Evidence mappings always identify the assertion being supported.
+
 Original-page visual verification is agent-driven. Include it as a `page-asset-verification` event with `evidence_refs` in the finalization decision so it is written without an additional trace command.
 
 For query-session evidence traces, `completed` requires these stages to exist:

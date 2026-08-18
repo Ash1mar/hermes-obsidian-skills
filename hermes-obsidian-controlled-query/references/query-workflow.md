@@ -95,7 +95,7 @@ Decision shape:
 }
 ```
 
-The script expands each packet reference into path, document version, section, pages, source PDF and viewer metadata, then assigns `E1...` and `C1...`. Supported claims require at least one recorded evidence ID, derived from an inspected packet reference. Use `qualified`, `disputed`, or `gap` when appropriate.
+The script expands each packet reference into path, document version, section, pages, source PDF and viewer metadata, then assigns `E1...` and `C1...`. Every claim requires non-empty text; `claim`, `statement`, and `claim_text` are accepted as aliases for `text`. Supported claims require at least one recorded evidence ID, derived from an inspected packet reference. Use `qualified`, `disputed`, or `gap` when appropriate.
 
 Finalization validates the entire payload before writing it. An invalid or uninspected reference leaves the existing trace in progress without partially adding final evidence or claims. Legacy manifest inputs remain compatibility/debugging interfaces only.
 
@@ -116,6 +116,8 @@ For multiple questions, finish each trace and then render compact capsules with:
 python3 "<query-skill-root>/scripts/query_session.py" request-summary \
   <vault-root> <request-id>
 ```
+
+`begin` rejects two or more question marks or numbered question items before trace creation. Split independently answerable questions under one request ID. Only genuinely coupled subparts may bypass the guard with `--coupled --coupled-reason "<shared evidence reason>"`.
 
 ## Search decisions
 
