@@ -29,6 +29,8 @@ query_session.py inspect
 query_session.py finalize
 ```
 
+The workflow identifier is `query-session/v2` and trace schema is 1.4. A real evidence gap adds `supplement -> inspect`; this is the only supported supplemental evidence path.
+
 These three calls automatically record:
 
 - query preflight;
@@ -42,7 +44,9 @@ These three calls automatically record:
 - claim–evidence validation;
 - query-session duration and command count.
 
-Original-page visual verification is agent-driven. Include it as a `page-asset-verification` event in the finalization manifest so it is written without an additional trace command.
+`inspect` also registers compact evidence handles. `finalize --decision-json` inherits all provenance from those handles, creates deterministic ASCII evidence/claim IDs, and stores a compact answer capsule for later request aggregation.
+
+Original-page visual verification is agent-driven. Include it as a `page-asset-verification` event with `evidence_refs` in the finalization decision so it is written without an additional trace command.
 
 For query-session evidence traces, `completed` requires these stages to exist:
 
@@ -57,13 +61,13 @@ A stage may be explicitly `skipped` when genuinely inapplicable. The trace canno
 
 ## Timing interpretation
 
-Schema 1.3 stores `started_at`, `ended_at`, `duration_ms`, and `accounting` on events. Diagnostic parallel-route timings are not added to the accounted total; the aggregate scope event is the primary interval. The Markdown note reports:
+Schema 1.4 stores `started_at`, `ended_at`, `duration_ms`, and `accounting` on events. Diagnostic parallel-route timings are not added to the accounted total; the aggregate scope event is the primary interval. The Markdown note reports:
 
 - query-session duration;
 - accounted primary-stage duration;
 - unaccounted query-session duration.
 
-The measurement boundary begins when `query_session.py begin` starts and ends when `finalize` begins final persistence. It does not include time before the first tool invocation or after the final tool returns. Correlate the Hermes session ID with `agent.log` for true request-received-to-answer-emitted timing and approval waits.
+The measurement boundary begins when `query_session.py begin` starts and ends when `finalize` begins final persistence. It does not include time before the first tool invocation or after the final tool returns. Hermes session and message IDs are inherited automatically from the terminal environment; correlate both with `agent.log` for true request-received-to-answer-emitted timing and approval waits.
 
 `attempted_routes` includes disabled/unavailable routes. `effective_routes` and the compatibility `retrieval_route` exclude them.
 
@@ -87,7 +91,7 @@ Evidence and claim records include `recorded_at` in both the sidecar and rendere
 
 ## Multiple questions
 
-Each independently answerable question receives its own trace. Reuse one request ID and increment `--question-index`, but finish and verify one trace before beginning the next. Never reuse a trace ID, keep traces open concurrently, or batch separate questions through an ad hoc script.
+Each independently answerable question receives its own trace. Reuse one request ID and increment `--question-index`, but finish and verify one trace before beginning the next. Never reuse a trace ID, keep traces open concurrently, or batch separate questions through an ad hoc script. Each completed trace stores an answer capsule; `request-summary` combines capsules without reloading full evidence packets.
 
 Grouped notes live under `_system/reports/query-traces/<request-id>/`; sidecars remain under `_data/`. `Request Summary.md` is navigation only. Map every numbered final answer to its trace path or explicit skipped/unavailable status.
 

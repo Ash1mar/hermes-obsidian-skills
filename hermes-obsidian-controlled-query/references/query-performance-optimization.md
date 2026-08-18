@@ -59,7 +59,7 @@ qmd-like-rag 未配置、被禁用或暂时不可用时，coarse route 记为 di
 
 ### `finalize`
 
-模型一次提交包含 evidence、claims、结论、未解决项和可选核验事件的 manifest。脚本先在内存中完成路径、证据 ID、claim 映射和阶段覆盖校验，再原子化写入最终状态和 Markdown trace。任一记录无效时不留下半完成的 finalization。
+模型一次提交只含 claims、inspect packet 引用、结论、未解决项和可选核验事件的 decision。脚本从 evidence catalog 自动继承路径、版本、章节、页码和原始 PDF，生成 ASCII evidence/claim ID，再原子化写入最终状态和 Markdown trace。任一记录无效时不留下半完成的 finalization。
 
 ## 具体优化机制
 
@@ -69,6 +69,7 @@ qmd-like-rag 未配置、被禁用或暂时不可用时，coarse route 记为 di
 - 正常查询不读取稳定脚本源码，不探测 CLI help；
 - 不为结果查看创建临时 Python formatter；
 - 不为每条 evidence/claim 单独启动进程和写一次状态；
+- 不创建或 patch 临时 manifest，正常 finalize 直接使用 `--decision-json`；
 - 多问题仍逐题完成，以维持一题一 trace 的治理边界。
 
 ### 减少模型上下文
@@ -77,6 +78,7 @@ qmd-like-rag 未配置、被禁用或暂时不可用时，coarse route 记为 di
 - 中文查询产生的重叠 n-gram 只保留最长且不同的少量命中词；
 - trace Markdown 只展示最高优先级候选，诊断详情保留在 JSON；
 - `inspect` 只读取已选择候选，不把整个 Vault 或全部候选送回模型。
+- 每题完成后只保留 answer capsule 用于多题汇总，完整 packet 留在 trace sidecar。
 
 一次真实大 Vault 基准中，初始检索输出从 35,204 bytes 降到 4,893 bytes，减少约 86.1%。
 
@@ -91,7 +93,7 @@ Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产
 
 ## 自动 trace 与计时
 
-`query-session/v1`、trace schema 1.3 自动记录以下阶段：
+`query-session/v2`、trace schema 1.4 自动记录以下阶段：
 
 - scope retrieval；
 - candidate review；
@@ -112,6 +114,7 @@ trace 同时记录：
 - attempted routes 与 effective routes，disabled/unavailable route 不冒充实际检索路线；
 - evidence 和 claim 的 `recorded_at`；
 - command count 与 inspection count。
+- Hermes session ID、message ID 与 platform，由运行时环境自动继承。
 
 计时边界从 `query_session.py begin` 调用开始，到 `finalize` 开始最终持久化为止。用户请求到第一条工具调用之前、最后工具返回到答案发出之后、模型服务排队以及审批等待，需要通过 Hermes session ID 和 `agent.log` 补齐，不能伪装成脚本阶段耗时。
 
@@ -128,13 +131,17 @@ trace 同时记录：
 
 当前实现完成了以下自动验证：
 
-- 三调用 evidence workflow 的集成测试；
+- 三调用 decision workflow 的集成测试；
+- inspect provenance 自动继承及 ASCII evidence/claim ID；
+- supplement 后缺少第二次 inspect 时拒绝 finalize；
+- answer capsule 与 request-summary 汇总；
+- Hermes session/message 环境继承；
 - 无效 claim 导致 finalization 整体失败且不产生部分写入；
 - required-stage coverage 检查；
 - attempted/effective route 区分；
 - evidence/claim 时间戳和请求级计时输出；
 - 紧凑候选和 n-gram 限制；
-- 全套测试 49 项通过；
+- intranet 分支全套测试 49 项通过；
 - Skill 结构校验通过；
 - 所有 Python 入口保持 Git executable mode `100755`。
 
@@ -164,6 +171,6 @@ trace 同时记录：
 3. 若经常发生第二次 inspect，调整 compact candidates、文档路由词或 evidence packet，而不是盲目扩大首次上下文；
 4. qmd-like-rag 启用后保持与 hierarchical route 并行，并用 route timing 判断收益；
 5. 若 Windows-mounted Vault 成为长期运行路径，构建单文件聚合索引或 Linux-local Provider cache；
-6. 只有当三调用路径本身成为瓶颈时，再考虑 stdin manifest、常驻进程或更细的缓存；不得为减少几十毫秒破坏原子性和证据治理。
+6. 若多题 API 输入上下文仍线性增长，在 Hermes prompt 组装层将已经 finalize 的 begin/inspect tool output 替换为 answer capsule；磁盘会话与 trace 原文保持不变。
 
 本设计的核心不是让模型“更快地执行原来的十几个步骤”，而是取消不必要的步骤，把稳定、可验证的工作下沉到确定性脚本中，并让可观测性自动产生。

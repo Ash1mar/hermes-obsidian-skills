@@ -21,7 +21,7 @@ The normal fast path invokes parallel scope retrieval through:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" begin \
-  <vault-root> "<query>" --query-type <type> --session-id <session-id>
+  <vault-root> "<query>" --query-type <type>
 ```
 
 It starts the trace, invokes the adapter below concurrently with hierarchical location, expands Provider chunks to complete sections, and fuses the union. Provider and hierarchical raw scores remain separate; fusion ordering uses route ranks. Candidate duplicates and their rejection reasons are retained in the trace sidecar while stdout stays compact.

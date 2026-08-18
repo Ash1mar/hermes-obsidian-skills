@@ -89,7 +89,7 @@ def test_query_adapter_normalizes_provider_output(tmp_path: Path) -> None:
     assert result["candidates"][0]["retrieval_routes"] == ["qmd-like-rag"]
 
 
-def test_default_provider_configs_disable_query_and_sync_until_indexes_exist(tmp_path: Path) -> None:
+def test_default_provider_configs_disable_query_and_sync_until_deployed(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     query = subprocess.run(
         [sys.executable, str(QUERY_ADAPTER), str(vault), "供电可用性"],

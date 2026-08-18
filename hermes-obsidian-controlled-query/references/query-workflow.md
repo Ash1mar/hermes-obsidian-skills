@@ -19,13 +19,13 @@ Do not scan old traces, probe stable CLI help, run inline Python, create tempora
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" begin \
   <vault-root> "<question>" \
-  --query-type evidence \
-  --session-id <hermes-session-id>
+  --query-type evidence
 ```
 
 Optional flags:
 
 - `--request-id` and `--question-index` for sequential multi-question requests;
+- `--session-id` only for non-Hermes runtimes without `HERMES_SESSION_ID`;
 - `--provider-config` for an explicitly deployed Provider configuration;
 - `--top-sections` or `--compact-limit` only when the defaults are demonstrably insufficient.
 
@@ -44,6 +44,8 @@ Selectors may also be a section ID or `document/path::section-id`. If omitted, t
 
 Each evidence packet contains:
 
+- a stable ASCII packet reference such as `P1` for final claims;
+
 - the complete ledger-owned source ranges;
 - original PDF identity/path, pages, and source hash when present;
 - section quality and ingest status;
@@ -56,48 +58,35 @@ The packet is navigation and verification material, not a user-facing citation. 
 
 ## Finalize
 
-Use `--manifest-json` for a compact payload or `--manifest <path>` for a large payload:
+Use `--decision-json`. Do not write a temporary manifest:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" finalize \
-  <vault-root> <trace-id> --manifest-json '<json-object>'
+  <vault-root> <trace-id> --decision-json '<json-object>'
 ```
 
-Manifest shape:
+Decision shape:
 
 ```json
 {
   "status": "completed",
   "evidence_level": "clear",
-  "evidence": [
-    {
-      "evidence_id": "E1",
-      "path": "10_Raw/converted/example_bundle/document.md",
-      "document_version": "source-or-document-hash",
-      "section_id": "5.1.1",
-      "pages": [18],
-      "block_id": "lines-532-557",
-      "original_asset_status": "verified",
-      "original_asset_path": "10_Raw/example.pdf",
-      "summary": "Checked the complete section and original page."
-    }
-  ],
   "claims": [
     {
-      "claim_id": "C1",
       "text": "Concise final claim.",
       "status": "supported",
-      "evidence_ids": ["E1"],
+      "evidence_refs": ["P1"],
       "qualification": null
     }
   ],
+  "verified_evidence_refs": ["P1"],
   "events": [
     {
       "stage": "page-asset-verification",
       "route": "original-pdf",
       "status": "completed",
       "summary": "Checked table 5.1.1-1 on PDF page 18.",
-      "evidence_ids": ["E1"],
+      "evidence_refs": ["P1"],
       "inspected_paths": ["10_Raw/example.pdf"]
     }
   ],
@@ -106,9 +95,27 @@ Manifest shape:
 }
 ```
 
-Allowed evidence asset statuses are `verified`, `not-required`, `not-checked`, and `failed`. Supported claims require at least one recorded evidence ID. Use `qualified`, `disputed`, or `gap` when appropriate.
+The script expands each packet reference into path, document version, section, pages, source PDF and viewer metadata, then assigns `E1...` and `C1...`. Supported claims require at least one recorded evidence ID, derived from an inspected packet reference. Use `qualified`, `disputed`, or `gap` when appropriate.
 
-Finalization validates the entire payload before writing it. An invalid claim or path leaves the existing trace in progress without partially adding final evidence or claims.
+Finalization validates the entire payload before writing it. An invalid or uninspected reference leaves the existing trace in progress without partially adding final evidence or claims. Legacy manifest inputs remain compatibility/debugging interfaces only.
+
+## Supplemental retrieval
+
+When a real evidence gap remains, record it and retrieve a focused scope:
+
+```bash
+python3 "<query-skill-root>/scripts/query_session.py" supplement \
+  <vault-root> <trace-id> "<focused query>" --reason "<gap>"
+```
+
+Then run `inspect` on the supplemental candidate. `finalize` rejects a trace with pending supplemental evidence, so supplemental search cannot be hidden inside answer synthesis.
+
+For multiple questions, finish each trace and then render compact capsules with:
+
+```bash
+python3 "<query-skill-root>/scripts/query_session.py" request-summary \
+  <vault-root> <request-id>
+```
 
 ## Search decisions
 
