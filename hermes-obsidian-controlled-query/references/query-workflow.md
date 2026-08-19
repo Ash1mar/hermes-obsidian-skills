@@ -12,7 +12,7 @@ Use the three-command path for one ordinary question:
 begin -> inspect -> finalize
 ```
 
-When the user or an explicit audit requirement requires visual source verification, use `begin --verification-required -> inspect -> verify -> visual check -> finalize`. `verify` is a single deterministic carrier-preparation attempt. Tables, formulas, engineering parameters, images, and Bundle QA flags do not select this route by themselves, and the script never infers it from question wording. Run a second `inspect` only for a real evidence gap or conflict.
+When the user or an explicit audit requirement requires visual source verification, use `begin --verification-required -> inspect -> verify -> visual check -> finalize`. `verify` is a single deterministic carrier-preparation attempt. Tables, formulas, engineering parameters, images, and Bundle QA flags do not select this route by themselves, and the script never infers it from question wording. Run a second `inspect` only for a real evidence gap or conflict. A trace permits at most two inspections and one supplement; when those limits are reached, finalize immediately as completed or incomplete instead of modifying or debugging the installed Skill.
 
 Do not scan old traces, probe stable CLI help, run inline Python, create temporary formatter scripts, or read source sections one by one. Keep progress narration sparse; the trace carries the operational detail.
 

@@ -11,6 +11,7 @@ import re
 import shutil
 import subprocess
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 
@@ -57,6 +58,8 @@ EVENT_KEYS = {
     "extensions",
 }
 VISUAL_ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
+MAX_INSPECTIONS = 2
+MAX_SUPPLEMENTS = 1
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -70,6 +73,15 @@ def vault_relative(path: Path, vault_root: Path) -> str:
     return path.resolve().relative_to(vault_root.resolve()).as_posix()
 
 
+def is_within(path: Path, root: Path) -> bool:
+    try:
+        path.resolve().relative_to(root.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+@lru_cache(maxsize=128)
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:
@@ -465,24 +477,35 @@ def register_evidence_packets(
     for packet in packets:
         key = (str(packet.get("document_path")), str(packet.get("section_id")))
         handle = existing.get(key)
+        refreshed = {
+            "path": packet.get("document_path"),
+            "document_version": packet.get("document_version"),
+            "section_id": packet.get("section_id"),
+            "pages": packet.get("pages", []),
+            "block_id": block_id_for_ranges(packet.get("content_ranges", [])),
+            "original_asset_path": packet.get("source_path") if packet.get("source_exists") else None,
+            "source_filename": packet.get("source_filename"),
+            "viewer_url": packet.get("viewer_url"),
+            "quality": packet.get("quality"),
+            "ingest_status": packet.get("ingest_status"),
+            "verification_assets": verification_asset_paths(packet.get("assets", [])),
+        }
         if not handle:
             handle = f"P{len(catalog) + 1}"
             catalog[handle] = {
                 "handle": handle,
-                "path": packet.get("document_path"),
-                "document_version": packet.get("document_version"),
-                "section_id": packet.get("section_id"),
-                "pages": packet.get("pages", []),
-                "block_id": block_id_for_ranges(packet.get("content_ranges", [])),
-                "original_asset_path": packet.get("source_path") if packet.get("source_exists") else None,
-                "source_filename": packet.get("source_filename"),
-                "viewer_url": packet.get("viewer_url"),
-                "quality": packet.get("quality"),
-                "ingest_status": packet.get("ingest_status"),
-                "verification_assets": verification_asset_paths(packet.get("assets", [])),
+                **refreshed,
                 "inspection_rounds": [],
             }
             existing[key] = handle
+        else:
+            prior_version = str(catalog[handle].get("document_version") or "")
+            current_version = str(packet.get("document_version") or "")
+            if prior_version and current_version and prior_version != current_version:
+                raise ValueError(
+                    f"document changed between inspections for {handle}; start a new query trace"
+                )
+            catalog[handle].update(refreshed)
         rounds = catalog[handle].setdefault("inspection_rounds", [])
         if inspection_round not in rounds:
             rounds.append(inspection_round)
@@ -517,15 +540,41 @@ def resolve_source_path(
     document_meta: dict[str, Any],
     manifest: dict[str, Any],
     source_filename: str,
-) -> Path:
+) -> Path | None:
+    expected_sha256 = str(manifest.get("source", {}).get("sha256") or "").casefold()
     candidates: list[Path] = []
     for value in (document_meta.get("source_path"), manifest.get("source", {}).get("path")):
         if not value:
             continue
         path = Path(str(value))
-        candidates.append(path if path.is_absolute() else vault_root / path)
-    candidates.append(vault_root / "10_Raw" / source_filename)
-    return next((path for path in candidates if path.is_file()), candidates[-1])
+        candidate = path if path.is_absolute() else vault_root / path
+        if is_within(candidate, vault_root):
+            candidates.append(candidate)
+    if source_filename:
+        candidates.append(vault_root / "10_Raw" / source_filename)
+
+    def trusted(candidate: Path) -> bool:
+        if not candidate.is_file() or not is_within(candidate, vault_root):
+            return False
+        return not expected_sha256 or file_sha256(candidate).casefold() == expected_sha256
+
+    for candidate in candidates:
+        if trusted(candidate):
+            return candidate
+
+    raw_root = vault_root / "10_Raw"
+    if source_filename and raw_root.is_dir():
+        matches = []
+        for directory, directory_names, filenames in os.walk(raw_root):
+            directory_names[:] = [name for name in directory_names if name.casefold() != "converted"]
+            if source_filename not in filenames:
+                continue
+            candidate = Path(directory) / source_filename
+            if trusted(candidate):
+                matches.append(candidate)
+        if len(matches) == 1:
+            return matches[0]
+    return None
 
 
 def asset_packet(
@@ -588,6 +637,13 @@ def build_evidence_packet(
     ledger = load_json(ledger_path) if ledger_path and ledger_path.is_file() else {}
     source_filename = str(document_meta.get("source_filename") or candidate.get("source_filename") or "")
     source_path = resolve_source_path(vault_root, document_meta, manifest, source_filename)
+    external_source_paths = []
+    for value in (document_meta.get("source_path"), manifest.get("source", {}).get("path")):
+        if not value:
+            continue
+        path = Path(str(value))
+        if path.is_absolute() and not is_within(path, vault_root):
+            external_source_paths.append(path.as_posix())
     source_map_path = (
         ledger_path.with_name(ledger_path.name.replace(".section-ledger.json", ".source-map.md"))
         if ledger_path
@@ -640,8 +696,8 @@ def build_evidence_packet(
     packet = {
         "document_path": vault_relative(document_path, vault_root),
         "source_filename": source_filename,
-        "source_path": vault_relative(source_path, vault_root) if source_path.is_file() else str(document_meta.get("source_path") or "unresolved"),
-        "source_exists": source_path.is_file(),
+        "source_path": vault_relative(source_path, vault_root) if source_path else "unresolved",
+        "source_exists": bool(source_path),
         "source_sha256": manifest.get("source", {}).get("sha256"),
         "document_version": document_version,
         "section_id": candidate.get("section_id"),
@@ -660,6 +716,7 @@ def build_evidence_packet(
             "source_map_path": vault_relative(source_map_path, vault_root) if source_map_path.is_file() else None,
             "source_map": source_map_frontmatter(source_map_path),
             "source_state": projection.get("source_state", {}),
+            "external_source_paths": list(dict.fromkeys(external_source_paths)),
         },
         "viewer_url": viewer_url,
         "selection_origin": candidate.get("selection_origin", "fused-candidate"),
@@ -743,6 +800,39 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
         raise ValueError(f"trace does not use {WORKFLOW}")
     workflow = state.setdefault("workflow_state", {})
     inspection_count = int(workflow.get("inspection_count") or 0)
+    if inspection_count >= MAX_INSPECTIONS:
+        summary = (
+            f"Inspection limit reached ({MAX_INSPECTIONS}); finalize this trace as completed when existing "
+            "evidence is sufficient, otherwise finalize it as incomplete with an unresolved item."
+        )
+        if not any(
+            event.get("stage") == "query-guardrail" and event.get("route") == "inspection-limit"
+            for event in state.get("events", [])
+        ):
+            state.setdefault("events", []).append(
+                clean_event(
+                    state,
+                    {
+                        "stage": "query-guardrail",
+                        "route": "inspection-limit",
+                        "status": "blocked",
+                        "summary": summary,
+                        "started_at": command_started_at,
+                        "ended_at": now_iso(),
+                        "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
+                    },
+                )
+            )
+            workflow["command_count"] = int(workflow.get("command_count") or 1) + 1
+            write_state(vault_root, state)
+        return {
+            "workflow": WORKFLOW,
+            "trace_id": args.trace_id,
+            "status": "blocked",
+            "reason": summary,
+            "next_command": "finalize",
+            "required_status_when_evidence_is_insufficient": "incomplete",
+        }
     if inspection_count:
         review_stage = "evidence-gap-review"
         review_route = "supplemental-selection" if workflow.get("evidence_dirty") else "agent-follow-up-selection"
@@ -888,6 +978,40 @@ def supplement(args: argparse.Namespace) -> dict[str, Any]:
     workflow = state.setdefault("workflow_state", {})
     if int(workflow.get("inspection_count") or 0) < 1:
         raise ValueError("supplement requires an initial inspect")
+    supplement_count = int(workflow.get("supplement_count") or 0)
+    if supplement_count >= MAX_SUPPLEMENTS or int(workflow.get("inspection_count") or 0) >= MAX_INSPECTIONS:
+        summary = (
+            f"Supplement limit reached ({MAX_SUPPLEMENTS}) or no inspection slot remains; finalize this trace "
+            "as completed when existing evidence is sufficient, otherwise finalize it as incomplete."
+        )
+        if not any(
+            event.get("stage") == "query-guardrail" and event.get("route") == "supplement-limit"
+            for event in state.get("events", [])
+        ):
+            state.setdefault("events", []).append(
+                clean_event(
+                    state,
+                    {
+                        "stage": "query-guardrail",
+                        "route": "supplement-limit",
+                        "status": "blocked",
+                        "summary": summary,
+                        "started_at": command_started_at,
+                        "ended_at": now_iso(),
+                        "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
+                    },
+                )
+            )
+            workflow["command_count"] = int(workflow.get("command_count") or 1) + 1
+            write_state(vault_root, state)
+        return {
+            "workflow": WORKFLOW,
+            "trace_id": args.trace_id,
+            "status": "blocked",
+            "reason": summary,
+            "next_command": "finalize",
+            "required_status_when_evidence_is_insufficient": "incomplete",
+        }
     if workflow.get("evidence_dirty"):
         raise ValueError("the previous supplement must be inspected before another supplement")
     scope = retrieve_scope(
@@ -947,6 +1071,7 @@ def supplement(args: argparse.Namespace) -> dict[str, Any]:
     workflow.update(
         {
             "evidence_dirty": True,
+            "supplement_count": supplement_count + 1,
             "supplemental_reason": args.reason,
             "evidence_gap_review_started_at": gap_review_started_at,
             "evidence_gap_review_started_monotonic_ns": gap_review_started_monotonic,
@@ -1605,9 +1730,50 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def record_command_failure(args: argparse.Namespace, error: Exception) -> None:
+    vault_root = getattr(args, "vault_root", None)
+    trace_id = getattr(args, "trace_id", None)
+    if not isinstance(vault_root, Path) or not trace_id:
+        return
+    try:
+        state, _, _ = load_state(vault_root.resolve(), str(trace_id))
+        if state.get("status") != "in_progress":
+            return
+        workflow = state.setdefault("workflow_state", {})
+        summary = (
+            f"query_session {getattr(args, 'command', 'command')} failed: "
+            f"{type(error).__name__}: {str(error)[:800]}. Do not modify the installed Skill during a query; "
+            "finalize the trace as incomplete when the failure prevents a supported answer."
+        )
+        state.setdefault("events", []).append(
+            clean_event(
+                state,
+                {
+                    "stage": "query-command-failure",
+                    "route": str(getattr(args, "command", "query-session")),
+                    "status": "failed",
+                    "summary": summary,
+                    "started_at": now_iso(),
+                    "ended_at": now_iso(),
+                    "duration_ms": 0.0,
+                },
+            )
+        )
+        workflow["last_failure"] = summary
+        workflow["recommended_next_command"] = "finalize"
+        workflow["command_count"] = int(workflow.get("command_count") or 0) + 1
+        write_state(vault_root.resolve(), state)
+    except Exception:
+        return
+
+
 def main() -> int:
     args = build_parser().parse_args()
-    result = args.handler(args)
+    try:
+        result = args.handler(args)
+    except Exception as error:
+        record_command_failure(args, error)
+        raise
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

@@ -311,6 +311,7 @@ def compact_result(result: dict[str, Any], limit: int = DEFAULT_COMPACT_LIMIT) -
         "duration_ms": result.get("duration_ms"),
         "routes": result.get("routes", {}),
         "fusion": result.get("fusion", {}),
+        "ranking": result.get("ranking", {}),
         "candidate_count": len(candidates),
         "candidates": [
             compact_candidate(candidate, rank)
@@ -450,6 +451,7 @@ def retrieve_scope(
             "retained_count": len(fused),
             "eliminated_count": len(rejected),
         },
+        "ranking": hierarchical.get("ranking", {}),
         "candidates": fused,
         "rejected": rejected,
         "warnings": warnings,
