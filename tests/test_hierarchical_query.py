@@ -729,7 +729,12 @@ def test_query_session_bootstrap_returns_exact_rules_and_capabilities(tmp_path: 
     paths = {Path(item["path"]).name for item in result["required_rules"]}
     assert {"AGENTS.md", "ENVIRONMENT.md"} <= paths
     assert result["verification_runtime"]["policy"].startswith("one deterministic")
-    assert isinstance(result["routing"], dict)
+    config_root = QUERY_SKILL.parent / "config"
+    expected_routing_path = next(
+        path for path in (config_root / "domain-routing.json", config_root / "intranet.json") if path.is_file()
+    )
+    assert Path(result["routing_config_path"]).name == expected_routing_path.name
+    assert result["routing"] == json.loads(expected_routing_path.read_text(encoding="utf-8"))
     assert result["next_command"] == "begin"
 
 
@@ -832,7 +837,7 @@ def test_query_session_verify_uses_registered_carrier_once(tmp_path: Path) -> No
     assert any(event["stage"] == "verification-readiness" for event in state["events"])
 
 
-def test_query_session_verify_fast_fails_without_carrier_or_renderer(tmp_path: Path) -> None:
+def test_query_session_verification_uses_viewer_or_fast_fails_without_carrier(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     bundle = vault / "10_Raw" / "converted" / "0712XFNPXTS02_document_bundle"
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
@@ -874,9 +879,14 @@ def test_query_session_verify_fast_fails_without_carrier_or_renderer(tmp_path: P
         env=env,
     )
     result = json.loads(prepared.stdout)
-    assert result["verification"][0]["status"] == "unavailable"
-    assert result["verification"][0]["recommended_evidence_level"] == "needs-qa"
-    assert result["verification"][0]["required_unresolved"]
+    verification = result["verification"][0]
+    if verification["status"] == "ready":
+        assert verification["mode"] == "viewer"
+        assert verification["viewer_url"]
+    else:
+        assert verification["status"] == "unavailable"
+        assert verification["recommended_evidence_level"] == "needs-qa"
+        assert verification["required_unresolved"]
     assert "Do not probe pdftotext" in result["stopping_rule"]
 
 

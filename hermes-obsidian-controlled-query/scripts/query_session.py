@@ -183,7 +183,17 @@ def bootstrap(args: argparse.Namespace) -> dict[str, Any]:
             }
         )
     skill_root = Path(__file__).resolve().parent.parent
-    domain_path = skill_root / "config" / "domain-routing.json"
+    routing_path = next(
+        (
+            path
+            for path in (
+                skill_root / "config" / "domain-routing.json",
+                skill_root / "config" / "intranet.json",
+            )
+            if path.is_file()
+        ),
+        None,
+    )
     provider_path = skill_root / "config" / "retrieval-provider.json"
     return {
         "workflow": WORKFLOW,
@@ -194,7 +204,8 @@ def bootstrap(args: argparse.Namespace) -> dict[str, Any]:
             "platform": os.environ.get("HERMES_SESSION_PLATFORM"),
         },
         "required_rules": rules,
-        "routing": load_json(domain_path) if domain_path.is_file() else None,
+        "routing_config_path": str(routing_path) if routing_path else None,
+        "routing": load_json(routing_path) if routing_path else None,
         "provider": load_json(provider_path) if provider_path.is_file() else None,
         "verification_runtime": verification_runtime(),
         "next_command": "begin",
