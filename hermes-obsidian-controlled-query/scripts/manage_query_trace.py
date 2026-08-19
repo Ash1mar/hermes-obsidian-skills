@@ -17,7 +17,7 @@ from typing import Any
 
 TRACE_RELATIVE_DIR = Path("_system/reports/query-traces")
 DATA_DIR_NAME = "_data"
-SCHEMA_VERSION = "1.4"
+SCHEMA_VERSION = "1.5"
 INACTIVE_ROUTE_STATUSES = {"disabled", "unavailable", "skipped", "failed"}
 RETRIEVAL_STAGES = {
     "coarse-recall",
@@ -344,6 +344,7 @@ def grouped_states(vault_root: Path, request_id: str) -> list[dict[str, Any]]:
 def grouped_request_metrics(states: list[dict[str, Any]]) -> dict[str, Any]:
     starts: list[int] = []
     ends: list[int] = []
+    intervals: list[tuple[int, int, str]] = []
     for state in states:
         workflow = state.get("workflow_state", {})
         started_wall_ns = workflow.get("session_started_wall_ns")
@@ -351,14 +352,35 @@ def grouped_request_metrics(states: list[dict[str, Any]]) -> dict[str, Any]:
         if started_wall_ns is None or duration_ms is None:
             continue
         start = int(started_wall_ns)
+        end = start + int(float(duration_ms) * 1_000_000)
         starts.append(start)
-        ends.append(start + int(float(duration_ms) * 1_000_000))
+        ends.append(end)
+        intervals.append((start, end, str(state.get("trace_id") or "")))
+    overlaps: list[dict[str, Any]] = []
+    previous_end = 0
+    previous_trace = ""
+    for start, end, trace_id in sorted(intervals):
+        if start < previous_end:
+            overlaps.append(
+                {
+                    "trace_id": trace_id,
+                    "overlaps_with": previous_trace,
+                    "duration_ms": round((min(end, previous_end) - start) / 1_000_000, 3),
+                }
+            )
+        if end > previous_end:
+            previous_end = end
+            previous_trace = trace_id
     return {
         "controlled_request_duration_ms": round((max(ends) - min(starts)) / 1_000_000, 3)
         if starts and ends
         else None,
         "measurement_boundary": "first query-session begin through last finalized trace",
         "trace_count": len(states),
+        "overlap_count": len(overlaps),
+        "overlap_duration_ms": round(sum(item["duration_ms"] for item in overlaps), 3),
+        "overlaps": overlaps,
+        "sequential": not overlaps,
     }
 
 
@@ -374,6 +396,17 @@ def write_request_summary(vault_root: Path, request_id: str) -> Path:
         dict.fromkeys(str(state["session_id"]) for state in states if state.get("session_id"))
     )
     request_metrics = grouped_request_metrics(states)
+    expected_counts = {
+        int(state.get("workflow_state", {}).get("expected_question_count"))
+        for state in states
+        if state.get("workflow_state", {}).get("expected_question_count") is not None
+    }
+    expected_count = next(iter(expected_counts)) if len(expected_counts) == 1 else None
+    process_statement = (
+        "> This folder groups independently auditable question traces from one user request. Process order is sequential."
+        if request_metrics["sequential"]
+        else "> [!danger] Trace intervals overlap; the request did not follow the required sequential process."
+    )
     lines = [
         "---",
         "type: query-trace-request",
@@ -382,17 +415,21 @@ def write_request_summary(vault_root: Path, request_id: str) -> Path:
         f"request_id: {yaml_string(safe_request)}",
         f"updated: {yaml_string(updated)}",
         f"controlled_request_duration_ms: {yaml_string(request_metrics['controlled_request_duration_ms'])}",
+        f"expected_question_count: {yaml_string(expected_count)}",
+        f"trace_overlap_count: {request_metrics['overlap_count']}",
         "---",
         "",
         f"# Query Request · {safe_request}",
         "",
         "> [!warning] Runtime trace group, not evidence",
-        "> This folder groups independently auditable question traces from one user request. Process order remains sequential.",
+        process_statement,
         "",
         f"- Hermes sessions: `{', '.join(session_ids) or 'unavailable'}`",
         f"- Questions recorded: `{len(states)}`",
+        f"- Questions expected: `{expected_count if expected_count is not None else 'unavailable'}`",
         f"- Controlled request duration: `{request_metrics['controlled_request_duration_ms'] if request_metrics['controlled_request_duration_ms'] is not None else 'unavailable'} ms`",
         f"- Measurement boundary: `{request_metrics['measurement_boundary']}`",
+        f"- Trace overlap: `{request_metrics['overlap_count']} intervals / {request_metrics['overlap_duration_ms']} ms`",
         "",
         "| # | Status | Trace | Question |",
         "| ---: | --- | --- | --- |",

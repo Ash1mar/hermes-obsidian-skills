@@ -282,7 +282,7 @@ def test_locator_compacts_overlapping_query_ngrams(tmp_path: Path) -> None:
         assert not any(left != right and left in right for left in values for right in values)
 
 
-def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path) -> None:
+def test_query_session_completes_explicit_visual_verification_policy(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
 
@@ -297,6 +297,7 @@ def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path
             "session-fast",
             "--query-type",
             "evidence",
+            "--verification-required",
             "--request-id",
             "req-fast",
             "--question-index",
@@ -324,8 +325,16 @@ def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path
     assert packet["source_path"] == "10_Raw/0712XFNPXTS02.pdf"
     assert packet["assets"][0]["id"] == "table_spray"
     assert "| 60 | 68 ℃ |" in packet["assets"][0]["content"]
-    assert packet["control"]["source_map"]["validation_status"] == "pass"
+    assert packet["qa"]["source_map_validation_status"] == "pass"
+    assert packet["verification"]["status"] == "ready"
     assert packet["evidence_ref"] == "P1"
+    prepared = subprocess.run(
+        [sys.executable, str(SESSION), "verify", str(vault), trace_id, "--evidence-ref", "P1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    carrier = json.loads(prepared.stdout)["verification"][0]["paths"][0]
 
     decision = {
         "status": "completed",
@@ -335,7 +344,12 @@ def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path
                 "text": "The checked section supports K=60.",
                 "status": "supported",
                 "evidence_refs": ["P1"],
-            }
+            },
+            {
+                "text": "The checked table supports 68 ℃.",
+                "status": "supported",
+                "evidence_refs": ["P1"],
+            },
         ],
         "verified_evidence_refs": ["P1"],
         "events": [
@@ -345,7 +359,7 @@ def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path
                 "status": "completed",
                 "summary": "Checked page 1 and the table evidence image.",
                 "evidence_refs": ["P1"],
-                "inspected_paths": [packet["source_path"], packet["assets"][0]["evidence_path"]],
+                "inspected_paths": [carrier],
             }
         ],
         "conclusion": "The checked section supports K=60.",
@@ -370,11 +384,14 @@ def test_query_session_completes_evidence_query_in_three_commands(tmp_path: Path
     assert final_result["trace_verified"] is True
     state_path = Path(final_result["state_path"])
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["metrics"]["command_count"] == 3
+    assert state["metrics"]["command_count"] == 4
     assert state["evidence"][0]["evidence_id"] == "E1"
     assert state["evidence"][0]["document_version"] == packet["document_version"]
     assert state["claims"][0]["claim_id"] == "C1"
     assert state["answer_capsule"]["claims"][0]["text"] == "The checked section supports K=60."
+    assert len(state["answer_capsule"]["sources"]) == 1
+    assert state["answer_capsule"]["claims"][0]["source_ids"] == ["S1"]
+    assert state["answer_capsule"]["claims"][1]["source_ids"] == ["S1"]
     stages = {event["stage"] for event in state["events"]}
     assert {
         "candidate-review",
@@ -503,9 +520,33 @@ def test_query_session_rejects_empty_claim_then_accepts_text_alias(tmp_path: Pat
     assert state["evidence"] == []
     assert state["claims"] == []
 
+    unknown_field = {
+        "evidence_level": "needs-qa",
+        "claims": [{"text": "A claim.", "evidence_refs": [evidence_ref]}],
+        "unresolved": ["Verification pending."],
+        "unresolved_itemz": [],
+    }
+    rejected_unknown = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            trace_id,
+            "--decision-json",
+            json.dumps(unknown_field),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected_unknown.returncode != 0
+    assert "unsupported fields: unresolved_itemz" in rejected_unknown.stderr
+
     repaired_decision = {
-        "evidence_level": "source-backed",
+        "evidence_level": "needs-qa",
         "claims": [{"statement": "The inspected source supports the water-spray parameter.", "evidence_refs": [evidence_ref]}],
+        "unresolved_items": ["Original-page verification was not completed."],
     }
     finalized = subprocess.run(
         [
@@ -524,6 +565,9 @@ def test_query_session_rejects_empty_claim_then_accepts_text_alias(tmp_path: Pat
     final_state = json.loads(Path(json.loads(finalized.stdout)["state_path"]).read_text(encoding="utf-8"))
     assert final_state["claims"][0]["text"] == "The inspected source supports the water-spray parameter."
     assert final_state["answer_capsule"]["claims"][0]["text"] == final_state["claims"][0]["text"]
+    assert final_state["unresolved"] == ["Original-page verification was not completed."]
+    assert final_state["answer_capsule"]["sources"][0]["source_id"] == "S1"
+    assert final_state["answer_capsule"]["claims"][0]["source_ids"] == ["S1"]
 
 
 def test_query_session_finalize_is_atomic_on_invalid_claim(tmp_path: Path) -> None:
@@ -605,6 +649,7 @@ def test_query_session_requires_inspect_after_supplement(tmp_path: Path) -> None
     decision = {
         "evidence_level": "source-backed",
         "claims": [{"text": "K=60 is present.", "evidence_refs": [packet_ref]}],
+        "unresolved": [],
     }
     blocked = subprocess.run(
         [
@@ -681,6 +726,311 @@ def test_query_session_inherits_hermes_session_context(tmp_path: Path) -> None:
     assert state["session_id"] == "real-hermes-session"
     assert state["session_message_id"] == "message-42"
     assert state["session_platform"] == "cli"
+
+
+def test_query_session_bootstrap_returns_exact_rules_and_capabilities(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    (tmp_path / "ENVIRONMENT.md").write_text("# Runtime\nUse the verified test runtime.\n", encoding="utf-8")
+    (vault / "AGENTS.md").write_text("# Vault rules\nKeep raw evidence read-only.\n", encoding="utf-8")
+    completed = subprocess.run(
+        [sys.executable, str(SESSION), "bootstrap", str(vault)],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = json.loads(completed.stdout)
+    paths = {Path(item["path"]).name for item in result["required_rules"]}
+    assert {"AGENTS.md", "ENVIRONMENT.md"} <= paths
+    assert result["verification_runtime"]["policy"].startswith("one deterministic")
+    config_root = QUERY_SKILL.parent / "config"
+    expected_routing_path = next(
+        path for path in (config_root / "domain-routing.json", config_root / "intranet.json") if path.is_file()
+    )
+    assert Path(result["routing_config_path"]).name == expected_routing_path.name
+    assert result["routing"] == json.loads(expected_routing_path.read_text(encoding="utf-8"))
+    assert result["next_command"] == "begin"
+
+
+def test_query_session_does_not_infer_verification_policy_from_question_terms(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "begin",
+            str(vault),
+            "水喷雾喷头参数 K=60 表格 formula pressure 是多少？",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    inspected = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert json.loads(inspected.stdout)["next_command"] == "finalize"
+    state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
+    workflow = json.loads(state_path.read_text(encoding="utf-8"))["workflow_state"]
+    assert workflow["verification_required"] is False
+    assert workflow["verification_requirement_reason"] == "not requested"
+
+
+def test_query_session_verify_uses_registered_carrier_once(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "begin",
+            str(vault),
+            "水喷雾喷头参数是多少？",
+            "--verification-required",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    inspected = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    evidence_ref = json.loads(inspected.stdout)["evidence_packets"][0]["evidence_ref"]
+    prepared = subprocess.run(
+        [sys.executable, str(SESSION), "verify", str(vault), trace_id, "--evidence-ref", evidence_ref],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    verification = json.loads(prepared.stdout)
+    assert verification["verification"][0]["status"] == "ready"
+    assert verification["verification"][0]["mode"] == "evidence-image"
+    assert "pdftotext" in verification["stopping_rule"]
+    carrier = verification["verification"][0]["paths"][0]
+    decision = {
+        "evidence_level": "clear",
+        "claims": [{"text": "K=60 is confirmed.", "evidence_refs": [evidence_ref]}],
+        "verified_evidence_refs": [evidence_ref],
+        "events": [
+            {
+                "stage": "page-asset-verification",
+                "status": "completed",
+                "route": "evidence-image",
+                "summary": "Visually checked the registered table image.",
+                "evidence_refs": [evidence_ref],
+                "inspected_paths": [carrier],
+            }
+        ],
+        "unresolved": [],
+    }
+    finalized = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            trace_id,
+            "--decision-json",
+            json.dumps(decision),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    state = json.loads(Path(json.loads(finalized.stdout)["state_path"]).read_text(encoding="utf-8"))
+    assert state["metrics"]["command_count"] == 4
+    assert any(event["stage"] == "verification-readiness" for event in state["events"])
+
+
+def test_query_session_verification_uses_viewer_or_fast_fails_without_carrier(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    bundle = vault / "10_Raw" / "converted" / "0712XFNPXTS02_document_bundle"
+    manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8"))
+    manifest["tables"] = []
+    write_json(bundle / "manifest.json", manifest)
+    outline = json.loads((bundle / "outline.json").read_text(encoding="utf-8"))
+    for section in outline["sections"]:
+        section["assets"] = []
+    write_json(bundle / "outline.json", outline)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "begin",
+            str(vault),
+            "水喷雾参数是多少？",
+            "--verification-required",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    inspected = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    evidence_ref = json.loads(inspected.stdout)["evidence_packets"][0]["evidence_ref"]
+    env = os.environ.copy()
+    env["PATH"] = ""
+    prepared = subprocess.run(
+        [sys.executable, str(SESSION), "verify", str(vault), trace_id, "--evidence-ref", evidence_ref],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    result = json.loads(prepared.stdout)
+    verification = result["verification"][0]
+    if verification["status"] == "ready":
+        assert verification["mode"] == "viewer"
+        assert verification["viewer_url"]
+    else:
+        assert verification["status"] == "unavailable"
+        assert verification["recommended_evidence_level"] == "needs-qa"
+        assert verification["required_unresolved"]
+    assert "Do not probe pdftotext" in result["stopping_rule"]
+
+
+def test_query_session_blocks_overlapping_request_and_closes_with_capsules(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    first = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "begin",
+            str(vault),
+            "水喷雾参数是多少？",
+            "--request-id",
+            "req-sequential",
+            "--question-index",
+            "1",
+            "--question-count",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    first_trace = json.loads(first.stdout)["trace"]["trace_id"]
+    premature_summary = subprocess.run(
+        [sys.executable, str(SESSION), "request-summary", str(vault), "req-sequential"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert premature_summary.returncode != 0
+    assert "unfinished traces" in premature_summary.stderr
+    blocked = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "begin",
+            str(vault),
+            "水喷雾接口要求是什么？",
+            "--request-id",
+            "req-sequential",
+            "--question-index",
+            "2",
+            "--question-count",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert blocked.returncode != 0
+    assert "in-progress trace" in blocked.stderr
+    first_inspect = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), first_trace, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    first_ref = json.loads(first_inspect.stdout)["evidence_packets"][0]["evidence_ref"]
+    subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            first_trace,
+            "--decision-json",
+            json.dumps(
+                {
+                    "evidence_level": "source-backed",
+                    "claims": [{"text": "The parameter is present.", "evidence_refs": [first_ref]}],
+                    "unresolved": [],
+                }
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    second = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "begin",
+            str(vault),
+            "水喷雾接口要求是什么？",
+            "--request-id",
+            "req-sequential",
+            "--question-index",
+            "2",
+            "--question-count",
+            "2",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    second_trace = json.loads(second.stdout)["trace"]["trace_id"]
+    second_inspect = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), second_trace, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    second_ref = json.loads(second_inspect.stdout)["evidence_packets"][0]["evidence_ref"]
+    closed = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            second_trace,
+            "--decision-json",
+            json.dumps(
+                {
+                    "evidence_level": "source-backed",
+                    "claims": [{"text": "The interface requirement is present.", "evidence_refs": [second_ref]}],
+                    "unresolved": [],
+                }
+            ),
+            "--close-request",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    request = json.loads(closed.stdout)["request"]
+    assert request["question_count"] == 2
+    assert request["metrics"]["sequential"] is True
+    assert request["metrics"]["overlap_count"] == 0
 
 
 def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_path: Path) -> None:
@@ -805,7 +1155,7 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
     dashboard = (trace_root / "Query Trace Dashboard.md").read_text(encoding="utf-8")
     assert state["authority"] == "non-authoritative-runtime-log"
     assert state["status"] == "completed"
-    assert state["schema_version"] == "1.4"
+    assert state["schema_version"] == "1.5"
     assert state["events"][1]["evidence_ids"] == ["E1"]
     assert "accepted_count" not in state["events"][1]
     assert state["claims"][0]["evidence_ids"] == ["E1"]
@@ -1023,7 +1373,8 @@ def test_query_contract_fuses_parallel_scope_before_governed_first_search() -> N
     skill = QUERY_SKILL.read_text(encoding="utf-8")
     workflow = QUERY_WORKFLOW.read_text(encoding="utf-8")
     assert "query_session.py" in skill
-    assert "begin -> inspect -> optional original-page visual check -> finalize" in skill
+    assert "begin -> inspect -> finalize" in skill
+    assert "begin -> inspect -> verify -> one visual check when ready -> finalize" in skill
     assert "Consume the fused union" in skill
     assert "Inspect retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` material first" in skill
     assert "Use supplemental scoped exact/lexical search only" in skill
@@ -1045,7 +1396,7 @@ def test_multiple_questions_are_sequential_and_trace_isolated() -> None:
     assert "strictly one at a time" in skill
     assert "before starting the next question" in skill
     assert "keep two traces open" in skill
-    assert "shared `--request-id` and one-based `--question-index`" in skill
+    assert "shared `--request-id`, one-based `--question-index`, and total `--question-count`" in skill
     assert "Do not use a Hermes session ID as a trace ID" in skill
     assert "create an ad hoc orchestration script" in skill
     assert "Each independently answerable question receives its own trace" in reference

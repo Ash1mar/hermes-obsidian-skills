@@ -8,6 +8,8 @@ import hashlib
 import json
 import os
 import re
+import shutil
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -31,6 +33,29 @@ QUESTION_MARK_RE = re.compile(r"[?？]")
 NUMBERED_QUESTION_RE = re.compile(
     r"(?m)^\s*(?:\d{1,2}[.)、．]|[（(]\d{1,2}[)）]|[一二三四五六七八九十]{1,3}[、.．])\s*\S+"
 )
+DECISION_KEYS = {
+    "status",
+    "evidence_level",
+    "claims",
+    "verified_evidence_refs",
+    "events",
+    "conclusion",
+    "unresolved",
+    "unresolved_items",
+}
+CLAIM_KEYS = {"text", "claim", "statement", "claim_text", "status", "evidence_refs", "qualification"}
+EVENT_KEYS = {
+    "stage",
+    "route",
+    "status",
+    "summary",
+    "evidence_refs",
+    "inspected_paths",
+    "hit_count",
+    "duration_ms",
+    "accounting",
+}
+VISUAL_ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -80,6 +105,113 @@ def validate_question_boundary(args: argparse.Namespace) -> dict[str, int | bool
     return shape
 
 
+def validate_request_sequence(
+    vault_root: Path,
+    request_id: str | None,
+    question_index: int | None,
+    question_count: int | None,
+) -> None:
+    if question_count is not None and question_count < 1:
+        raise ValueError("question count must be at least 1")
+    if question_count is not None and not request_id:
+        raise ValueError("question count requires request id")
+    if question_count is not None and question_index is None:
+        raise ValueError("question count requires question index")
+    if question_count is not None and question_index is not None and question_index > question_count:
+        raise ValueError("question index must not exceed question count")
+    if not request_id:
+        return
+    states = grouped_states(vault_root, request_id)
+    open_traces = [str(state.get("trace_id")) for state in states if state.get("status") == "in_progress"]
+    if open_traces:
+        raise ValueError(
+            f"request already has an in-progress trace; finalize it before begin: {', '.join(open_traces)}"
+        )
+    indexed = {int(state["question_index"]): state for state in states if state.get("question_index") is not None}
+    if question_index is not None:
+        if question_index in indexed:
+            raise ValueError(f"request already contains question index {question_index}")
+        missing = [index for index in range(1, question_index) if index not in indexed]
+        if missing:
+            raise ValueError(f"question index is not sequential; missing prior indices: {', '.join(map(str, missing))}")
+    recorded_counts = {
+        int(state.get("workflow_state", {}).get("expected_question_count"))
+        for state in states
+        if state.get("workflow_state", {}).get("expected_question_count") is not None
+    }
+    if len(recorded_counts) > 1:
+        raise ValueError("request contains inconsistent expected question counts")
+    if question_count is not None and recorded_counts and question_count not in recorded_counts:
+        raise ValueError(
+            f"question count {question_count} conflicts with recorded request count {next(iter(recorded_counts))}"
+        )
+
+
+def nearest_rule_files(vault_root: Path) -> list[Path]:
+    result: list[Path] = []
+    candidates = [vault_root / "AGENTS.md"]
+    for parent in vault_root.parents:
+        candidates.extend((parent / "AGENTS.md", parent / "ENVIRONMENT.md"))
+    for path in candidates:
+        if path.is_file() and path.resolve() not in {item.resolve() for item in result}:
+            result.append(path)
+    return result
+
+
+def verification_runtime() -> dict[str, Any]:
+    renderer = shutil.which("pdftoppm")
+    return {
+        "renderer": "pdftoppm" if renderer else None,
+        "renderer_path": renderer,
+        "policy": "one deterministic preparation attempt; never probe alternative PDF tools",
+    }
+
+
+def bootstrap(args: argparse.Namespace) -> dict[str, Any]:
+    vault_root = args.vault_root.resolve()
+    if not vault_root.is_dir():
+        raise FileNotFoundError(f"vault root does not exist: {vault_root}")
+    rules = []
+    for path in nearest_rule_files(vault_root):
+        content = path.read_text(encoding="utf-8", errors="replace")
+        rules.append(
+            {
+                "path": str(path),
+                "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                "content": content[: args.max_rule_chars],
+                "content_truncated": len(content) > args.max_rule_chars,
+            }
+        )
+    skill_root = Path(__file__).resolve().parent.parent
+    routing_path = next(
+        (
+            path
+            for path in (
+                skill_root / "config" / "domain-routing.json",
+                skill_root / "config" / "intranet.json",
+            )
+            if path.is_file()
+        ),
+        None,
+    )
+    provider_path = skill_root / "config" / "retrieval-provider.json"
+    return {
+        "workflow": WORKFLOW,
+        "vault_root": str(vault_root),
+        "session": {
+            "id": os.environ.get("HERMES_SESSION_ID"),
+            "message_id": os.environ.get("HERMES_SESSION_MESSAGE_ID"),
+            "platform": os.environ.get("HERMES_SESSION_PLATFORM"),
+        },
+        "required_rules": rules,
+        "routing_config_path": str(routing_path) if routing_path else None,
+        "routing": load_json(routing_path) if routing_path else None,
+        "provider": load_json(provider_path) if provider_path.is_file() else None,
+        "verification_runtime": verification_runtime(),
+        "next_command": "begin",
+    }
+
+
 def elapsed_ms(started_monotonic_ns: int, started_wall_ns: int) -> float:
     current = time.monotonic_ns()
     elapsed = current - int(started_monotonic_ns)
@@ -124,6 +256,8 @@ def begin(args: argparse.Namespace) -> dict[str, Any]:
     if not vault_root.is_dir():
         raise FileNotFoundError(f"vault root does not exist: {vault_root}")
     shape = validate_question_boundary(args)
+    validate_request_sequence(vault_root, args.request_id, args.question_index, args.question_count)
+    requires_verification = bool(args.verification_required)
     preflight_finished_monotonic = time.monotonic_ns()
     runtime_session_id = os.environ.get("HERMES_SESSION_ID") or args.session_id
     started = start_trace(
@@ -197,6 +331,10 @@ def begin(args: argparse.Namespace) -> dict[str, Any]:
         "question_shape": shape,
         "coupled_question": bool(args.coupled),
         "coupled_reason": str(args.coupled_reason or "").strip() or None,
+        "expected_question_count": args.question_count,
+        "verification_required": requires_verification,
+        "verification_requirement_reason": "explicit CLI selection" if requires_verification else "not requested",
+        "verification_catalog": {},
     }
     write_state(vault_root, state)
     return {
@@ -265,6 +403,15 @@ def block_id_for_ranges(ranges: list[dict[str, Any]]) -> str | None:
     return "lines-" + "+".join(spans) if spans else None
 
 
+def verification_asset_paths(assets: list[dict[str, Any]]) -> list[str]:
+    paths = []
+    for asset in assets:
+        value = asset.get("evidence_path") or asset.get("path")
+        if value and Path(str(value)).suffix.casefold() in VISUAL_ASSET_SUFFIXES:
+            paths.append(str(value))
+    return list(dict.fromkeys(paths))
+
+
 def register_evidence_packets(
     workflow: dict[str, Any],
     packets: list[dict[str, Any]],
@@ -292,6 +439,7 @@ def register_evidence_packets(
                 "viewer_url": packet.get("viewer_url"),
                 "quality": packet.get("quality"),
                 "ingest_status": packet.get("ingest_status"),
+                "verification_assets": verification_asset_paths(packet.get("assets", [])),
                 "inspection_rounds": [],
             }
             existing[key] = handle
@@ -478,6 +626,71 @@ def build_evidence_packet(
     return packet, timings, inspected
 
 
+def packet_verification_readiness(packet: dict[str, Any]) -> dict[str, Any]:
+    image_paths = verification_asset_paths(packet.get("assets", []))
+    if image_paths:
+        return {"status": "ready", "mode": "evidence-image", "paths": image_paths}
+    if packet.get("viewer_url"):
+        return {"status": "ready", "mode": "viewer", "viewer_url": packet.get("viewer_url")}
+    runtime = verification_runtime()
+    if packet.get("source_exists") and packet.get("pages") and runtime.get("renderer"):
+        return {"status": "preparable", "mode": runtime["renderer"], "paths": []}
+    return {
+        "status": "unavailable",
+        "mode": None,
+        "paths": [],
+        "reason": "No evidence image/viewer is registered and the deterministic pdftoppm renderer is unavailable.",
+        "recommended_evidence_level": "needs-qa",
+    }
+
+
+def compact_evidence_packet(packet: dict[str, Any]) -> dict[str, Any]:
+    source_map = packet.get("control", {}).get("source_map", {})
+    assets = []
+    for asset in packet.get("assets", []):
+        assets.append(
+            {
+                key: asset.get(key)
+                for key in (
+                    "type",
+                    "id",
+                    "caption",
+                    "page_start",
+                    "page_end",
+                    "bbox",
+                    "quality",
+                    "path",
+                    "evidence_path",
+                    "content",
+                    "content_truncated",
+                )
+                if asset.get(key) is not None
+            }
+        )
+    return {
+        "evidence_ref": packet.get("evidence_ref"),
+        "title": packet.get("title"),
+        "section_id": packet.get("section_id"),
+        "pages": packet.get("pages", []),
+        "content": packet.get("content"),
+        "content_truncated": packet.get("content_truncated"),
+        "source_filename": packet.get("source_filename"),
+        "source_path": packet.get("source_path"),
+        "source_exists": packet.get("source_exists"),
+        "document_path": packet.get("document_path"),
+        "document_version": packet.get("document_version"),
+        "assets": assets,
+        "governed_artifacts": packet.get("governed_artifacts", []),
+        "qa": {
+            "quality": packet.get("quality"),
+            "ingest_status": packet.get("ingest_status"),
+            "source_map_validation_status": source_map.get("validation_status"),
+        },
+        "viewer_url": packet.get("viewer_url"),
+        "verification": packet_verification_readiness(packet),
+    }
+
+
 def inspect(args: argparse.Namespace) -> dict[str, Any]:
     command_started_at = now_iso()
     command_started_monotonic = time.monotonic_ns()
@@ -603,8 +816,8 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
         "trace_id": args.trace_id,
         "selected_count": len(packets),
         "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
-        "evidence_packets": packets,
-        "next_command": "finalize",
+        "evidence_packets": [compact_evidence_packet(packet) for packet in packets],
+        "next_command": "verify" if workflow.get("verification_required") else "finalize",
     }
 
 
@@ -702,6 +915,137 @@ def supplement(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def render_pdf_pages(
+    vault_root: Path,
+    note_path: Path,
+    trace_id: str,
+    handle: str,
+    source_path: str,
+    pages: list[int],
+) -> list[str]:
+    renderer = shutil.which("pdftoppm")
+    if not renderer:
+        return []
+    pdf_path = (vault_root / source_path).resolve()
+    pdf_path.relative_to(vault_root)
+    if not pdf_path.is_file():
+        return []
+    output_root = note_path.parent / "_verification" / trace_id
+    output_root.mkdir(parents=True, exist_ok=True)
+    rendered: list[str] = []
+    for page in sorted(set(int(value) for value in pages if int(value) > 0))[:4]:
+        prefix = output_root / f"{handle}-page-{page}"
+        completed = subprocess.run(
+            [renderer, "-f", str(page), "-l", str(page), "-png", "-singlefile", str(pdf_path), str(prefix)],
+            capture_output=True,
+            text=True,
+            timeout=60,
+            check=False,
+        )
+        output_path = prefix.with_suffix(".png")
+        if completed.returncode != 0 or not output_path.is_file():
+            raise RuntimeError(
+                f"pdftoppm failed for {handle} page {page}: {(completed.stderr or completed.stdout).strip()}"
+            )
+        rendered.append(vault_relative(output_path, vault_root))
+    return rendered
+
+
+def prepare_verification(args: argparse.Namespace) -> dict[str, Any]:
+    command_started_at = now_iso()
+    command_started_monotonic = time.monotonic_ns()
+    command_started_wall = time.time_ns()
+    vault_root = args.vault_root.resolve()
+    state, _, note_path = load_state(vault_root, args.trace_id)
+    if state.get("workflow") != WORKFLOW:
+        raise ValueError(f"trace does not use {WORKFLOW}")
+    if state.get("status") != "in_progress":
+        raise ValueError(f"query trace is not in progress: {state.get('status')}")
+    workflow = state.setdefault("workflow_state", {})
+    catalog = workflow.get("evidence_catalog", {})
+    requested = [str(value) for value in args.evidence_ref]
+    if not requested:
+        raise ValueError("verify requires at least one --evidence-ref")
+    unknown = [handle for handle in requested if handle not in catalog]
+    if unknown:
+        raise ValueError(f"verify references unknown evidence handles: {', '.join(unknown)}")
+    results = []
+    for handle in requested:
+        entry = catalog[handle]
+        paths = [
+            path
+            for path in (str(value) for value in entry.get("verification_assets", []))
+            if (vault_root / path).is_file()
+        ]
+        mode = "evidence-image" if paths else None
+        status = "ready" if paths else "unavailable"
+        reason = None
+        if not paths and entry.get("viewer_url"):
+            mode = "viewer"
+            status = "ready"
+        elif not paths and entry.get("original_asset_path") and entry.get("pages"):
+            try:
+                paths = render_pdf_pages(
+                    vault_root,
+                    note_path,
+                    args.trace_id,
+                    handle,
+                    str(entry["original_asset_path"]),
+                    [int(value) for value in entry.get("pages", [])],
+                )
+                if paths:
+                    mode = "pdftoppm"
+                    status = "ready"
+                else:
+                    reason = "The deterministic pdftoppm renderer is unavailable and no evidence image/viewer is registered."
+            except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+                status = "failed"
+                reason = str(exc)
+        else:
+            reason = "No original PDF pages, evidence image, or viewer is registered for this evidence packet."
+        result = {
+            "evidence_ref": handle,
+            "status": status,
+            "mode": mode,
+            "paths": paths,
+            "viewer_url": entry.get("viewer_url") if mode == "viewer" else None,
+            "reason": reason,
+            "recommended_evidence_level": "clear-after-visual-check" if status == "ready" else "needs-qa",
+            "required_unresolved": None
+            if status == "ready"
+            else f"{handle} original-page verification unavailable: {reason}",
+        }
+        workflow.setdefault("verification_catalog", {})[handle] = result
+        results.append(result)
+    ended_at = now_iso()
+    state.setdefault("events", []).append(
+        clean_event(
+            state,
+            {
+                "stage": "verification-readiness",
+                "route": "deterministic-verification",
+                "status": "ready" if all(item["status"] == "ready" for item in results) else "unavailable",
+                "summary": "Prepared registered verification carriers without probing alternative PDF tools.",
+                "hit_count": sum(len(item["paths"]) + bool(item.get("viewer_url")) for item in results),
+                "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
+                "started_at": command_started_at,
+                "ended_at": ended_at,
+                "accounting": "diagnostic",
+                "inspected_paths": [path for item in results for path in item["paths"]],
+            },
+        )
+    )
+    workflow["command_count"] = int(workflow.get("command_count") or 2) + 1
+    write_state(vault_root, state)
+    return {
+        "workflow": WORKFLOW,
+        "trace_id": args.trace_id,
+        "verification": results,
+        "stopping_rule": "Do not probe pdftotext, Python PDF libraries, other binaries, Bundle listings, or converted text.",
+        "next_command": "visually-check-ready-carrier-then-finalize",
+    }
+
+
 def referenced_packet_handles(claims: list[dict[str, Any]]) -> list[str]:
     handles: list[str] = []
     for claim in claims:
@@ -712,14 +1056,110 @@ def referenced_packet_handles(claims: list[dict[str, Any]]) -> list[str]:
     return handles
 
 
+def reject_unknown_keys(value: dict[str, Any], allowed: set[str], label: str) -> None:
+    unknown = sorted(set(value) - allowed)
+    if unknown:
+        raise ValueError(f"{label} contains unsupported fields: {', '.join(unknown)}")
+
+
+def normalize_decision(decision: dict[str, Any]) -> dict[str, Any]:
+    reject_unknown_keys(decision, DECISION_KEYS, "decision")
+    normalized = dict(decision)
+    if "unresolved_items" in normalized:
+        if "unresolved" in normalized and normalized["unresolved"] != normalized["unresolved_items"]:
+            raise ValueError("decision unresolved and unresolved_items must not conflict")
+        normalized["unresolved"] = normalized.pop("unresolved_items")
+    normalized.setdefault("unresolved", [])
+    if not isinstance(normalized["unresolved"], list) or not all(
+        isinstance(item, str) and item.strip() for item in normalized["unresolved"]
+    ):
+        raise ValueError("decision unresolved must be a list of non-empty strings")
+    claims = normalized.get("claims", [])
+    if not isinstance(claims, list):
+        raise ValueError("decision claims must be a list")
+    for index, claim in enumerate(claims, start=1):
+        if not isinstance(claim, dict):
+            raise ValueError(f"decision claim {index} must be an object")
+        reject_unknown_keys(claim, CLAIM_KEYS, f"decision claim {index}")
+        resolve_claim_text(claim, f"decision claim {index}")
+        refs = claim.get("evidence_refs", [])
+        if not isinstance(refs, list):
+            raise ValueError(f"decision claim {index} evidence_refs must be a list")
+    events = normalized.get("events", [])
+    if not isinstance(events, list):
+        raise ValueError("decision events must be a list")
+    for index, event in enumerate(events, start=1):
+        if not isinstance(event, dict):
+            raise ValueError(f"decision event {index} must be an object")
+        reject_unknown_keys(event, EVENT_KEYS, f"decision event {index}")
+    verified = normalized.get("verified_evidence_refs", [])
+    if not isinstance(verified, list):
+        raise ValueError("decision verified_evidence_refs must be a list")
+    return normalized
+
+
+def validate_verification_decision(
+    workflow: dict[str, Any],
+    decision: dict[str, Any],
+    handles: list[str],
+    verified: set[str],
+) -> None:
+    verification_catalog = workflow.get("verification_catalog", {})
+    if workflow.get("verification_required"):
+        missing_readiness = sorted(handle for handle in handles if handle not in verification_catalog)
+        if missing_readiness:
+            raise ValueError(
+                f"evidence marked as requiring visual verification must run verify once before finalize: "
+                f"{', '.join(missing_readiness)}"
+            )
+    unavailable = sorted(
+        handle
+        for handle in verified
+        if verification_catalog.get(handle, {}).get("status") in {"unavailable", "failed"}
+    )
+    if unavailable:
+        raise ValueError(f"cannot mark unavailable verification handles as verified: {', '.join(unavailable)}")
+    verification_events = [
+        event
+        for event in decision.get("events", [])
+        if event.get("stage") == "page-asset-verification" and event.get("status", "completed") == "completed"
+    ]
+    for handle in verified:
+        matching = [event for event in verification_events if handle in {str(ref) for ref in event.get("evidence_refs", [])}]
+        if not matching or not any(event.get("inspected_paths") for event in matching):
+            raise ValueError(
+                f"verified evidence {handle} requires a completed page-asset-verification event with inspected_paths"
+            )
+        readiness = verification_catalog.get(handle)
+        if readiness:
+            allowed = {
+                str(value)
+                for value in [*readiness.get("paths", []), readiness.get("viewer_url")]
+                if value
+            }
+            inspected = {str(path) for event in matching for path in event.get("inspected_paths", [])}
+            if allowed and not inspected.intersection(allowed):
+                raise ValueError(f"verified evidence {handle} did not inspect a registered verification carrier")
+    if not workflow.get("verification_required"):
+        return
+    unchecked = sorted(set(handles) - verified)
+    evidence_level = str(decision.get("evidence_level") or "source-backed")
+    if unchecked and evidence_level in {"clear", "source-backed"}:
+        raise ValueError(
+            f"evidence marked as requiring visual verification must be checked before {evidence_level}: "
+            f"{', '.join(unchecked)}"
+        )
+    if unchecked and evidence_level == "needs-qa" and not decision.get("unresolved"):
+        raise ValueError("unverified evidence marked as requiring visual verification needs a non-empty unresolved item")
+
+
 def decision_to_manifest(state: dict[str, Any], decision: dict[str, Any]) -> dict[str, Any]:
+    decision = normalize_decision(decision)
     workflow = state.get("workflow_state", {})
     if workflow.get("evidence_dirty"):
         raise ValueError("supplemental retrieval must be followed by inspect before finalize")
     catalog = workflow.get("evidence_catalog", {})
     claims = decision.get("claims", [])
-    if not isinstance(claims, list):
-        raise ValueError("decision claims must be a list")
     handles = referenced_packet_handles(claims)
     missing = [handle for handle in handles if handle not in catalog]
     if missing:
@@ -731,6 +1171,7 @@ def decision_to_manifest(state: dict[str, Any], decision: dict[str, Any]) -> dic
     unused_verified = sorted(verified - set(handles))
     if unused_verified:
         raise ValueError(f"verification references handles not used by a claim: {', '.join(unused_verified)}")
+    validate_verification_decision(workflow, decision, handles, verified)
     handle_to_evidence = {handle: f"E{index}" for index, handle in enumerate(handles, start=1)}
     evidence: list[dict[str, Any]] = []
     for handle in handles:
@@ -809,33 +1250,43 @@ def validate_manifest_catalog(state: dict[str, Any], manifest: dict[str, Any]) -
 def build_answer_capsule(state: dict[str, Any], manifest: dict[str, Any]) -> dict[str, Any]:
     evidence = {str(item.get("evidence_id")): item for item in manifest.get("evidence", [])}
     claims: list[dict[str, Any]] = []
+    sources: list[dict[str, Any]] = []
+    source_ids: dict[str, str] = {}
     markdown: list[str] = []
     for index, claim in enumerate(manifest.get("claims", []), start=1):
         claim_text = resolve_claim_text(claim, f"capsule claim {index}")
-        sources = []
+        claim_source_ids = []
+        claim_sources = []
         for evidence_id in claim.get("evidence_ids", []):
             item = evidence.get(str(evidence_id), {})
-            sources.append(
-                {
-                    "evidence_id": evidence_id,
-                    "evidence_ref": item.get("evidence_ref"),
-                    "original_pdf_filename": item.get("source_filename"),
-                    "original_pdf": item.get("original_asset_path"),
-                    "pages": item.get("pages", []),
-                    "section_id": item.get("section_id"),
-                    "viewer_url": item.get("viewer_url"),
-                }
-            )
+            key = str(evidence_id)
+            if key not in source_ids:
+                source_id = f"S{len(sources) + 1}"
+                source_ids[key] = source_id
+                sources.append(
+                    {
+                        "source_id": source_id,
+                        "evidence_id": evidence_id,
+                        "evidence_ref": item.get("evidence_ref"),
+                        "original_pdf_filename": item.get("source_filename"),
+                        "original_pdf": item.get("original_asset_path"),
+                        "pages": item.get("pages", []),
+                        "section_id": item.get("section_id"),
+                        "viewer_url": item.get("viewer_url"),
+                    }
+                )
+            claim_source_ids.append(source_ids[key])
+            claim_sources.append(next(source for source in sources if source["source_id"] == source_ids[key]))
         claim_capsule = {
             "text": claim_text,
             "status": claim.get("status"),
             "qualification": claim.get("qualification"),
-            "sources": sources,
+            "source_ids": claim_source_ids,
         }
         claims.append(claim_capsule)
         citation = "; ".join(
             f"{item.get('original_pdf') or 'unresolved'}, page {','.join(str(page) for page in item.get('pages', [])) or 'unresolved'}"
-            for item in sources
+            for item in claim_sources
         )
         markdown.append(f"- {claim_text}" + (f" ({citation})" if citation else ""))
     return {
@@ -843,6 +1294,7 @@ def build_answer_capsule(state: dict[str, Any], manifest: dict[str, Any]) -> dic
         "question_index": state.get("question_index"),
         "question": state.get("question"),
         "evidence_level": manifest.get("evidence_level"),
+        "sources": sources,
         "claims": claims,
         "conclusion": manifest.get("conclusion"),
         "unresolved": manifest.get("unresolved", []),
@@ -862,6 +1314,56 @@ def load_manifest(args: argparse.Namespace) -> dict[str, Any]:
     return value
 
 
+def expected_request_count(states: list[dict[str, Any]]) -> int | None:
+    counts = {
+        int(state.get("workflow_state", {}).get("expected_question_count"))
+        for state in states
+        if state.get("workflow_state", {}).get("expected_question_count") is not None
+    }
+    if len(counts) > 1:
+        raise ValueError("request contains inconsistent expected question counts")
+    return next(iter(counts)) if counts else None
+
+
+def validate_request_completion(states: list[dict[str, Any]], request_id: str) -> None:
+    if not states:
+        raise ValueError(f"request has no traces: {request_id}")
+    incomplete = [str(state.get("trace_id")) for state in states if state.get("status") != "completed"]
+    if incomplete:
+        raise ValueError(f"request contains unfinished traces: {', '.join(incomplete)}")
+    missing_capsules = [str(state.get("trace_id")) for state in states if not state.get("answer_capsule")]
+    if missing_capsules:
+        raise ValueError(f"request traces are missing answer capsules: {', '.join(missing_capsules)}")
+    indices = [int(state["question_index"]) for state in states if state.get("question_index") is not None]
+    if indices and sorted(indices) != list(range(1, max(indices) + 1)):
+        raise ValueError("request question indices are not contiguous from 1")
+    expected = expected_request_count(states)
+    if expected is not None and len(states) != expected:
+        raise ValueError(f"request expected {expected} questions but contains {len(states)} traces")
+
+
+def validate_close_request(vault_root: Path, state: dict[str, Any]) -> None:
+    request_id = state.get("request_id")
+    if not request_id:
+        raise ValueError("--close-request requires a request id")
+    states = grouped_states(vault_root, str(request_id))
+    others = [item for item in states if item.get("trace_id") != state.get("trace_id")]
+    unfinished = [str(item.get("trace_id")) for item in others if item.get("status") != "completed"]
+    if unfinished:
+        raise ValueError(f"cannot close request with unfinished prior traces: {', '.join(unfinished)}")
+    indices = sorted(int(item["question_index"]) for item in states if item.get("question_index") is not None)
+    if indices and indices != list(range(1, max(indices) + 1)):
+        raise ValueError("cannot close request with non-contiguous question indices")
+    if indices and state.get("question_index") != max(indices):
+        raise ValueError("--close-request must be used on the highest question index")
+    expected = expected_request_count(states)
+    if expected is not None:
+        if len(states) != expected:
+            raise ValueError(f"cannot close request: expected {expected} traces but found {len(states)}")
+        if state.get("question_index") != expected:
+            raise ValueError("--close-request must be used on the final expected question")
+
+
 def finalize(args: argparse.Namespace) -> dict[str, Any]:
     command_started_at = now_iso()
     command_started_monotonic = time.monotonic_ns()
@@ -870,6 +1372,8 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
     state, _, _ = load_state(vault_root, args.trace_id)
     if state.get("workflow") != WORKFLOW:
         raise ValueError(f"trace does not use {WORKFLOW}")
+    if args.close_request:
+        validate_close_request(vault_root, state)
     payload = load_manifest(args)
     if args.decision_json:
         manifest = decision_to_manifest(state, payload)
@@ -924,21 +1428,22 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
             "answer_capsule": capsule,
         }
     )
+    if args.close_request:
+        result["request"] = request_summary_payload(vault_root, str(state["request_id"]))
     return result
 
 
-def request_summary(args: argparse.Namespace) -> dict[str, Any]:
-    states = grouped_states(args.vault_root.resolve(), args.request_id)
-    capsules = [state.get("answer_capsule") for state in states if state.get("answer_capsule")]
-    if not capsules:
-        raise ValueError(f"request has no finalized answer capsules: {args.request_id}")
+def request_summary_payload(vault_root: Path, request_id: str) -> dict[str, Any]:
+    states = grouped_states(vault_root.resolve(), request_id)
+    validate_request_completion(states, request_id)
+    capsules = [state["answer_capsule"] for state in states]
     sections = []
     for index, capsule in enumerate(capsules, start=1):
         label = capsule.get("question_index") or index
         sections.append(f"## Question {label}\n\n{capsule.get('answer_markdown') or capsule.get('conclusion') or ''}")
     return {
         "workflow": WORKFLOW,
-        "request_id": args.request_id,
+        "request_id": request_id,
         "question_count": len(capsules),
         "answer_capsules": capsules,
         "answer_markdown": "\n\n".join(sections),
@@ -946,9 +1451,18 @@ def request_summary(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def request_summary(args: argparse.Namespace) -> dict[str, Any]:
+    return request_summary_payload(args.vault_root.resolve(), args.request_id)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    bootstrap_parser = subparsers.add_parser("bootstrap", help="Return exact query rules, config, session, and verification capability")
+    bootstrap_parser.add_argument("vault_root", type=Path)
+    bootstrap_parser.add_argument("--max-rule-chars", type=int, default=12000)
+    bootstrap_parser.set_defaults(handler=bootstrap)
 
     begin_parser = subparsers.add_parser("begin", help="Start the trace and return compact fused scope")
     begin_parser.add_argument("vault_root", type=Path)
@@ -958,6 +1472,7 @@ def build_parser() -> argparse.ArgumentParser:
     begin_parser.add_argument("--trace-id")
     begin_parser.add_argument("--request-id")
     begin_parser.add_argument("--question-index", type=int)
+    begin_parser.add_argument("--question-count", type=int, help="Expected independently auditable questions in this request")
     begin_parser.add_argument("--coupled", action="store_true", help="Allow multiple subparts that require one evidence set")
     begin_parser.add_argument("--coupled-reason", help="Auditable reason that multiple subparts share one evidence set")
     begin_parser.add_argument("--provider-config", type=Path)
@@ -965,14 +1480,25 @@ def build_parser() -> argparse.ArgumentParser:
     begin_parser.add_argument("--top-documents", type=int, default=6)
     begin_parser.add_argument("--top-sections", type=int, default=12)
     begin_parser.add_argument("--compact-limit", type=int, default=5)
+    begin_parser.add_argument(
+        "--verification-required",
+        action="store_true",
+        help="Require registered-carrier visual verification; this is never inferred from question wording",
+    )
     begin_parser.set_defaults(handler=begin)
 
     inspect_parser = subparsers.add_parser("inspect", help="Read selected source sections and evidence assets in one batch")
     inspect_parser.add_argument("vault_root", type=Path)
     inspect_parser.add_argument("trace_id")
     inspect_parser.add_argument("--candidate", action="append", default=[], help="1-based rank, section id, or document::section")
-    inspect_parser.add_argument("--max-chars-per-section", type=int, default=16000)
+    inspect_parser.add_argument("--max-chars-per-section", type=int, default=12000)
     inspect_parser.set_defaults(handler=inspect)
+
+    verify_parser = subparsers.add_parser("verify", help="Prepare registered visual carriers once, or return a deterministic QA downgrade")
+    verify_parser.add_argument("vault_root", type=Path)
+    verify_parser.add_argument("trace_id")
+    verify_parser.add_argument("--evidence-ref", action="append", default=[])
+    verify_parser.set_defaults(handler=prepare_verification)
 
     supplement_parser = subparsers.add_parser("supplement", help="Retrieve candidates for a recorded evidence gap")
     supplement_parser.add_argument("vault_root", type=Path)
@@ -992,6 +1518,7 @@ def build_parser() -> argparse.ArgumentParser:
     finalize_parser.add_argument("--manifest", type=Path)
     finalize_parser.add_argument("--manifest-json")
     finalize_parser.add_argument("--decision-json")
+    finalize_parser.add_argument("--close-request", action="store_true", help="Validate and return the completed request capsules")
     finalize_parser.set_defaults(handler=finalize)
 
     summary_parser = subparsers.add_parser("request-summary", help="Render compact capsules for a multi-question request")

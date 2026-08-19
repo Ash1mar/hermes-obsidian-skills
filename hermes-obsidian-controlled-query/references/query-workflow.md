@@ -4,13 +4,15 @@ Use this reference for the `query_session.py` interface and evidence-query decis
 
 ## Performance contract
 
+After the runtime loads the Skill, run one `bootstrap <vault-root>` call. It returns the exact applicable rule content, deployment configuration, runtime session linkage, and verification capability; do not locate them through additional searches.
+
 Use the three-command path for one ordinary question:
 
 ```text
 begin -> inspect -> finalize
 ```
 
-Allow one additional original-page visual tool call for tables, figures, formulas, or disputed extraction. Run a second `inspect` only for a real evidence gap or conflict.
+When the caller explicitly requires visual source verification, use `begin --verification-required -> inspect -> verify -> visual check -> finalize`. `verify` is a single deterministic carrier-preparation attempt. The script never infers this policy from question wording. Run a second `inspect` only for a real evidence gap or conflict.
 
 Do not scan old traces, probe stable CLI help, run inline Python, create temporary formatter scripts, or read source sections one by one. Keep progress narration sparse; the trace carries the operational detail.
 
@@ -24,7 +26,8 @@ python3 "<query-skill-root>/scripts/query_session.py" begin \
 
 Optional flags:
 
-- `--request-id` and `--question-index` for sequential multi-question requests;
+- `--request-id`, `--question-index`, and `--question-count` for sequential multi-question requests;
+- `--verification-required` when the evidence requirement calls for a visual source check; never add it merely because a domain keyword appears;
 - `--session-id` only for non-Hermes runtimes without `HERMES_SESSION_ID`;
 - `--provider-config` for an explicitly deployed Provider configuration;
 - `--top-sections` or `--compact-limit` only when the defaults are demonstrably insufficient.
@@ -42,19 +45,31 @@ python3 "<query-skill-root>/scripts/query_session.py" inspect \
 
 Selectors may also be a section ID or `document/path::section-id`. If omitted, the command inspects the first three candidates; explicit selection is preferred.
 
-Each evidence packet contains:
+Each compact evidence packet contains:
 
 - a stable ASCII packet reference such as `P1` for final claims;
 
 - the complete ledger-owned source ranges;
-- original PDF identity/path, pages, and source hash when present;
+- original PDF identity/path and pages;
 - section quality and ingest status;
 - related table/image metadata, Markdown, verification image, caption, page, bbox, and QA;
-- manifest, ledger, source-map, and source-state pointers;
+- compact QA status derived from manifest, ledger, and source-map metadata;
 - associated governed card/concept/project outputs;
 - viewer URL when supplied by deployment metadata.
 
-The packet is navigation and verification material, not a user-facing citation. For a parameter, formula, table row, or figure internal, open the returned original PDF/page image or evidence image and check the precise region before finalizing.
+The full provenance catalog remains in the trace sidecar and is inherited by packet reference. The packet is navigation and verification material, not a user-facing citation.
+
+When `begin` was explicitly given `--verification-required`, prepare each cited registered visual carrier exactly once:
+
+```bash
+python3 "<query-skill-root>/scripts/query_session.py" verify \
+  <vault-root> <trace-id> --evidence-ref P1
+```
+
+- `ready`: open the returned image/viewer once, then submit a completed `page-asset-verification` event.
+- `unavailable` or `failed`: stop; use `needs-qa` and preserve `required_unresolved`.
+
+Do not probe `pdftotext`, Python PDF packages, alternative binaries, Bundle listings, or converted text. Those paths cannot replace visual original-page verification.
 
 ## Finalize
 
@@ -97,7 +112,7 @@ Decision shape:
 
 The script expands each packet reference into path, document version, section, pages, source PDF and viewer metadata, then assigns `E1...` and `C1...`. Every claim requires non-empty text; `claim`, `statement`, and `claim_text` are accepted as aliases for `text`. Supported claims require at least one recorded evidence ID, derived from an inspected packet reference. Use `qualified`, `disputed`, or `gap` when appropriate.
 
-Finalization validates the entire payload before writing it. An invalid or uninspected reference leaves the existing trace in progress without partially adding final evidence or claims. Legacy manifest inputs remain compatibility/debugging interfaces only.
+Finalization accepts only the documented decision fields. `unresolved_items` is a compatibility alias for `unresolved`; other unknown fields are rejected. A verified reference requires a completed `page-asset-verification` event with non-empty `inspected_paths`. When the trace marks verification as required, unverified evidence cannot be `clear` or `source-backed`; `needs-qa` also requires a non-empty unresolved item. An invalid or uninspected reference leaves the existing trace in progress without partially adding final evidence or claims. Legacy manifest inputs remain compatibility/debugging interfaces only.
 
 ## Supplemental retrieval
 
@@ -110,14 +125,21 @@ python3 "<query-skill-root>/scripts/query_session.py" supplement \
 
 Then run `inspect` on the supplemental candidate. `finalize` rejects a trace with pending supplemental evidence, so supplemental search cannot be hidden inside answer synthesis.
 
-For multiple questions, finish each trace and then render compact capsules with:
+For multiple questions, pass the same expected count to every begin. On the final trace, close and render compact capsules in the same command:
+
+```bash
+python3 "<query-skill-root>/scripts/query_session.py" finalize \
+  <vault-root> <last-trace-id> --decision-json '<json-object>' --close-request
+```
+
+For later inspection/debugging only, rerender with:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" request-summary \
   <vault-root> <request-id>
 ```
 
-`begin` rejects two or more question marks or numbered question items before trace creation. Split independently answerable questions under one request ID. Only genuinely coupled subparts may bypass the guard with `--coupled --coupled-reason "<shared evidence reason>"`.
+`begin` rejects two or more question marks or numbered question items before trace creation. It also rejects a new trace while the same request has an open trace, duplicate/gapped question indices, and inconsistent expected counts. `--close-request` rejects unfinished or incomplete request groups. Split independently answerable questions under one request ID. Only genuinely coupled subparts may bypass the question-shape guard with `--coupled --coupled-reason "<shared evidence reason>"`.
 
 ## Search decisions
 
