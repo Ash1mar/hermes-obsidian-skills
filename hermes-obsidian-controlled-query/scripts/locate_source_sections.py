@@ -122,6 +122,33 @@ def build_viewer_url(
     return f"{base_url}?{urlencode({'doc': document_id, 'section': section_id, 'from': start_line, 'to': end_line})}"
 
 
+def diversify_candidates(candidates: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    """Prevent one repetitive document from consuming the entire section window."""
+    bounded_limit = max(1, limit)
+    selected: list[dict[str, Any]] = []
+    selected_keys: set[tuple[str, str]] = set()
+    covered_documents: set[str] = set()
+    target_documents = min(3, bounded_limit)
+    for candidate in candidates:
+        document_path = str(candidate.get("document_path") or "")
+        if document_path in covered_documents:
+            continue
+        selected.append(candidate)
+        selected_keys.add((document_path, str(candidate.get("section_id") or "")))
+        covered_documents.add(document_path)
+        if len(covered_documents) >= target_documents:
+            break
+    for candidate in candidates:
+        key = (str(candidate.get("document_path") or ""), str(candidate.get("section_id") or ""))
+        if key in selected_keys:
+            continue
+        selected.append(candidate)
+        selected_keys.add(key)
+        if len(selected) >= bounded_limit:
+            break
+    return selected
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("vault_root", type=Path)
@@ -220,7 +247,7 @@ def main() -> int:
             )
 
     candidates.sort(key=lambda item: (-int(item["score"]), str(item["source_filename"]), str(item["section_id"])))
-    selected_candidates = candidates[: max(1, args.top_sections)]
+    selected_candidates = diversify_candidates(candidates, args.top_sections)
     eligible_viewer_urls = list(
         dict.fromkeys(str(item["viewer_url"]) for item in selected_candidates if item.get("viewer_url"))
     )
@@ -231,6 +258,10 @@ def main() -> int:
         "query": args.query,
         "terms": compact_terms(terms, limit=12),
         "candidates": selected_candidates,
+        "ranking": {
+            "strategy": "score-with-document-diversity",
+            "document_count": len({str(item.get("document_path") or "") for item in selected_candidates}),
+        },
         "answer_contract": {
             "viewer_enabled": bool(viewer_base_url),
             "final_section": "原文定位",

@@ -79,7 +79,7 @@ python3 "<query-skill-root>/scripts/query_session.py" inspect \
   <vault-root> <trace-id> --candidate 1 --candidate 4
 ```
 
-`inspect` reads complete section-owned ranges in one batch and resolves related governed outputs, table/image Markdown, optional verification images, manifest, ledger, source-map, original PDF path/pages, QA status, and viewer URL when available. Prefer one inspection call. Use a second only for a real gap, conflict, or missed source. A `document/path::section-id` selector may name any exact section registered in the query projection, even when it was outside the compact fused top-k; this is the audited route for an already-known section.
+`inspect` reads complete section-owned ranges in one batch and resolves related governed outputs, table/image Markdown, optional verification images, manifest, ledger, source-map, original PDF path/pages, QA status, and viewer URL when available. Prefer one inspection call. At most one second inspection is permitted for a real gap, conflict, missed source, or already-known exact section; a third inspection is blocked and requires immediate finalization as completed or incomplete. A `document/path::section-id` selector may name any exact section registered in the query projection, even when it was outside the compact fused top-k; this is the audited route for an already-known section.
 
 Each returned packet has an ASCII `evidence_ref` such as `P1`. The trace stores the corresponding path, version, section, pages, original PDF, and viewer metadata. Retain only the packet reference when synthesizing claims; never copy those provenance fields into finalization input.
 
@@ -96,7 +96,7 @@ python3 "<query-skill-root>/scripts/query_session.py" finalize \
 
 The decision contains only `status`, `evidence_level`, `claims`, `verified_evidence_refs`, `events`, `conclusion`, and `unresolved`. `unresolved_items` is accepted as a compatibility alias. Top-level decision and claim fields remain strict: unknown fields, blank claims, conflicting aliases, invalid references, or an unsupported evidence level for explicitly required but incomplete verification are rejected without changing the in-progress trace. Event standard fields are `stage`, `route`, `status`, `summary`, `evidence_refs`, `inspected_paths`, `hit_count`, `duration_ms`, and `accounting`; unknown event fields are retained under `extensions` and never satisfy a stage, evidence, or verification gate. Events are optional and should be omitted unless they record a real audit or verification fact. A verified reference requires a completed `page-asset-verification` event with `inspected_paths`. The script assigns evidence/claim IDs, inherits all provenance from inspected packets, and verifies the Markdown note exists. Do not create, write, or patch a temporary manifest. Legacy `--manifest-json` and `--manifest` exist only for compatibility/debugging.
 
-If the first evidence packet is insufficient, run `supplement` with an explicit gap reason and then run `inspect` again. Finalization is blocked until that second inspection records `evidence-gap-review`:
+If the first evidence packet is insufficient, run `supplement` once with an explicit gap reason and then run `inspect` again. Only one supplement and two total inspections are permitted per trace. Finalization is blocked until that second inspection records `evidence-gap-review`:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" supplement \
@@ -104,6 +104,8 @@ python3 "<query-skill-root>/scripts/query_session.py" supplement \
 ```
 
 Read `references/query-workflow.md` for selectors and the finalization decision. Read `references/query-tracing.md` only for trace schema, legacy fallback, grouped questions, or debugging.
+
+If a query-session command fails internally, do not patch the installed Skill, relax Vault path validation, probe implementation alternatives, or continue retrying. Preserve the recorded failure and finalize the trace as `incomplete` with a concrete unresolved item when the failure prevents a supported answer. Skill maintenance belongs in the source repository and a separately tested deployment workflow.
 
 ## Query rules
 

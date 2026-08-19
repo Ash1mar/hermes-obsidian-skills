@@ -74,6 +74,37 @@ bootstrap（每请求一次）
 
 通用修复不根据题目关键词或章节编号做特化：inspect 现在可从 query projection 解析任何已注册的精确 `document::section`，同时仍拒绝任意路径/行号；inspect 返回紧凑 finalize contract；未知 event 字段进入 `extensions`，而顶层 decision、claim、evidence ref 和 verification gate 继续严格。模型知道精确章节时可直接 inspect，不需要为了让它进入 top-k 而反复 supplement。
 
+## 2026-08-19 内网单题近 20 分钟中断事故
+
+内网使用问题“闭式水喷雾灭火系统的喷水强度和喷头参数设计为多少合适？”执行单题回归，trace `20260819_065942_2e9da9ca` 从 `06:59:42Z` 记录到 `07:17:30Z`，墙钟跨度 1068 秒（17 分 48 秒），随后在尚未 finalize 时中断。trace 保持 `in_progress`，没有 accepted evidence、Claim–Evidence map 或 conclusion。
+
+已记录的 primary stage duration 为 958127.346 ms，其中 `candidate-review` 和四次 `evidence-gap-review` 合计 957557.064 ms，占已记录耗时 99.94%。检索、文档读取、表格解析和 provenance 脚本均为毫秒级。剩余约 109.9 秒位于未计时的模型/外部工具间隔。由于该部署没有传入 Hermes session/message linkage，只能确认时间消耗发生在 query-session 调用之间，不能仅凭 trace 继续拆分模型 API 排队、生成、shell 工具和网络等待。
+
+### 触发链
+
+1. intranet 的 qmd-like-rag 部署开关为 disabled，查询按设计继续走 hierarchical fallback；开关本身没有产生等待，但失去了可与层级路线互补的粗召回。
+2. hierarchical locator 先按文档选取范围，再把所有章节放入一个全局 section 排序。同一份 GB 50219-2014 因重复出现通用水喷雾词组占满候选窗口，已注册在 query projection 中的《HDJPSC-25A4-02-02 核岛消防系统设计工作手册》没有进入 compact top-k。supplement 使用相同排序后又返回近似候选。
+3. 模型通过额外搜索找到了工作手册的精确章节，但 query projection/manifest 首先提供了 Vault 外仍存在的原 ingest 路径 `/opt/data/phq/2026.6.12/...`。`resolve_source_path()` 接受该文件，`build_evidence_packet()` 随后调用严格的 `vault_relative()`，对 Vault 外路径抛出异常。Vault 内实际已有位于 `10_Raw` 子目录中的原 PDF 副本，但旧 resolver 只尝试 `10_Raw/<filename>`，不会递归定位。
+4. 模型在正常 query 中读取并多次 patch 已部署 Skill，先尝试接受外部绝对路径，再尝试优先内部副本，最后尝试放宽 finalize 的 `validate_vault_path()`。这违反只读查询和 Skill 维护边界；放宽绝对路径校验还会破坏 Vault evidence containment。
+5. 第一次成功登记的 evidence handle 已保存外部路径。后来同一章节重新 inspect 时，`register_evidence_packets()` 只追加 inspection round，不刷新 provenance，因此 finalize 继续读取旧路径并失败。
+6. Skill 文本要求一次 inspect、真实缺口时最多再 inspect 一次，但脚本没有硬限制。本轮实际执行五次 inspection；模型返回中出现剩余 iteration 倒计时，最终在修补/重试链中耗尽执行轮次。
+
+### 责任边界
+
+- **确定性代码缺陷**：Vault 内原件解析顺序及嵌套目录支持、重复 inspection 的 evidence catalog 刷新、全局 section 排名缺乏跨文档多样性、inspection/supplement 只有文字约束而没有硬门禁、失败事件未自动进入 trace。
+- **模型编排错误**：偏离 `begin -> inspect -> finalize`，在 query 中修改已安装 Skill，提出接受 Vault 外绝对 evidence 路径的错误修法，在已有两轮 inspection 后继续搜索和重试，没有用 `incomplete + unresolved` 及时收口。
+- **部署/运行时条件**：intranet Provider 明确关闭；Hermes session/message 环境未传给 query-session。前者放大 fallback 候选质量问题，后者削弱耗时归因，但两者都不是路径异常本身。
+
+### 采用的通用修复
+
+1. **Vault 内原件优先**：只把 Vault 内文件登记为 `original_asset_path`。先检查 manifest/query projection 中可解析为 Vault 内的候选，再检查 `10_Raw/<filename>`；必要时才在 `10_Raw` 下按精确文件名递归定位。manifest 有 SHA-256 时必须匹配；多个同名匹配无法唯一确定时返回 unresolved。Vault 外 ingest 路径只保留为 control-plane 诊断元数据，不进入 evidence catalog，`validate_vault_path()` 继续严格拒绝绝对路径和 traversal。
+2. **可恢复的 evidence handle**：同文档版本、同 section 再次 inspection 时复用 handle，但刷新页码、block、原件路径、viewer、QA 和 verification assets；若 document version 发生变化则拒绝静默覆盖并要求新 trace。
+3. **跨文档候选覆盖**：hierarchical locator 在最终 section 窗口中先保留最多三个不同文档的最佳章节，再按原始分数补齐剩余位置，并返回 ranking strategy/document count。该策略不依赖消防领域词，也不改变 evidence authority。
+4. **硬性止损**：一个 trace 最多两次 inspection、一次 supplement。超限调用返回结构化 `blocked -> finalize`，证据不足时明确要求 `status: incomplete`。query-session 未预期异常自动记录 `query-command-failure` 和 `recommended_next_command: finalize`；模型不得在查询中 patch Skill 或放宽路径边界。
+5. **回归覆盖**：增加“外部路径存在 + Vault 内嵌套副本 + 同名错误副本 + SHA-256 选择”“无 Vault 内副本时不提升外部路径”“重复 inspection 刷新 catalog”“第三次 inspection/第二次 supplement 被阻止”“失败事件落 trace”“单文档高重复分数不能占满 compact window”等测试。
+
+这些修复属于 main/intranet 共用的领域无关查询逻辑，应先在 main 通过测试，再同步到 intranet；两分支的 Provider enabled 状态、Vault 路径和 viewer 配置继续独立维护，不能借通用修复覆盖部署配置。
+
 ## 原流程的主要耗时来源
 
 原流程中常见的额外步骤包括：
@@ -121,7 +152,7 @@ qmd-like-rag 未配置、被禁用或暂时不可用时，coarse route 记为 di
 - 原始 PDF 路径、页码和 viewer URL。
 - verification readiness 及唯一支持的下一步。
 
-只有出现真实缺口、冲突或漏检来源时才允许第二次 `inspect`。pass-quality Bundle 是默认内部提取载体；内容类型和 Bundle QA flag 本身不要求视觉原页核验。若 Bundle/control metadata 明确标记 QA、警告、歧义或不完整，普通查询直接限定或降级结论；只有用户明确要求视觉审计时才进入 `verify` 路径。
+只有出现真实缺口、冲突或漏检来源时才允许第二次 `inspect`。一个 trace 最多两次 inspection 和一次 supplement；超限调用由脚本返回 `blocked -> finalize`，不得继续搜索或调试 Skill。pass-quality Bundle 是默认内部提取载体；内容类型和 Bundle QA flag 本身不要求视觉原页核验。若 Bundle/control metadata 明确标记 QA、警告、歧义或不完整，普通查询直接限定或降级结论；只有用户明确要求视觉审计时才进入 `verify` 路径。
 
 ### `finalize`
 
@@ -152,6 +183,8 @@ qmd-like-rag 未配置、被禁用或暂时不可用时，coarse route 记为 di
 ### 减少文件与状态 I/O
 
 - hierarchical locator 对每个文档只读取一次 `document.md`，全部章节复用内存行；
+- hierarchical locator 在 compact section window 中先覆盖最多三个不同文档，再按原始分数补齐，防止重复术语多的单一文档垄断候选；
+- 原始 PDF 只从 Vault 内安全解析；外部 ingest 路径保留为诊断元数据，嵌套 `10_Raw` 副本按文件名和可用 SHA-256 确认；
 - route trace 事件批量追加；
 - finalization 在一次状态写入中记录 evidence、claims、events、metrics 和完成状态；
 - 完整检索结果写 sidecar，不在模型与工具之间重复传输。
@@ -217,7 +250,7 @@ trace 同时记录：
 - attempted/effective route 区分；
 - evidence/claim 时间戳和请求级计时输出；
 - 紧凑候选和 n-gram 限制；
-- intranet 分支全套测试 56 项通过；
+- intranet 分支全套测试 63 项通过；
 - Skill 结构校验通过；
 - 所有 Python 入口保持 Git executable mode `100755`。
 

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import subprocess
@@ -168,6 +169,81 @@ def test_locator_scans_owned_content_and_returns_navigation_only(tmp_path: Path)
     assert result["answer_contract"]["final_section"] == "原文定位"
     assert result["candidates"][0]["viewer_url"] in result["answer_contract"]["eligible_viewer_urls"]
     assert "Append 原文定位" in result["answer_contract"]["required_action"]
+
+
+def test_locator_keeps_multiple_documents_in_the_compact_candidate_window(tmp_path: Path) -> None:
+    vault = tmp_path / "vault"
+    index_dir = vault / "_system" / "reports" / "query-index"
+    for document_index, title in enumerate(
+        ("GB 水喷雾灭火系统技术规范", "核岛消防系统设计工作手册", "闭式喷头选型说明"),
+        start=1,
+    ):
+        bundle = vault / "10_Raw" / "converted" / f"doc-{document_index}"
+        bundle.mkdir(parents=True)
+        section_count = 8 if document_index == 1 else 1
+        lines = [f"# {title}"]
+        sections = []
+        for section_index in range(1, section_count + 1):
+            lines.extend(
+                [
+                    f"## section-{section_index}",
+                    "闭式水喷雾灭火系统的喷水强度和喷头参数设计。",
+                ]
+            )
+            start_line = len(lines) - 1
+            sections.append(
+                {
+                    "section_id": f"s{section_index}",
+                    "title": f"闭式水喷雾参数 {section_index}",
+                    "path_titles": [title, f"section-{section_index}"],
+                    "start_line": start_line,
+                    "end_line": len(lines),
+                    "content_ranges": [{"start_line": start_line, "end_line": len(lines)}],
+                    "pages": [section_index],
+                    "assets": [],
+                    "quality": "pass",
+                    "ingest_status": "ingested",
+                }
+            )
+        document_path = bundle / "document.md"
+        document_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        write_json(
+            index_dir / f"doc-{document_index}.section-query-index.json",
+            {
+                "document": {
+                    "document_id": f"doc-{document_index}",
+                    "source_filename": f"{title}.pdf",
+                    "bundle_path": bundle.relative_to(vault).as_posix(),
+                    "document_path": document_path.relative_to(vault).as_posix(),
+                    "routing_terms": [title, "消防系统"],
+                },
+                "sections": sections,
+            },
+        )
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(LOCATE),
+            str(vault),
+            "闭式水喷雾灭火系统喷水强度喷头参数",
+            "--index-dir",
+            str(index_dir),
+            "--top-documents",
+            "3",
+            "--top-sections",
+            "5",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = json.loads(completed.stdout)
+    first_three_documents = {item["document_path"] for item in result["candidates"][:3]}
+    assert len(first_three_documents) == 3
+    assert result["ranking"] == {
+        "strategy": "score-with-document-diversity",
+        "document_count": 3,
+    }
 
 
 def test_scope_retrieval_survives_missing_provider_and_keeps_hierarchical_results(tmp_path: Path) -> None:
@@ -696,7 +772,8 @@ def test_query_session_requires_inspect_after_supplement(tmp_path: Path) -> None
     stages = [event["stage"] for event in state["events"]]
     assert "supplemental-retrieval" in stages
     assert "evidence-gap-review" in stages
-    assert state["metrics"]["command_count"] == 5
+    assert "query-command-failure" in stages
+    assert state["metrics"]["command_count"] == 6
 
 
 def test_query_session_inherits_hermes_session_context(tmp_path: Path) -> None:
@@ -830,6 +907,179 @@ def test_query_session_accepts_exact_projected_section_outside_fused_candidates(
     assert packet["section_id"] == "root"
     assert "消防系统" in packet["content"]
     assert packet["selection_origin"] == "projection-exact"
+
+
+def test_query_session_resolves_hash_matched_nested_vault_source_before_external_path(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    original = vault / "10_Raw" / "0712XFNPXTS02.pdf"
+    payload = original.read_bytes()
+    nested = vault / "10_Raw" / "1.核岛消防系统（FNP）工作手册" / original.name
+    nested.parent.mkdir(parents=True)
+    original.replace(nested)
+    duplicate = vault / "10_Raw" / "duplicate" / original.name
+    duplicate.parent.mkdir(parents=True)
+    duplicate.write_bytes(b"different-pdf")
+    external = tmp_path / "external-ingest" / original.name
+    external.parent.mkdir(parents=True)
+    external.write_bytes(payload)
+    manifest_path = vault / "10_Raw" / "converted" / "0712XFNPXTS02_document_bundle" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["source"].update(
+        {"path": str(external), "sha256": hashlib.sha256(payload).hexdigest()}
+    )
+    write_json(manifest_path, manifest)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头 K=60"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    inspected = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    packet = json.loads(inspected.stdout)["evidence_packets"][0]
+    assert packet["source_exists"] is True
+    assert packet["source_path"] == f"10_Raw/1.核岛消防系统（FNP）工作手册/{original.name}"
+    assert str(external) not in json.dumps(packet, ensure_ascii=False)
+
+
+def test_query_session_does_not_promote_external_source_when_vault_copy_is_missing(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    original = vault / "10_Raw" / "0712XFNPXTS02.pdf"
+    payload = original.read_bytes()
+    original.unlink()
+    external = tmp_path / "external-ingest" / original.name
+    external.parent.mkdir(parents=True)
+    external.write_bytes(payload)
+    manifest_path = vault / "10_Raw" / "converted" / "0712XFNPXTS02_document_bundle" / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["source"].update(
+        {"path": str(external), "sha256": hashlib.sha256(payload).hexdigest()}
+    )
+    write_json(manifest_path, manifest)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头 K=60"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    inspected = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    packet = json.loads(inspected.stdout)["evidence_packets"][0]
+    assert packet["source_exists"] is False
+    assert packet["source_path"] == "unresolved"
+
+
+def test_reinspection_refreshes_catalog_and_third_inspection_is_blocked(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头 K=60"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    command = [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"]
+    subprocess.run(command, check=True, capture_output=True, text=True)
+    state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["workflow_state"]["evidence_catalog"]["P1"]["original_asset_path"] = "10_Raw/stale.pdf"
+    write_json(state_path, state)
+    second = subprocess.run(command, check=True, capture_output=True, text=True)
+    assert json.loads(second.stdout)["evidence_packets"][0]["evidence_ref"] == "P1"
+    refreshed = json.loads(state_path.read_text(encoding="utf-8"))["workflow_state"]["evidence_catalog"]["P1"]
+    assert refreshed["original_asset_path"] == "10_Raw/0712XFNPXTS02.pdf"
+    assert refreshed["inspection_rounds"] == [1, 2]
+    third = subprocess.run(command, check=True, capture_output=True, text=True)
+    blocked = json.loads(third.stdout)
+    assert blocked["status"] == "blocked"
+    assert blocked["next_command"] == "finalize"
+
+
+def test_query_session_allows_only_one_supplement(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    provider_config = tmp_path / "provider.json"
+    write_json(provider_config, {"provider": "qmd-like-rag", "enabled": False})
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "begin",
+            str(vault),
+            "水喷雾喷头 K=60",
+            "--provider-config",
+            str(provider_config),
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    supplement_command = [
+        sys.executable,
+        str(SESSION),
+        "supplement",
+        str(vault),
+        trace_id,
+        "闭式水喷雾参数",
+        "--reason",
+        "initial packet omitted a related design section",
+        "--provider-config",
+        str(provider_config),
+    ]
+    first = subprocess.run(supplement_command, check=True, capture_output=True, text=True)
+    assert json.loads(first.stdout)["next_command"] == "inspect"
+    subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    second = subprocess.run(supplement_command, check=True, capture_output=True, text=True)
+    blocked = json.loads(second.stdout)
+    assert blocked["status"] == "blocked"
+    assert blocked["next_command"] == "finalize"
+
+
+def test_failed_query_command_is_recorded_for_incomplete_finalization(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头 K=60"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    failed = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "missing"],
+        capture_output=True,
+        text=True,
+    )
+    assert failed.returncode != 0
+    state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["events"][-1]["stage"] == "query-command-failure"
+    assert state["workflow_state"]["recommended_next_command"] == "finalize"
 
 
 def test_query_session_verify_uses_registered_carrier_once(tmp_path: Path) -> None:
