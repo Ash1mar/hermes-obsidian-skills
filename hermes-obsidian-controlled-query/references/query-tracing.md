@@ -29,7 +29,7 @@ query_session.py inspect
 query_session.py finalize
 ```
 
-The workflow identifier is `query-session/v2` and trace schema is 1.4. A real evidence gap adds `supplement -> inspect`; this is the only supported supplemental evidence path.
+The workflow identifier is `query-session/v2` and trace schema is 1.5. A real evidence gap adds `supplement -> inspect`; this is the only supported supplemental evidence path. A query begun with the domain-neutral `--verification-required` policy adds one deterministic `verify` preparation command.
 
 These three calls automatically record:
 
@@ -44,11 +44,11 @@ These three calls automatically record:
 - claim–evidence validation;
 - query-session duration and command count.
 
-`inspect` also registers compact evidence handles. `finalize --decision-json` inherits all provenance from those handles, creates deterministic ASCII evidence/claim IDs, and stores a compact answer capsule for later request aggregation.
+`inspect` also registers compact evidence handles while returning only the source range, necessary QA status, and registered verification carriers. `finalize --decision-json` inherits all provenance from those handles, creates deterministic ASCII evidence/claim IDs, and stores a compact answer capsule with one deduplicated source catalog plus claim `source_ids`.
 
 Before trace creation, `begin` rejects apparent multi-question input unless the caller explicitly records that the subparts share one evidence set. Finalization rejects empty claim text atomically, so completed Claim–Evidence mappings always identify the assertion being supported.
 
-Original-page visual verification is agent-driven. Include it as a `page-asset-verification` event with `evidence_refs` in the finalization decision so it is written without an additional trace command.
+Original-page visual review is agent-driven, but carrier preparation is deterministic. `verify` records `verification-readiness` as `ready`, `unavailable`, or `failed` and never probes alternative PDF tools. Include an actual review as a completed `page-asset-verification` event with `evidence_refs` and `inspected_paths` in the finalization decision. Unavailable verification must remain `needs-qa` with an unresolved item.
 
 For query-session evidence traces, `completed` requires these stages to exist:
 
@@ -63,7 +63,7 @@ A stage may be explicitly `skipped` when genuinely inapplicable. The trace canno
 
 ## Timing interpretation
 
-Schema 1.4 stores `started_at`, `ended_at`, `duration_ms`, and `accounting` on events. Diagnostic parallel-route timings are not added to the accounted total; the aggregate scope event is the primary interval. The Markdown note reports:
+Schema 1.5 stores `started_at`, `ended_at`, `duration_ms`, and `accounting` on events. Diagnostic parallel-route and verification-readiness timings are not added to the accounted total; the aggregate scope event is the primary interval. The Markdown note reports:
 
 - query-session duration;
 - accounted primary-stage duration;
@@ -93,9 +93,9 @@ Evidence and claim records include `recorded_at` in both the sidecar and rendere
 
 ## Multiple questions
 
-Each independently answerable question receives its own trace. Reuse one request ID and increment `--question-index`, but finish and verify one trace before beginning the next. Never reuse a trace ID, keep traces open concurrently, or batch separate questions through an ad hoc script. Each completed trace stores an answer capsule; `request-summary` combines capsules without reloading full evidence packets.
+Each independently answerable question receives its own trace. Reuse one request ID, increment `--question-index`, and pass the same `--question-count`. The script rejects a new begin while that request has an in-progress trace, as well as duplicate/gapped indices and conflicting counts. Never reuse a trace ID, keep traces open concurrently, or batch separate questions through an ad hoc script. Each completed trace stores an answer capsule; the last finalize uses `--close-request` to return all capsules without reloading full evidence packets.
 
-Grouped notes live under `_system/reports/query-traces/<request-id>/`; sidecars remain under `_data/`. `Request Summary.md` is navigation only and reports the controlled request duration from the first query-session begin through the last finalized trace. Map every numbered final answer to its trace path or explicit skipped/unavailable status. True user-message-to-final-token time still comes from the correlated Hermes session/message log.
+Grouped notes live under `_system/reports/query-traces/<request-id>/`; sidecars remain under `_data/`. `Request Summary.md` is navigation only and reports expected/recorded counts, controlled duration, and detected trace overlap. `--close-request` and later `request-summary` reject unfinished/non-contiguous groups. Map every numbered final answer to its trace path or explicit skipped/unavailable status. True user-message-to-final-token time still comes from the correlated Hermes session/message log.
 
 ## Legacy fallback
 

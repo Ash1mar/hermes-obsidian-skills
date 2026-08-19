@@ -28,6 +28,16 @@
 - ingest `enabled: true`：ingest Skill 可以通过 `sync_retrieval_index.py` 写入或同步 Provider 索引。
 - 关闭适配器不会删除 Chroma、BM25、模型或 Vault manifest；重新开启后仍可使用兼容的 ready 索引。
 
+## Query session 开发准则
+
+`query_session.py` 是领域无关的会话状态机，它负责执行已显式选择的检索、核验、门禁和收口策略，不负责根据问题内容猜测策略。开发和评审时遵守以下边界：
+
+- `query_session.py` 负责执行策略；
+- Skill/调用方根据证据要求选择策略；
+- 问题关键词、语言、设备名、参数名和已测样题不得参与生产策略判定。
+
+例如，视觉原页核验必须由调用方显式传入 `--verification-required`。控制器只根据该状态准备已注册的 evidence image、viewer 或支持的页渲染载体，不得通过“参数”、“表格”、设备名或其他词表自动触发。测试应验证领域无关的状态转换和失败边界，不应把个别 trace 的问法固化为生产规则。
+
 ## 启用 query 前的门禁
 
 在 WSL/Hermes 主机内确认：

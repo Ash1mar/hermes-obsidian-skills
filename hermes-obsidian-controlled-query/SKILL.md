@@ -23,10 +23,24 @@ Read `config/domain-routing.json` when present. Treat `domain_query_terms` as ro
 
 ## Fast path
 
-For one ordinary question, target three script invocations:
+After `skill_view`, run one request bootstrap instead of searching configuration or reading rules in separate rounds:
+
+```bash
+python3 "<query-skill-root>/scripts/query_session.py" bootstrap <vault-root>
+```
+
+It returns the exact applicable `AGENTS.md`/`ENVIRONMENT.md` content, routing/provider configuration, inherited session linkage, and deterministic PDF-verification capability. Do not search for those files again during the same request.
+
+For one ordinary question, target three query-session invocations:
 
 ```text
-begin -> inspect -> optional original-page visual check -> finalize
+begin -> inspect -> finalize
+```
+
+When the answer depends on visually checking source layout or an extraction-sensitive region, explicitly add `--verification-required` to `begin`, then use exactly one deterministic preparation step after inspect:
+
+```text
+begin -> inspect -> verify -> one visual check when ready -> finalize
 ```
 
 Do not enumerate old traces for a new question, probe stable CLI help, run inline Python, create temporary formatter/helper scripts, or narrate every internal step. Look for an old trace only when the user explicitly asks to resume one.
@@ -37,8 +51,10 @@ Resolve the Vault, classify the question, and run:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" begin \
-  <vault-root> "<question>" --query-type <type>
+  <vault-root> "<question>" --query-type <type> [--verification-required]
 ```
+
+Choose `--verification-required` from the evidence requirement, not from keywords in the question. `query_session.py` deliberately performs no domain-, language-, equipment-, or parameter-specific classification.
 
 `begin` creates the required trace, runs optional coarse recall and hierarchical routing in parallel, fuses candidates, records route timings, and returns at most five compact candidates. The complete fused scope remains in the trace sidecar. An unavailable or disabled Provider is non-blocking.
 
@@ -59,7 +75,7 @@ python3 "<query-skill-root>/scripts/query_session.py" inspect \
 
 Each returned packet has an ASCII `evidence_ref` such as `P1`. The trace stores the corresponding path, version, section, pages, original PDF, and viewer metadata. Retain only the packet reference when synthesizing claims; never copy those provenance fields into finalization input.
 
-For engineering values, formulas, tables, or figure internals, open the returned original-page or evidence image and verify the relevant row/region. The packet is an internal verification carrier; the original PDF remains the user-facing source.
+If `begin` explicitly marked visual verification as required, run `query_session.py verify <vault-root> <trace-id> --evidence-ref P1` once. Open the returned registered carrier when status is `ready`. When it is `unavailable` or `failed`, stop verification attempts, use `needs-qa`, and copy its `required_unresolved` into the decision. Never try `pdftotext`, inspect Python PDF libraries, probe other binaries, enumerate Bundle files, or re-search converted text as substitutes for that visual check. The packet is an internal verification carrier; the original PDF remains the user-facing source.
 
 ### 3. Finalize
 
@@ -70,7 +86,7 @@ python3 "<query-skill-root>/scripts/query_session.py" finalize \
   <vault-root> <trace-id> --decision-json '<json-object>'
 ```
 
-The decision contains `claims` with non-empty `text` and `evidence_refs`, plus evidence level, conclusion, unresolved items, and optional verification events. `claim`, `statement`, and `claim_text` are accepted as compatibility aliases for `text`; finalization rejects a claim that remains blank without changing the in-progress trace. The script assigns evidence/claim IDs, inherits all provenance from inspected packets, and verifies the Markdown note exists. Do not create, write, or patch a temporary manifest. Legacy `--manifest-json` and `--manifest` exist only for compatibility/debugging.
+The decision contains only `status`, `evidence_level`, `claims`, `verified_evidence_refs`, `events`, `conclusion`, and `unresolved`. `unresolved_items` is accepted as a compatibility alias. Unknown fields, blank claims, conflicting aliases, invalid references, or an unsupported evidence level for explicitly required but incomplete verification are rejected without changing the in-progress trace. A verified reference requires a completed `page-asset-verification` event with `inspected_paths`. The script assigns evidence/claim IDs, inherits all provenance from inspected packets, and verifies the Markdown note exists. Do not create, write, or patch a temporary manifest. Legacy `--manifest-json` and `--manifest` exist only for compatibility/debugging.
 
 If the first evidence packet is insufficient, run `supplement` with an explicit gap reason and then run `inspect` again. Finalization is blocked until that second inspection records `evidence-gap-review`:
 
@@ -144,9 +160,9 @@ Read `references/answer-format.md` only when a non-trivial answer needs the full
 
 ## Multiple questions
 
-Process independently answerable questions strictly one at a time. Generate one request ID, pass the shared `--request-id` and one-based `--question-index` to each `begin`, then inspect, synthesize, finalize, and verify that trace before starting the next question. `begin` rejects multiple question marks or multiple numbered question items before creating a trace. Split the request and retry sequentially when this occurs. Do not use a Hermes session ID as a trace ID, keep two traces open, answer questions concurrently, or create an ad hoc orchestration script. Report each trace separately.
+Process independently answerable questions strictly one at a time. Generate one request ID, pass the shared `--request-id`, one-based `--question-index`, and total `--question-count` to each `begin`, then inspect, synthesize, finalize, and verify that trace before starting the next question. `begin` rejects a second trace while the request contains an `in_progress` trace, inconsistent counts, duplicate/gapped indices, multiple question marks, or multiple numbered question items. Split the request and retry sequentially when this occurs. Do not use a Hermes session ID as a trace ID, keep two traces open, answer questions concurrently, or create an ad hoc orchestration script. Report each trace separately.
 
-After all questions finish, call `query_session.py request-summary <vault-root> <request-id>` once. Carry only its answer capsules into the combined response; do not reload completed evidence packets.
+On the final question, pass `--close-request` to `finalize`; it validates the expected count and returns the complete request capsules without a separate `request-summary` round. `request-summary` remains available for later inspection/debugging and rejects unfinished or non-contiguous requests. Carry only the returned deduplicated `sources`, claim `source_ids`, conclusion, and unresolved items into the combined response; do not reload completed evidence packets.
 
 Use one trace only for tightly coupled subparts requiring the same evidence set. In that exceptional case pass both `--coupled` and a concrete `--coupled-reason`; the reason is stored in trace state for audit.
 
@@ -171,6 +187,6 @@ Do not create or update governed artifacts during query. Retain a compact intern
 - `references/evidence-levels.md`: evidence and QA restrictions.
 - `references/answer-format.md`: full user-facing response template.
 - `references/query-tracing.md`: trace schema, timing, grouped questions, and legacy commands.
-- `references/query-performance-optimization.md`: latency sources, three-call design, benchmarks, and intranet A/B acceptance.
+- `references/query-performance-optimization.md`: maintainer-only incident history, latency design, benchmarks, and intranet A/B acceptance; read only for performance work or debugging.
 - `references/coarse-retrieval.md`: Provider contract and main/intranet boundary.
 - `references/Hierarchical_search.md`: projection and hierarchical locator design.

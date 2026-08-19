@@ -20,6 +20,8 @@ Use evidence labels to prevent a query answer from overstating weak or extractio
 - Record converted source, table, image, and page-image paths and line/section locations in the query trace only. Do not expose them as user-facing evidence sources.
 - For every user-facing substantive answer, cite the original PDF identity and original PDF page rather than converted Markdown lines.
 - If a figure, page image, or table is part of the evidence, include its original PDF page, number or caption, containing section, and page region. Include coordinates only when reliably mapped to the original PDF. Keep converted asset paths in the trace. If its internals were not reviewed, mark it `needs-qa`.
+- When `inspect` marks original-page verification as required, run the deterministic `verify` preparation once. If it returns `unavailable` or `failed`, stop trying alternative PDF/text tools, preserve the returned unresolved reason, and use `needs-qa` or `gap`; do not use `clear` or `source-backed`.
+- When visual verification was explicitly required for a query, `clear` requires every cited packet reference to appear in `verified_evidence_refs` and in a completed `page-asset-verification` event with the actual inspected carrier path. The session script never infers this requirement from domain terms.
 
 ## Conflict Handling
 
