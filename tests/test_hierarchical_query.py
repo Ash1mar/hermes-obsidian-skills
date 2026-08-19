@@ -533,6 +533,7 @@ def test_query_session_rejects_empty_claim_then_accepts_text_alias(tmp_path: Pat
     repaired_decision = {
         "evidence_level": "needs-qa",
         "claims": [{"statement": "The inspected source supports the water-spray parameter.", "evidence_refs": [evidence_ref]}],
+        "events": [{"type": "inspection", "summary": "Recorded by a newer model event vocabulary."}],
         "unresolved_items": ["Original-page verification was not completed."],
     }
     finalized = subprocess.run(
@@ -555,6 +556,10 @@ def test_query_session_rejects_empty_claim_then_accepts_text_alias(tmp_path: Pat
     assert final_state["unresolved"] == ["Original-page verification was not completed."]
     assert final_state["answer_capsule"]["sources"][0]["source_id"] == "S1"
     assert final_state["answer_capsule"]["claims"][0]["source_ids"] == ["S1"]
+    extension_event = next(event for event in final_state["events"] if event.get("extensions", {}).get("type"))
+    assert extension_event["stage"] == "unspecified"
+    assert extension_event["extensions"] == {"type": "inspection"}
+    assert 'Extensions: `{"type": "inspection"}`' in Path(json.loads(finalized.stdout)["note_path"]).read_text(encoding="utf-8")
 
 
 def test_query_session_finalize_is_atomic_on_invalid_claim(tmp_path: Path) -> None:
@@ -760,11 +765,58 @@ def test_query_session_does_not_infer_verification_policy_from_question_terms(tm
         text=True,
         check=True,
     )
-    assert json.loads(inspected.stdout)["next_command"] == "finalize"
+    inspect_result = json.loads(inspected.stdout)
+    assert inspect_result["next_command"] == "finalize"
+    assert "type" not in inspect_result["finalize_contract"]["event_standard_fields"]
+    assert "Unknown event fields are preserved under extensions" in inspect_result["finalize_contract"]["event_extension_policy"]
     state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
     workflow = json.loads(state_path.read_text(encoding="utf-8"))["workflow_state"]
     assert workflow["verification_required"] is False
     assert workflow["verification_requirement_reason"] == "not requested"
+
+
+def test_query_session_accepts_exact_projected_section_outside_fused_candidates(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "begin",
+            str(vault),
+            "K=60 水喷雾喷头参数",
+            "--top-sections",
+            "1",
+            "--compact-limit",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = json.loads(begun.stdout)
+    trace_id = result["trace"]["trace_id"]
+    assert all(candidate["section_id"] != "root" for candidate in result["scope"]["candidates"])
+    document_path = "10_Raw/converted/0712XFNPXTS02_document_bundle/document.md"
+    inspected = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "inspect",
+            str(vault),
+            trace_id,
+            "--candidate",
+            f"{document_path}::root",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    packet = json.loads(inspected.stdout)["evidence_packets"][0]
+    assert packet["document_path"] == document_path
+    assert packet["section_id"] == "root"
+    assert "消防系统" in packet["content"]
+    assert packet["selection_origin"] == "projection-exact"
 
 
 def test_query_session_verify_uses_registered_carrier_once(tmp_path: Path) -> None:
@@ -1367,6 +1419,9 @@ def test_query_contract_fuses_parallel_scope_before_governed_first_search() -> N
     assert "Use supplemental scoped exact/lexical search only" in skill
     assert "disabled or unavailable Provider" in workflow
     assert "Supported claims require at least one recorded evidence ID" in workflow
+    assert "A table, formula, engineering parameter, image reference, or Bundle QA flag does not trigger it by itself" in skill
+    assert "unknown event fields" in skill and "extensions" in skill
+    assert "outside the fused top-k" in workflow
 
 
 def test_skill_name_alone_activates_complete_query_contract() -> None:

@@ -14,7 +14,7 @@
 2. 再压缩文件读取和 trace 写入次数；
 3. 最后补齐后半段阶段记录与请求级计时，避免可观测性反过来增加查询步骤。
 
-普通单问题查询的结构目标是三次 query-session 调用；工程参数确需查看原页时，增加一次确定性 `verify` 准备和一次视觉核验。每个用户请求另有一次 `bootstrap`，多题最后一次 finalize 通过 `--close-request` 同时返回汇总。端到端验收以 intranet 上同题 A/B 为准，暂定普通证据查询 P50 不超过 180 秒，并以接近或低于 120 秒为进一步目标。脚本耗时、模型思考时间、网络/API 重试、审批等待和回答输出时间必须分开报告。
+普通单问题查询的结构目标是三次 query-session 调用；只有显式的用户/审计视觉核验要求才增加一次确定性 `verify` 准备和一次视觉核验。工程参数、公式、表格、图片和 Bundle QA flag 本身不触发该路径；普通查询信任 Bundle，并在有具体 QA 问题时如实降级或限定结论。每个用户请求另有一次 `bootstrap`，多题最后一次 finalize 通过 `--close-request` 同时返回汇总。端到端验收以 intranet 上同题 A/B 为准，暂定普通证据查询 P50 不超过 180 秒，并以接近或低于 120 秒为进一步目标。脚本耗时、模型思考时间、网络/API 重试、审批等待和回答输出时间必须分开报告。
 
 ## 2026-08-18 真实双题事故
 
@@ -49,10 +49,10 @@ pdftotext
 2. **P2 · 请求 bootstrap**：一次返回实际规则文件内容、部署配置、session linkage 和 verification runtime，替代配置搜索和分轮读取。
 3. **P3 · 自动收口**：最后一题 `finalize --close-request` 同时校验请求完整性并返回 request capsules，取消独立 request-summary 模型轮次；独立 `request-summary` 只保留给稍后检查或调试。
 4. **P4 · 顺序门禁**：同一 request 存在 `in_progress` trace 时拒绝新 begin；校验 `--question-count`、连续 index 和重复 index；summary 记录并检查 trace overlap。
-5. **P5 · 严格 decision schema**：未知字段报错，`unresolved_items` 作为兼容别名；工程参数若未完成原页核验，不得使用 `clear`/`source-backed`；verified ref 必须对应带实际 carrier 路径的完成事件。
+5. **P5 · 分层 decision schema**：顶层 decision 和 claim 字段保持严格，`unresolved_items` 作为兼容别名；event 标准字段固定，模型新增的 event 字段保留到 `extensions`，但不能满足任何门禁；只有显式要求视觉核验时，未核验 evidence 才不得使用 `clear`/`source-backed`；verified ref 必须对应带实际 carrier 路径的完成事件。
 6. **P6 · 上下文压缩**：inspect 返回紧凑 QA/verification packet，完整 provenance 留在 sidecar；answer capsule 使用去重 `sources` 和 claim `source_ids`；最后收口不重新加载 evidence packet。
 
-新工程参数路径为：
+显式视觉核验路径为：
 
 ```text
 bootstrap（每请求一次）
@@ -62,6 +62,17 @@ bootstrap（每请求一次）
 -> visual check（仅 ready）
 -> finalize [--close-request]
 ```
+
+## 2026-08-19 三题回归暴露的编排浪费
+
+三题 controlled request 约 290 秒，Hermes 用户端到端约 350 秒；23 次模型调用累计 API 等待约 246 秒，未发生 API retry。前两题分别约 70 秒和 31 秒，第三题约 175 秒并出现两次 supplement。主要浪费不是检索计算或 VPN 重试，而是四次可避免的失败与随后重新加载/重试：
+
+1. finalize event 使用模型生成的 `type` 字段，被严格 schema 拒绝；
+2. 已知 `document::section` 不在 fused top-k 时，inspect 拒绝精确章节；
+3. 上一次 supplement 尚未 inspect 就发起下一次 supplement；
+4. 精确章节选择再次失败后退回临时文件搜索，证据没有完整进入 Claim–Evidence map。
+
+通用修复不根据题目关键词或章节编号做特化：inspect 现在可从 query projection 解析任何已注册的精确 `document::section`，同时仍拒绝任意路径/行号；inspect 返回紧凑 finalize contract；未知 event 字段进入 `extensions`，而顶层 decision、claim、evidence ref 和 verification gate 继续严格。模型知道精确章节时可直接 inspect，不需要为了让它进入 top-k 而反复 supplement。
 
 ## 原流程的主要耗时来源
 
@@ -110,11 +121,11 @@ qmd-like-rag 未配置、被禁用或暂时不可用时，coarse route 记为 di
 - 原始 PDF 路径、页码和 viewer URL。
 - verification readiness 及唯一支持的下一步。
 
-只有出现真实缺口、冲突或漏检来源时才允许第二次 `inspect`。工程值、公式、表格或图片内部信息仍需按证据规则核验原页，不能为了省时降低证据质量。
+只有出现真实缺口、冲突或漏检来源时才允许第二次 `inspect`。pass-quality Bundle 是默认内部提取载体；内容类型和 Bundle QA flag 本身不要求视觉原页核验。若 Bundle/control metadata 明确标记 QA、警告、歧义或不完整，普通查询直接限定或降级结论；只有用户明确要求视觉审计时才进入 `verify` 路径。
 
 ### `finalize`
 
-模型一次提交只含 claims、inspect packet 引用、结论、`unresolved` 和可选核验事件的 decision。`unresolved_items` 仅作为兼容别名；任何其他未知字段会被拒绝。脚本从 evidence catalog 自动继承路径、版本、章节、页码和原始 PDF，生成 ASCII evidence/claim ID，再原子化写入最终状态和 Markdown trace。任一记录无效时不留下半完成的 finalization。多题最后一题使用 `--close-request` 原子校验请求并返回 capsules。
+模型一次提交只含 claims、inspect packet 引用、结论、`unresolved` 和可选核验事件的 decision。`unresolved_items` 仅作为兼容别名。顶层 decision 和 claim 的未知字段仍被拒绝；event 的未知字段被收纳到 `extensions`，仅作诊断记录，不能被当作 `stage` 或 evidence/verification 证明。脚本从 evidence catalog 自动继承路径、版本、章节、页码和原始 PDF，生成 ASCII evidence/claim ID，再原子化写入最终状态和 Markdown trace。任一实质记录无效时不留下半完成的 finalization。多题最后一题使用 `--close-request` 原子校验请求并返回 capsules。
 
 ## 具体优化机制
 
@@ -149,7 +160,7 @@ Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产
 
 ## 自动 trace 与计时
 
-`query-session/v2`、trace schema 1.4 自动记录以下阶段：
+`query-session/v2`、trace schema 1.5 自动记录以下阶段：
 
 - scope retrieval；
 - candidate review；
@@ -182,7 +193,7 @@ trace 同时记录：
 - 原始 PDF 仍是用户可见证据来源；Bundle、索引、ledger 和 trace 只是导航或核验载体；
 - 查询不得重建或同步 Provider；
 - governed Vault 内容保持只读，仅允许写当前非权威 query trace；
-- 表格、公式和工程参数必须执行必要的原页/verification asset 核验；
+- pass-quality Bundle 默认可作为内部提取载体；视觉核验只由显式用户/审计要求触发，具体 QA/歧义状态直接体现在证据等级和限定语中；
 - Provider 不可用不得阻塞已有 hierarchical fallback；
 - 可独立回答的多个问题仍按顺序分别完成 trace。
 
@@ -194,7 +205,8 @@ trace 同时记录：
 - bootstrap 一次返回规则、配置和 verification capability；
 - registered verification carrier 的单次准备与无 carrier/renderer 时的 fast-fail；
 - 同 request 的 open-trace 拒绝、连续 question index/count 和 `--close-request`；
-- unknown decision field 拒绝及 `unresolved_items` 兼容继承；
+- unknown 顶层 decision/claim field 拒绝、unknown event field 的 `extensions` 兼容保留及 `unresolved_items` 兼容继承；
+- fused top-k 之外已注册精确章节的 projection 解析；
 - 显式声明需要视觉核验的证据未核验时拒绝 `clear`/`source-backed`；
 - inspect provenance 自动继承及 ASCII evidence/claim ID；
 - supplement 后缺少第二次 inspect 时拒绝 finalize；

@@ -48,7 +48,9 @@ These three calls automatically record:
 
 Before trace creation, `begin` rejects apparent multi-question input unless the caller explicitly records that the subparts share one evidence set. Finalization rejects empty claim text atomically, so completed Claim–Evidence mappings always identify the assertion being supported.
 
-Original-page visual review is agent-driven, but carrier preparation is deterministic. `verify` records `verification-readiness` as `ready`, `unavailable`, or `failed` and never probes alternative PDF tools. Include an actual review as a completed `page-asset-verification` event with `evidence_refs` and `inspected_paths` in the finalization decision. Unavailable verification must remain `needs-qa` with an unresolved item.
+Original-page visual review is an opt-in audit route, not a default requirement for parameters, formulas, tables, or figures. Bundle extraction is trusted when its control metadata passes. When visual review is explicitly selected, carrier preparation is deterministic: `verify` records `verification-readiness` as `ready`, `unavailable`, or `failed` and never probes alternative PDF tools. Include an actual review as a completed `page-asset-verification` event with `evidence_refs` and `inspected_paths` in the finalization decision. Unavailable required verification must remain `needs-qa` with an unresolved item.
+
+Top-level decision and claim fields are strict. Event fields are forward-compatible: the standard fields are `stage`, `route`, `status`, `summary`, `evidence_refs`, `inspected_paths`, `hit_count`, `duration_ms`, and `accounting`; unknown model-supplied event fields are stored under `extensions`. Extensions remain diagnostic and never count as a required stage, evidence mapping, or verification event.
 
 For query-session evidence traces, `completed` requires these stages to exist:
 
