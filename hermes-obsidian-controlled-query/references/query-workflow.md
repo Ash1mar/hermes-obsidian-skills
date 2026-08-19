@@ -12,7 +12,7 @@ Use the three-command path for one ordinary question:
 begin -> inspect -> finalize
 ```
 
-When the caller explicitly requires visual source verification, use `begin --verification-required -> inspect -> verify -> visual check -> finalize`. `verify` is a single deterministic carrier-preparation attempt. The script never infers this policy from question wording. Run a second `inspect` only for a real evidence gap or conflict.
+When the user or an explicit audit requirement requires visual source verification, use `begin --verification-required -> inspect -> verify -> visual check -> finalize`. `verify` is a single deterministic carrier-preparation attempt. Tables, formulas, engineering parameters, images, and Bundle QA flags do not select this route by themselves, and the script never infers it from question wording. Run a second `inspect` only for a real evidence gap or conflict.
 
 Do not scan old traces, probe stable CLI help, run inline Python, create temporary formatter scripts, or read source sections one by one. Keep progress narration sparse; the trace carries the operational detail.
 
@@ -27,7 +27,7 @@ python3 "<query-skill-root>/scripts/query_session.py" begin \
 Optional flags:
 
 - `--request-id`, `--question-index`, and `--question-count` for sequential multi-question requests;
-- `--verification-required` when the evidence requirement calls for a visual source check; never add it merely because a domain keyword appears;
+- `--verification-required` only for an explicit user/audit visual-check requirement; never add it merely because of a content type, domain keyword, or Bundle QA flag;
 - `--session-id` only for non-Hermes runtimes without `HERMES_SESSION_ID`;
 - `--provider-config` for an explicitly deployed Provider configuration;
 - `--top-sections` or `--compact-limit` only when the defaults are demonstrably insufficient.
@@ -43,7 +43,7 @@ python3 "<query-skill-root>/scripts/query_session.py" inspect \
   <vault-root> <trace-id> --candidate 1 --candidate 4
 ```
 
-Selectors may also be a section ID or `document/path::section-id`. If omitted, the command inspects the first three candidates; explicit selection is preferred.
+Selectors may also be a section ID or `document/path::section-id`. The exact document/section form resolves against the query projection even when the section is outside the fused top-k. It never accepts an arbitrary unregistered path or line range. If omitted, the command inspects the first three candidates; explicit selection is preferred.
 
 Each compact evidence packet contains:
 
@@ -112,7 +112,7 @@ Decision shape:
 
 The script expands each packet reference into path, document version, section, pages, source PDF and viewer metadata, then assigns `E1...` and `C1...`. Every claim requires non-empty text; `claim`, `statement`, and `claim_text` are accepted as aliases for `text`. Supported claims require at least one recorded evidence ID, derived from an inspected packet reference. Use `qualified`, `disputed`, or `gap` when appropriate.
 
-Finalization accepts only the documented decision fields. `unresolved_items` is a compatibility alias for `unresolved`; other unknown fields are rejected. A verified reference requires a completed `page-asset-verification` event with non-empty `inspected_paths`. When the trace marks verification as required, unverified evidence cannot be `clear` or `source-backed`; `needs-qa` also requires a non-empty unresolved item. An invalid or uninspected reference leaves the existing trace in progress without partially adding final evidence or claims. Legacy manifest inputs remain compatibility/debugging interfaces only.
+Finalization accepts only the documented top-level decision and claim fields. `unresolved_items` is a compatibility alias for `unresolved`; other unknown top-level or claim fields are rejected. Event standard fields are `stage`, `route`, `status`, `summary`, `evidence_refs`, `inspected_paths`, `hit_count`, `duration_ms`, and `accounting`. Unknown event fields such as a model-supplied `type` are preserved under `extensions`; they are diagnostic metadata only and cannot satisfy stage, evidence, or verification gates. Events are optional unless an actual visual verification must be recorded. A verified reference requires a completed `page-asset-verification` event with non-empty `inspected_paths`. When the trace marks verification as required, unverified evidence cannot be `clear` or `source-backed`; `needs-qa` also requires a non-empty unresolved item. An invalid or uninspected reference leaves the existing trace in progress without partially adding final evidence or claims. Legacy manifest inputs remain compatibility/debugging interfaces only.
 
 ## Supplemental retrieval
 

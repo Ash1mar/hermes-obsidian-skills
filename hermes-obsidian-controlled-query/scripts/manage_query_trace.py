@@ -217,6 +217,8 @@ def render_note(state: dict[str, Any]) -> str:
             lines.append(f"> - Accepted evidence: `{len(accepted_evidence)}`")
         if event.get("duration_ms") is not None:
             lines.append(f"> - Duration: `{event.get('duration_ms')} ms`")
+        if event.get("extensions"):
+            lines.append(f"> - Extensions: `{shorten(yaml_string(event.get('extensions')), 800)}`")
         for path in event.get("inspected_paths", []):
             lines.append(f"> - Inspected: {markdown_path(str(path))}")
         for evidence in accepted_evidence:
@@ -569,6 +571,7 @@ def clean_event(state: dict[str, Any], event: dict[str, Any]) -> dict[str, Any]:
         "evidence_ids": evidence_ids,
         "rejected": event.get("rejected", []),
         "candidates": event.get("candidates", [])[:20],
+        "extensions": event.get("extensions", {}),
     }
 
 

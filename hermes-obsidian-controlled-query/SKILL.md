@@ -45,7 +45,7 @@ For one ordinary question, target three query-session invocations:
 begin -> inspect -> finalize
 ```
 
-When the answer depends on visually checking source layout or an extraction-sensitive region, explicitly add `--verification-required` to `begin`, then use exactly one deterministic preparation step after inspect:
+Visual verification is opt-in. Add `--verification-required` only when the user or an explicit audit requirement asks for an original-page visual check. A table, formula, engineering parameter, image reference, or Bundle QA flag does not trigger it by itself; ordinary queries trust the Bundle and report concrete QA limitations without opening the original-page visual path. When selected, use exactly one deterministic preparation step after inspect:
 
 ```text
 begin -> inspect -> verify -> one visual check when ready -> finalize
@@ -62,7 +62,7 @@ python3 "<query-skill-root>/scripts/query_session.py" begin \
   <vault-root> "<question>" --query-type <type> [--verification-required]
 ```
 
-Choose `--verification-required` from the evidence requirement, not from keywords in the question. `query_session.py` deliberately performs no domain-, language-, equipment-, or parameter-specific classification.
+Choose `--verification-required` only from an explicit user/audit requirement, not from question keywords or Bundle content. `query_session.py` deliberately performs no domain-, language-, equipment-, or parameter-specific classification. Pass a Vault root supplied by the user directly; do not search parent directories for another Vault.
 
 `begin` creates the required trace, runs optional coarse recall and hierarchical routing in parallel, fuses candidates, records route timings, and returns at most five compact candidates. The complete fused scope remains in the trace sidecar. An unavailable or disabled Provider is non-blocking.
 
@@ -79,7 +79,7 @@ python3 "<query-skill-root>/scripts/query_session.py" inspect \
   <vault-root> <trace-id> --candidate 1 --candidate 4
 ```
 
-`inspect` reads complete section-owned ranges in one batch and resolves related governed outputs, table/image Markdown, verification images, manifest, ledger, source-map, original PDF path/pages, QA status, and viewer URL when available. Prefer one inspection call. Use a second only for a real gap, conflict, or missed source.
+`inspect` reads complete section-owned ranges in one batch and resolves related governed outputs, table/image Markdown, optional verification images, manifest, ledger, source-map, original PDF path/pages, QA status, and viewer URL when available. Prefer one inspection call. Use a second only for a real gap, conflict, or missed source. A `document/path::section-id` selector may name any exact section registered in the query projection, even when it was outside the compact fused top-k; this is the audited route for an already-known section.
 
 Each returned packet has an ASCII `evidence_ref` such as `P1`. The trace stores the corresponding path, version, section, pages, original PDF, and viewer metadata. Retain only the packet reference when synthesizing claims; never copy those provenance fields into finalization input.
 
@@ -94,7 +94,7 @@ python3 "<query-skill-root>/scripts/query_session.py" finalize \
   <vault-root> <trace-id> --decision-json '<json-object>'
 ```
 
-The decision contains only `status`, `evidence_level`, `claims`, `verified_evidence_refs`, `events`, `conclusion`, and `unresolved`. `unresolved_items` is accepted as a compatibility alias. Unknown fields, blank claims, conflicting aliases, invalid references, or an unsupported evidence level for explicitly required but incomplete verification are rejected without changing the in-progress trace. A verified reference requires a completed `page-asset-verification` event with `inspected_paths`. The script assigns evidence/claim IDs, inherits all provenance from inspected packets, and verifies the Markdown note exists. Do not create, write, or patch a temporary manifest. Legacy `--manifest-json` and `--manifest` exist only for compatibility/debugging.
+The decision contains only `status`, `evidence_level`, `claims`, `verified_evidence_refs`, `events`, `conclusion`, and `unresolved`. `unresolved_items` is accepted as a compatibility alias. Top-level decision and claim fields remain strict: unknown fields, blank claims, conflicting aliases, invalid references, or an unsupported evidence level for explicitly required but incomplete verification are rejected without changing the in-progress trace. Event standard fields are `stage`, `route`, `status`, `summary`, `evidence_refs`, `inspected_paths`, `hit_count`, `duration_ms`, and `accounting`; unknown event fields are retained under `extensions` and never satisfy a stage, evidence, or verification gate. Events are optional and should be omitted unless they record a real audit or verification fact. A verified reference requires a completed `page-asset-verification` event with `inspected_paths`. The script assigns evidence/claim IDs, inherits all provenance from inspected packets, and verifies the Markdown note exists. Do not create, write, or patch a temporary manifest. Legacy `--manifest-json` and `--manifest` exist only for compatibility/debugging.
 
 If the first evidence packet is insufficient, run `supplement` with an explicit gap reason and then run `inspect` again. Finalization is blocked until that second inspection records `evidence-gap-review`:
 
@@ -145,9 +145,9 @@ Use source maps and ledgers to resolve current/stale status, complete ranges, so
 
 ### Evidence quality
 
-- `clear`: pass-quality governed/source evidence resolves to an original PDF and page.
-- `source-backed`: checked source evidence resolves to an original PDF and page but lacks a durable governed conclusion.
-- `needs-qa`: the claim depends on formula OCR, engineering values, table/figure internals, cross-page structure, or a warning/QA section.
+- `clear`: pass-quality governed/source or Bundle evidence supports the claim and resolves to an original PDF and page.
+- `source-backed`: current converted Bundle/source evidence supports the claim and resolves to an original PDF and page but lacks a durable governed conclusion.
+- `needs-qa`: relevant Bundle/control metadata reports `qa_required`, warning-affected, incomplete or ambiguous extraction; sources conflict; or explicitly required verification remains incomplete.
 - `gap`: adequate original-PDF evidence is unavailable.
 
 Read `references/evidence-levels.md` for parameters, formulas, tables, figures, conflicts, or QA warnings. Never promote `needs-qa` evidence into an authoritative reusable fact.
@@ -162,7 +162,7 @@ For each substantive conclusion provide:
 4. table/figure number or caption, section, page region, and reliable coordinates when available;
 5. evidence quality and unresolved limits.
 
-Never substitute a Bundle, Markdown, source-map, ledger, spec index, trace, or extracted-asset path for the original PDF citation. Record source maps, ledgers, `document.md`, tables, extracted images, and page images only in the trace. They are internal retrieval and QA details, not user-facing evidence sources.
+Never substitute a Bundle, Markdown, source-map, ledger, spec index, trace, or extracted-asset path for the original PDF citation. The Bundle is trusted as the default internal extraction carrier when its quality metadata passes; trusting it does not change the user-facing original-PDF citation. Record source maps, ledgers, `document.md`, tables, extracted images, and page images only in the trace. They are internal retrieval and QA details, not user-facing evidence sources.
 
 Inspect the top-level `answer_contract`. When `viewer_enabled` is true, produce a final `原文定位` list. Use only locator-returned `viewer_url` values for every verified candidate actually used, deduplicate identical URLs, and label each with the original PDF filename and section ID. The URL shape is `doc=<document_id>&section=<section_id>&from=<match_start_line>&to=<match_end_line>`; never invent a document ID or line range. Viewer URLs are navigation aids, not evidence. If no used hit has an eligible URL, state under uncertainty/gaps that source positioning is unavailable; do not allow silent omission of both the links and the unavailable status.
 

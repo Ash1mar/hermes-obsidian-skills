@@ -54,6 +54,7 @@ EVENT_KEYS = {
     "hit_count",
     "duration_ms",
     "accounting",
+    "extensions",
 }
 VISUAL_ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 
@@ -352,7 +353,44 @@ def fused_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
     raise ValueError("trace has no candidate-fusion result")
 
 
-def select_candidates(candidates: list[dict[str, Any]], selectors: list[str]) -> list[dict[str, Any]]:
+def exact_projection_candidate(
+    projections: dict[str, dict[str, Any]], document_path: str, section_id: str
+) -> dict[str, Any] | None:
+    normalized_document = document_path.replace("\\", "/").strip("/")
+    projection = projections.get(normalized_document)
+    if not projection:
+        return None
+    document = projection.get("document", {})
+    for section in projection.get("sections", []):
+        if str(section.get("section_id") or "") != section_id:
+            continue
+        return {
+            "document_path": normalized_document,
+            "source_filename": document.get("source_filename"),
+            "section_id": section.get("section_id"),
+            "title": section.get("title"),
+            "path_titles": section.get("path_titles", []),
+            "start_line": section.get("start_line"),
+            "end_line": section.get("end_line"),
+            "content_ranges": section.get("content_ranges", []),
+            "pages": section.get("pages", []),
+            "assets": section.get("assets", []),
+            "quality": section.get("quality"),
+            "ingest_status": section.get("ingest_status"),
+            "viewer_url": section.get("viewer_url"),
+            "retrieval_routes": ["projection-exact"],
+            "route_ranks": {},
+            "route_scores": {},
+            "selection_origin": "projection-exact",
+        }
+    return None
+
+
+def select_candidates(
+    candidates: list[dict[str, Any]],
+    selectors: list[str],
+    projections: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     requested = selectors or [str(index) for index in range(1, min(3, len(candidates)) + 1)]
     selected: list[dict[str, Any]] = []
     for selector in requested:
@@ -374,6 +412,8 @@ def select_candidates(candidates: list[dict[str, Any]], selectors: list[str]) ->
                 elif str(candidate.get("section_id")) == selector:
                     match = candidate
                     break
+            if match is None and separator and projections is not None:
+                match = exact_projection_candidate(projections, document_part, section_part)
         if match is None:
             raise ValueError(f"candidate selector did not match: {selector}")
         key = (str(match.get("document_path")), str(match.get("section_id")))
@@ -622,6 +662,7 @@ def build_evidence_packet(
             "source_state": projection.get("source_state", {}),
         },
         "viewer_url": viewer_url,
+        "selection_origin": candidate.get("selection_origin", "fused-candidate"),
     }
     return packet, timings, inspected
 
@@ -687,6 +728,7 @@ def compact_evidence_packet(packet: dict[str, Any]) -> dict[str, Any]:
             "source_map_validation_status": source_map.get("validation_status"),
         },
         "viewer_url": packet.get("viewer_url"),
+        "selection_origin": packet.get("selection_origin"),
         "verification": packet_verification_readiness(packet),
     }
 
@@ -729,8 +771,8 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
         started_wall_ns=int(review_started_wall or command_started_wall),
         summary=review_summary,
     )
-    selected = select_candidates(fused_candidates(state), args.candidate)
     projections = load_projections(vault_root)
+    selected = select_candidates(fused_candidates(state), args.candidate, projections)
     packets: list[dict[str, Any]] = []
     timings = {"document_reading": 0.0, "table_figure_resolution": 0.0, "provenance_resolution": 0.0}
     inspected_paths: list[str] = []
@@ -817,6 +859,16 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
         "selected_count": len(packets),
         "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
         "evidence_packets": [compact_evidence_packet(packet) for packet in packets],
+        "finalize_contract": {
+            "top_level_fields": sorted(DECISION_KEYS - {"unresolved_items"}),
+            "top_level_aliases": {"unresolved_items": "unresolved"},
+            "claim_fields": sorted(CLAIM_KEYS),
+            "event_standard_fields": sorted(EVENT_KEYS - {"extensions"}),
+            "event_extension_policy": (
+                "Unknown event fields are preserved under extensions; they never satisfy a stage or evidence gate. "
+                "Omit events unless they add an actual audit or verification fact."
+            ),
+        },
         "next_command": "verify" if workflow.get("verification_required") else "finalize",
     }
 
@@ -1088,10 +1140,35 @@ def normalize_decision(decision: dict[str, Any]) -> dict[str, Any]:
     events = normalized.get("events", [])
     if not isinstance(events, list):
         raise ValueError("decision events must be a list")
+    normalized_events: list[dict[str, Any]] = []
     for index, event in enumerate(events, start=1):
         if not isinstance(event, dict):
             raise ValueError(f"decision event {index} must be an object")
-        reject_unknown_keys(event, EVENT_KEYS, f"decision event {index}")
+        extensions = event.get("extensions", {})
+        if extensions is None:
+            extensions = {}
+        if not isinstance(extensions, dict):
+            raise ValueError(f"decision event {index} extensions must be an object")
+        reserved_extensions = sorted(set(extensions) & EVENT_KEYS)
+        if reserved_extensions:
+            raise ValueError(
+                f"decision event {index} extensions contain reserved fields: {', '.join(reserved_extensions)}"
+            )
+        normalized_event = {key: value for key, value in event.items() if key in EVENT_KEYS and key != "extensions"}
+        for list_field in ("evidence_refs", "inspected_paths"):
+            if list_field in normalized_event and not isinstance(normalized_event[list_field], list):
+                raise ValueError(f"decision event {index} {list_field} must be a list")
+        merged_extensions = dict(extensions)
+        for key, value in event.items():
+            if key in EVENT_KEYS:
+                continue
+            if key in merged_extensions and merged_extensions[key] != value:
+                raise ValueError(f"decision event {index} extension conflicts with field: {key}")
+            merged_extensions[key] = value
+        if merged_extensions:
+            normalized_event["extensions"] = merged_extensions
+        normalized_events.append(normalized_event)
+    normalized["events"] = normalized_events
     verified = normalized.get("verified_evidence_refs", [])
     if not isinstance(verified, list):
         raise ValueError("decision verified_evidence_refs must be a list")
