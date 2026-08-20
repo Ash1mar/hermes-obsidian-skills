@@ -1,6 +1,6 @@
 # Hermes + Obsidian 受控知识流程图
 
-> 本文档与 `main` 和 `intranet` 两个分支的当前实现对齐。Mermaid 图可在 Obsidian 阅读视图中直接渲染，在编辑视图中修改节点和连线。
+> 本文档已对齐远程 `main@90d7bfb` 和 `intranet@77c4ff6`（2026-08-19）。Mermaid 图可在 Obsidian 阅读视图中直接渲染，在编辑视图中修改节点和连线。
 
 ## 两个分支实际使用的环境
 
@@ -9,14 +9,15 @@
 | Vault 位置 | 使用用户指定或当前任务中的 Vault；当前部署从 WSL 通过 `/mnt/c/...` 访问 Windows 工作区 | 固定使用 `config/intranet.json` 中的 `/opt/data/phq/testVault`，不根据 prompt 临时切换 Vault |
 | Skill 位置 | 优先使用 Hermes loader 返回的实际 Skill 目录，不假定固定安装路径 | 仍优先使用 loader 返回的目录；配置的后备检查位置是 `/opt/data/skills/<skill-name>/` |
 | PDF 转换 | 通常在 WSL 调用 `/usr/local/bin/mineru`，实际执行 `/root/.venvs/mineru/bin/mineru` | 默认调用 MinerU HTTP API `http://10.27.17.35:7861`；只有明确传入 `--mineru-invocation cli` 时才改用本地 CLI |
-| 粗召回检索 | 通过 `/usr/local/bin/qmd-like-rag` 调用独立虚拟环境 `/root/.venvs/qmd-like-rag`，查找候选文件和行范围 | 使用同一 `qmd-like-rag` 协议；部署可明确配置为本地命令或 HTTP 服务，不在 Skill 中猜测服务地址 |
+| 粗召回检索 | 通过 `/usr/local/bin/qmd-like-rag` 调用独立虚拟环境 `/root/.venvs/qmd-like-rag`；Query 仓库配置当前 `enabled: true` | 使用同一 `hermes-coarse-recall/v1` 协议；Query 仓库配置当前 `enabled: false`，部署时必须明确选择本地命令或 HTTP 服务，不能猜测服务地址 |
 | QMD | 只作为明确要求时的对比实验，不是默认 Provider | 不部署 QMD |
-| 检索索引存放 | 示例配置使用 `/root/.local/state/qmd-like-rag`；Chroma、BM25、模型和缓存不放入 Windows Vault | 示例配置使用 Vault 外的同级目录 `/opt/data/phq/qmd-like-rag-state`，不放入 `/opt/data/phq/testVault` |
-| 用户查看原文位置 | 答案给出原 PDF 文件名、页码、相关段落和图表位置 | 除相同的 PDF 证据包外，对已验证的命中追加由 locator 生成的 `原文定位` viewer 链接 |
+| 检索索引存放 | Provider 状态根目录为 `/root/.local/state/qmd-like-rag`，按 Vault 隔离；Chroma、BM25、模型和缓存不放入 Windows Vault | 示例配置使用 Vault 外的 `/opt/data/phq/qmd-like-rag-state`，不放入 `/opt/data/phq/testVault` |
+| Provider 模型和设备 | `BAAI/bge-m3` + `BAAI/bge-reranker-large` 固定到不可变 revision，`local_files_only: true`，当前主机使用 CUDA | 使用相同模型 revision；示例从 `/opt/models/...` 本地读取并使用 CPU，实际部署可按主机能力调整，但不能使用未审计模型 |
+| 用户查看原文位置 | 答案给出原 PDF 文件名、Vault 相对路径、页码、相关段落和图表位置 | 除相同的原 PDF 证据外，对答案实际使用的命中去重列出 locator 返回的 `原文定位` viewer 链接；没有合格链接时明确说明不可用 |
 | 领域短语触发配置 | 从 Query Skill 的 `config/domain-routing.json` 读取 | 从 Query Skill 的 `config/intranet.json` 读取；同一文件还保存固定 Vault 和 viewer 地址 |
 | Vault 中是否放 Skill 副本 | Bootstrap 保留可选的 `--copy-skill-note` 用法 | 运行时 Skill 始终位于 `/opt/data/skills/<skill-name>/`，不把 Skill 或安装路径复制进 Vault |
 
-`qmd-like-rag` 是独立安装的检索 Provider，不是第五个 Skill。Vault 内只保存可审计的检索配置和索引状态；可重建的向量、BM25 索引和模型文件保存在 Provider 主机上。
+`qmd-like-rag` 是独立安装的检索 Provider，不是第五个 Skill。Query adapter（Query 是否可以只读调用粗召回的开关）和 ingest adapter（Ingest 是否可以维护索引的开关）彼此独立。Vault 内只保存可审计的检索配置和索引状态；可重建的向量、BM25 索引和模型文件保存在 Provider 主机上。
 
 ## 从建库、摄取到查询的完整流程
 
@@ -70,7 +71,7 @@ flowchart TB
         IS["有多个相关来源时，比较共同对象、参数、接口和冲突<br/>只用已通过的 section 生成跨来源卡片或候选概念评审"]
         ID["如果本次使用 section ledger，将 section 结束为 ingested（已生成并记录输出）、<br/>qa_required（等待人工核验）或 skipped（有理由地跳过）<br/>无论是否使用 ledger，都记录创建/更新/复用/跳过的文件<br/>并写 ingest log（本次摄取做了什么的审计记录）"]
         IH["可选生成 query-index（按文档/章节标题和层级定位候选的可重建索引）<br/>位于 _system/reports/query-index/source-name.json<br/>只供导航，失败不改变摄取结果"]
-        IQ["每个来源完成后或相关批次结束时<br/>调用 sync_retrieval_index.py，让 qmd-like-rag（结合向量、BM25 和重排的粗召回 Provider）<br/>只更新本次新增、修改或删除的可检索文档<br/>在 Vault 写 retrieval-index-manifest.json（记录索引使用的配置、模型指纹、文档数和同步结果）"]
+        IQ["每个来源完成后或相关批次结束时检查 ingest adapter（是否允许摄取流程维护检索索引的开关）<br/>只有部署层启用时才调用 sync_retrieval_index.py，增量同步新增、修改或删除的可检索文档<br/>默认关闭时只记录 skipped/disabled；同步失败只告警，不改变已完成的摄取和 ledger 状态<br/>原子写 retrieval-index-manifest.json（记录协议、模型/配置/语料/索引指纹、数量和最近成功状态）"]
 
         I0 --> ICTRL --> ISTATE
         ISTATE -- "外部新原文，10_Raw 无相同指纹副本" --> I1 --> I2
@@ -104,52 +105,66 @@ flowchart TB
         L2 --> LE
     end
 
-    subgraph QUERY["阶段四｜查找候选范围、回到原 PDF 核验并回答"]
+    subgraph QUERY["阶段四｜用 Query Session 定位、检查证据并原子收口"]
         direction TB
-        Q0["确定 Vault 和问题类型<br/>intranet 固定使用 /opt/data/phq/testVault<br/>参数、公式、表格或图片问题一律当作 evidence 查询（必须回到原文页核验的证据型查询）"]
-        QB["一条消息含多个独立问题时<br/>按用户顺序一题一题执行，每题建立自己的 trace（该问题的查询审计记录）<br/>前一题结束并验证 trace 文件后才开始下一题"]
-        QT["默认在 _system/reports/query-traces 启动 trace（本次查询的审计记录，<br/>记录走了哪条检索路线、选了哪些候选、核对了哪些证据）<br/>只有用户明确 no-trace 或 Vault 不可写时才跳过"]
-        QD0{"是否已知精确文件名、标准号、条款号或原文短语？"}
-        QDIRECT["记录为什么跳过粗召回<br/>直接在指定文件/报告/query-index 中定位完整 section"]
+        Q0["Hermes 用 loader 加载 Controlled Query Skill<br/>确认包内有 query_session.py（统一管理一次受控查询的状态机脚本）"]
+        QBOOT["每个用户请求先调用一次 bootstrap<br/>一次返回适用的 AGENTS.md/ENVIRONMENT.md、分支路由与 Provider 配置、<br/>Hermes session/message 关联和原页可视核验能力；本次请求不再重复搜索这些文件"]
+        QB["拆分问题边界<br/>多个可独立回答的问题共用一个 request ID，但严格按 question index 一题一题执行<br/>前一题 finalize 并验证 trace 后才能 begin 下一题；明显多问题、并发 trace、跳号或数量冲突会被拒绝"]
+        QTYPE["给当前问题选择 locating / explanatory / synthesis / evidence / gap<br/>参数、公式、表格和图片仍归为 evidence（需要保留原 PDF 页级出处）"]
+        QPOLICY["只有用户或明确审计要求指定必须目视检查原页时<br/>才给 begin 加 verification-required；否则不打开视觉核验路径"]
 
-        subgraph QAUTO["脚本自动执行并自动写入三个 trace 事件"]
+        subgraph QAUTO["query_session.py 自动执行、计时并写 trace"]
             direction TB
-            QC["粗召回<br/>retrieve_candidates.py 调用 qmd-like-rag<br/>在 Provider 内经向量召回 + BM25 + 去重 + 父章节恢复 + reranker（语义重排模型）<br/>返回候选文件和 chunk（按标题切出的较小文本片段）行范围<br/>Provider 不可用时记录 unavailable"]
+            QBEGIN["begin（开始一题）<br/>创建 trace（查询审计记录），继承 Hermes session/message ID<br/>记录 verification-required 选择，然后启动候选定位"]
+            QC["可选粗召回<br/>qmd-like-rag 用向量 + BM25 + 去重 + 父章节恢复 + reranker 返回候选 chunk<br/>Provider disabled/unavailable 只记为 attempted，不冒充 effective，也不阻塞另一条路线"]
             QH["分层定位<br/>locate_source_sections.py 读 query-index<br/>按文档名、section 标题和完整父子路径定位候选章节"]
-            QM["retrieve_query_scope.py（并行调用上述两路并统一输出）<br/>把 Provider chunk 扩展为台账中的完整 section，再取两路并集<br/>按文档/section/重叠行范围去重<br/>用 RRF（按两路排名而不是直接相加原始分数）综合排序并记录合并/淘汰原因"]
+            QM["候选融合<br/>把 Provider chunk 扩展为完整 ledger-owned section（台账划定的完整章节范围）<br/>取两路并集、按文档/section/重叠范围去重，并用 RRF 按两路排名综合排序<br/>begin 只返回最多 5 个紧凑候选；完整候选和淘汰原因保存在 trace sidecar（详细 JSON 伴随文件）"]
             QC --> QM
             QH --> QM
         end
 
-        subgraph QMANUAL["Hermes 按 Skill 说明逐步执行的范围（当前不是一个后半段自动状态机）"]
-            direction TB
-            QSEL["查看双路融合或直接定位得到的候选列表<br/>选出真正与问题相关的文档/章节，记录保留和排除原因"]
-            QG["governed-artifact-lookup（已有知识文档检查）<br/>先查融合候选中的 30_Cards、40_Concepts 和 50_Projects<br/>再用标准号、文件名、参数名和同义词补充精确搜索"]
-            QN{"已有知识文档是否能明确指向<br/>当前原 PDF、版本、section、页码和相关段落？"}
-            QX["scoped-lexical-search（限定范围的精确文字搜索）<br/>已有知识不足时，只在融合候选的文档/完整 section 中<br/>搜标准号、文件名、条款、原文短语、数值、单位和同义词<br/>缺口、完整性和审计问题要主动扩大到更广范围"]
-            QR["选定候选后再读控制文件<br/>source-map.md 解析原 PDF、页码、转换质量和输出<br/>section-ledger.json 解析完整正文范围、当前/stale 状态、revision、内容指纹和图表"]
-            QDOC["document-reading / converted-source（读取当前转换正文）<br/>重新打开当前 document.md，读完整 ledger-owned section<br/>不只看命中的几行，不把 Provider、融合分数或 query-index 当证据"]
-            QPAGE["page-asset-verification（原页和原图表核验）<br/>核对原 PDF 文件名、原 PDF 页码和相关段落<br/>数值、公式、跨页表格或图内容还要打开原表截图/页图核对"]
-            QE["Evidence 记录（一条被接受的可追溯证据）<br/>用 manage_query_trace.py evidence 记录 Evidence ID、文档版本、section、<br/>原 PDF 页、表/图 block ID 和原始资产是否已核验<br/>Accepted 数量和路径由这些记录自动汇总，不手工填数"]
-            QCLAIM["Claim–Evidence 映射（说明每条最终结论由哪些 Evidence ID 支持）<br/>每条最终 Claim 都必须标记 supported、unsupported 或 needs-qa"]
-            QANS["answer-synthesis（把已核验证据组织成答案）<br/>clear（已有受控知识或已核验源文直接支持）<br/>source-backed（源文支持，但还没有稳定知识卡）<br/>needs-qa（原页、数值、公式或图表仍需人工核验）<br/>gap（当前 Vault 没有找到足够证据）<br/>对每条实质结论输出原 PDF 文件名、页码、相关段落和图表位置"]
-            QI["intranet 且 locator 返回有效 viewer_url（指向已核对 Bundle 段落的阅读链接）时<br/>在答案末尾附上已实际使用命中的「原文定位」链接<br/>该链接只帮助定位，不替代原 PDF 证据包"]
-            QF["将 trace 结束为 completed（完成）、failed（失败）或 incomplete（未走完）<br/>确认 trace Markdown 确实已写入；如有未结束计时器，不允许 finish"]
-            QW{"用户是否明确要求把结果沉淀到 Vault？"}
-            QWC["query-writeback candidate（查询发现的待复审写回候选）<br/>后续必须交给 Controlled Ingest 重新打开原始证据、查重和核对 QA<br/>查询阶段不直接创建卡片或概念"]
+        QSEL["Hermes 从紧凑候选中选择真正需要的章节<br/>优先使用能追到当前来源的 Cards/Concepts/Projects；也可指定已注册的 document/path::section-id<br/>只做语义选择，不把候选分数、索引或治理文件当成事实证据"]
+        QINSPECT["inspect（批量检查所选候选，普通路径只调用一次）<br/>一次读取每个 section 自己拥有的完整 document.md 行范围，并解析关联知识文档、表格/图片、<br/>manifest、ledger、source-map、原 PDF 路径/页码、QA 状态和 intranet viewer URL<br/>每份紧凑 evidence packet（证据包）得到 P1、P2 等引用；完整出处留在 sidecar"]
+        QENOUGH{"已检查的证据包是否足以回答？"}
+        QFOLLOW{"当前候选/投影中是否已有<br/>一个明确漏选或已知的注册 section？"}
+        QSUP["supplement（针对真实缺口补检索）<br/>必须写明缺什么和聚焦查询；每条 trace 最多 1 次"]
+        QINSPECT2["第二次 inspect<br/>检查漏选/已知 section 或 supplement 找到的候选，并自动记录 evidence-gap-review<br/>整条 trace 最多 2 次 inspect；第三次会被阻止，必须以 completed 或 incomplete 收口"]
+        QVERIFY{"begin 时是否显式设置了<br/>verification-required？"}
+        QDEFAULT["否：把通过质量门禁的 Bundle 当默认内部提取载体<br/>不因为出现参数、公式、表格、图片或 qa_required 就自行打开视觉路径<br/>把具体提取警告、冲突或不确定性写进 evidence level 和限定语"]
+        QVCALL["verify（为将引用的 P1/P2 准备注册的可视核验载体，每份只尝试一次）"]
+        QVRESULT{"载体状态"}
+        QVISUAL["ready：只打开返回的图像/viewer 一次<br/>记录 completed page-asset-verification、evidence ref 和实际查看路径"]
+        QVFAIL["unavailable / failed：立即停止替代工具和重复尝试<br/>使用 needs-qa，并保留 required_unresolved（必须向用户说明的未核验项）"]
+        QDECIDE["Hermes 生成紧凑 decision JSON（最终决定数据）<br/>只写 status、evidence_level、claims、P1/P2 引用、真实验证事件、结论和 unresolved<br/>不重复抄写路径、页码和版本，因为 finalize 会从 evidence packet 继承"]
+        QFINAL["finalize（一次原子收口）<br/>严格校验问题/Claim 字段和 evidence refs，继承出处并分配 E1/C1 ID<br/>一次写入 Evidence、Claim–Evidence 映射、事件、阶段耗时和完成状态，并确认 trace Markdown 存在<br/>非法字段、空 Claim、未检查引用或必需核验未完成会整体拒绝，不留下半写状态"]
+        QMORE{"同一 request 还有下一道独立问题吗？"}
+        QCLOSE["最后一题用 --close-request<br/>核对题目数量和连续顺序，并返回去重 answer capsules（每题的紧凑答案摘要）<br/>汇总时只复用来源 ID、结论和未解决项，不重新加载已完成 evidence packet"]
+        QANSWER["输出用户答案<br/>每条实质结论给出原 PDF 文件名、Vault 相对路径、页码、相关段落/图表位置和证据等级<br/>intranet 的原文定位 viewer URL 只帮助导航，不替代原 PDF 证据"]
+        QW{"用户是否明确要求把结果沉淀到 Vault？"}
+        QWC["query-writeback candidate（查询发现、尚未批准写入知识库的候选）<br/>交给 Controlled Ingest 重新打开原始证据、查重和处理 QA；Query 不直接改知识文档"]
+        QFAIL["某个 query_session 命令在 trace 已启动后内部失败<br/>脚本记录 query-command-failure；不修补已安装 Skill、不放宽路径校验、不换工具反复重试<br/>若失败阻止受支持答案，直接 finalize 为 incomplete 并列出具体未解决项"]
+        QLEGACY["只有 query_session.py 主入口本身不可用时<br/>才把 manage_query_trace.py、retrieve_query_scope.py、locator 等旧脚本作为已记录 fallback<br/>旧流程仍须保持 Query 只读并完成或明确结束 trace"]
 
-            QSEL --> QG --> QN
-            QN -- "是：直接追到来源定点核验" --> QR
-            QN -- "否：在融合范围内继续搜" --> QX --> QR
-            QR --> QDOC --> QPAGE --> QE --> QCLAIM --> QANS --> QI --> QF --> QW
-            QW -- "是" --> QWC
-        end
-
-        Q0 --> QB --> QT --> QD0
-        QD0 -- "否：运行默认双路候选定位" --> QC
-        QD0 -- "否：运行默认双路候选定位" --> QH
-        QD0 -- "是：记录 skipped + reason" --> QDIRECT --> QSEL
-        QM --> QSEL
+        Q0 --> QBOOT --> QB --> QTYPE --> QPOLICY --> QBEGIN
+        QBEGIN --> QC
+        QBEGIN --> QH
+        QM --> QSEL --> QINSPECT --> QENOUGH
+        QENOUGH -- "否：存在真实缺口/冲突" --> QFOLLOW
+        QFOLLOW -- "是" --> QINSPECT2 --> QVERIFY
+        QFOLLOW -- "否：现有范围里没有" --> QSUP --> QINSPECT2
+        QENOUGH -- "是" --> QVERIFY
+        QVERIFY -- "否" --> QDEFAULT --> QDECIDE
+        QVERIFY -- "是" --> QVCALL --> QVRESULT
+        QVRESULT -- "ready" --> QVISUAL --> QDECIDE
+        QVRESULT -- "unavailable / failed" --> QVFAIL --> QDECIDE
+        QDECIDE --> QFINAL --> QMORE
+        QMORE -- "有：上一题已完全结束" --> QTYPE
+        QMORE -- "没有" --> QCLOSE --> QANSWER --> QW
+        QW -- "是" --> QWC
+        QBEGIN -. "命令内部失败" .-> QFAIL
+        QINSPECT -. "命令内部失败" .-> QFAIL
+        QFAIL --> QDECIDE
+        Q0 -. "主入口不可用" .-> QLEGACY --> QDECIDE
     end
 
     START --> E0
@@ -169,29 +184,31 @@ flowchart TB
 
 ### Query 中哪些串行，哪些并行
 
-- 总体串行：问题分类 → 启动 trace → 自动候选定位/融合 → 候选选择 → 已有知识文档检查 → 必要时限定范围文字搜索 → 读完整章节 → 核对原 PDF/图表 → 记录 Evidence 和 Claim 映射 → 生成答案 → 结束 trace。
-- 局部并行：`retrieve_query_scope.py` 同时启动 `retrieve_candidates.py`（qmd-like-rag 粗召回）和 `locate_source_sections.py`（query-index 分层定位）。两路都结束后，脚本才将 chunk 扩展到完整 section、取并集、去重和 RRF 排序。
-- source-map、section ledger、spec index 和 ingest log 不是第三条自动并行召回脚本。它们在候选选定后用于解析完整行范围、页码、版本、内容指纹和 QA 状态。
-- 当前自动化边界止于候选融合：`retrieve_query_scope.py` 自动写入粗召回、分层定位和候选融合三个事件；之后的选择、文字搜索、正文读取、图表核验和答案生成仍由 Hermes 执行。`manage_query_trace.py` 负责保存事件、Evidence、Claim 和计时，不会替 Hermes 自动执行后半段。
-- 精确文件名、标准号、条款号或逐字短语可跳过粗召回，但要在 trace 中记录 `skipped + reason`。缺口、完整性或审计问题不能只看 Provider top-k，要扩大搜索范围。
-- qmd-like-rag 不可用时，记录 `unavailable/fallback`，继续分层定位和精确文字搜索，不因 Provider 失败而停止回答。
+- 对一个普通问题，外部调用顺序已经收敛为 `bootstrap（每个请求一次） → begin → inspect → finalize`。Hermes 只在这些调用之间做两件需要语义判断的事：选择真正相关的候选，以及根据证据包写 Claim 和结论。
+- `begin` 内部局部并行：`retrieve_query_scope.py` 同时启动 `retrieve_candidates.py`（qmd-like-rag 粗召回）和 `locate_source_sections.py`（query-index 分层定位）。两路结束后再扩展完整 section、取并集、去重并做 RRF 排序。
+- `inspect` 已把原先分散的“读完整正文、找关联知识文档、解析 manifest/ledger/source-map、找表格图片、页码、QA 和 viewer URL”合并成一次批量读取。它返回的 P1/P2 是内部证据包引用；最终面向用户的引用仍必须是原 PDF 和页码。
+- 第二次 `inspect` 只允许用于真实缺口、冲突、漏选来源或已知的注册 section。如果必要 section 不在当前候选中，先用一次 `supplement` 写明缺口并补充范围；每条 trace 最多一次 supplement、两次 inspect，达到上限后必须如实完成或标为 incomplete。
+- “问题类型是 evidence”和“必须目视打开原 PDF 页”是两件事。参数、公式、表格、图片要保留页级证据，但只有用户或明确审计要求才设置 `--verification-required` 并进入 `verify → 一次可视检查`；普通查询默认信任通过质量门禁的 Bundle，并公开 QA 限制。
+- `finalize` 现在是原子操作：一次校验和写入 Evidence、Claim 映射、真实事件、阶段耗时与最终状态。输入无效时整次拒绝，不会留下只写了一半的 trace。
+- qmd-like-rag 被关闭或不可用时，只把粗召回记为 attempted/disabled 或 attempted/unavailable；分层定位仍继续。`effective routes` 只列真正产生作用的路线。
+- 多个独立问题不并行：共享 request ID，但逐题 `begin → inspect → finalize`。最后一题用 `--close-request` 检查数量和顺序，并返回用于汇总的紧凑 answer capsules。
 
 ### 实际 query trace 怎样才算把链路记完
 
-图中的 Query 后半段是必须执行的标准步骤，但当前并没有一个脚本强制 Hermes 依次走完。审核一条 trace 时，应该能分开看到：
+现在由 `query_session.py` 状态机自动限制调用顺序并产生大部分可观测信息。审核一条 trace 时，应该能分开看到：
 
-1. `coarse-recall` 或者明确的 `skipped/unavailable + reason`；
-2. `hierarchical-candidate-location` 或者明确的 `skipped + reason`；
-3. `candidate-fusion`：保留了哪些候选，哪些重复候选被合并；
-4. `governed-artifact-lookup`：查了哪些 Cards、Concepts 和 Projects，为什么保留或排除；
-5. `scoped-lexical-search` 或者明确说明为什么不需要；
-6. `document-reading`：真正读了哪些完整 section；
-7. `page-asset-verification`：数值、公式、表格或图是否核对原 PDF/原图，不涉及时也要记录为什么跳过；
-8. Evidence 记录与每条 Claim 的映射；
-9. `answer-synthesis` 及其耗时；
-10. `finish`：状态、证据等级、简短结论和未解决问题。
+1. 当前 Hermes session/message、request ID、问题序号和总题数；
+2. `coarse-recall` 与 `hierarchical-candidate-location` 的 attempted/effective 状态、命中数和耗时；
+3. `candidate-fusion` 保留了哪些候选、合并了哪些重复候选，完整结果是否写入 sidecar；
+4. `candidate-review` 和 `inspect` 实际选了哪些候选，读取了哪些完整 section；
+5. `document-reading`、表格/图片解析和 provenance resolution（把证据追到原 PDF、版本、页码的出处解析）记录；
+6. 如果有第二次 inspect，必须出现 `evidence-gap-review`；如果还调用了 supplement，必须另外记录缺口理由和补充范围；
+7. 只有显式要求可视核验时，才必须有 `page-asset-verification`；失败时应看到 `needs-qa` 和具体 `required_unresolved`，不能伪装成已核验；
+8. 每条 Claim 是否有非空文本、状态和 P1/P2 证据包引用，finalize 后是否继承为 E1/C1 等正式 ID；
+9. scope retrieval、candidate review、document reading、answer synthesis、Claim 映射等阶段耗时，以及总耗时中尚未核算的部分；
+10. 最终状态、证据等级、结论、未解决项、命令/inspect 次数和实际存在的 trace Markdown 路径。
 
-同一会话的后续问题即使复用了前一题的文档范围，也不能让 retrieval timeline 留空；应记录“复用了哪一题的范围、本题是否重新打开当前源、为什么跳过某一检索步骤”。
+多题请求还要检查 request summary：题目序号必须连续、不能同时存在两个 in-progress trace，最后一题关闭 request 后才能把各题 answer capsule 合并进最终回复。
 
 ## 辅助关系图：谁调用什么，读写哪些文件
 
@@ -203,12 +220,13 @@ flowchart TB
     BS["Vault Bootstrap Skill<br/>创建目录、治理规则、模板和 Dataview 索引"]
     IS["Controlled Ingest Skill<br/>保存原文、转换 Bundle、管理 section 状态、生成受控文档"]
     LS["Vault Lint Skill<br/>只读检查结构、Bundle、ledger、引用和 QA 边界"]
-    QS["Controlled Query Skill<br/>启动 trace，选候选，读完整章节，核对原 PDF，建立 Claim–Evidence 映射"]
-    SCOPE["retrieve_query_scope.py<br/>自动并行粗召回与分层定位<br/>扩展完整 section，取并集，去重，用 RRF 排序"]
-    TRACE["manage_query_trace.py<br/>保存前后各阶段的检索事件、Evidence、Claim 和耗时<br/>它只负责记录，不替 Hermes 自动执行 Query 后半段"]
+    QS["Controlled Query Skill<br/>定义只读边界、问题类型、证据等级、原 PDF 引用和写回规则"]
+    SESSION["query_session.py（统一 Query 状态机）<br/>bootstrap 读配置；begin 检索；inspect 组证据包；可选 supplement/verify；finalize 原子收口"]
+    SCOPE["retrieve_query_scope.py（由 begin 调用）<br/>并行粗召回与分层定位，扩展完整 section，取并集、去重并用 RRF 排序"]
+    TRACE["query trace Markdown + JSON sidecar（详细伴随数据）<br/>保存候选全集、P1/P2 证据包出处、Evidence、Claim、事件和耗时<br/>manage_query_trace.py 仍是底层/旧流程记录器，不再是普通查询的主入口"]
 
     MINERU["MinerU CLI 或 intranet HTTP API<br/>把 PDF 转成 Markdown、大纲、表格、图片和 QA 证据"]
-    PROVIDER["qmd-like-rag Provider<br/>用向量召回、BM25、去重、父章节恢复和 reranker 查候选<br/>只返回候选文件和行范围，不回答问题"]
+    PROVIDER["qmd-like-rag 0.3.0 Provider<br/>用固定 revision 的 embedding/reranker、向量召回、BM25、去重和父章节恢复查候选<br/>只返回候选文件和行范围，不回答问题；Query 只读，Ingest 才能维护索引"]
 
     RAW["10_Raw<br/>原始文件副本，摄取后不修改"]
     BUNDLE["10_Raw/converted/..._document_bundle<br/>manifest.json、document.md、outline.json、tables/images、_evidence"]
@@ -237,7 +255,7 @@ flowchart TB
     IS -- "创建/更新 ledger、source map、query-index 和索引状态" --> CONTROL
     IS -- "创建或增量更新" --> KNOWLEDGE
     IS -- "写入摄取和 QA 记录" --> LOGS
-    IS -- "只在摄取完成后调用 sync" --> PROVIDER
+    IS -- "批次结束且 ingest adapter 已启用时才调用 sync" --> PROVIDER
     PROVIDER -- "保存索引" --> INDEX
 
     LS -- "只读检查" --> RAW
@@ -246,16 +264,17 @@ flowchart TB
     LS -- "只读检查" --> CONTROL
     LS -- "只读检查" --> KNOWLEDGE
 
-    QS -- "调用候选范围脚本" --> SCOPE
-    QS -- "读 AGENTS.md 和查询规则" --> RULES
+    QS -- "由 Hermes 调用" --> SESSION
+    SESSION -- "bootstrap 一次读取规则和分支配置" --> RULES
+    SESSION -- "begin 调用候选范围脚本" --> SCOPE
     SCOPE -- "请求粗召回，不在查询时重建索引" --> PROVIDER
     SCOPE -- "读 query-index 做分层定位" --> CONTROL
-    SCOPE -- "返回已融合的完整章节候选" --> QS
-    QS -- "检查已有卡片/概念/项目" --> KNOWLEDGE
-    QS -- "候选选定后用 source map/ledger 解析页码、版本和 QA" --> CONTROL
-    QS -- "打开 document.md 并核对原 PDF 页" --> BUNDLE
-    QS -- "用记录器追加后半段事件" --> TRACE
-    SCOPE -- "自动记录粗召回、分层定位和候选融合" --> TRACE
+    SCOPE -- "返回紧凑候选；完整融合范围留在 sidecar" --> SESSION
+    SESSION -- "inspect 读取关联卡片/概念/项目" --> KNOWLEDGE
+    SESSION -- "inspect 用 source map/ledger 解析范围、页码、版本和 QA" --> CONTROL
+    SESSION -- "inspect 读完整 document.md、图表；显式要求时 verify" --> BUNDLE
+    SESSION -- "finalize 原子写入状态、Evidence、Claim 和计时" --> TRACE
+    SCOPE -- "批量记录路线和融合事件" --> TRACE
     TRACE -- "写 query trace，不改知识文档" --> LOGS
 ```
 
@@ -264,9 +283,9 @@ flowchart TB
 | Skill | 输入 | 实际执行的事 | 输出 |
 | --- | --- | --- | --- |
 | `hermes-obsidian-vault-bootstrap` | Vault 路径或 intranet 固定路径；`general`/`meeting` profile | 创建目录，写入 AGENTS.md、prompts、metadata registry、templates、Dataview 页和 setup report | 一个空的、可执行摄取规则的 Vault |
-| `hermes-obsidian-controlled-ingest` | 外部材料、Vault 中已有原文、Bundle 或 query-writeback candidate | 校验原文，转换 Bundle，按 ledger section 读取，核对 QA，创建/更新知识文档，同步检索索引 | Bundle、source map、section ledger、卡片/概念/项目/报告、ingest log、索引状态 |
+| `hermes-obsidian-controlled-ingest` | 外部材料、Vault 中已有原文、Bundle 或 query-writeback candidate | 校验原文，转换 Bundle，按 ledger section 读取，核对 QA，创建/更新知识文档；只在批次结束且 ingest adapter 启用时维护检索索引 | Bundle、source map、section ledger、卡片/概念/项目/报告、ingest log、可审计的索引状态 |
 | `hermes-obsidian-vault-lint` | Vault 和检查 profile | 只读验证目录、Bundle、ledger、source map、frontmatter、证据引用和 QA 限制 | `pass`、`pass-with-warnings` 或包含具体文件/规则的 errors |
-| `hermes-obsidian-controlled-query` | 用户问题和可选范围限制 | 每题启动独立 trace；用 `retrieve_query_scope.py` 自动并行粗召回/分层定位并融合候选；Hermes 再选候选、检查治理文档、限定范围文字搜索、读完整章节、核对原 PDF/图表、记录 Evidence 并建立 Claim 映射 | 带 PDF 页级证据包的答案、不确定性/缺口、包含候选与 Claim–Evidence 关系的 query trace；intranet 可附已验证的 viewer 链接 |
+| `hermes-obsidian-controlled-query` | 用户问题、可选范围，以及是否明确要求目视核验原页 | 每个请求先 `bootstrap`；每题用 `query_session.py` 执行 `begin → inspect → finalize`，必要时最多一次 `supplement` 和第二次 `inspect`；只有显式要求时才 `verify`；多题严格串行并在最后关闭 request | 带原 PDF 路径/页码/段落/图表位置和证据等级的答案；原子完成、含路线/证据/Claim/耗时的 trace；多题 answer capsules；intranet 可附 locator 返回的 viewer 链接 |
 
 ## 编辑说明
 
