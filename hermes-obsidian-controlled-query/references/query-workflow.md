@@ -59,6 +59,8 @@ Each compact evidence packet contains:
 - associated governed card/concept/project outputs;
 - viewer URL when supplied by deployment metadata.
 
+`inspect` reads and registers evidence; it never performs visual verification and never grants verified status. Follow the returned `verification_contract`. For the ordinary route, it states `verification_required: false`, requires `verified_evidence_refs: []`, and requires omission of `page-asset-verification` events.
+
 The full provenance catalog remains in the trace sidecar and is inherited by packet reference. The packet is navigation and verification material, not a user-facing citation.
 
 When `begin` was explicitly given `--verification-required`, prepare each cited registered visual carrier exactly once:
@@ -100,21 +102,14 @@ Decision shape:
       "qualification": null
     }
   ],
-  "verified_evidence_refs": ["P1"],
-  "events": [
-    {
-      "stage": "page-asset-verification",
-      "route": "original-pdf",
-      "status": "completed",
-      "summary": "Checked table 5.1.1-1 on PDF page 18.",
-      "evidence_refs": ["P1"],
-      "inspected_paths": ["10_Raw/example.pdf"]
-    }
-  ],
+  "verified_evidence_refs": [],
+  "events": [],
   "conclusion": "Short supported conclusion.",
   "unresolved": []
 }
 ```
+
+The example above is the ordinary no-visual-verification decision. Only when `begin --verification-required` selected the visual route, `verify` returned `ready`, and the registered carrier was actually viewed may `verified_evidence_refs` contain packet refs; each such ref then requires a completed `page-asset-verification` event with non-empty `inspected_paths`.
 
 The script expands each packet reference into path, document version, section, pages, source PDF and viewer metadata, then assigns `E1...` and `C1...`. Every claim requires non-empty text; `claim`, `statement`, and `claim_text` are accepted as aliases for `text`. Supported claims require at least one recorded evidence ID, derived from an inspected packet reference. Use `qualified`, `disputed`, or `gap` when appropriate.
 

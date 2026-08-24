@@ -943,6 +943,22 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
         }
     )
     write_state(vault_root, state)
+    verification_required = bool(workflow.get("verification_required"))
+    verification_contract = {
+        "verification_required": verification_required,
+        "inspect_grants_verified_status": False,
+        "verified_evidence_refs_policy": (
+            "only refs whose registered carrier was visually checked after verify returned ready"
+            if verification_required
+            else "must be empty because visual verification was not requested"
+        ),
+        "required_verified_evidence_refs": None if verification_required else [],
+        "page_asset_verification_event_policy": (
+            "required for each verified ref, with inspected_paths"
+            if verification_required
+            else "omit because visual verification was not requested"
+        ),
+    }
     return {
         "workflow": WORKFLOW,
         "trace_id": args.trace_id,
@@ -953,6 +969,7 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             "top_level_fields": sorted(DECISION_KEYS - {"unresolved_items"}),
             "top_level_aliases": {"unresolved_items": "unresolved"},
             "claim_fields": sorted(CLAIM_KEYS),
+            "verification_contract": verification_contract,
             "claim_set_policy": (
                 "Use the minimum sufficient claim set: each claim must answer a necessary requested facet; "
                 "merge closely related parameters supported by the same evidence."
@@ -969,7 +986,7 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
                 "Omit events unless they add an actual audit or verification fact."
             ),
         },
-        "next_command": "verify" if workflow.get("verification_required") else "finalize",
+        "next_command": "verify" if verification_required else "finalize",
     }
 
 
@@ -1317,6 +1334,11 @@ def validate_verification_decision(
     verified: set[str],
 ) -> None:
     verification_catalog = workflow.get("verification_catalog", {})
+    if not workflow.get("verification_required") and verified:
+        raise ValueError(
+            "verified_evidence_refs must be empty when visual verification was not requested; "
+            "inspect reads evidence but does not grant verified status"
+        )
     if workflow.get("verification_required"):
         missing_readiness = sorted(handle for handle in handles if handle not in verification_catalog)
         if missing_readiness:
