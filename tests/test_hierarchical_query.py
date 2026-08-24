@@ -1,4 +1,5 @@
 import hashlib
+import importlib.util
 import json
 import os
 import subprocess
@@ -242,11 +243,42 @@ def test_locator_keeps_multiple_documents_in_the_compact_candidate_window(tmp_pa
     first_three_documents = set(candidate_documents[:3])
     assert len(candidate_documents) == 5
     assert len(first_three_documents) == 3
-    assert candidate_documents[3:] == candidate_documents[:2]
-    assert result["ranking"] == {
-        "strategy": "score-with-document-round-robin",
-        "document_count": 3,
-    }
+    assert result["ranking"]["strategy"] == "score-with-document-and-query-coverage"
+    assert result["ranking"]["document_count"] == 3
+    assert result["ranking"]["matched_query_term_count"] > 0
+
+
+def test_candidate_packing_prefers_complementary_query_facets_over_repetition() -> None:
+    spec = importlib.util.spec_from_file_location("locate_source_sections", LOCATE)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def candidate(document: str, section: str, title_terms: list[str]) -> dict:
+        return {
+            "document_path": document,
+            "section_id": section,
+            "matched_terms": {
+                "title": title_terms,
+                "path": [],
+                "content": title_terms,
+                "document": [],
+            },
+        }
+
+    candidates = [
+        candidate("a.md", "a1", ["喷水强度"]),
+        candidate("b.md", "b1", ["设计参数"]),
+        candidate("c.md", "c1", ["灭火系统"]),
+        candidate("a.md", "a2", ["喷水强度"]),
+        candidate("a.md", "a3", ["喷头参数"]),
+        candidate("b.md", "b2", ["工作压力", "流量公式"]),
+    ]
+    selected = module.diversify_candidates(candidates, 5)
+    selected_ids = [item["section_id"] for item in selected]
+    assert selected_ids[:3] == ["a1", "b1", "c1"]
+    assert set(selected_ids[3:]) == {"a3", "b2"}
+    assert "a2" not in selected_ids
 
 
 def test_scope_retrieval_survives_missing_provider_and_keeps_hierarchical_results(tmp_path: Path) -> None:
@@ -393,6 +425,7 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert begin_result["scope"]["selection_contract"] == {
         "first_inspection_input": "compact-candidates-only",
         "inspect_once": "select all currently useful candidates in one call",
+        "coverage_priority": "prefer the smallest candidate set that jointly covers distinct requested facets",
         "do_not_open": ["full-candidate-sidecar", "trace-state"],
         "exact_selector": "copy document_path verbatim, then append ::section_id",
     }
@@ -404,6 +437,10 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
         check=True,
     )
     inspect_result = json.loads(inspected.stdout)
+    assert "minimum sufficient claim set" in inspect_result["finalize_contract"]["claim_set_policy"]
+    assert "do not create a separate" in inspect_result["finalize_contract"]["qualification_policy"]
+    assert "materially change" in inspect_result["finalize_contract"]["unresolved_policy"]
+    assert "do not repeat" in inspect_result["finalize_contract"]["conclusion_policy"]
     packet = inspect_result["evidence_packets"][0]
     assert "K=60" in packet["content"]
     assert packet["source_exists"] is True
