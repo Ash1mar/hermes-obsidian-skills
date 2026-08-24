@@ -16,6 +16,8 @@ When the user or an explicit audit requirement requires visual source verificati
 
 Do not scan old traces, probe stable CLI help, run inline Python, create temporary formatter scripts, or read source sections one by one. Keep progress narration sparse; the trace carries the operational detail.
 
+The compact candidates are the complete input for the first inspection: do not open the full candidate sidecar or trace state. Select all currently useful compact candidates in one call. For a later exact section, copy a returned `document_path` verbatim and append `::section-id`; do not try document IDs, shortened paths, guessed prefixes, CLI help, or source-code inspection. If the exact selector still fails, stop selector experimentation and finalize from existing evidence, using `incomplete` when necessary.
+
 ## Begin
 
 ```bash
@@ -79,6 +81,8 @@ Use `--decision-json`. Do not write a temporary manifest:
 python3 "<query-skill-root>/scripts/query_session.py" finalize \
   <vault-root> <trace-id> --decision-json '<json-object>'
 ```
+
+Keep the conclusion within the scope supported by inspected evidence. Express a narrower scope as a short evidence-derived qualification without launching additional retrieval merely to make the answer broader. This is a general synthesis rule, not a domain-specific routing or answer template.
 
 Decision shape:
 
