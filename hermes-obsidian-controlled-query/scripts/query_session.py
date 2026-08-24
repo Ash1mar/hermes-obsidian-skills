@@ -790,6 +790,50 @@ def compact_evidence_packet(packet: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def evidence_level_contract(packets: list[dict[str, Any]]) -> dict[str, Any]:
+    """Return enough generic QA policy to avoid a routine reference-file read."""
+    triggers: list[str] = []
+    for packet in packets:
+        evidence_ref = str(packet.get("evidence_ref") or "unregistered")
+        quality = str(packet.get("quality") or "missing").strip().casefold()
+        source_map_status = str(
+            packet.get("control", {}).get("source_map", {}).get("validation_status") or "missing"
+        ).strip().casefold()
+        if quality != "pass":
+            triggers.append(f"{evidence_ref}:quality={quality}")
+        if source_map_status != "pass":
+            triggers.append(f"{evidence_ref}:source-map-validation={source_map_status}")
+        if not packet.get("source_exists"):
+            triggers.append(f"{evidence_ref}:original-source-unresolved")
+        if not packet.get("pages"):
+            triggers.append(f"{evidence_ref}:original-pages-unresolved")
+        if packet.get("content_truncated"):
+            triggers.append(f"{evidence_ref}:content-truncated")
+        for asset in packet.get("assets", []):
+            asset_quality = str(asset.get("quality") or "").strip().casefold()
+            if asset_quality and asset_quality != "pass":
+                asset_id = str(asset.get("id") or asset.get("type") or "asset")
+                triggers.append(f"{evidence_ref}:{asset_id}-quality={asset_quality}")
+    full_reference_required = bool(triggers)
+    return {
+        "ordinary_pass_quality": not full_reference_required,
+        "full_reference_required": full_reference_required,
+        "reference_read_policy": (
+            "read references/evidence-levels.md because packet QA/provenance needs exception handling"
+            if full_reference_required
+            else "do not read references/evidence-levels.md; use these inline rules unless an actual conflict, ambiguity, or gap is found"
+        ),
+        "triggered_conditions": triggers,
+        "inline_rules": {
+            "source-backed": "current pass-quality converted evidence resolves to original source and page but lacks a durable governed conclusion",
+            "clear": "a governed conclusion or otherwise clearly durable pass-quality source supports the claim and resolves to original source and page",
+            "needs-qa": "a concrete QA warning, ambiguity, incompleteness, conflict, or explicitly required incomplete verification affects the claim",
+            "gap": "adequate original-source evidence is unavailable",
+        },
+        "model_escalation_triggers": ["actual source conflict", "answer-relevant ambiguity", "evidence gap"],
+    }
+
+
 def inspect(args: argparse.Namespace) -> dict[str, Any]:
     command_started_at = now_iso()
     command_started_monotonic = time.monotonic_ns()
@@ -959,6 +1003,7 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             else "omit because visual verification was not requested"
         ),
     }
+    level_contract = evidence_level_contract(packets)
     return {
         "workflow": WORKFLOW,
         "trace_id": args.trace_id,
@@ -970,9 +1015,11 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             "top_level_aliases": {"unresolved_items": "unresolved"},
             "claim_fields": sorted(CLAIM_KEYS),
             "verification_contract": verification_contract,
+            "evidence_level_contract": level_contract,
             "claim_set_policy": (
-                "Use the minimum sufficient claim set: each claim must answer a necessary requested facet; "
-                "merge closely related parameters supported by the same evidence."
+                "Use the minimum sufficient claim set: each claim must answer a requested output attribute or "
+                "action; subject qualifiers only narrow scope and do not create claims. Merge closely related "
+                "parameters supported by the same evidence."
             ),
             "qualification_policy": (
                 "Attach scope or evidence boundaries briefly to the affected claim; do not create a separate "

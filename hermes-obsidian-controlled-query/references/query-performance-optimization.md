@@ -203,6 +203,8 @@ finalize packet 同时返回通用的 minimum-sufficient decision contract：每
 
 trace `20260824_083500_bc7fe661` 使用旧版 `65ad59e` 时在未启用视觉核验的普通查询中把 inspected packet `P1` 填入 `verified_evidence_refs`，第一次 finalize 被严格门禁拒绝，随后约 23 秒才完成修正重试。根因是模型把“inspect/读取证据”叙述成“核验”，而通用 decision 示例又默认展示了非空 verified refs。修复后，inspect 按当前 trace 状态返回动态 verification contract：`inspect_grants_verified_status: false`；未请求视觉核验时唯一合法值为 `verified_evidence_refs: []` 且不得生成 `page-asset-verification` 事件；请求视觉核验时仍只允许实际查看过 registered carrier 的引用。普通示例同步改为空列表，finalize 对误填返回明确错误但不静默降级或吞掉错误。该修复不增加调用、检索或验证步骤。
 
+trace `20260824_090251_a3624b82` 使用动态 verification contract 后没有 finalize 重试，但模型把限定查询对象的词组误当成独立答案维度，首轮 inspect 扩大到四个章节，并按旧规则因工程参数/表格额外读取完整 `evidence-levels.md`。修复继续保持领域无关：requested facet 仅指用户要求输出的属性、值、条件、比较或动作；subject qualifier 只缩小作用域，不占候选槽位或生成 claim。inspect 同时根据 packet 的内容质量、source-map、原件/页码、截断和资产 QA 返回紧凑 `evidence_level_contract`。普通 pass-quality packet 使用内联四级规则直接 finalize；只有具体 QA/provenance trigger，或实际冲突、答案相关歧义、gap 才读取完整 reference。该规则不解析问题关键词，不包含系统、标准、章节、语言或参数特例，也不增加调用。
+
 Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产生明显的跨文件系统开销；这不是 `/opt/data/...` Linux 本地 intranet Vault 的同类路径。若 main 的该场景成为生产目标，应增加单文件聚合索引或 Provider-side cache，而不是牺牲候选完整性。
 
 ## 自动 trace 与计时
