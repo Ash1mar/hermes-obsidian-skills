@@ -321,6 +321,7 @@ def compact_result(result: dict[str, Any], limit: int = DEFAULT_COMPACT_LIMIT) -
         "selection_contract": {
             "first_inspection_input": "compact-candidates-only",
             "inspect_once": "select all currently useful candidates in one call",
+            "coverage_priority": "prefer the smallest candidate set that jointly covers distinct requested facets",
             "do_not_open": ["full-candidate-sidecar", "trace-state"],
             "exact_selector": "copy document_path verbatim, then append ::section_id",
         },

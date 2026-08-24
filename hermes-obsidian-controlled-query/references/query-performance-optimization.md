@@ -193,11 +193,13 @@ qmd-like-rag 未配置、被禁用或暂时不可用时，coarse route 记为 di
 ### 减少文件与状态 I/O
 
 - hierarchical locator 对每个文档只读取一次 `document.md`，全部章节复用内存行；
-- hierarchical locator 对最多三个高相关文档按轮次交错选择章节，在不增加 compact window 大小和 I/O 的前提下同时保留文档多样性与互补章节；
+- hierarchical locator 在固定 compact window 内先为最多三个高相关文档各保留一个强候选，再按 title/path 优先、content/document 次优的新增 query-term 覆盖选择剩余章节。这样不把 top 5 扩为 top 8、不增加 I/O，却能让同一文档中排名稍低但回答另一问题维度的章节越过重复候选；
 - 原始 PDF 只从 Vault 内安全解析；外部 ingest 路径保留为诊断元数据，嵌套 `10_Raw` 副本按文件名和可用 SHA-256 确认；
 - route trace 事件批量追加；
 - finalization 在一次状态写入中记录 evidence、claims、events、metrics 和完成状态；
 - 完整检索结果写 sidecar，不在模型与工具之间重复传输。
+
+finalize packet 同时返回通用的 minimum-sufficient decision contract：每条 claim 必须对应必要的提问维度，同证据支持的紧密相关参数应合并；作用域、适用性或证据边界优先附着为简短 qualification，不默认成为独立 claim；只有实质影响正确性或使用方式的问题进入 `unresolved`；结论只做一次简短综合，不逐条复述 claims。该契约不按领域、系统、标准、语言或参数硬编码，也不新增模型调用。脚本不对语义冗余做强制拒绝，避免误判后触发额外 finalize 重试。
 
 Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产生明显的跨文件系统开销；这不是 `/opt/data/...` Linux 本地 intranet Vault 的同类路径。若 main 的该场景成为生产目标，应增加单文件聚合索引或 Provider-side cache，而不是牺牲候选完整性。
 

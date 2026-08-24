@@ -72,8 +72,24 @@ def display_path(path: Path, root: Path) -> str:
         return path.resolve().as_posix()
 
 
+def candidate_coverage_terms(candidate: dict[str, Any], *fields: str) -> set[str]:
+    """Return compact matched query terms for coverage-aware candidate packing."""
+    matched = candidate.get("matched_terms") or {}
+    values = [
+        str(value)
+        for field in fields
+        for value in matched.get(field, [])
+        if str(value).strip()
+    ]
+    return set(compact_terms(values, limit=16))
+
+
+def marginal_term_weight(terms: set[str], covered: set[str]) -> int:
+    return sum(max(1, len(term)) for term in terms - covered)
+
+
 def diversify_candidates(candidates: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
-    """Interleave strong documents so compact output includes useful follow-up sections."""
+    """Pack a fixed window for document diversity and complementary query coverage."""
     bounded_limit = max(1, limit)
     target_documents = min(3, bounded_limit)
     document_order: list[str] = []
@@ -88,22 +104,46 @@ def diversify_candidates(candidates: list[dict[str, Any]], limit: int) -> list[d
 
     selected: list[dict[str, Any]] = []
     selected_keys: set[tuple[str, str]] = set()
-    round_index = 0
-    while len(selected) < bounded_limit:
-        added = False
-        for document_path in document_order:
-            document_candidates = grouped[document_path]
-            if round_index >= len(document_candidates):
-                continue
-            candidate = document_candidates[round_index]
-            selected.append(candidate)
-            selected_keys.add((document_path, str(candidate.get("section_id") or "")))
-            added = True
-            if len(selected) >= bounded_limit:
-                break
-        if not added:
+    covered_structured: set[str] = set()
+    covered_all: set[str] = set()
+
+    def add(candidate: dict[str, Any]) -> None:
+        document_path = str(candidate.get("document_path") or "")
+        selected.append(candidate)
+        selected_keys.add((document_path, str(candidate.get("section_id") or "")))
+        covered_structured.update(candidate_coverage_terms(candidate, "title", "path"))
+        covered_all.update(candidate_coverage_terms(candidate, "title", "path", "content", "document"))
+
+    # Reserve one slot for each of the strongest documents. This retains the
+    # cross-document protection while leaving the rest of the fixed window for
+    # sections that add query facets not already represented.
+    for document_path in document_order:
+        if len(selected) >= bounded_limit:
             break
-        round_index += 1
+        add(grouped[document_path][0])
+
+    ranked_positions = {id(candidate): index for index, candidate in enumerate(candidates)}
+    eligible = [
+        candidate
+        for document_path in document_order
+        for candidate in grouped[document_path][1:]
+    ]
+    while len(selected) < bounded_limit and eligible:
+        candidate = max(
+            eligible,
+            key=lambda item: (
+                marginal_term_weight(
+                    candidate_coverage_terms(item, "title", "path"), covered_structured
+                ),
+                marginal_term_weight(
+                    candidate_coverage_terms(item, "title", "path", "content", "document"),
+                    covered_all,
+                ),
+                -ranked_positions[id(item)],
+            ),
+        )
+        eligible.remove(candidate)
+        add(candidate)
 
     if len(selected) >= bounded_limit:
         return selected
@@ -112,8 +152,7 @@ def diversify_candidates(candidates: list[dict[str, Any]], limit: int) -> list[d
         key = (str(candidate.get("document_path") or ""), str(candidate.get("section_id") or ""))
         if key in selected_keys:
             continue
-        selected.append(candidate)
-        selected_keys.add(key)
+        add(candidate)
         if len(selected) >= bounded_limit:
             break
     return selected
@@ -214,8 +253,15 @@ def main() -> int:
         "terms": compact_terms(terms, limit=12),
         "candidates": selected_candidates,
         "ranking": {
-            "strategy": "score-with-document-round-robin",
+            "strategy": "score-with-document-and-query-coverage",
             "document_count": len({str(item.get("document_path") or "") for item in selected_candidates}),
+            "matched_query_term_count": len(
+                {
+                    term
+                    for item in selected_candidates
+                    for term in candidate_coverage_terms(item, "title", "path", "content", "document")
+                }
+            ),
         },
         "errors": errors,
         "next_step": "Fuse with optional coarse-recall candidates, inspect governed candidates first, then run supplemental scoped exact/lexical search and verify current source/PDF evidence.",

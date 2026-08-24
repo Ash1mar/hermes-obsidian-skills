@@ -953,6 +953,16 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             "top_level_fields": sorted(DECISION_KEYS - {"unresolved_items"}),
             "top_level_aliases": {"unresolved_items": "unresolved"},
             "claim_fields": sorted(CLAIM_KEYS),
+            "claim_set_policy": (
+                "Use the minimum sufficient claim set: each claim must answer a necessary requested facet; "
+                "merge closely related parameters supported by the same evidence."
+            ),
+            "qualification_policy": (
+                "Attach scope or evidence boundaries briefly to the affected claim; do not create a separate "
+                "background or applicability claim unless the question asks for it."
+            ),
+            "unresolved_policy": "Keep only unresolved items that materially change correctness or use of the answer.",
+            "conclusion_policy": "Use one short synthesis and do not repeat the claims item by item.",
             "event_standard_fields": sorted(EVENT_KEYS - {"extensions"}),
             "event_extension_policy": (
                 "Unknown event fields are preserved under extensions; they never satisfy a stage or evidence gate. "
