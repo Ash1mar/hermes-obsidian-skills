@@ -123,21 +123,41 @@ def build_viewer_url(
 
 
 def diversify_candidates(candidates: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
-    """Prevent one repetitive document from consuming the entire section window."""
+    """Interleave strong documents so compact output includes useful follow-up sections."""
     bounded_limit = max(1, limit)
-    selected: list[dict[str, Any]] = []
-    selected_keys: set[tuple[str, str]] = set()
-    covered_documents: set[str] = set()
     target_documents = min(3, bounded_limit)
+    document_order: list[str] = []
+    grouped: dict[str, list[dict[str, Any]]] = {}
     for candidate in candidates:
         document_path = str(candidate.get("document_path") or "")
-        if document_path in covered_documents:
-            continue
-        selected.append(candidate)
-        selected_keys.add((document_path, str(candidate.get("section_id") or "")))
-        covered_documents.add(document_path)
-        if len(covered_documents) >= target_documents:
+        if document_path not in grouped and len(document_order) < target_documents:
+            document_order.append(document_path)
+            grouped[document_path] = []
+        if document_path in grouped:
+            grouped[document_path].append(candidate)
+
+    selected: list[dict[str, Any]] = []
+    selected_keys: set[tuple[str, str]] = set()
+    round_index = 0
+    while len(selected) < bounded_limit:
+        added = False
+        for document_path in document_order:
+            document_candidates = grouped[document_path]
+            if round_index >= len(document_candidates):
+                continue
+            candidate = document_candidates[round_index]
+            selected.append(candidate)
+            selected_keys.add((document_path, str(candidate.get("section_id") or "")))
+            added = True
+            if len(selected) >= bounded_limit:
+                break
+        if not added:
             break
+        round_index += 1
+
+    if len(selected) >= bounded_limit:
+        return selected
+
     for candidate in candidates:
         key = (str(candidate.get("document_path") or ""), str(candidate.get("section_id") or ""))
         if key in selected_keys:
@@ -259,7 +279,7 @@ def main() -> int:
         "terms": compact_terms(terms, limit=12),
         "candidates": selected_candidates,
         "ranking": {
-            "strategy": "score-with-document-diversity",
+            "strategy": "score-with-document-round-robin",
             "document_count": len({str(item.get("document_path") or "") for item in selected_candidates}),
         },
         "answer_contract": {

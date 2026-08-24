@@ -105,6 +105,16 @@ bootstrap（每请求一次）
 
 这些修复属于 main/intranet 共用的领域无关查询逻辑，应先在 main 通过测试，再同步到 intranet；两分支的 Provider enabled 状态、Vault 路径和 viewer 配置继续独立维护，不能借通用修复覆盖部署配置。
 
+### 第二次内网同题回归与继续优化
+
+trace `20260819_083733_79e1a696` 已完成并生成 evidence/claims，query-session duration 为 180538.073 ms，较前次 1068 秒墙钟跨度缩短约 83.1%。检索、读取与 provenance 仍低于 1 秒；`candidate-review`、第二轮 `evidence-gap-review` 和 `answer-synthesis` 合计 179913.524 ms，占受控时长 99.65%。因此下一轮继续只优化 compact candidate 覆盖与模型工具纪律，不增加普通查询的验证、检索或判级步骤。
+
+本轮候选跨文档覆盖已经生效，但前三个不同文档各取一条后，剩余位置又按全局分数回填，紧凑窗口仍可能错过高相关文档的第二个互补章节。改为对前三个高相关文档按轮次交错选择：先取每个文档的最佳章节，再取各自第二章节，直到填满既有窗口；候选数量不增加，脚本 I/O 不增加。
+
+同一回归中，模型在第二次有效 inspection 前查看完整候选、触发 inline Python 审批、探测 CLI help、两次猜测 selector 并读取脚本源码。为消除这些往返，`begin` 的 compact response 增加简短 selection contract，Skill 明确要求：compact candidates 是首次 inspection 的完整操作输入；一次选择全部当前有用候选；精确章节只能逐字复用已返回的 `document_path` 并追加 `::section-id`；不得读取 sidecar/trace state、猜 document ID/短路径、探测 help 或源码。精确形式仍失败时直接从现有证据收口，不继续 selector 试错。
+
+答案作用域只采用领域无关的合成引导：结论保留已检查证据本身表达的适用边界，必要时加一句简短限定；不为扩大答案范围额外检索，也不在脚本、Skill 或模板中编码任何具体领域、系统、标准、语言或参数规则。
+
 ## 原流程的主要耗时来源
 
 原流程中常见的额外步骤包括：
@@ -183,7 +193,7 @@ qmd-like-rag 未配置、被禁用或暂时不可用时，coarse route 记为 di
 ### 减少文件与状态 I/O
 
 - hierarchical locator 对每个文档只读取一次 `document.md`，全部章节复用内存行；
-- hierarchical locator 在 compact section window 中先覆盖最多三个不同文档，再按原始分数补齐，防止重复术语多的单一文档垄断候选；
+- hierarchical locator 对最多三个高相关文档按轮次交错选择章节，在不增加 compact window 大小和 I/O 的前提下同时保留文档多样性与互补章节；
 - 原始 PDF 只从 Vault 内安全解析；外部 ingest 路径保留为诊断元数据，嵌套 `10_Raw` 副本按文件名和可用 SHA-256 确认；
 - route trace 事件批量追加；
 - finalization 在一次状态写入中记录 evidence、claims、events、metrics 和完成状态；

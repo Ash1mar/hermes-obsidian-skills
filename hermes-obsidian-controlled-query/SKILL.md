@@ -53,6 +53,8 @@ begin -> inspect -> verify -> one visual check when ready -> finalize
 
 Do not enumerate old traces for a new question, probe stable CLI help, run inline Python, create temporary formatter/helper scripts, or narrate every internal step. Look for an old trace only when the user explicitly asks to resume one.
 
+Treat the compact candidates returned by `begin` as the complete operational input for the first inspection. Do not open the full candidate sidecar or trace state to look for a better list. Select every currently useful compact candidate in one `inspect` call. When a later exact registered section is genuinely needed, copy `document_path` verbatim from a returned compact candidate or evidence packet and append `::section-id`; never substitute a document ID, shortened bundle path, or guessed prefix. Do not probe `--help` or read script source to discover selector syntax. If that exact form fails, do not try alternate selector shapes; finalize from the inspected evidence, using `incomplete` when the remaining gap prevents a supported answer.
+
 ### 1. Begin
 
 Resolve the Vault, classify the question, and run:
@@ -95,6 +97,8 @@ python3 "<query-skill-root>/scripts/query_session.py" finalize \
 ```
 
 The decision contains only `status`, `evidence_level`, `claims`, `verified_evidence_refs`, `events`, `conclusion`, and `unresolved`. `unresolved_items` is accepted as a compatibility alias. Top-level decision and claim fields remain strict: unknown fields, blank claims, conflicting aliases, invalid references, or an unsupported evidence level for explicitly required but incomplete verification are rejected without changing the in-progress trace. Event standard fields are `stage`, `route`, `status`, `summary`, `evidence_refs`, `inspected_paths`, `hit_count`, `duration_ms`, and `accounting`; unknown event fields are retained under `extensions` and never satisfy a stage, evidence, or verification gate. Events are optional and should be omitted unless they record a real audit or verification fact. A verified reference requires a completed `page-asset-verification` event with `inspected_paths`. The script assigns evidence/claim IDs, inherits all provenance from inspected packets, and verifies the Markdown note exists. Do not create, write, or patch a temporary manifest. Legacy `--manifest-json` and `--manifest` exist only for compatibility/debugging.
+
+Preserve the scope expressed by the inspected evidence when writing the conclusion. If the evidence is narrower than the wording of the question, state that boundary as a concise qualification derived from the evidence itself. Do not launch additional retrieval solely to broaden the scope, and do not encode domain-, system-, standard-, language-, or parameter-specific scope rules in the Skill.
 
 If the first evidence packet is insufficient, run `supplement` once with an explicit gap reason and then run `inspect` again. Only one supplement and two total inspections are permitted per trace. Finalization is blocked until that second inspection records `evidence-gap-review`:
 

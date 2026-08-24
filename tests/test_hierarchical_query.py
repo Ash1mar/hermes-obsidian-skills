@@ -180,7 +180,7 @@ def test_locator_keeps_multiple_documents_in_the_compact_candidate_window(tmp_pa
     ):
         bundle = vault / "10_Raw" / "converted" / f"doc-{document_index}"
         bundle.mkdir(parents=True)
-        section_count = 8 if document_index == 1 else 1
+        section_count = 8 if document_index == 1 else 2
         lines = [f"# {title}"]
         sections = []
         for section_index in range(1, section_count + 1):
@@ -238,10 +238,13 @@ def test_locator_keeps_multiple_documents_in_the_compact_candidate_window(tmp_pa
         check=True,
     )
     result = json.loads(completed.stdout)
-    first_three_documents = {item["document_path"] for item in result["candidates"][:3]}
+    candidate_documents = [item["document_path"] for item in result["candidates"]]
+    first_three_documents = set(candidate_documents[:3])
+    assert len(candidate_documents) == 5
     assert len(first_three_documents) == 3
+    assert candidate_documents[3:] == candidate_documents[:2]
     assert result["ranking"] == {
-        "strategy": "score-with-document-diversity",
+        "strategy": "score-with-document-round-robin",
         "document_count": 3,
     }
 
@@ -387,6 +390,12 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     trace_id = begin_result["trace"]["trace_id"]
     assert len(begin_result["scope"]["candidates"]) <= 5
     assert begin_result["scope"]["candidates"][0]["section_id"] == "spray"
+    assert begin_result["scope"]["selection_contract"] == {
+        "first_inspection_input": "compact-candidates-only",
+        "inspect_once": "select all currently useful candidates in one call",
+        "do_not_open": ["full-candidate-sidecar", "trace-state"],
+        "exact_selector": "copy document_path verbatim, then append ::section_id",
+    }
 
     inspected = subprocess.run(
         [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
@@ -1685,6 +1694,10 @@ def test_query_contract_fuses_parallel_scope_before_governed_first_search() -> N
     assert "A table, formula, engineering parameter, image reference, or Bundle QA flag does not trigger it by itself" in skill
     assert "unknown event fields" in skill and "extensions" in skill
     assert "outside the fused top-k" in workflow
+    assert "compact candidates returned by `begin` as the complete operational input" in skill
+    assert "copy `document_path` verbatim" in skill
+    assert "Do not launch additional retrieval solely to broaden the scope" in skill
+    assert "not a domain-specific routing or answer template" in workflow
 
 
 def test_skill_name_alone_activates_complete_query_contract() -> None:

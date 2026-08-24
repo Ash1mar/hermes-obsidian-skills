@@ -319,6 +319,12 @@ def compact_result(result: dict[str, Any], limit: int = DEFAULT_COMPACT_LIMIT) -
         ],
         "warnings": result.get("warnings", []),
         "answer_contract": result.get("answer_contract"),
+        "selection_contract": {
+            "first_inspection_input": "compact-candidates-only",
+            "inspect_once": "select all currently useful candidates in one call",
+            "do_not_open": ["full-candidate-sidecar", "trace-state"],
+            "exact_selector": "copy document_path verbatim, then append ::section_id",
+        },
         "next_step": result.get("next_step"),
     }
 
