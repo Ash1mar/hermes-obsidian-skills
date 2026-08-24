@@ -201,6 +201,8 @@ qmd-like-rag 未配置、被禁用或暂时不可用时，coarse route 记为 di
 
 finalize packet 同时返回通用的 minimum-sufficient decision contract：每条 claim 必须对应必要的提问维度，同证据支持的紧密相关参数应合并；作用域、适用性或证据边界优先附着为简短 qualification，不默认成为独立 claim；只有实质影响正确性或使用方式的问题进入 `unresolved`；结论只做一次简短综合，不逐条复述 claims。该契约不按领域、系统、标准、语言或参数硬编码，也不新增模型调用。脚本不对语义冗余做强制拒绝，避免误判后触发额外 finalize 重试。
 
+trace `20260824_083500_bc7fe661` 使用旧版 `65ad59e` 时在未启用视觉核验的普通查询中把 inspected packet `P1` 填入 `verified_evidence_refs`，第一次 finalize 被严格门禁拒绝，随后约 23 秒才完成修正重试。根因是模型把“inspect/读取证据”叙述成“核验”，而通用 decision 示例又默认展示了非空 verified refs。修复后，inspect 按当前 trace 状态返回动态 verification contract：`inspect_grants_verified_status: false`；未请求视觉核验时唯一合法值为 `verified_evidence_refs: []` 且不得生成 `page-asset-verification` 事件；请求视觉核验时仍只允许实际查看过 registered carrier 的引用。普通示例同步改为空列表，finalize 对误填返回明确错误但不静默降级或吞掉错误。该修复不增加调用、检索或验证步骤。
+
 Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产生明显的跨文件系统开销；这不是 `/opt/data/...` Linux 本地 intranet Vault 的同类路径。若 main 的该场景成为生产目标，应增加单文件聚合索引或 Provider-side cache，而不是牺牲候选完整性。
 
 ## 自动 trace 与计时

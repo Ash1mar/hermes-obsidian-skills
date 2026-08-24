@@ -441,6 +441,15 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert "do not create a separate" in inspect_result["finalize_contract"]["qualification_policy"]
     assert "materially change" in inspect_result["finalize_contract"]["unresolved_policy"]
     assert "do not repeat" in inspect_result["finalize_contract"]["conclusion_policy"]
+    assert inspect_result["finalize_contract"]["verification_contract"] == {
+        "verification_required": True,
+        "inspect_grants_verified_status": False,
+        "verified_evidence_refs_policy": (
+            "only refs whose registered carrier was visually checked after verify returned ready"
+        ),
+        "required_verified_evidence_refs": None,
+        "page_asset_verification_event_policy": "required for each verified ref, with inspected_paths",
+    }
     packet = inspect_result["evidence_packets"][0]
     assert "K=60" in packet["content"]
     assert packet["source_exists"] is True
@@ -903,12 +912,61 @@ def test_query_session_does_not_infer_verification_policy_from_question_terms(tm
     )
     inspect_result = json.loads(inspected.stdout)
     assert inspect_result["next_command"] == "finalize"
+    assert inspect_result["finalize_contract"]["verification_contract"] == {
+        "verification_required": False,
+        "inspect_grants_verified_status": False,
+        "verified_evidence_refs_policy": "must be empty because visual verification was not requested",
+        "required_verified_evidence_refs": [],
+        "page_asset_verification_event_policy": "omit because visual verification was not requested",
+    }
     assert "type" not in inspect_result["finalize_contract"]["event_standard_fields"]
     assert "Unknown event fields are preserved under extensions" in inspect_result["finalize_contract"]["event_extension_policy"]
     state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
     workflow = json.loads(state_path.read_text(encoding="utf-8"))["workflow_state"]
     assert workflow["verification_required"] is False
     assert workflow["verification_requirement_reason"] == "not requested"
+
+
+def test_query_session_rejects_verified_refs_after_inspect_without_visual_verification(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头参数是多少？"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    inspected = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    evidence_ref = json.loads(inspected.stdout)["evidence_packets"][0]["evidence_ref"]
+    rejected = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            trace_id,
+            "--decision-json",
+            json.dumps(
+                {
+                    "evidence_level": "source-backed",
+                    "claims": [{"text": "K=60.", "evidence_refs": [evidence_ref]}],
+                    "verified_evidence_refs": [evidence_ref],
+                    "unresolved": [],
+                }
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert rejected.returncode != 0
+    assert "inspect reads evidence but does not grant verified status" in rejected.stderr
 
 
 def test_query_session_accepts_exact_projected_section_outside_fused_candidates(tmp_path: Path) -> None:
@@ -1735,6 +1793,9 @@ def test_query_contract_fuses_parallel_scope_before_governed_first_search() -> N
     assert "copy `document_path` verbatim" in skill
     assert "Do not launch additional retrieval solely to broaden the scope" in skill
     assert "not a domain-specific routing or answer template" in workflow
+    assert "`inspect` is evidence reading and registration, not visual verification" in skill
+    assert "requires `verified_evidence_refs: []`" in workflow
+    assert '"verified_evidence_refs": []' in workflow
 
 
 def test_skill_name_alone_activates_complete_query_contract() -> None:
