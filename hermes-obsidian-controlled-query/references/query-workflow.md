@@ -34,7 +34,7 @@ Optional flags:
 - `--provider-config` for an explicitly deployed Provider configuration;
 - `--top-sections` or `--compact-limit` only when the defaults are demonstrably insufficient.
 
-The response contains the trace ID and at most five compact fused candidates. The fixed window reserves strong-document diversity, then favors sections that add matched question facets not already represented. Choose the smallest subset that jointly covers the requested facets and inspect it in one batch; do not expand the window or inspect every candidate by default. A disabled or unavailable Provider remains an attempted route but not an effective route.
+The response contains the trace ID and at most five compact fused candidates. The fixed window reserves strong-document diversity, then favors sections that add matched question facets not already represented. A facet is an output attribute, value, condition, comparison, or action requested by the user; words that only limit the subject narrow scope rather than create a separate evidence need. Choose the smallest subset that adds necessary requested outputs and inspect it in one batch. Do not inspect contextual or comparative material unless requested or needed for a concrete conflict, and do not expand the window or inspect every candidate by default. A disabled or unavailable Provider remains an attempted route but not an effective route.
 
 ## Inspect
 
@@ -61,6 +61,8 @@ Each compact evidence packet contains:
 
 `inspect` reads and registers evidence; it never performs visual verification and never grants verified status. Follow the returned `verification_contract`. For the ordinary route, it states `verification_required: false`, requires `verified_evidence_refs: []`, and requires omission of `page-asset-verification` events.
 
+Also follow the returned `evidence_level_contract`. For packets whose content, source map, original source/pages, truncation state, and answer-relevant asset QA all pass, it reports `ordinary_pass_quality: true` and contains the complete inline label rules needed for finalization. Do not read `references/evidence-levels.md` merely because the evidence contains a parameter, formula, table, or figure. Read it only when the contract lists a concrete exception trigger or the evidence reveals an actual conflict, answer-relevant ambiguity, or gap.
+
 The full provenance catalog remains in the trace sidecar and is inherited by packet reference. The packet is navigation and verification material, not a user-facing citation.
 
 When `begin` was explicitly given `--verification-required`, prepare each cited registered visual carrier exactly once:
@@ -86,7 +88,7 @@ python3 "<query-skill-root>/scripts/query_session.py" finalize \
 
 Keep the conclusion within the scope supported by inspected evidence. Express a narrower scope as a short evidence-derived qualification without launching additional retrieval merely to make the answer broader. This is a general synthesis rule, not a domain-specific routing or answer template.
 
-Use the minimum sufficient claim set: each claim must answer a necessary requested facet, and closely related parameters supported by the same evidence should be merged. Put background, applicability, scope, or evidence limits into a brief qualification on the affected claim instead of creating another claim, unless the question explicitly requests that material. Record only unresolved items that materially affect correctness or use, and write one short conclusion without restating each claim.
+Use the minimum sufficient claim set: each claim must answer a requested output attribute or action, while subject qualifiers only narrow its scope. Closely related parameters supported by the same evidence should be merged. Put background, comparison, applicability, operational detail, scope, or evidence limits into a brief qualification on the affected claim instead of creating another claim, unless the question explicitly requests that material. Record only unresolved items that materially affect correctness or use, and write one short conclusion without restating each claim.
 
 Decision shape:
 

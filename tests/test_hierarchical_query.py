@@ -412,7 +412,10 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert begin_result["scope"]["selection_contract"] == {
         "first_inspection_input": "compact-candidates-only",
         "inspect_once": "select all currently useful candidates in one call",
-        "coverage_priority": "prefer the smallest candidate set that jointly covers distinct requested facets",
+        "coverage_priority": (
+            "select the smallest set that adds requested output attributes or actions; subject qualifiers "
+            "only narrow scope, and contextual or comparative material is not a facet unless requested"
+        ),
         "do_not_open": ["full-candidate-sidecar", "trace-state"],
         "exact_selector": "copy document_path verbatim, then append ::section_id",
     }
@@ -437,6 +440,11 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
         "required_verified_evidence_refs": None,
         "page_asset_verification_event_policy": "required for each verified ref, with inspected_paths",
     }
+    assert inspect_result["finalize_contract"]["evidence_level_contract"]["ordinary_pass_quality"] is True
+    assert inspect_result["finalize_contract"]["evidence_level_contract"]["full_reference_required"] is False
+    assert "do not read references/evidence-levels.md" in (
+        inspect_result["finalize_contract"]["evidence_level_contract"]["reference_read_policy"]
+    )
     packet = inspect_result["evidence_packets"][0]
     assert "K=60" in packet["content"]
     assert packet["source_exists"] is True
@@ -906,12 +914,44 @@ def test_query_session_does_not_infer_verification_policy_from_question_terms(tm
         "required_verified_evidence_refs": [],
         "page_asset_verification_event_policy": "omit because visual verification was not requested",
     }
+    level_contract = inspect_result["finalize_contract"]["evidence_level_contract"]
+    assert level_contract["ordinary_pass_quality"] is True
+    assert level_contract["full_reference_required"] is False
+    assert level_contract["triggered_conditions"] == []
     assert "type" not in inspect_result["finalize_contract"]["event_standard_fields"]
     assert "Unknown event fields are preserved under extensions" in inspect_result["finalize_contract"]["event_extension_policy"]
     state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
     workflow = json.loads(state_path.read_text(encoding="utf-8"))["workflow_state"]
     assert workflow["verification_required"] is False
     assert workflow["verification_requirement_reason"] == "not requested"
+
+
+def test_query_session_requires_full_evidence_reference_for_concrete_qa_trigger(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    source_map = vault / "_system" / "reports" / "0712XFNPXTS02.source-map.md"
+    source_map.write_text(
+        "---\ntype: source-map\nvalidation_status: warn\nledger_revision: 2\n---\n",
+        encoding="utf-8",
+    )
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头参数是多少？"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    inspected = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    contract = json.loads(inspected.stdout)["finalize_contract"]["evidence_level_contract"]
+    assert contract["ordinary_pass_quality"] is False
+    assert contract["full_reference_required"] is True
+    assert contract["triggered_conditions"] == ["P1:source-map-validation=warn"]
+    assert contract["reference_read_policy"].startswith("read references/evidence-levels.md")
 
 
 def test_query_session_rejects_verified_refs_after_inspect_without_visual_verification(tmp_path: Path) -> None:
@@ -1783,6 +1823,8 @@ def test_query_contract_fuses_parallel_scope_before_governed_first_search() -> N
     assert "`inspect` is evidence reading and registration, not visual verification" in skill
     assert "requires `verified_evidence_refs: []`" in workflow
     assert '"verified_evidence_refs": []' in workflow
+    assert "while subject qualifiers only narrow its scope" in workflow
+    assert "Do not read `references/evidence-levels.md`" in workflow
 
 
 def test_skill_name_alone_activates_complete_query_contract() -> None:
