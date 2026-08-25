@@ -454,6 +454,7 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
         "page_asset_verification_event_policy": "required for each verified ref, with inspected_paths",
     }
     assert inspect_result["finalize_contract"]["evidence_level_contract"]["ordinary_pass_quality"] is True
+    assert inspect_result["finalize_contract"]["evidence_level_contract"]["direct_use_allowed"] is True
     assert inspect_result["finalize_contract"]["evidence_level_contract"]["full_reference_required"] is False
     assert "do not read references/evidence-levels.md" in (
         inspect_result["finalize_contract"]["evidence_level_contract"]["reference_read_policy"]
@@ -929,8 +930,15 @@ def test_query_session_does_not_infer_verification_policy_from_question_terms(tm
     }
     level_contract = inspect_result["finalize_contract"]["evidence_level_contract"]
     assert level_contract["ordinary_pass_quality"] is True
+    assert level_contract["direct_use_allowed"] is True
     assert level_contract["full_reference_required"] is False
-    assert level_contract["triggered_conditions"] == []
+    assert level_contract["blocked_conditions"] == []
+    assert level_contract["non_blocking_diagnostics"] == []
+    assert inspect_result["finalize_contract"]["event_submission_contract"] == {
+        "ordinary_events": [],
+        "policy": "set events to []; query-session already records inspect, search, reading, and provenance",
+        "evidence_ref_policy": "never add a claim or evidence ref solely to make an optional event reference valid",
+    }
     assert "type" not in inspect_result["finalize_contract"]["event_standard_fields"]
     assert "Unknown event fields are preserved under extensions" in inspect_result["finalize_contract"]["event_extension_policy"]
     state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
@@ -939,7 +947,7 @@ def test_query_session_does_not_infer_verification_policy_from_question_terms(tm
     assert workflow["verification_requirement_reason"] == "not requested"
 
 
-def test_query_session_requires_full_evidence_reference_for_concrete_qa_trigger(tmp_path: Path) -> None:
+def test_query_session_treats_source_map_warn_as_non_blocking_diagnostic(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     source_map = vault / "_system" / "reports" / "0712XFNPXTS02.source-map.md"
     source_map.write_text(
@@ -961,10 +969,98 @@ def test_query_session_requires_full_evidence_reference_for_concrete_qa_trigger(
         check=True,
     )
     contract = json.loads(inspected.stdout)["finalize_contract"]["evidence_level_contract"]
-    assert contract["ordinary_pass_quality"] is False
-    assert contract["full_reference_required"] is True
-    assert contract["triggered_conditions"] == ["P1:source-map-validation=warn"]
-    assert contract["reference_read_policy"].startswith("read references/evidence-levels.md")
+    assert contract["ordinary_pass_quality"] is True
+    assert contract["direct_use_allowed"] is True
+    assert contract["full_reference_required"] is False
+    assert contract["blocked_conditions"] == []
+    assert contract["non_blocking_diagnostics"] == ["P1:source-map-validation=warn"]
+    assert contract["reference_read_policy"].startswith("do not read references/evidence-levels.md")
+
+
+def test_query_session_treats_non_failed_asset_qa_as_non_blocking(tmp_path: Path) -> None:
+    for asset_quality in ("qa_required", "ambiguous", "incomplete"):
+        vault = make_vault(tmp_path / asset_quality)
+        manifest_path = vault / "10_Raw" / "converted" / "0712XFNPXTS02_document_bundle" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["tables"][0]["quality"] = asset_quality
+        write_json(manifest_path, manifest)
+        subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+        begun = subprocess.run(
+            [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头参数是多少？"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+        inspected = subprocess.run(
+            [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        contract = json.loads(inspected.stdout)["finalize_contract"]["evidence_level_contract"]
+        assert contract["direct_use_allowed"] is True
+        assert contract["full_reference_required"] is False
+        assert contract["blocked_conditions"] == []
+        assert contract["non_blocking_diagnostics"] == [
+            f"P1:table_spray-quality={asset_quality}"
+        ]
+
+
+def test_query_session_blocks_failed_asset_and_truncated_answer_content(tmp_path: Path) -> None:
+    failed_vault = make_vault(tmp_path / "failed-asset")
+    manifest_path = (
+        failed_vault / "10_Raw" / "converted" / "0712XFNPXTS02_document_bundle" / "manifest.json"
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["tables"][0]["quality"] = "failed"
+    write_json(manifest_path, manifest)
+    subprocess.run([sys.executable, str(BUILD), str(failed_vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(failed_vault), "水喷雾喷头参数是多少？"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    inspected = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(failed_vault), trace_id, "--candidate", "1"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    contract = json.loads(inspected.stdout)["finalize_contract"]["evidence_level_contract"]
+    assert contract["direct_use_allowed"] is False
+    assert contract["blocked_conditions"] == ["P1:table_spray-quality=failed"]
+
+    truncated_vault = make_vault(tmp_path / "truncated")
+    subprocess.run([sys.executable, str(BUILD), str(truncated_vault)], check=True, capture_output=True, text=True)
+    begun = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(truncated_vault), "水喷雾喷头参数是多少？"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    inspected = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "inspect",
+            str(truncated_vault),
+            trace_id,
+            "--candidate",
+            "1",
+            "--max-chars-per-section",
+            "10",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    contract = json.loads(inspected.stdout)["finalize_contract"]["evidence_level_contract"]
+    assert contract["direct_use_allowed"] is False
+    assert "P1:content-truncated" in contract["blocked_conditions"]
 
 
 def test_query_session_rejects_verified_refs_after_inspect_without_visual_verification(tmp_path: Path) -> None:

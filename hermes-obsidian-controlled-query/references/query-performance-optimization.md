@@ -205,6 +205,8 @@ trace `20260824_083500_bc7fe661` 使用旧版 `65ad59e` 时在未启用视觉核
 
 trace `20260824_090251_a3624b82` 使用动态 verification contract 后没有 finalize 重试，但模型把限定查询对象的词组误当成独立答案维度，首轮 inspect 扩大到四个章节，并按旧规则因工程参数/表格额外读取完整 `evidence-levels.md`。修复继续保持领域无关：requested facet 仅指用户要求输出的属性、值、条件、比较或动作；subject qualifier 只缩小作用域，不占候选槽位或生成 claim。inspect 同时根据 packet 的内容质量、source-map、原件/页码、截断和资产 QA 返回紧凑 `evidence_level_contract`。普通 pass-quality packet 使用内联四级规则直接 finalize；只有具体 QA/provenance trigger，或实际冲突、答案相关歧义、gap 才读取完整 reference。该规则不解析问题关键词，不包含系统、标准、章节、语言或参数特例，也不增加调用。
 
+trace `20260824_101544_421650ea` 首次进入 120 秒目标（107942.854 ms），但三个 packet 的 source-map `warn` 仍触发了完整 evidence-level reference 读取，普通 finalize 又因可选 inspect event 引用未使用 handles 而失败并重试。性能优先策略进一步改为 fail-open diagnostics：非 failed 的 `warn`、`pending`、`qa_required`、`ambiguous`、`incomplete`（包括表格/图片标签）可直接作为 `source-backed` 使用，不触发 reference 读取；无正文、原件/页码缺失、答案内容截断、failed/unavailable-class 状态、真实来源冲突和显式视觉核验未完成仍是硬门禁。普通动态 event contract 要求 `events: []`，禁止为满足可选 event 引用而扩大 claim/evidence。规则只读取 packet 控制状态和内容存在性，不包含任何领域或问题特例。
+
 Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产生明显的跨文件系统开销；这不是 `/opt/data/...` Linux 本地 intranet Vault 的同类路径。若 main 的该场景成为生产目标，应增加单文件聚合索引或 Provider-side cache，而不是牺牲候选完整性。
 
 ## 自动 trace 与计时

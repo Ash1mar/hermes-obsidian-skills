@@ -61,7 +61,7 @@ Each compact evidence packet contains:
 
 `inspect` reads and registers evidence; it never performs visual verification and never grants verified status. Follow the returned `verification_contract`. For the ordinary route, it states `verification_required: false`, requires `verified_evidence_refs: []`, and requires omission of `page-asset-verification` events.
 
-Also follow the returned `evidence_level_contract`. For packets whose content, source map, original source/pages, truncation state, and answer-relevant asset QA all pass, it reports `ordinary_pass_quality: true` and contains the complete inline label rules needed for finalization. Do not read `references/evidence-levels.md` merely because the evidence contains a parameter, formula, table, or figure. Read it only when the contract lists a concrete exception trigger or the evidence reveals an actual conflict, answer-relevant ambiguity, or gap.
+Also follow the returned `evidence_level_contract`. Non-failed `warn`, `pending`, `qa_required`, `ambiguous`, and `incomplete` metadata, including table/image labels, appear under `non_blocking_diagnostics`; they remain directly usable as `source-backed` when substantive content and original source/pages are present. Do not read `references/evidence-levels.md` for these statuses. Exclude only refs listed under `blocked_conditions`: no substantive content, unresolved source/pages, content truncation, or failed/unavailable-class packet, source-map, or asset status. Actual source conflict and explicitly required incomplete visual verification remain hard blockers.
 
 The full provenance catalog remains in the trace sidecar and is inherited by packet reference. The packet is navigation and verification material, not a user-facing citation.
 
@@ -112,6 +112,8 @@ Decision shape:
 ```
 
 The example above is the ordinary no-visual-verification decision. Only when `begin --verification-required` selected the visual route, `verify` returned `ready`, and the registered carrier was actually viewed may `verified_evidence_refs` contain packet refs; each such ref then requires a completed `page-asset-verification` event with non-empty `inspected_paths`.
+
+Follow `event_submission_contract` as well. For an ordinary query, submit `events: []`; query-session already records candidate selection, inspect, reading, assets, and provenance. Do not add a claim, comparison, or evidence ref merely to make an optional event reference count as used.
 
 The script expands each packet reference into path, document version, section, pages, source PDF and viewer metadata, then assigns `E1...` and `C1...`. Every claim requires non-empty text; `claim`, `statement`, and `claim_text` are accepted as aliases for `text`. Supported claims require at least one recorded evidence ID, derived from an inspected packet reference. Use `qualified`, `disputed`, or `gap` when appropriate.
 
