@@ -26,6 +26,7 @@ from manage_query_trace import (
     start_trace,
     write_state,
 )
+from locate_source_sections import match_score, query_terms, section_specific_query_terms
 from retrieve_query_scope import compact_result, load_projections, retrieve_scope
 
 
@@ -60,6 +61,10 @@ EVENT_KEYS = {
 VISUAL_ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
 MAX_INSPECTIONS = 2
 MAX_SUPPLEMENTS = 1
+DEFAULT_AGENT_EVIDENCE_BUDGET = 18000
+MIN_AGENT_EVIDENCE_BUDGET = 4000
+MIN_DELIVERY_FIELD_CHARS = 400
+DELIVERY_OMISSION_MARKER = "[... unmatched source content omitted from agent delivery ...]"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -790,6 +795,204 @@ def compact_evidence_packet(packet: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def serialized_chars(value: Any) -> int:
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+
+
+def content_field_chars(packets: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "section": sum(len(str(packet.get("content") or "")) for packet in packets),
+        "asset": sum(
+            len(str(asset.get("content") or ""))
+            for packet in packets
+            for asset in packet.get("assets", [])
+        ),
+        "governed": sum(
+            len(str(item.get("content") or ""))
+            for packet in packets
+            for item in packet.get("governed_artifacts", [])
+        ),
+    }
+
+
+def matched_excerpt(text: str, question: str, source_filename: str, limit: int) -> str:
+    """Keep query-matched Markdown blocks under a delivery-only character limit."""
+    if len(text) <= limit:
+        return text
+    terms = query_terms(question)
+    _, document_matches = match_score(terms, source_filename, 1)
+    section_terms = section_specific_query_terms(terms, document_matches) or terms
+    blocks = [block.strip() for block in re.split(r"\n\s*\n", text) if block.strip()]
+    if not blocks:
+        return text[:limit]
+
+    block_terms: list[set[str]] = []
+    for block in blocks:
+        folded = block.casefold()
+        block_terms.append({term for term in section_terms if term in folded})
+    uncovered = set(section_terms)
+    selected: set[int] = set()
+    remaining = set(range(len(blocks)))
+    while remaining and uncovered:
+        best = max(
+            remaining,
+            key=lambda index: (
+                sum(max(1, len(term)) for term in block_terms[index] & uncovered),
+                sum(max(1, len(term)) for term in block_terms[index]),
+                -index,
+            ),
+        )
+        if not (block_terms[best] & uncovered):
+            break
+        selected.add(best)
+        uncovered.difference_update(block_terms[best])
+        remaining.remove(best)
+
+    if not selected:
+        selected.add(0)
+    for index in list(selected):
+        if index > 0:
+            selected.add(index - 1)
+        if index + 1 < len(blocks):
+            selected.add(index + 1)
+
+    def render(indices: set[int]) -> str:
+        parts: list[str] = []
+        previous: int | None = None
+        for index in sorted(indices):
+            if previous is not None and index != previous + 1:
+                parts.append(DELIVERY_OMISSION_MARKER)
+            parts.append(blocks[index])
+            previous = index
+        if 0 not in indices:
+            parts.insert(0, DELIVERY_OMISSION_MARKER)
+        if len(blocks) - 1 not in indices:
+            parts.append(DELIVERY_OMISSION_MARKER)
+        return "\n\n".join(parts)
+
+    excerpt = render(selected)
+    if len(excerpt) <= limit:
+        return excerpt
+
+    ranked = sorted(
+        selected,
+        key=lambda index: (
+            -sum(max(1, len(term)) for term in block_terms[index]),
+            index,
+        ),
+    )
+    packed: set[int] = set()
+    for index in ranked:
+        trial = render({*packed, index})
+        if packed and len(trial) > limit:
+            continue
+        packed.add(index)
+    excerpt = render(packed or {ranked[0]})
+    if len(excerpt) <= limit:
+        return excerpt
+
+    anchor_terms = block_terms[next(iter(packed or {ranked[0]}))]
+    anchor = min((text.casefold().find(term) for term in anchor_terms if term in text.casefold()), default=0)
+    marker_budget = len(DELIVERY_OMISSION_MARKER) * 2 + 4
+    span = max(1, limit - marker_budget)
+    start = max(0, anchor - span // 3)
+    end = min(len(text), start + span)
+    return f"{DELIVERY_OMISSION_MARKER}\n\n{text[start:end]}\n\n{DELIVERY_OMISSION_MARKER}"[:limit]
+
+
+def compact_packets_for_delivery(
+    packets: list[dict[str, Any]],
+    question: str,
+    verification_required: bool,
+    budget_chars: int,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Build a bounded agent copy while retaining full source ranges in the evidence catalog."""
+    delivered = [compact_evidence_packet(packet) for packet in packets]
+    before_chars = serialized_chars(delivered)
+    original_content_chars = content_field_chars(delivered)
+    deduplicated_assets = 0
+    for packet in delivered:
+        section_content = str(packet.get("content") or "").strip()
+        for asset in packet.get("assets", []):
+            asset_content = str(asset.get("content") or "").strip()
+            if asset_content and section_content and asset_content in section_content:
+                asset.pop("content", None)
+                asset["delivery"] = "content-already-present-in-section"
+                deduplicated_assets += 1
+        if not verification_required:
+            packet.pop("verification", None)
+            for asset in packet.get("assets", []):
+                asset.pop("evidence_path", None)
+                asset.pop("bbox", None)
+
+    content_fields: list[tuple[dict[str, Any], str, str, str, int]] = []
+    for packet in delivered:
+        source_filename = str(packet.get("source_filename") or "")
+        if packet.get("content"):
+            content_fields.append((packet, "content", str(packet["content"]), source_filename, 3))
+        for asset in packet.get("assets", []):
+            if asset.get("content"):
+                content_fields.append((asset, "content", str(asset["content"]), source_filename, 2))
+        for governed in packet.get("governed_artifacts", []):
+            if governed.get("content"):
+                content_fields.append((governed, "content", str(governed["content"]), source_filename, 1))
+
+    excerpted_fields: set[tuple[int, str]] = set()
+    if serialized_chars(delivered) > budget_chars and content_fields:
+        for container, key, _, _, _ in content_fields:
+            container[key] = ""
+        fixed_chars = serialized_chars(delivered)
+        available = max(
+            MIN_DELIVERY_FIELD_CHARS * len(content_fields),
+            budget_chars - fixed_chars,
+        )
+        total_weight = sum(weight for _, _, _, _, weight in content_fields)
+        for container, key, original, source_filename, weight in content_fields:
+            allocation = max(
+                MIN_DELIVERY_FIELD_CHARS,
+                int(available * weight / max(1, total_weight)),
+            )
+            excerpt = matched_excerpt(original, question, source_filename, allocation)
+            container[key] = excerpt
+            if excerpt != original:
+                container["delivery_excerpted"] = True
+                container["delivery_original_chars"] = len(original)
+                excerpted_fields.add((id(container), key))
+
+    # Metadata or unusually long exact selectors can leave a small overrun.
+    # Reduce the largest delivered content fields progressively, never paths or IDs.
+    while serialized_chars(delivered) > budget_chars and content_fields:
+        largest = max(
+            content_fields,
+            key=lambda item: len(str(item[0].get(item[1]) or "")),
+        )
+        container, key, original, source_filename, _ = largest
+        current = str(container.get(key) or "")
+        if len(current) <= MIN_DELIVERY_FIELD_CHARS:
+            break
+        target = max(MIN_DELIVERY_FIELD_CHARS, int(len(current) * 0.8))
+        container[key] = matched_excerpt(original, question, source_filename, target)
+        container["delivery_excerpted"] = True
+        container["delivery_original_chars"] = len(original)
+        excerpted_fields.add((id(container), key))
+
+    after_chars = serialized_chars(delivered)
+    delivered_content_chars = content_field_chars(delivered)
+    metrics = {
+        "budget_chars": budget_chars,
+        "full_packet_chars": before_chars,
+        "agent_packet_chars": after_chars,
+        "saved_chars": max(0, before_chars - after_chars),
+        "packet_count": len(delivered),
+        "excerpted_field_count": len(excerpted_fields),
+        "deduplicated_asset_count": deduplicated_assets,
+        "full_content_chars": original_content_chars,
+        "agent_content_chars": delivered_content_chars,
+        "budget_satisfied": after_chars <= budget_chars,
+    }
+    return delivered, metrics
+
+
 HARD_FAILURE_STATUSES = {"fail", "failed", "unavailable", "error", "invalid"}
 
 
@@ -881,6 +1084,10 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
     command_started_monotonic = time.monotonic_ns()
     command_started_wall = time.time_ns()
     vault_root = args.vault_root.resolve()
+    if args.max_agent_evidence_chars < MIN_AGENT_EVIDENCE_BUDGET:
+        raise ValueError(
+            f"agent evidence budget must be at least {MIN_AGENT_EVIDENCE_BUDGET} characters"
+        )
     state, _, _ = load_state(vault_root, args.trace_id)
     if state.get("workflow") != WORKFLOW:
         raise ValueError(f"trace does not use {WORKFLOW}")
@@ -1014,6 +1221,32 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             ),
         ]
     )
+    verification_required = bool(workflow.get("verification_required"))
+    delivery_started_at = now_iso()
+    delivery_started_monotonic = time.monotonic_ns()
+    delivery_started_wall = time.time_ns()
+    agent_packets, delivery_metrics = compact_packets_for_delivery(
+        packets,
+        str(state.get("question") or ""),
+        verification_required,
+        args.max_agent_evidence_chars,
+    )
+    delivery_event = timed_event(
+        stage="evidence-packet-delivery",
+        route="agent-context",
+        started_at=delivery_started_at,
+        started_monotonic_ns=delivery_started_monotonic,
+        started_wall_ns=delivery_started_wall,
+        summary=(
+            f"Delivered {delivery_metrics['agent_packet_chars']} of "
+            f"{delivery_metrics['full_packet_chars']} packet characters under a "
+            f"{delivery_metrics['budget_chars']} character agent budget."
+        ),
+        hit_count=len(agent_packets),
+    )
+    delivery_event["accounting"] = "diagnostic"
+    delivery_event["extensions"] = delivery_metrics
+    state.setdefault("events", []).append(clean_event(state, delivery_event))
     workflow.update(
         {
             "answer_synthesis_started_at": now_iso(),
@@ -1026,10 +1259,10 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             "evidence_gap_review_started_at": None,
             "evidence_gap_review_started_monotonic_ns": None,
             "evidence_gap_review_started_wall_ns": None,
+            "last_delivery_metrics": delivery_metrics,
         }
     )
     write_state(vault_root, state)
-    verification_required = bool(workflow.get("verification_required"))
     verification_contract = {
         "verification_required": verification_required,
         "inspect_grants_verified_status": False,
@@ -1060,7 +1293,8 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
         "trace_id": args.trace_id,
         "selected_count": len(packets),
         "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
-        "evidence_packets": [compact_evidence_packet(packet) for packet in packets],
+        "evidence_packets": agent_packets,
+        "delivery_metrics": delivery_metrics,
         "finalize_contract": {
             "top_level_fields": sorted(DECISION_KEYS - {"unresolved_items"}),
             "top_level_aliases": {"unresolved_items": "unresolved"},
@@ -1085,6 +1319,11 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             ),
             "unresolved_policy": "Keep only unresolved items that materially change correctness or use of the answer.",
             "conclusion_policy": "Use one short synthesis and do not repeat the claims item by item.",
+            "decision_minimization_policy": (
+                "Submit the smallest valid decision object: only the minimum claims, their packet refs, "
+                "necessary qualifications, one short conclusion, material unresolved items, and the required "
+                "empty ordinary event list."
+            ),
             "event_standard_fields": sorted(EVENT_KEYS - {"extensions"}),
             "event_extension_policy": (
                 "Unknown event fields are preserved under extensions; they never satisfy a stage or evidence gate. "
@@ -1714,6 +1953,7 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
     if args.close_request:
         validate_close_request(vault_root, state)
     payload = load_manifest(args)
+    decision_input_chars = serialized_chars(payload)
     if args.decision_json:
         manifest = decision_to_manifest(state, payload)
     else:
@@ -1728,7 +1968,10 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
             started_at=str(workflow.get("answer_synthesis_started_at") or state.get("updated") or command_started_at),
             started_monotonic_ns=int(workflow.get("answer_synthesis_started_monotonic_ns") or command_started_monotonic),
             started_wall_ns=int(workflow.get("answer_synthesis_started_wall_ns") or command_started_wall),
-            summary="Reviewed the batched evidence packet and prepared the final claim set.",
+            summary=(
+                "Reviewed the batched evidence packet and prepared "
+                f"a {decision_input_chars} character final decision."
+            ),
         )
     )
     manifest["events"].append(
@@ -1750,6 +1993,9 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
             "query_session_duration_ms": elapsed_ms(session_started_monotonic, session_started_wall),
             "command_count": int(workflow.get("command_count") or 2) + 1,
             "measurement_boundary": "query-session begin invocation through finalize validation",
+            "decision_input_chars": decision_input_chars,
+            "last_agent_packet_chars": workflow.get("last_delivery_metrics", {}).get("agent_packet_chars"),
+            "last_full_packet_chars": workflow.get("last_delivery_metrics", {}).get("full_packet_chars"),
         }
     )
     capsule = build_answer_capsule(state, manifest)
@@ -1831,6 +2077,12 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("trace_id")
     inspect_parser.add_argument("--candidate", action="append", default=[], help="1-based rank, section id, or document::section")
     inspect_parser.add_argument("--max-chars-per-section", type=int, default=12000)
+    inspect_parser.add_argument(
+        "--max-agent-evidence-chars",
+        type=int,
+        default=DEFAULT_AGENT_EVIDENCE_BUDGET,
+        help="Aggregate character budget for the agent-facing evidence packet copy",
+    )
     inspect_parser.set_defaults(handler=inspect)
 
     verify_parser = subparsers.add_parser("verify", help="Prepare registered visual carriers once, or return a deterministic QA downgrade")

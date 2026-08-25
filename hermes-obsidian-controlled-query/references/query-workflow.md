@@ -51,7 +51,7 @@ Each compact evidence packet contains:
 
 - a stable ASCII packet reference such as `P1` for final claims;
 
-- the complete ledger-owned source ranges;
+- the registered ledger-owned source-range identity and the delivered content needed for synthesis;
 - original PDF identity/path and pages;
 - section quality and ingest status;
 - related table/image metadata, Markdown, verification image, caption, page, bbox, and QA;
@@ -63,7 +63,9 @@ Each compact evidence packet contains:
 
 Also follow the returned `evidence_level_contract`. Non-failed `warn`, `pending`, `qa_required`, `ambiguous`, and `incomplete` metadata, including table/image labels, appear under `non_blocking_diagnostics`; they remain directly usable as `source-backed` when substantive content and original source/pages are present. Do not read `references/evidence-levels.md` for these statuses. Exclude only refs listed under `blocked_conditions`: no substantive content, unresolved source/pages, content truncation, or failed/unavailable-class packet, source-map, or asset status. Actual source conflict and explicitly required incomplete visual verification remain hard blockers.
 
-The full provenance catalog remains in the trace sidecar and is inherited by packet reference. The packet is navigation and verification material, not a user-facing citation.
+Before delivery, `inspect` applies one aggregate 18,000-character budget across the selected packets. It first removes exact duplicate asset Markdown and ordinary-route visual-audit fields, then—only when still over budget—keeps query-matched Markdown blocks and adjacent context. A packet or asset marked `delivery_excerpted` is a shortened agent copy; it is not a failed source read and must not be confused with `content_truncated`. `delivery_metrics` and the diagnostic `evidence-packet-delivery` event record `full_packet_chars`, `agent_packet_chars`, saved characters, excerpted fields, and whether the budget was satisfied. Do not open the full trace or source to reverse this delivery optimization when the visible content already answers the question.
+
+The full provenance catalog and complete source ranges remain in the trace sidecar and are inherited by packet reference; the underlying registered source remains reconstructible from those ranges. The packet is navigation and verification material, not a user-facing citation.
 
 When `begin` was explicitly given `--verification-required`, prepare each cited registered visual carrier exactly once:
 
@@ -88,7 +90,7 @@ python3 "<query-skill-root>/scripts/query_session.py" finalize \
 
 Keep the conclusion within the scope supported by inspected evidence. Express a narrower scope as a short evidence-derived qualification without launching additional retrieval merely to make the answer broader. This is a general synthesis rule, not a domain-specific routing or answer template.
 
-Use the minimum sufficient claim set: each claim must answer a requested output attribute or action, while subject qualifiers only narrow its scope. Closely related parameters supported by the same evidence should be merged. Put background, comparison, applicability, operational detail, scope, or evidence limits into a brief qualification on the affected claim instead of creating another claim, unless the question explicitly requests that material. Record only unresolved items that materially affect correctness or use, and write one short conclusion without restating each claim.
+Use the minimum sufficient claim set: each claim must answer a requested output attribute or action, while subject qualifiers only narrow its scope. Closely related parameters supported by the same evidence should be merged. Put background, comparison, applicability, operational detail, scope, or evidence limits into a brief qualification on the affected claim instead of creating another claim, unless the question explicitly requests that material. Record only unresolved items that materially affect correctness or use, and write one short conclusion without restating each claim. Submit the smallest valid decision object; do not copy packet prose or provenance into it.
 
 Decision shape:
 
