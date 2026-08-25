@@ -209,6 +209,8 @@ trace `20260824_101544_421650ea` 首次进入 120 秒目标（107942.854 ms）�
 
 后续内网模型曾把 agent-facing `candidate_count` 的完整融合总数与仅返回前五条的 `candidates` 数组误判为工具输出截断，继而尝试 inline `python3 -c` 和临时脚本读取完整列表。修复消除这一契约歧义：agent-facing `candidate_count` 只表示实际返回数，完整融合数量仅留在 trace；返回 `candidate_window_complete: true` 和 `producer_output_truncated: false`；移除 agent-facing route/fusion 的候选总数，限制可选标签、页码、路由和 warning 长度，并在固定字符预算内打包最多五条。若下游显示确实在 JSON 中途截断，唯一恢复路径是用已返回 trace ID 调用无 selector 的 `inspect` 默认窗口，禁止读取完整 trace、运行 inline Python 或写 helper script。该策略不解析问题、领域、文档或章节内容。
 
+trace `20260825_024105_c3e20311` 在 108982.548 ms 内稳定完成，未再读取完整 trace/reference、运行 helper、重试 finalize 或误用视觉核验；但首轮 inspect 的三个 packet 中一个未用于 claim，另一个只生成未请求的通用对比，真正补齐请求属性的同文档详细章节需要第二轮 inspect，耗费 34946.923 ms 的模型选择时间。通用修复分两层：locator 在 section 路由时扣除已由 document identity 命中的主题词，限制重叠 n-gram 膨胀，并在文档多样性之前给最强文档一个能增加 query-language coverage 的互补章节槽位；模型侧增加 `candidate_purpose_gate` 和 `claim_pruning_gate`，证据存在不再构成 inspect/claim 理由，删除后仍完整回答请求的比较、背景、适用性或运行内容必须省略。规则只比较查询词覆盖和请求输出完整性，不包含系统、规范、章节、语言或参数特例。
+
 Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产生明显的跨文件系统开销；这不是 `/opt/data/...` Linux 本地 intranet Vault 的同类路径。若 main 的该场景成为生产目标，应增加单文件聚合索引或 Provider-side cache，而不是牺牲候选完整性。
 
 ## 自动 trace 与计时
