@@ -221,9 +221,13 @@ trace `20260825_031033_61bf03fd` 只有一次 inspect 和一次成功 finalize�
 2. 普通非视觉路径先移除重复资产正文及仅用于视觉审计的 carrier 字段；仍超预算时，按查询词覆盖保留 Markdown 命中块及相邻上下文，并用通用 omission marker 标记中间省略；
 3. `delivery_excerpted` 只表示传输副本被压缩，不能替代或触发 `content_truncated`。完整 provenance 与 source ranges 继续登记在 trace，finalize 仍按 packet handle 继承；
 4. 新增 diagnostic `evidence-packet-delivery` 事件及 `full_packet_chars`、`agent_packet_chars`、`saved_chars`、content 分类字符数、去重/摘录数和预算满足状态；finalize 另记录 `decision_input_chars`；
-5. answer-synthesis 计时改为在 delivery copy 准备完成后开始，其含义明确为“agent 收到证据后到 decision 到达 finalize”的综合区间。finalize contract 同时要求最小有效 decision，但不对语义冗余做脚本拒绝，避免额外重试。
+5. answer-synthesis 计时改为在完整 inspect response 与 contract 准备完成后开始，其含义明确为“agent 收到 inspect 输出后到 decision 到达 finalize”的综合区间。finalize contract 同时要求最小有效 decision，但不对语义冗余做脚本拒绝，避免额外重试。
 
 18,000 是总体交付预算而非每份文档配额；CLI 提供最低 4,000 的测试/诊断覆盖，但普通流程不应为了恢复已省略背景而扩大预算或读取 trace。摘录算法只使用查询词匹配、块邻接、字段类型权重和精确重复检测，不包含系统、规范、章节、语言或参数特例。长 packet 回归测试验证 5,000 字符预算下关键查询值和表格行仍保留，同时 trace 中登记压缩前后指标。
+
+trace `20260825_054518_a71e6c33` 使用上述 packet 预算后，总耗时由上一轮 107468.615 ms 降至 73115.403 ms，`answer-synthesis` 由 97433.471 ms 降至 48621.302 ms；但本轮 8514 字符 packet 仅因移除审计字段降为 7686 字符，正文 4730 字符完全未摘录，decision 也只有 757 字符。该结果说明性能改善存在，但旧指标仍漏掉模型同时接收的 `finalize_contract` 和 inspect 包装字段，不能把约 50% 的合成降幅归因于正文压缩；服务排队、模型波动和更短 decision 引导仍可能参与。
+
+下一轮把所有重复自然语言 contract 合并为 `finalize_contract.version: compact/v1`。它只返回严格 schema、当前视觉核验状态、blocked refs/diagnostics、普通 event 值及最小合成枚举；详细通用解释继续由已加载的 Skill/bootstrap 提供。trace-side response metrics 分别记录 `inspect_response_chars`、`evidence_packet_chars`、`finalize_contract_chars` 和其他包装字符；这些指标只进入 diagnostic delivery event，不再返回给模型，并在 finalize metrics 中保留最后一次完整 response 与 contract 大小。该压缩不改变 finalize 校验器、evidence-level 判断、视觉门禁或 claim-evidence 映射，也不增加调用。规则仍只依赖动态状态和通用 schema，不包含领域、标准、章节或问题特例。
 
 Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产生明显的跨文件系统开销；这不是 `/opt/data/...` Linux 本地 intranet Vault 的同类路径。若 main 的该场景成为生产目标，应增加单文件聚合索引或 Provider-side cache，而不是牺牲候选完整性。
 
