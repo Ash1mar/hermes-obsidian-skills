@@ -1054,28 +1054,64 @@ def evidence_level_contract(packets: list[dict[str, Any]]) -> dict[str, Any]:
                 if failed_status(asset_quality):
                     blocked.append(diagnostic)
     direct_use_allowed = not blocked
+    blocked_conditions = list(dict.fromkeys(blocked))
     return {
-        "ordinary_pass_quality": all_packet_quality_pass and direct_use_allowed,
-        "direct_use_allowed": direct_use_allowed,
-        "full_reference_required": False,
-        "reference_read_policy": (
-            "do not read references/evidence-levels.md for packet statuses; exclude blocked packet refs and use the inline rules"
-            if blocked
-            else "do not read references/evidence-levels.md; non-failed diagnostics remain usable as source-backed evidence"
-        ),
-        "blocked_conditions": list(dict.fromkeys(blocked)),
-        "non_blocking_diagnostics": list(dict.fromkeys(diagnostics)),
-        "inline_rules": {
-            "source-backed": "non-failed converted evidence with substantive content resolves to original source and page; warn, pending, qa_required, ambiguous, or incomplete metadata may be qualified but is not a read blocker",
-            "clear": "a governed conclusion or otherwise clearly durable pass-quality source supports the claim and resolves to original source and page",
-            "needs-qa": "a hard blocker, actual source conflict, or explicitly required incomplete verification affects the claim",
-            "gap": "substantive original-source evidence is unavailable",
+        "direct_use": direct_use_allowed,
+        "pass_quality": all_packet_quality_pass and direct_use_allowed,
+        "read_reference": False,
+        "blocked_refs": list(dict.fromkeys(item.split(":", 1)[0] for item in blocked_conditions)),
+        "blocked": blocked_conditions,
+        "diagnostics": list(dict.fromkeys(diagnostics)),
+        "usable_default_level": "source-backed",
+        "clear_gate": "governed-or-durable-pass",
+        "blocked_outcome": "needs-qa-or-gap",
+        "non_failed_diagnostics_block": False,
+        "escalate_on": ["source-conflict", "answer-not-visible", "required-visual-incomplete"],
+    }
+
+
+def finalize_contract(packets: list[dict[str, Any]], verification_required: bool) -> dict[str, Any]:
+    """Return only dynamic gates and compact synthesis/schema reminders."""
+    return {
+        "version": "compact/v1",
+        "schema": {
+            "decision": sorted(DECISION_KEYS - {"unresolved_items"}),
+            "claim": sorted(CLAIM_KEYS),
+            "aliases": {"unresolved_items": "unresolved"},
         },
-        "model_escalation_triggers": [
-            "actual source conflict",
-            "the answer cannot be determined from the visible substantive content",
-            "explicitly required visual verification is incomplete",
-        ],
+        "verification": {
+            "required": verification_required,
+            "inspect_verified": False,
+            "verified_refs": "checked-ready-only" if verification_required else [],
+            "visual_events": "per-verified-ref" if verification_required else [],
+        },
+        "evidence": evidence_level_contract(packets),
+        "events": {
+            "submit": "actual-visual-check-only" if verification_required else [],
+            "expand_claims_or_refs": False,
+            "extensions": "diagnostic-only",
+        },
+        "synthesis": {
+            "claims": "minimum-requested-outputs;merge-related-same-evidence",
+            "prune": "unrequested-or-redundant",
+            "qualification": "attach-only-if-needed",
+            "unresolved": "material-only",
+            "conclusion": "one-short-no-repeat",
+            "decision": "smallest-valid-object",
+        },
+    }
+
+
+def inspect_response_metrics(result: dict[str, Any]) -> dict[str, int]:
+    """Measure the compact JSON the agent receives without adding telemetry to it."""
+    packet_chars = serialized_chars(result.get("evidence_packets", []))
+    contract_chars = serialized_chars(result.get("finalize_contract", {}))
+    total = serialized_chars(result)
+    return {
+        "inspect_response_chars": total,
+        "evidence_packet_chars": packet_chars,
+        "finalize_contract_chars": contract_chars,
+        "other_response_chars": max(0, total - packet_chars - contract_chars),
     }
 
 
@@ -1231,6 +1267,16 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
         verification_required,
         args.max_agent_evidence_chars,
     )
+    result = {
+        "workflow": WORKFLOW,
+        "trace_id": args.trace_id,
+        "selected_count": len(packets),
+        "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
+        "evidence_packets": agent_packets,
+        "finalize_contract": finalize_contract(packets, verification_required),
+        "next_command": "verify" if verification_required else "finalize",
+    }
+    response_metrics = inspect_response_metrics(result)
     delivery_event = timed_event(
         stage="evidence-packet-delivery",
         route="agent-context",
@@ -1238,14 +1284,14 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
         started_monotonic_ns=delivery_started_monotonic,
         started_wall_ns=delivery_started_wall,
         summary=(
-            f"Delivered {delivery_metrics['agent_packet_chars']} of "
-            f"{delivery_metrics['full_packet_chars']} packet characters under a "
-            f"{delivery_metrics['budget_chars']} character agent budget."
+            f"Delivered a {response_metrics['inspect_response_chars']} character inspect response: "
+            f"{response_metrics['evidence_packet_chars']} evidence packet characters and "
+            f"{response_metrics['finalize_contract_chars']} finalize-contract characters."
         ),
         hit_count=len(agent_packets),
     )
     delivery_event["accounting"] = "diagnostic"
-    delivery_event["extensions"] = delivery_metrics
+    delivery_event["extensions"] = {**delivery_metrics, **response_metrics}
     state.setdefault("events", []).append(clean_event(state, delivery_event))
     workflow.update(
         {
@@ -1260,78 +1306,11 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             "evidence_gap_review_started_monotonic_ns": None,
             "evidence_gap_review_started_wall_ns": None,
             "last_delivery_metrics": delivery_metrics,
+            "last_response_metrics": response_metrics,
         }
     )
     write_state(vault_root, state)
-    verification_contract = {
-        "verification_required": verification_required,
-        "inspect_grants_verified_status": False,
-        "verified_evidence_refs_policy": (
-            "only refs whose registered carrier was visually checked after verify returned ready"
-            if verification_required
-            else "must be empty because visual verification was not requested"
-        ),
-        "required_verified_evidence_refs": None if verification_required else [],
-        "page_asset_verification_event_policy": (
-            "required for each verified ref, with inspected_paths"
-            if verification_required
-            else "omit because visual verification was not requested"
-        ),
-    }
-    level_contract = evidence_level_contract(packets)
-    event_contract = {
-        "ordinary_events": [] if not verification_required else None,
-        "policy": (
-            "set events to []; query-session already records inspect, search, reading, and provenance"
-            if not verification_required
-            else "omit inspect/search events; add only an actual completed page-asset-verification event"
-        ),
-        "evidence_ref_policy": "never add a claim or evidence ref solely to make an optional event reference valid",
-    }
-    return {
-        "workflow": WORKFLOW,
-        "trace_id": args.trace_id,
-        "selected_count": len(packets),
-        "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
-        "evidence_packets": agent_packets,
-        "delivery_metrics": delivery_metrics,
-        "finalize_contract": {
-            "top_level_fields": sorted(DECISION_KEYS - {"unresolved_items"}),
-            "top_level_aliases": {"unresolved_items": "unresolved"},
-            "claim_fields": sorted(CLAIM_KEYS),
-            "verification_contract": verification_contract,
-            "evidence_level_contract": level_contract,
-            "event_submission_contract": event_contract,
-            "claim_set_policy": (
-                "Use the minimum sufficient claim set: each claim must answer a requested output attribute or "
-                "action; subject qualifiers only narrow scope and do not create claims. Merge closely related "
-                "parameters supported by the same evidence."
-            ),
-            "claim_pruning_gate": (
-                "Before finalize, remove any claim whose deletion still leaves every requested output answered. "
-                "Evidence availability never creates answer scope. Put unrequested comparison, background, "
-                "applicability, or operational context only in a necessary qualification on a requested claim; "
-                "otherwise omit it."
-            ),
-            "qualification_policy": (
-                "Attach scope or evidence boundaries briefly to the affected claim; do not create a separate "
-                "background or applicability claim unless the question asks for it."
-            ),
-            "unresolved_policy": "Keep only unresolved items that materially change correctness or use of the answer.",
-            "conclusion_policy": "Use one short synthesis and do not repeat the claims item by item.",
-            "decision_minimization_policy": (
-                "Submit the smallest valid decision object: only the minimum claims, their packet refs, "
-                "necessary qualifications, one short conclusion, material unresolved items, and the required "
-                "empty ordinary event list."
-            ),
-            "event_standard_fields": sorted(EVENT_KEYS - {"extensions"}),
-            "event_extension_policy": (
-                "Unknown event fields are preserved under extensions; they never satisfy a stage or evidence gate. "
-                "Omit events unless they add an actual audit or verification fact."
-            ),
-        },
-        "next_command": "verify" if verification_required else "finalize",
-    }
+    return result
 
 
 def candidate_key(candidate: dict[str, Any]) -> tuple[str, str]:
@@ -1996,6 +1975,12 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
             "decision_input_chars": decision_input_chars,
             "last_agent_packet_chars": workflow.get("last_delivery_metrics", {}).get("agent_packet_chars"),
             "last_full_packet_chars": workflow.get("last_delivery_metrics", {}).get("full_packet_chars"),
+            "last_inspect_response_chars": workflow.get("last_response_metrics", {}).get(
+                "inspect_response_chars"
+            ),
+            "last_finalize_contract_chars": workflow.get("last_response_metrics", {}).get(
+                "finalize_contract_chars"
+            ),
         }
     )
     capsule = build_answer_capsule(state, manifest)
