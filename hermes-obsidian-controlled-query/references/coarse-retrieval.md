@@ -8,8 +8,8 @@ Use the configured coarse-recall Provider to narrow a large Vault before traditi
 question classification
 -> optional coarse recall || hierarchical routing
 -> normalize, expand, union, deduplicate, and RRF-rank candidate scope
--> governed-layer-first traditional search
--> one compact-window evidence inspection
+-> deterministic compact-window selection
+-> one automatic evidence inspection
 -> current-source resolution and optional explicitly requested original-page verification
 -> finalize as completed or incomplete without supplemental retrieval
 ```
@@ -21,11 +21,11 @@ Use direct traditional/hierarchical lookup for exact identifiers and verbatim ph
 The normal fast path invokes parallel scope retrieval through:
 
 ```bash
-python3 "<query-skill-root>/scripts/query_session.py" begin \
+python3 "<query-skill-root>/scripts/query_session.py" query \
   <vault-root> "<query>" --query-type <type>
 ```
 
-It starts the trace, invokes the adapter below concurrently with hierarchical location, expands Provider chunks to complete sections, and fuses the union. Provider and hierarchical raw scores remain separate; fusion ordering uses route ranks. Candidate duplicates and their rejection reasons are retained in the trace sidecar while stdout stays compact.
+It starts the trace, invokes the adapter below concurrently with hierarchical location, expands Provider chunks to complete sections, fuses the union, and automatically inspects the bounded first window. Provider and hierarchical raw scores remain separate; fusion ordering uses route ranks. Candidate details and rejection reasons are retained in the trace sidecar; stdout contains evidence packets rather than a candidate list.
 
 Call `retrieve_query_scope.py` directly only for an explicit diagnostic or legacy fallback.
 

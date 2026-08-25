@@ -24,29 +24,28 @@ Never search for runtime scripts under the Vault or hard-code `/root/.hermes/ski
 The normal lifecycle is handled by:
 
 ```text
-query_session.py begin
-query_session.py inspect
+query_session.py query
 query_session.py finalize
 ```
 
-The workflow identifier is `query-session/v2` and trace schema is 1.5. Every trace has one compact-window inspection; supplemental retrieval and a second inspection are blocked, so an unresolved evidence gap proceeds directly to an `incomplete` finalization. A query begun with the domain-neutral `--verification-required` policy adds one deterministic `verify` preparation command after that inspection.
+The workflow identifier is `query-session/v2` and trace schema is 1.5. `query` creates the trace and performs the single compact-window inspection in one process. Supplemental retrieval and a second inspection are blocked. `query --verification-required` adds one deterministic `verify` preparation command.
 
-These three calls automatically record:
+These two calls automatically record:
 
 - query preflight;
 - coarse and hierarchical route attempts;
 - aggregate parallel scope retrieval;
-- candidate-review interval between `begin` and `inspect`;
+- automatic first-window candidate review inside `query`;
 - document reading;
 - table/figure resolution;
 - provenance resolution;
-- answer-synthesis interval between `inspect` and `finalize`;
+- answer-synthesis interval between the combined `query` result and `finalize`;
 - claim–evidence validation;
 - query-session duration and command count.
 
-`inspect` also registers compact evidence handles and complete source-range provenance while returning an aggregate-budgeted agent copy. The diagnostic `evidence-packet-delivery` event records pre-delivery and delivered character counts without adding a primary stage. `finalize --decision-json` inherits all provenance from those handles, creates deterministic ASCII evidence/claim IDs, and stores a compact answer capsule with one deduplicated source catalog plus claim `source_ids`.
+The embedded inspection registers compact evidence handles and complete source-range provenance while returning an aggregate-budgeted agent copy. The diagnostic `evidence-packet-delivery` event records character counts without adding a primary stage. `finalize --decision-json` inherits provenance, supplies ordinary default fields, creates deterministic ASCII evidence/claim IDs, and stores a compact answer capsule.
 
-Before trace creation, `begin` rejects apparent multi-question input unless the caller explicitly records that the subparts share one evidence set. Finalization rejects empty claim text atomically, so completed Claim–Evidence mappings always identify the assertion being supported.
+Before trace creation, `query` rejects apparent multi-question input unless the caller explicitly records that the subparts share one evidence set. Finalization rejects empty claim text atomically, so completed Claim–Evidence mappings always identify the assertion being supported.
 
 Original-page visual review is an opt-in audit route, not a default requirement for parameters, formulas, tables, or figures. Bundle extraction is trusted when its control metadata passes. When visual review is explicitly selected, carrier preparation is deterministic: `verify` records `verification-readiness` as `ready`, `unavailable`, or `failed` and never probes alternative PDF tools. Include an actual review as a completed `page-asset-verification` event with `evidence_refs` and `inspected_paths` in the finalization decision. Unavailable required verification must remain `needs-qa` with an unresolved item.
 
@@ -71,7 +70,7 @@ Schema 1.5 stores `started_at`, `ended_at`, `duration_ms`, and `accounting` on e
 - accounted primary-stage duration;
 - unaccounted query-session duration.
 
-The measurement boundary begins when `query_session.py begin` starts and ends when `finalize` begins final persistence. `answer-synthesis` starts after the agent-facing evidence copy is prepared and ends when the final decision reaches `finalize`; it therefore includes tool-result transfer, model queue/reading/reasoning, and decision serialization, not only prose composition. The trace records `decision_input_chars` plus the last pre-delivery and agent-delivered packet sizes so these causes can be separated on later runs. It does not include time before the first tool invocation or after the final tool returns. Hermes session and message IDs are inherited automatically from the terminal environment; correlate both with `agent.log` for true request-received-to-answer-emitted timing and approval waits.
+The measurement boundary begins when `query_session.py query` starts and ends when `finalize` begins final persistence. `answer-synthesis` starts after the agent-facing evidence copy is prepared and ends when the final decision reaches `finalize`; it therefore includes tool-result transfer, model queue/reading/reasoning, and decision serialization, not only prose composition. The trace records `decision_input_chars` plus the last pre-delivery and agent-delivered packet sizes so these causes can be separated on later runs. It does not include time before the first tool invocation or after the final tool returns. Hermes session and message IDs are inherited automatically from the terminal environment; correlate both with `agent.log` for true request-received-to-answer-emitted timing and approval waits.
 
 `attempted_routes` includes disabled/unavailable routes. `effective_routes` and the compatibility `retrieval_route` exclude them.
 
@@ -95,7 +94,7 @@ Evidence and claim records include `recorded_at` in both the sidecar and rendere
 
 ## Multiple questions
 
-Each independently answerable question receives its own trace. Reuse one request ID, increment `--question-index`, and pass the same `--question-count`. The script rejects a new begin while that request has an in-progress trace, as well as duplicate/gapped indices and conflicting counts. Never reuse a trace ID, keep traces open concurrently, or batch separate questions through an ad hoc script. Each completed trace stores an answer capsule; the last finalize uses `--close-request` to return all capsules without reloading full evidence packets.
+Each independently answerable question receives its own trace. Reuse one request ID, increment `--question-index`, and pass the same `--question-count`. The script rejects a new `query` while that request has an in-progress trace, as well as duplicate/gapped indices and conflicting counts. Never reuse a trace ID, keep traces open concurrently, or batch separate questions through an ad hoc script. Each completed trace stores an answer capsule; the last finalize uses `--close-request` to return all capsules without reloading full evidence packets.
 
 Grouped notes live under `_system/reports/query-traces/<request-id>/`; sidecars remain under `_data/`. `Request Summary.md` is navigation only and reports expected/recorded counts, controlled duration, and detected trace overlap. `--close-request` and later `request-summary` reject unfinished/non-contiguous groups. Map every numbered final answer to its trace path or explicit skipped/unavailable status. True user-message-to-final-token time still comes from the correlated Hermes session/message log.
 

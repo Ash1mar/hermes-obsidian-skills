@@ -31,15 +31,15 @@ def make_vault(tmp_path: Path) -> Path:
     bundle = vault / "10_Raw" / "converted" / "0712XFNPXTS02_document_bundle"
     bundle.mkdir(parents=True)
     (bundle / "document.md").write_text(
-        "# 消防系统\n\n## 水喷雾管网\n喷头参数 K=60，动作温度为 68 摄氏度。\n",
+        "# 工程系统\n\n## 参数子系统\n组件参数 A=60，阈值温度为 68 摄氏度。\n",
         encoding="utf-8",
     )
     (bundle / "tables").mkdir()
-    (bundle / "tables" / "table_spray.md").write_text(
-        "# 喷头参数表\n\n<!-- table-id: table_spray; source-page: 1 -->\n\n| K | 温度 |\n| --- | --- |\n| 60 | 68 ℃ |\n",
+    (bundle / "tables" / "table_component.md").write_text(
+        "# 组件参数表\n\n<!-- table-id: table_component; source-page: 1 -->\n\n| A | 温度 |\n| --- | --- |\n| 60 | 68 ℃ |\n",
         encoding="utf-8",
     )
-    (bundle / "tables" / "table_spray_source.jpg").write_bytes(b"fixture-image")
+    (bundle / "tables" / "table_component_source.jpg").write_bytes(b"fixture-image")
     source_pdf = vault / "10_Raw" / "0712XFNPXTS02.pdf"
     source_pdf.parent.mkdir(parents=True, exist_ok=True)
     source_pdf.write_bytes(b"%PDF-1.4 fixture")
@@ -53,15 +53,15 @@ def make_vault(tmp_path: Path) -> Path:
             "outline": {"path": "outline.json"},
             "tables": [
                 {
-                    "id": "table_spray",
-                    "caption": "喷头参数表",
+                    "id": "table_component",
+                    "caption": "组件参数表",
                     "page_start": 1,
                     "page_end": 1,
-                    "path": "tables/table_spray.md",
-                    "evidence_path": "tables/table_spray_source.jpg",
+                    "path": "tables/table_component.md",
+                    "evidence_path": "tables/table_component_source.jpg",
                     "bbox": [1, 2, 3, 4],
                     "quality": "pass",
-                    "section_id": "spray",
+                    "section_id": "component",
                 }
             ],
         },
@@ -73,7 +73,7 @@ def make_vault(tmp_path: Path) -> Path:
             "sections": [
                 {
                     "id": "root",
-                    "title": "消防系统",
+                    "title": "工程系统",
                     "level": 1,
                     "parent": None,
                     "path": ["root"],
@@ -84,15 +84,15 @@ def make_vault(tmp_path: Path) -> Path:
                     "quality": "pass",
                 },
                 {
-                    "id": "spray",
-                    "title": "水喷雾管网",
+                    "id": "component",
+                    "title": "参数子系统",
                     "level": 2,
                     "parent": "root",
-                    "path": ["root", "spray"],
+                    "path": ["root", "component"],
                     "start_line": 3,
                     "end_line": 4,
                     "pages": [1],
-                    "assets": ["table_spray"],
+                    "assets": ["table_component"],
                     "quality": "pass",
                 },
             ],
@@ -113,10 +113,10 @@ def make_vault(tmp_path: Path) -> Path:
                     "outputs": ["_system/reports/0712XFNPXTS02.spec-index.md"],
                 },
                 {
-                    "id": "spray",
+                    "id": "component",
                     "status": "ingested",
                     "content_ranges": [{"start_line": 3, "end_line": 4}],
-                    "content_sha256": "spray-hash",
+                    "content_sha256": "component-hash",
                     "outputs": ["_system/reports/0712XFNPXTS02.spec-index.md"],
                 },
             ],
@@ -141,7 +141,7 @@ def test_build_projection_is_additive_and_has_no_summary(tmp_path: Path) -> None
     projection = json.loads(projection_path.read_text(encoding="utf-8"))
     assert projection["authority"] == "non-authoritative"
     assert projection["design_origin"] == "hanyu"
-    assert projection["sections"][1]["path_titles"] == ["消防系统", "水喷雾管网"]
+    assert projection["sections"][1]["path_titles"] == ["工程系统", "参数子系统"]
     assert "summary" not in projection["sections"][1]
     assert (vault / "10_Raw" / "converted" / "0712XFNPXTS02_document_bundle" / "outline.json").is_file()
 
@@ -150,7 +150,7 @@ def test_locator_scans_owned_content_and_returns_navigation_only(tmp_path: Path)
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     completed = subprocess.run(
-        [sys.executable, str(LOCATE), str(vault), "水喷雾喷头 K=60", "--top-sections", "5"],
+        [sys.executable, str(LOCATE), str(vault), "目标系统组件 A=60", "--top-sections", "5"],
         capture_output=True,
         text=True,
         check=True,
@@ -158,7 +158,7 @@ def test_locator_scans_owned_content_and_returns_navigation_only(tmp_path: Path)
     result = json.loads(completed.stdout)
     assert result["authority"] == "candidate-navigation-only"
     assert result["design_origin"] == "hanyu"
-    assert result["candidates"][0]["section_id"] == "spray"
+    assert result["candidates"][0]["section_id"] == "component"
     assert "60" in result["candidates"][0]["matched_terms"]["content"]
 
 
@@ -166,7 +166,7 @@ def test_locator_keeps_multiple_documents_in_the_compact_candidate_window(tmp_pa
     vault = tmp_path / "vault"
     index_dir = vault / "_system" / "reports" / "query-index"
     for document_index, title in enumerate(
-        ("GB 水喷雾灭火系统技术规范", "核岛消防系统设计工作手册", "闭式喷头选型说明"),
+        ("工程参数技术规范", "工程系统设计工作手册", "组件选型说明"),
         start=1,
     ):
         bundle = vault / "10_Raw" / "converted" / f"doc-{document_index}"
@@ -178,14 +178,14 @@ def test_locator_keeps_multiple_documents_in_the_compact_candidate_window(tmp_pa
             lines.extend(
                 [
                     f"## section-{section_index}",
-                    "闭式水喷雾灭火系统的喷水强度和喷头参数设计。",
+                    "目标工程系统的设计强度和组件参数。",
                 ]
             )
             start_line = len(lines) - 1
             sections.append(
                 {
                     "section_id": f"s{section_index}",
-                    "title": f"闭式水喷雾参数 {section_index}",
+                    "title": f"目标系统参数 {section_index}",
                     "path_titles": [title, f"section-{section_index}"],
                     "start_line": start_line,
                     "end_line": len(lines),
@@ -206,7 +206,7 @@ def test_locator_keeps_multiple_documents_in_the_compact_candidate_window(tmp_pa
                     "source_filename": f"{title}.pdf",
                     "bundle_path": bundle.relative_to(vault).as_posix(),
                     "document_path": document_path.relative_to(vault).as_posix(),
-                    "routing_terms": [title, "消防系统"],
+                    "routing_terms": [title, "工程系统"],
                 },
                 "sections": sections,
             },
@@ -216,7 +216,7 @@ def test_locator_keeps_multiple_documents_in_the_compact_candidate_window(tmp_pa
             sys.executable,
             str(LOCATE),
             str(vault),
-            "闭式水喷雾灭火系统喷水强度喷头参数",
+            "目标工程系统设计强度组件参数",
             "--index-dir",
             str(index_dir),
             "--top-documents",
@@ -257,11 +257,11 @@ def test_candidate_packing_prefers_complementary_query_facets_over_repetition() 
         }
 
     candidates = [
-        candidate("a.md", "a1", ["喷水强度"]),
+        candidate("a.md", "a1", ["设计强度"]),
         candidate("b.md", "b1", ["设计参数"]),
-        candidate("c.md", "c1", ["灭火系统"]),
-        candidate("a.md", "a2", ["喷水强度"]),
-        candidate("a.md", "a3", ["喷头参数"]),
+        candidate("c.md", "c1", ["工程系统"]),
+        candidate("a.md", "a2", ["设计强度"]),
+        candidate("a.md", "a3", ["组件参数"]),
         candidate("b.md", "b2", ["工作压力", "流量公式"]),
     ]
     selected = module.diversify_candidates(candidates, 5)
@@ -353,7 +353,7 @@ def test_scope_retrieval_survives_missing_provider_and_keeps_hierarchical_result
             sys.executable,
             str(SCOPE),
             str(vault),
-            "水喷雾喷头 K=60",
+            "目标系统组件 A=60",
             "--provider-config",
             str(missing_config),
         ],
@@ -365,7 +365,7 @@ def test_scope_retrieval_survives_missing_provider_and_keeps_hierarchical_result
     assert result["status"] == "ok"
     assert result["routes"]["coarse_recall"]["status"] == "unavailable"
     assert result["routes"]["hierarchical_search"]["hit_count"] >= 1
-    assert result["candidates"][0]["section_id"] == "spray"
+    assert result["candidates"][0]["section_id"] == "component"
     assert result["candidates"][0]["retrieval_routes"] == ["hierarchical-search"]
     assert result["duration_ms"] >= 0
 
@@ -374,7 +374,7 @@ def test_scope_fusion_expands_provider_chunk_and_records_duplicate_reason(tmp_pa
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     started = subprocess.run(
-        [sys.executable, str(TRACE), "start", str(vault), "水喷雾喷头 K=60"],
+        [sys.executable, str(TRACE), "start", str(vault), "目标系统组件 A=60"],
         capture_output=True,
         text=True,
         check=True,
@@ -384,7 +384,7 @@ def test_scope_fusion_expands_provider_chunk_and_records_duplicate_reason(tmp_pa
     provider.write_text(
         """import argparse, json
 p=argparse.ArgumentParser(); p.add_argument('command'); p.add_argument('--vault-root'); p.add_argument('--query'); p.add_argument('--top-k'); a=p.parse_args()
-print(json.dumps({'protocol_version':'hermes-coarse-recall/v1','provider':'qmd-like-rag','provider_version':'test','status':'ok','authority':'candidate-navigation-only','index_fingerprint':'idx','warnings':[],'candidates':[{'vault_path':'10_Raw/converted/0712XFNPXTS02_document_bundle/document.md','line_start':3,'line_end':4,'heading':'水喷雾管网','score':0.9}]}))
+print(json.dumps({'protocol_version':'hermes-coarse-recall/v1','provider':'qmd-like-rag','provider_version':'test','status':'ok','authority':'candidate-navigation-only','index_fingerprint':'idx','warnings':[],'candidates':[{'vault_path':'10_Raw/converted/0712XFNPXTS02_document_bundle/document.md','line_start':3,'line_end':4,'heading':'参数子系统','score':0.9}]}))
 """,
         encoding="utf-8",
     )
@@ -403,7 +403,7 @@ print(json.dumps({'protocol_version':'hermes-coarse-recall/v1','provider':'qmd-l
             sys.executable,
             str(SCOPE),
             str(vault),
-            "水喷雾喷头 K=60",
+            "目标系统组件 A=60",
             "--provider-config",
             str(provider_config),
             "--trace-id",
@@ -414,11 +414,11 @@ print(json.dumps({'protocol_version':'hermes-coarse-recall/v1','provider':'qmd-l
         check=True,
     )
     result = json.loads(completed.stdout)
-    spray = next(item for item in result["candidates"] if item["section_id"] == "spray")
-    assert spray["retrieval_routes"] == ["hierarchical-search", "qmd-like-rag"]
-    assert set(spray["route_scores"]) == {"hierarchical-search", "qmd-like-rag"}
-    assert spray["fusion_score"] > 0
-    assert spray["rerank_score"] == spray["fusion_score"]
+    component = next(item for item in result["candidates"] if item["section_id"] == "component")
+    assert component["retrieval_routes"] == ["hierarchical-search", "qmd-like-rag"]
+    assert set(component["route_scores"]) == {"hierarchical-search", "qmd-like-rag"}
+    assert component["fusion_score"] > 0
+    assert component["rerank_score"] == component["fusion_score"]
     assert result["fusion"]["duration_ms"] >= 0
     assert result["fusion"]["eliminated_count"] >= 1
     assert any(item["reason"] == "duplicate-section-merged" for item in result["rejected"])
@@ -437,7 +437,7 @@ def test_locator_compacts_overlapping_query_ngrams(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     completed = subprocess.run(
-        [sys.executable, str(LOCATE), str(vault), "消防系统水喷雾喷头参数"],
+        [sys.executable, str(LOCATE), str(vault), "工程系统目标组件参数"],
         capture_output=True,
         text=True,
         check=True,
@@ -459,7 +459,7 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
             str(SESSION),
             "begin",
             str(vault),
-            "水喷雾喷头 K=60 的参数是什么？",
+            "目标系统组件 A=60 的参数是什么？",
             "--session-id",
             "session-fast",
             "--query-type",
@@ -480,7 +480,7 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert begin_result["scope"]["candidate_count"] == len(begin_result["scope"]["candidates"])
     assert begin_result["scope"]["candidate_window_complete"] is True
     assert begin_result["scope"]["producer_output_truncated"] is False
-    assert begin_result["scope"]["candidates"][0]["section_id"] == "spray"
+    assert begin_result["scope"]["candidates"][0]["section_id"] == "component"
     assert begin_result["scope"]["selection_contract"] == {
         "first_inspection_input": "compact-candidates-only",
         "inspect_once": "select all useful returned candidates in the only permitted inspection call",
@@ -540,10 +540,10 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
         inspect_result["finalize_contract"]["evidence_level_contract"]["reference_read_policy"]
     )
     packet = inspect_result["evidence_packets"][0]
-    assert "K=60" in packet["content"]
+    assert "A=60" in packet["content"]
     assert packet["source_exists"] is True
     assert packet["source_path"] == "10_Raw/0712XFNPXTS02.pdf"
-    assert packet["assets"][0]["id"] == "table_spray"
+    assert packet["assets"][0]["id"] == "table_component"
     assert "| 60 | 68 ℃ |" in packet["assets"][0]["content"]
     assert packet["qa"]["source_map_validation_status"] == "pass"
     assert packet["verification"]["status"] == "ready"
@@ -563,7 +563,7 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
         "evidence_level": "clear",
         "claims": [
             {
-                "text": "The checked section supports K=60.",
+                "text": "The checked section supports parameter A=60.",
                 "status": "supported",
                 "evidence_refs": ["P1"],
             },
@@ -584,7 +584,7 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
                 "inspected_paths": [carrier],
             }
         ],
-        "conclusion": "The checked section supports K=60.",
+        "conclusion": "The checked section supports parameter A=60.",
         "unresolved": [],
     }
     finalized = subprocess.run(
@@ -613,7 +613,7 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert state["evidence"][0]["evidence_id"] == "E1"
     assert state["evidence"][0]["document_version"] == packet["document_version"]
     assert state["claims"][0]["claim_id"] == "C1"
-    assert state["answer_capsule"]["claims"][0]["text"] == "The checked section supports K=60."
+    assert state["answer_capsule"]["claims"][0]["text"] == "The checked section supports parameter A=60."
     assert len(state["answer_capsule"]["sources"]) == 1
     assert state["answer_capsule"]["claims"][0]["source_ids"] == ["S1"]
     assert state["answer_capsule"]["claims"][1]["source_ids"] == ["S1"]
@@ -642,7 +642,7 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     )
     request_result = json.loads(summarized.stdout)
     assert request_result["question_count"] == 1
-    assert "The checked section supports K=60." in request_result["answer_markdown"]
+    assert "The checked section supports parameter A=60." in request_result["answer_markdown"]
     assert request_result["metrics"]["controlled_request_duration_ms"] >= 0
     assert request_result["metrics"]["measurement_boundary"] == "first query-session begin through last finalized trace"
 
@@ -654,26 +654,26 @@ def test_query_session_bounds_agent_evidence_copy_and_keeps_query_matches(tmp_pa
         f"背景段落 {index}：" + ("与当前问题无关的通用说明。" * 10)
         for index in range(45)
     ]
-    paragraphs.insert(22, "关键参数：喷头参数 K=60，动作温度为 68 摄氏度。")
-    document_lines = ["# 消防系统", "", "## 水喷雾管网", ""]
+    paragraphs.insert(22, "关键参数：组件参数 A=60，动作温度为 68 摄氏度。")
+    document_lines = ["# 工程系统", "", "## 参数子系统", ""]
     document_lines.extend("\n\n".join(paragraphs).splitlines())
     (bundle / "document.md").write_text("\n".join(document_lines) + "\n", encoding="utf-8")
     end_line = len(document_lines)
     outline = json.loads((bundle / "outline.json").read_text(encoding="utf-8"))
     for section in outline["sections"]:
-        if section["id"] in {"root", "spray"}:
+        if section["id"] in {"root", "component"}:
             section["end_line"] = end_line
     write_json(bundle / "outline.json", outline)
     ledger_path = vault / "_system" / "reports" / "0712XFNPXTS02.section-ledger.json"
     ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
     for section in ledger["sections"]:
-        if section["id"] == "spray":
+        if section["id"] == "component":
             section["content_ranges"] = [{"start_line": 3, "end_line": end_line}]
     write_json(ledger_path, ledger)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
 
     begun = subprocess.run(
-        [sys.executable, str(SESSION), "begin", str(vault), "喷头参数 K=60 的动作温度是什么？"],
+        [sys.executable, str(SESSION), "begin", str(vault), "组件参数 A=60 的阈值温度是什么？"],
         capture_output=True,
         text=True,
         check=True,
@@ -704,7 +704,7 @@ def test_query_session_bounds_agent_evidence_copy_and_keeps_query_matches(tmp_pa
     packet = result["evidence_packets"][0]
     assert packet["content_truncated"] is False
     assert packet["delivery_excerpted"] is True
-    assert "K=60" in packet["content"]
+    assert "A=60" in packet["content"]
     assert "68 摄氏度" in packet["content"]
     assert "| 60 | 68 ℃ |" in packet["assets"][0]["content"]
 
@@ -717,7 +717,7 @@ def test_query_session_bounds_agent_evidence_copy_and_keeps_query_matches(tmp_pa
 
 def test_query_session_rejects_multiple_questions_before_trace_creation(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
-    question = "喷水强度是多少？通信接口应注意什么？喷头审查关注什么？"
+    question = "设计强度是多少？通信接口应注意什么？组件审查关注什么？"
     rejected = subprocess.run(
         [sys.executable, str(SESSION), "begin", str(vault), question],
         capture_output=True,
@@ -775,7 +775,7 @@ def test_query_session_rejects_empty_claim_then_accepts_text_alias(tmp_path: Pat
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
-        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾参数"],
+        [sys.executable, str(SESSION), "begin", str(vault), "目标系统参数"],
         capture_output=True,
         text=True,
         check=True,
@@ -839,7 +839,7 @@ def test_query_session_rejects_empty_claim_then_accepts_text_alias(tmp_path: Pat
 
     repaired_decision = {
         "evidence_level": "needs-qa",
-        "claims": [{"statement": "The inspected source supports the water-spray parameter.", "evidence_refs": [evidence_ref]}],
+        "claims": [{"statement": "The inspected source supports the component parameter.", "evidence_refs": [evidence_ref]}],
         "events": [{"type": "inspection", "summary": "Recorded by a newer model event vocabulary."}],
         "unresolved_items": ["Original-page verification was not completed."],
     }
@@ -858,7 +858,7 @@ def test_query_session_rejects_empty_claim_then_accepts_text_alias(tmp_path: Pat
         check=True,
     )
     final_state = json.loads(Path(json.loads(finalized.stdout)["state_path"]).read_text(encoding="utf-8"))
-    assert final_state["claims"][0]["text"] == "The inspected source supports the water-spray parameter."
+    assert final_state["claims"][0]["text"] == "The inspected source supports the component parameter."
     assert final_state["answer_capsule"]["claims"][0]["text"] == final_state["claims"][0]["text"]
     assert final_state["unresolved"] == ["Original-page verification was not completed."]
     assert final_state["answer_capsule"]["sources"][0]["source_id"] == "S1"
@@ -873,7 +873,7 @@ def test_query_session_finalize_is_atomic_on_invalid_claim(tmp_path: Path) -> No
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
-        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾参数"],
+        [sys.executable, str(SESSION), "begin", str(vault), "目标系统参数"],
         capture_output=True,
         text=True,
         check=True,
@@ -917,7 +917,7 @@ def test_query_session_blocks_supplement_and_allows_immediate_finalize(tmp_path:
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
-        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾参数"],
+        [sys.executable, str(SESSION), "begin", str(vault), "目标系统参数"],
         capture_output=True,
         text=True,
         check=True,
@@ -937,7 +937,7 @@ def test_query_session_blocks_supplement_and_allows_immediate_finalize(tmp_path:
             "supplement",
             str(vault),
             trace_id,
-            "K=60 表格",
+            "A=60 表格",
             "--reason",
             "Confirm the exact table value.",
         ],
@@ -951,7 +951,7 @@ def test_query_session_blocks_supplement_and_allows_immediate_finalize(tmp_path:
     assert "single-pass policy" in supplement_result["reason"]
     decision = {
         "evidence_level": "source-backed",
-        "claims": [{"text": "K=60 is present.", "evidence_refs": [packet_ref]}],
+        "claims": [{"text": "A=60 is present.", "evidence_refs": [packet_ref]}],
         "unresolved": [],
     }
     finalized = subprocess.run(
@@ -993,7 +993,7 @@ def test_query_session_inherits_hermes_session_context(tmp_path: Path) -> None:
             str(SESSION),
             "begin",
             str(vault),
-            "水喷雾参数",
+            "目标系统参数",
             "--session-id",
             "model-supplied-session",
         ],
@@ -1026,11 +1026,70 @@ def test_query_session_bootstrap_returns_exact_rules_and_capabilities(tmp_path: 
     assert result["verification_runtime"]["policy"].startswith("one deterministic")
     config_root = QUERY_SKILL.parent / "config"
     expected_routing_path = next(
-        path for path in (config_root / "domain-routing.json", config_root / "intranet.json") if path.is_file()
+        path for path in (config_root / "intranet.json", config_root / "domain-routing.json") if path.is_file()
     )
     assert Path(result["routing_config_path"]).name == expected_routing_path.name
     assert result["routing"] == json.loads(expected_routing_path.read_text(encoding="utf-8"))
-    assert result["next_command"] == "begin"
+    assert result["next_command"] == "query"
+
+
+def test_combined_query_automatically_inspects_and_uses_minimal_synthesis_contract(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    queried = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "query",
+            str(vault),
+            "参数值和温度是什么？",
+            "--session-id",
+            "session-combined",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = json.loads(queried.stdout)
+    assert "scope" not in result
+    assert result["next_command"] == "finalize"
+    assert 1 <= result["selected_count"] <= 3
+    assert result["agent_packet_chars"] > 0
+    assert result["synthesis_contract"]["mode"] == "ordinary-minimal"
+    assert result["synthesis_contract"]["model_fields"] == ["claims", "conclusion"]
+    assert result["synthesis_contract"]["ordinary_script_defaults"]["events"] == []
+    assert result["synthesis_contract"]["evidence_policy"]["direct_use_allowed"] is True
+    packet = result["evidence_packets"][0]
+    finalized = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            result["trace_id"],
+            "--decision-json",
+            json.dumps(
+                {
+                    "claims": [{"text": "The selected section supports the requested value.", "evidence_refs": [packet["evidence_ref"]]}],
+                    "conclusion": "Use the value supported by the selected evidence.",
+                },
+                ensure_ascii=False,
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    final_result = json.loads(finalized.stdout)
+    state = json.loads(Path(final_result["state_path"]).read_text(encoding="utf-8"))
+    assert state["metrics"]["command_count"] == 2
+    review = next(event for event in state["events"] if event["stage"] == "candidate-review")
+    assert review["route"] == "automatic-first-window"
+    assert state["answer_capsule"]["answer_markdown"].startswith(
+        "- The selected section supports the requested value."
+    )
+    assert final_result["final_response"] == state["answer_capsule"]["answer_markdown"]
+    assert final_result["next_action"] == "return final_response verbatim without another evidence review"
 
 
 def test_query_session_does_not_infer_verification_policy_from_question_terms(tmp_path: Path) -> None:
@@ -1042,7 +1101,7 @@ def test_query_session_does_not_infer_verification_policy_from_question_terms(tm
             str(SESSION),
             "begin",
             str(vault),
-            "水喷雾喷头参数 K=60 表格 formula pressure 是多少？",
+            "目标系统组件参数 A=60 表格 formula pressure 是多少？",
         ],
         capture_output=True,
         text=True,
@@ -1092,7 +1151,7 @@ def test_query_session_treats_source_map_warn_as_non_blocking_diagnostic(tmp_pat
     )
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
-        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头参数是多少？"],
+        [sys.executable, str(SESSION), "begin", str(vault), "目标系统组件参数是多少？"],
         capture_output=True,
         text=True,
         check=True,
@@ -1122,7 +1181,7 @@ def test_query_session_treats_non_failed_asset_qa_as_non_blocking(tmp_path: Path
         write_json(manifest_path, manifest)
         subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
         begun = subprocess.run(
-            [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头参数是多少？"],
+            [sys.executable, str(SESSION), "begin", str(vault), "目标系统组件参数是多少？"],
             capture_output=True,
             text=True,
             check=True,
@@ -1139,7 +1198,7 @@ def test_query_session_treats_non_failed_asset_qa_as_non_blocking(tmp_path: Path
         assert contract["full_reference_required"] is False
         assert contract["blocked_conditions"] == []
         assert contract["non_blocking_diagnostics"] == [
-            f"P1:table_spray-quality={asset_quality}"
+            f"P1:table_component-quality={asset_quality}"
         ]
 
 
@@ -1153,7 +1212,7 @@ def test_query_session_blocks_failed_asset_and_truncated_answer_content(tmp_path
     write_json(manifest_path, manifest)
     subprocess.run([sys.executable, str(BUILD), str(failed_vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
-        [sys.executable, str(SESSION), "begin", str(failed_vault), "水喷雾喷头参数是多少？"],
+        [sys.executable, str(SESSION), "begin", str(failed_vault), "目标系统组件参数是多少？"],
         capture_output=True,
         text=True,
         check=True,
@@ -1167,12 +1226,12 @@ def test_query_session_blocks_failed_asset_and_truncated_answer_content(tmp_path
     )
     contract = json.loads(inspected.stdout)["finalize_contract"]["evidence_level_contract"]
     assert contract["direct_use_allowed"] is False
-    assert contract["blocked_conditions"] == ["P1:table_spray-quality=failed"]
+    assert contract["blocked_conditions"] == ["P1:table_component-quality=failed"]
 
     truncated_vault = make_vault(tmp_path / "truncated")
     subprocess.run([sys.executable, str(BUILD), str(truncated_vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
-        [sys.executable, str(SESSION), "begin", str(truncated_vault), "水喷雾喷头参数是多少？"],
+        [sys.executable, str(SESSION), "begin", str(truncated_vault), "目标系统组件参数是多少？"],
         capture_output=True,
         text=True,
         check=True,
@@ -1203,7 +1262,7 @@ def test_query_session_rejects_verified_refs_after_inspect_without_visual_verifi
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
-        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头参数是多少？"],
+        [sys.executable, str(SESSION), "begin", str(vault), "目标系统组件参数是多少？"],
         capture_output=True,
         text=True,
         check=True,
@@ -1227,7 +1286,7 @@ def test_query_session_rejects_verified_refs_after_inspect_without_visual_verifi
             json.dumps(
                 {
                     "evidence_level": "source-backed",
-                    "claims": [{"text": "K=60.", "evidence_refs": [evidence_ref]}],
+                    "claims": [{"text": "A=60.", "evidence_refs": [evidence_ref]}],
                     "verified_evidence_refs": [evidence_ref],
                     "unresolved": [],
                 }
@@ -1250,7 +1309,7 @@ def test_query_session_rejects_exact_projected_section_outside_initial_window(tm
             str(SESSION),
             "begin",
             str(vault),
-            "K=60 水喷雾喷头参数",
+            "目标系统组件参数 A=60",
             "--top-sections",
             "1",
             "--compact-limit",
@@ -1294,7 +1353,7 @@ def test_query_session_resolves_hash_matched_nested_vault_source_before_external
     vault = make_vault(tmp_path)
     original = vault / "10_Raw" / "0712XFNPXTS02.pdf"
     payload = original.read_bytes()
-    nested = vault / "10_Raw" / "1.核岛消防系统（FNP）工作手册" / original.name
+    nested = vault / "10_Raw" / "1.项目工程系统（FNP）工作手册" / original.name
     nested.parent.mkdir(parents=True)
     original.replace(nested)
     duplicate = vault / "10_Raw" / "duplicate" / original.name
@@ -1311,7 +1370,7 @@ def test_query_session_resolves_hash_matched_nested_vault_source_before_external
     write_json(manifest_path, manifest)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
-        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头 K=60"],
+        [sys.executable, str(SESSION), "begin", str(vault), "目标系统组件 A=60"],
         check=True,
         capture_output=True,
         text=True,
@@ -1325,7 +1384,7 @@ def test_query_session_resolves_hash_matched_nested_vault_source_before_external
     )
     packet = json.loads(inspected.stdout)["evidence_packets"][0]
     assert packet["source_exists"] is True
-    assert packet["source_path"] == f"10_Raw/1.核岛消防系统（FNP）工作手册/{original.name}"
+    assert packet["source_path"] == f"10_Raw/1.项目工程系统（FNP）工作手册/{original.name}"
     assert str(external) not in json.dumps(packet, ensure_ascii=False)
 
 
@@ -1345,7 +1404,7 @@ def test_query_session_does_not_promote_external_source_when_vault_copy_is_missi
     write_json(manifest_path, manifest)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
-        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头 K=60"],
+        [sys.executable, str(SESSION), "begin", str(vault), "目标系统组件 A=60"],
         check=True,
         capture_output=True,
         text=True,
@@ -1366,7 +1425,7 @@ def test_second_inspection_is_blocked_without_refreshing_catalog(tmp_path: Path)
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
-        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头 K=60"],
+        [sys.executable, str(SESSION), "begin", str(vault), "目标系统组件 A=60"],
         check=True,
         capture_output=True,
         text=True,
@@ -1394,7 +1453,7 @@ def test_query_session_disables_every_supplement_attempt(tmp_path: Path) -> None
             str(SESSION),
             "begin",
             str(vault),
-            "水喷雾喷头 K=60",
+            "目标系统组件 A=60",
             "--provider-config",
             str(provider_config),
         ],
@@ -1415,7 +1474,7 @@ def test_query_session_disables_every_supplement_attempt(tmp_path: Path) -> None
         "supplement",
         str(vault),
         trace_id,
-        "闭式水喷雾参数",
+        "目标系统参数",
         "--reason",
         "initial packet omitted a related design section",
         "--provider-config",
@@ -1444,7 +1503,7 @@ def test_failed_query_command_is_recorded_for_incomplete_finalization(tmp_path: 
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
-        [sys.executable, str(SESSION), "begin", str(vault), "水喷雾喷头 K=60"],
+        [sys.executable, str(SESSION), "begin", str(vault), "目标系统组件 A=60"],
         check=True,
         capture_output=True,
         text=True,
@@ -1471,7 +1530,7 @@ def test_query_session_verify_uses_registered_carrier_once(tmp_path: Path) -> No
             str(SESSION),
             "begin",
             str(vault),
-            "水喷雾喷头参数是多少？",
+            "目标系统组件参数是多少？",
             "--verification-required",
         ],
         capture_output=True,
@@ -1499,7 +1558,7 @@ def test_query_session_verify_uses_registered_carrier_once(tmp_path: Path) -> No
     carrier = verification["verification"][0]["paths"][0]
     decision = {
         "evidence_level": "clear",
-        "claims": [{"text": "K=60 is confirmed.", "evidence_refs": [evidence_ref]}],
+        "claims": [{"text": "A=60 is confirmed.", "evidence_refs": [evidence_ref]}],
         "verified_evidence_refs": [evidence_ref],
         "events": [
             {
@@ -1549,7 +1608,7 @@ def test_query_session_verification_uses_viewer_or_fast_fails_without_carrier(tm
             str(SESSION),
             "begin",
             str(vault),
-            "水喷雾参数是多少？",
+            "目标系统参数是多少？",
             "--verification-required",
         ],
         capture_output=True,
@@ -1594,7 +1653,7 @@ def test_query_session_blocks_overlapping_request_and_closes_with_capsules(tmp_p
             str(SESSION),
             "begin",
             str(vault),
-            "水喷雾参数是多少？",
+            "目标系统参数是多少？",
             "--request-id",
             "req-sequential",
             "--question-index",
@@ -1621,7 +1680,7 @@ def test_query_session_blocks_overlapping_request_and_closes_with_capsules(tmp_p
             str(SESSION),
             "begin",
             str(vault),
-            "水喷雾接口要求是什么？",
+            "目标系统接口要求是什么？",
             "--request-id",
             "req-sequential",
             "--question-index",
@@ -1668,7 +1727,7 @@ def test_query_session_blocks_overlapping_request_and_closes_with_capsules(tmp_p
             str(SESSION),
             "begin",
             str(vault),
-            "水喷雾接口要求是什么？",
+            "目标系统接口要求是什么？",
             "--request-id",
             "req-sequential",
             "--question-index",
@@ -1723,7 +1782,7 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
             str(TRACE),
             "start",
             str(vault),
-            "水喷雾喷头 K=60 应如何核查？",
+            "目标系统组件 A=60 应如何核查？",
             "--session-id",
             "session-123",
             "--query-type",
@@ -1740,7 +1799,7 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
             sys.executable,
             str(LOCATE),
             str(vault),
-            "水喷雾喷头 K=60",
+            "目标系统组件 A=60",
             "--trace-id",
             trace_id,
         ],
@@ -1762,11 +1821,11 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
             "--document-version",
             "doc-hash",
             "--section-id",
-            "spray",
+            "component",
             "--page",
             "1",
             "--block-id",
-            "spray-lines-3-4",
+            "component-lines-3-4",
             "--original-asset-status",
             "not-required",
         ],
@@ -1806,7 +1865,7 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
             "--claim-id",
             "C1",
             "--text",
-            "The checked section supports K=60.",
+            "The checked section supports parameter A=60.",
             "--evidence-id",
             "E1",
         ],
@@ -1824,7 +1883,7 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
             "--evidence-level",
             "source-backed",
             "--conclusion",
-            "The checked section supports K=60.",
+            "The checked section supports parameter A=60.",
         ],
         check=True,
         capture_output=True,
@@ -1844,7 +1903,7 @@ def test_query_trace_is_incremental_obsidian_readable_and_non_authoritative(tmp_
     assert "Accepted evidence: `1`" in note
     assert "## Claim–Evidence map" in note
     assert state["events"][0]["route"] == "hierarchical-search"
-    assert state["events"][0]["candidates"][0]["section_id"] == "spray"
+    assert state["events"][0]["candidates"][0]["section_id"] == "component"
     assert "hierarchical_search_used: true" in note
     assert "Runtime trace, not evidence" in note
     assert "session-123" in note
@@ -2027,7 +2086,7 @@ def test_trace_failure_does_not_block_hierarchical_retrieval(tmp_path: Path) -> 
             sys.executable,
             str(LOCATE),
             str(vault),
-            "水喷雾喷头 K=60",
+            "目标系统组件 A=60",
             "--trace-id",
             "missing-trace",
         ],
@@ -2037,7 +2096,7 @@ def test_trace_failure_does_not_block_hierarchical_retrieval(tmp_path: Path) -> 
     result = json.loads(completed.stdout)
     assert completed.returncode == 0
     assert result["status"] == "ok"
-    assert result["candidates"][0]["section_id"] == "spray"
+    assert result["candidates"][0]["section_id"] == "component"
     assert "query trace append failed" in completed.stderr
 
 
@@ -2046,7 +2105,7 @@ def test_read_only_wording_does_not_disable_default_query_trace() -> None:
     reference = TRACE_REFERENCE.read_text(encoding="utf-8")
     assert "Read-only query” protects governed artifacts; it does **not** disable the trace" in skill
     assert "explicit no-trace request or an unwritable Vault" in skill
-    assert "verifies the Markdown note exists" in skill
+    assert "verifies the trace note exists" in skill
     assert "read-only controlled query still creates its trace" in reference
     assert "trace: unavailable" in reference
 
@@ -2055,25 +2114,24 @@ def test_query_contract_fuses_parallel_scope_before_governed_first_search() -> N
     skill = QUERY_SKILL.read_text(encoding="utf-8")
     workflow = QUERY_WORKFLOW.read_text(encoding="utf-8")
     assert "query_session.py" in skill
-    assert "begin -> inspect -> finalize" in skill
-    assert "begin -> inspect -> verify -> one visual check when ready -> finalize" in skill
-    assert "Consume only the compact candidate window returned by `begin`" in skill
-    assert "Inspect retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` material first" in skill
+    assert "query (begin + automatic first-window inspect) -> finalize" in skill
+    assert "query --verification-required -> verify -> one visual check when ready -> finalize" in skill
+    assert "The agent never receives a candidate list" in skill
+    assert "Prefer retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` material" in skill
     assert "Do not supplement, broaden, recover trace-only candidates, or run a second inspection" in skill
     assert "disabled or unavailable Provider" in workflow
     assert "Supported claims require at least one recorded evidence ID" in workflow
     assert "A table, formula, engineering parameter, image reference, or Bundle QA flag does not trigger it by itself" in skill
-    assert "unknown event fields" in skill and "extensions" in skill
-    assert "resolves only against candidates actually returned in the compact `begin` window" in workflow
-    assert "compact candidate window returned by `begin`" in skill
-    assert "must match one of those entries exactly" in skill
+    assert "Top-level decision and claim fields remain strict" in skill
+    assert "does not expose candidate lists" in workflow
+    assert "automatically inspects the first three" in skill
     assert "Supplemental retrieval is disabled" in skill
     assert "aggregate 30,000-character budget" in workflow
     assert "Do not launch additional retrieval solely to broaden the scope" in skill
     assert "not a domain-specific routing or answer template" in workflow
     assert "`inspect` is evidence reading and registration, not visual verification" in skill
     assert "requires `verified_evidence_refs: []`" in workflow
-    assert '"verified_evidence_refs": []' in workflow
+    assert "The script supplies the omitted ordinary defaults" in workflow
     assert "while subject qualifiers only narrow its scope" in workflow
     assert "Do not read `references/evidence-levels.md`" in workflow
 
@@ -2172,8 +2230,7 @@ def test_query_domain_terms_are_configuration_not_frontmatter() -> None:
         )
     )
     description = next(line for line in skill.splitlines() if line.startswith("description: "))
-    assert config["domain_query_terms"] == ["消防系统"]
-    assert "消防系统" not in description
+    assert config["domain_query_terms"] == []
     assert "config/domain-routing.json" in skill
     assert "domain_query_terms" in skill
 

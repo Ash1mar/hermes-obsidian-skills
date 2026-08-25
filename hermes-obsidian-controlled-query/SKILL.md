@@ -31,53 +31,53 @@ python3 "<query-skill-root>/scripts/query_session.py" bootstrap <vault-root>
 
 It returns the exact applicable `AGENTS.md`/`ENVIRONMENT.md` content, routing/provider configuration, inherited session linkage, and deterministic PDF-verification capability. Do not search for those files again during the same request.
 
-For one ordinary question, target three query-session invocations:
+For one ordinary question, use two query-session invocations:
 
 ```text
-begin -> inspect -> finalize
+query (begin + automatic first-window inspect) -> finalize
 ```
 
-Visual verification is opt-in. Add `--verification-required` only when the user or an explicit audit requirement asks for an original-page visual check. A table, formula, engineering parameter, image reference, or Bundle QA flag does not trigger it by itself; ordinary queries trust the Bundle and report concrete QA limitations without opening the original-page visual path. When selected, use exactly one deterministic preparation step after inspect:
+Visual verification is opt-in. Add `--verification-required` only when the user or an explicit audit requirement asks for an original-page visual check. A table, formula, engineering parameter, image reference, or Bundle QA flag does not trigger it by itself; ordinary queries trust the Bundle and report concrete QA limitations without opening the original-page visual path. When selected, use exactly one deterministic preparation step after `query`:
 
 ```text
-begin -> inspect -> verify -> one visual check when ready -> finalize
+query --verification-required -> verify -> one visual check when ready -> finalize
 ```
 
 Do not enumerate old traces for a new question, probe stable CLI help, run inline Python, create temporary formatter/helper scripts, or narrate every internal step. Look for an old trace only when the user explicitly asks to resume one.
 
-Treat the compact candidates returned by `begin` as the complete operational input for the first inspection. `candidate_count` is the number actually returned, `candidate_window_complete: true` means no other list is needed, and `producer_output_truncated: false` distinguishes intentional compaction from producer truncation. Additional fused candidates and their counts remain trace-only. Do not open the full candidate sidecar or trace state to look for a better list. If downstream tool output is genuinely syntactically incomplete, use the visible trace ID to run `inspect` without `--candidate`, which selects its bounded default window; do not recover the list with inline Python, a temporary helper script, or any trace read. Candidate routing discounts query terms already satisfied by document identity, then gives the strongest document an early complementary-section slot before broader document diversity. This is lexical requested-output coverage, not a domain rule. Apply `candidate_purpose_gate`: inspect a candidate only when it fills an unanswered requested output or resolves a concrete conflict. Available comparison, background, applicability, or operational material is not a reason to inspect it. A requested facet is an output attribute, value, condition, comparison, or action the user asked to receive; a noun, adjective, or phrase that merely limits the subject narrows answer scope and does not consume a candidate slot or create a claim. Select the smallest set that adds necessary requested outputs, and inspect all of those candidates in one call. When a later exact registered section is genuinely needed, copy `document_path` verbatim from a returned compact candidate or evidence packet and append `::section-id`; never substitute a document ID, shortened bundle path, or guessed prefix. Do not probe `--help` or read script source to discover selector syntax. If that exact form fails, do not try alternate selector shapes; finalize from the inspected evidence, using `incomplete` when the remaining gap prevents a supported answer.
+`query` keeps the compact candidate window inside the script and automatically inspects its first three entries, or every entry when fewer than three exist. The agent never receives a candidate list and has no candidate-selection step. Additional fused candidates and counts remain trace-only. Candidate routing discounts terms already satisfied by document identity, gives the strongest document an early complementary-section slot, and then preserves document diversity; this is lexical requested-output coverage, not a domain rule. Do not call compatibility `begin`/`inspect`, open the candidate sidecar or trace, recover another list, or request a different selector. Finalize from the returned packets as completed or incomplete.
 
-### 1. Begin
+### 1. Query and inspect automatically
 
 Resolve the Vault, classify the question, and run:
 
 ```bash
-python3 "<query-skill-root>/scripts/query_session.py" begin \
+python3 "<query-skill-root>/scripts/query_session.py" query \
   <vault-root> "<question>" --query-type <type> [--verification-required]
 ```
 
 Choose `--verification-required` only from an explicit user/audit requirement, not from question keywords or Bundle content. `query_session.py` deliberately performs no domain-, language-, equipment-, or parameter-specific classification. Pass a Vault root supplied by the user directly; do not search parent directories for another Vault.
 
-`begin` creates the required trace, runs optional coarse recall and hierarchical routing in parallel, fuses candidates, records full counts and route details in the trace, and returns at most five compact candidates under a strict agent-facing character budget. The response exposes only the returned-window count; long optional labels and warnings are bounded, while exact `document_path` and `section_id` selectors are preserved. An unavailable or disabled Provider is non-blocking.
+`query` creates the required trace, runs optional coarse recall and hierarchical routing in parallel, fuses the scope, automatically inspects the first three compact candidates, and returns only registered evidence packets plus a small dynamic `synthesis_contract`. It does not expose the candidate list. An unavailable or disabled Provider is non-blocking. `begin` and separate `inspect` remain compatibility/diagnostic commands and are not part of the normal model workflow.
 
 Hermes session and message IDs are inherited from `HERMES_SESSION_ID` and `HERMES_SESSION_MESSAGE_ID`. Do not invent or manually copy a session ID. Use `--session-id` only outside Hermes when no runtime session context exists.
 
 The retrieval structure remains `optional coarse recall || hierarchical routing`; both branches are navigation-only and query never mutates either Provider or Vault evidence.
 
-### 2. Inspect
+### 2. Use the returned evidence packets
 
-Select only the candidates needed to answer and inspect them together:
+The normal `query` command already performed the only permitted inspection. Do not issue another `inspect`. For compatibility/debugging outside the normal model workflow, the split command remains:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" inspect \
   <vault-root> <trace-id> --candidate 1 --candidate 4
 ```
 
-`inspect` reads complete section-owned ranges in one batch and resolves related governed outputs, table/image Markdown, optional verification images, manifest, ledger, source-map, original PDF path/pages, QA status, and viewer URL when available. It registers the complete source ranges and provenance, then returns a delivery-only agent copy under an aggregate 30,000-character budget. When necessary, that copy removes duplicate or ordinary-route audit fields and keeps query-matched Markdown blocks with adjacent context; `delivery_excerpted` and the `evidence-packet-delivery` metrics describe this transfer reduction and do not mean the registered source range was truncated. `content_truncated` remains the separate source-reading blocker. Use only visible delivered content for claims and do not open the trace or source merely to recover delivery omissions. Exactly one inspection call is permitted. Its selectors may reference only candidates actually returned in the compact `begin` window; `document/path::section-id` must match one of those entries exactly. Sections retained only in the full projection or fused sidecar are not inspectable. Select every useful returned candidate in that one batch, then finalize from the registered packets. A second `inspect` is blocked even when a gap, conflict, or known section remains.
+The embedded inspection reads complete section-owned ranges in one batch and resolves governed outputs, table/image Markdown, manifest, ledger, source-map, original PDF path/pages, QA status, and viewer URL. It registers complete provenance, then returns a delivery-only copy under the aggregate 30,000-character budget. `delivery_excerpted` describes transfer reduction; `content_truncated` remains a separate source-reading blocker. Do not recover omitted or unreturned material.
 
 Each returned packet has an ASCII `evidence_ref` such as `P1`. The trace stores the corresponding path, version, section, pages, original PDF, and viewer metadata. Retain only the packet reference when synthesizing claims; never copy those provenance fields into finalization input. `inspect` is evidence reading and registration, not visual verification; do not describe it as `verify`, and never treat an inspected packet as a verified reference.
 
-If `begin` explicitly marked visual verification as required, run `query_session.py verify <vault-root> <trace-id> --evidence-ref P1` once. Open the returned registered carrier when status is `ready`. Only a reference whose registered carrier was actually visually checked may appear in `verified_evidence_refs`, and it requires a completed `page-asset-verification` event with `inspected_paths`. When verification was not requested and `inspect` returns `next_command: finalize`, set `verified_evidence_refs` to `[]` and omit visual-verification events. When `verify` returns `unavailable` or `failed`, stop verification attempts, use `needs-qa`, and copy its `required_unresolved` into the decision. Never try `pdftotext`, inspect Python PDF libraries, probe other binaries, enumerate Bundle files, or re-search converted text as substitutes for that visual check. The packet is an internal verification carrier; the original PDF remains the user-facing source.
+If `query` explicitly marked visual verification as required, run `query_session.py verify <vault-root> <trace-id> --evidence-ref P1` once. Open the returned registered carrier when status is `ready`. Only a reference whose registered carrier was actually visually checked may appear in `verified_evidence_refs`, and it requires a completed `page-asset-verification` event with `inspected_paths`. When verification was not requested and `query` returns `next_command: finalize`, ordinary fixed decision fields default inside the script. When `verify` returns `unavailable` or `failed`, stop verification attempts, use `needs-qa`, and copy its `required_unresolved` into the decision. Never probe alternative PDF/text tools or re-search converted text.
 
 ### 3. Finalize
 
@@ -88,7 +88,9 @@ python3 "<query-skill-root>/scripts/query_session.py" finalize \
   <vault-root> <trace-id> --decision-json '<json-object>'
 ```
 
-The decision contains only `status`, `evidence_level`, `claims`, `verified_evidence_refs`, `events`, `conclusion`, and `unresolved`. Submit the smallest valid object: minimum sufficient claims and packet refs, necessary qualifications, one short conclusion, material unresolved items, and the required empty ordinary event list. `unresolved_items` is accepted as a compatibility alias. Top-level decision and claim fields remain strict: unknown fields, blank claims, conflicting aliases, invalid references, or an unsupported evidence level for explicitly required but incomplete verification are rejected without changing the in-progress trace. Event standard fields are `stage`, `route`, `status`, `summary`, `evidence_refs`, `inspected_paths`, `hit_count`, `duration_ms`, and `accounting`; unknown event fields are retained under `extensions` and never satisfy a stage, evidence, or verification gate. Follow `event_submission_contract`: ordinary queries submit `events: []` because query-session already records inspect, search, reading, and provenance. Never add a claim or evidence reference merely to make an optional event reference valid. Only an actually completed visual check may add `page-asset-verification` with `inspected_paths`. The script assigns evidence/claim IDs, inherits all provenance from inspected packets, and verifies the Markdown note exists. Do not create, write, or patch a temporary manifest. Legacy `--manifest-json` and `--manifest` exist only for compatibility/debugging.
+For `synthesis_contract.mode: ordinary-minimal`, submit only `claims` and `conclusion`; the script defaults `status: completed`, `evidence_level: source-backed`, `verified_evidence_refs: []`, `events: []`, `unresolved: []`, and claim status. Include additional fields only when the dynamic contract reports blockers or required verification. Top-level decision and claim fields remain strict, packet refs must be inspected, and only an actual visual check may add verification fields/events. The script assigns evidence/claim IDs, inherits provenance, and verifies the trace note exists. Do not create or patch a temporary manifest.
+
+`finalize` returns the rendered capsule at top-level `final_response` and sets `next_action` to copy it. Hermes has no Skill-level `return_direct` behavior, so one final model continuation still occurs. In that continuation, return `final_response` verbatim without reopening evidence, recomputing claims, or adding material.
 
 Use the minimum sufficient claim set and apply the returned `claim_pruning_gate` immediately before finalize: delete any claim whose removal still leaves every requested output answered. Evidence availability never expands answer scope. Every retained claim must answer a requested output attribute or action; subject qualifiers narrow scope but do not create claims. Merge closely related parameters when the same evidence supports them. Put a necessary scope or evidence boundary in a short qualification on the affected claim; omit unrequested background, comparison, applicability, or operational material instead of creating a separate claim. Keep only unresolved items that materially change correctness or use of the answer. Write one short conclusion that synthesizes rather than repeats the claims.
 
@@ -132,7 +134,7 @@ Treat engineering parameters, formulas, tables, and figures as `evidence` even w
 
 ### Search and verification
 
-Consume only the compact candidate window returned by `begin`. Inspect retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` material first when the selected evidence packet includes it. Do not supplement, broaden, recover trace-only candidates, or run a second inspection. For gap, completeness, conflict, or audit questions, report the boundary from the single inspected window and finalize as incomplete when that boundary prevents a supported answer.
+Consume only the evidence packets returned by the combined `query`. Prefer retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` material when a returned packet includes it. Do not supplement, broaden, recover trace-only candidates, or run a second inspection. For gap, completeness, conflict, or audit questions, report the boundary from the automatically inspected window and finalize as incomplete when that boundary prevents a supported answer.
 
 This is governed-layer-first traditional search after candidate fusion. Query must never run Provider `sync` or rebuild operations. extraction QA labels are verification metadata, not relevance boosts or penalties.
 
@@ -163,7 +165,7 @@ Read `references/answer-format.md` only when a non-trivial answer needs the full
 
 ## Multiple questions
 
-Process independently answerable questions strictly one at a time. Generate one request ID, pass the shared `--request-id`, one-based `--question-index`, and total `--question-count` to each `begin`, then inspect, synthesize, finalize, and verify that trace before starting the next question. `begin` rejects a second trace while the request contains an `in_progress` trace, inconsistent counts, duplicate/gapped indices, multiple question marks, or multiple numbered question items. Split the request and retry sequentially when this occurs. Do not use a Hermes session ID as a trace ID, keep two traces open, answer questions concurrently, or create an ad hoc orchestration script. Report each trace separately.
+Process independently answerable questions strictly one at a time. Generate one request ID, pass the shared `--request-id`, one-based `--question-index`, and total `--question-count` to each `query`, then synthesize, finalize, and verify that trace before starting the next question. `query` rejects a second trace while the request contains an `in_progress` trace, inconsistent counts, duplicate/gapped indices, multiple question marks, or multiple numbered question items. Split the request and retry sequentially when this occurs. Do not use a Hermes session ID as a trace ID, keep two traces open, answer questions concurrently, or create an ad hoc orchestration script. Report each trace separately.
 
 On the final question, pass `--close-request` to `finalize`; it validates the expected count and returns the complete request capsules without a separate `request-summary` round. `request-summary` remains available for later inspection/debugging and rejects unfinished or non-contiguous requests. Carry only the returned deduplicated `sources`, claim `source_ids`, conclusion, and unresolved items into the combined response; do not reload completed evidence packets.
 

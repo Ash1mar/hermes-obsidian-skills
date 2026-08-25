@@ -6,22 +6,22 @@ Use this reference for the `query_session.py` interface and evidence-query decis
 
 After the runtime loads the Skill, run one `bootstrap <vault-root>` call. It returns the exact applicable rule content, deployment configuration, runtime session linkage, and verification capability; do not locate them through additional searches.
 
-Use the three-command path for one ordinary question:
+Use the two-command path for one ordinary question:
 
 ```text
-begin -> inspect -> finalize
+query (begin + automatic first-window inspect) -> finalize
 ```
 
-When the user or an explicit audit requirement requires visual source verification, use `begin --verification-required -> inspect -> verify -> visual check -> finalize`. `verify` is a single deterministic carrier-preparation attempt. Tables, formulas, engineering parameters, images, and Bundle QA flags do not select this route by themselves, and the script never infers it from question wording. Exactly one `inspect` is permitted, and `supplement` is disabled. After that inspection, finalize immediately as completed or incomplete instead of searching again, selecting projection-only material, or modifying/debugging the installed Skill.
+When explicit visual verification is required, use `query --verification-required -> verify -> visual check -> finalize`. `query` automatically inspects the first three bounded candidates inside the script, `verify` is a single deterministic carrier-preparation attempt, and supplement/another inspect are disabled.
 
 Do not scan old traces, probe stable CLI help, run inline Python, create temporary formatter scripts, or read source sections one by one. Keep progress narration sparse; the trace carries the operational detail.
 
-The compact candidates are the complete and only inspection input: `candidate_count` counts the returned window, `candidate_window_complete` is true, and full fused counts remain trace-only. `producer_output_truncated: false` means the producer returned the intentional compact window, not that the trace has no other candidates. Do not open the full candidate sidecar or trace state. If the downstream tool display is genuinely syntactically incomplete, run `inspect` without selectors using the visible trace ID; its bounded default window is the only recovery route. Never use inline Python, a temporary helper script, or a trace read to reconstruct candidates. Select all currently useful visible candidates in that one call. An exact `document_path::section-id` selector must match an entry in the returned window; do not try document IDs, shortened paths, guessed prefixes, projection-only sections, CLI help, or source-code inspection. If a selector fails, stop selector experimentation and finalize from the evidence obtained by the one allowed inspection, using `incomplete` when necessary.
+The compact candidate list stays inside `query_session.py`. The script automatically inspects its first three entries, or all entries when fewer exist, and returns only evidence packets. Full fused counts and rejected candidates remain trace-only. Do not call compatibility `begin`/`inspect`, reconstruct candidates, or change selectors during a normal query. Finalize from the returned packets, using `incomplete` when necessary.
 
-## Begin
+## Query and automatic inspection
 
 ```bash
-python3 "<query-skill-root>/scripts/query_session.py" begin \
+python3 "<query-skill-root>/scripts/query_session.py" query \
   <vault-root> "<question>" \
   --query-type evidence
 ```
@@ -34,11 +34,11 @@ Optional flags:
 - `--provider-config` for an explicitly deployed Provider configuration;
 - `--top-sections` or `--compact-limit` only when the defaults are demonstrably insufficient.
 
-The response contains the trace ID and at most five compact fused candidates under a strict character budget. It omits total fused counts and bounds optional labels and warnings; exact selectors remain intact. Section routing removes lexical terms already satisfied by document identity so repeated subject wording cannot outrank requested-output wording. The fixed window selects the strongest section, considers one complementary section from that document, then preserves broader document diversity. Apply `candidate_purpose_gate`: choose only candidates that fill an unanswered requested output or resolve a concrete conflict. A facet is an output attribute, value, condition, comparison, or action requested by the user; words that only limit the subject narrow scope rather than create a separate evidence need. Available contextual, comparative, applicability, or operational material is not an inspection reason unless requested, and does not justify expanding the window. A disabled or unavailable Provider remains an attempted route but not an effective route.
+The response contains the trace ID, up to three automatically registered evidence packets, and a minimal dynamic synthesis contract. It does not expose candidate lists or the full static finalize contract. Section routing and fixed-window diversity remain deterministic inside the script. A disabled or unavailable Provider remains an attempted route but not an effective route.
 
-## Inspect
+## Compatibility split inspection
 
-Select by one-based fused rank:
+The following split interface is diagnostic/compatibility-only; the normal model workflow must not use it:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" inspect \
@@ -67,7 +67,7 @@ Before delivery, `inspect` applies one aggregate 30,000-character budget across 
 
 The full provenance catalog and complete source ranges remain in the trace sidecar and are inherited by packet reference; the underlying registered source remains reconstructible from those ranges. The packet is navigation and verification material, not a user-facing citation.
 
-When `begin` was explicitly given `--verification-required`, prepare each cited registered visual carrier exactly once:
+When `query` was explicitly given `--verification-required`, prepare each cited registered visual carrier exactly once:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" verify \
@@ -81,7 +81,7 @@ Do not probe `pdftotext`, Python PDF packages, alternative binaries, Bundle list
 
 ## Finalize
 
-Use `--decision-json`. Do not write a temporary manifest:
+Use `--decision-json`. For ordinary-minimal mode, send only `claims` and `conclusion`; do not write a temporary manifest:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" finalize \
@@ -92,28 +92,21 @@ Keep the conclusion within the scope supported by inspected evidence. Express a 
 
 Use the minimum sufficient claim set: each claim must answer a requested output attribute or action, while subject qualifiers only narrow its scope. Closely related parameters supported by the same evidence should be merged. Put background, comparison, applicability, operational detail, scope, or evidence limits into a brief qualification on the affected claim instead of creating another claim, unless the question explicitly requests that material. Record only unresolved items that materially affect correctness or use, and write one short conclusion without restating each claim. Submit the smallest valid decision object; do not copy packet prose or provenance into it.
 
-Decision shape:
+Ordinary-minimal decision shape:
 
 ```json
 {
-  "status": "completed",
-  "evidence_level": "clear",
   "claims": [
     {
       "text": "Concise final claim.",
-      "status": "supported",
-      "evidence_refs": ["P1"],
-      "qualification": null
+      "evidence_refs": ["P1"]
     }
   ],
-  "verified_evidence_refs": [],
-  "events": [],
-  "conclusion": "Short supported conclusion.",
-  "unresolved": []
+  "conclusion": "Short supported conclusion."
 }
 ```
 
-The example above is the ordinary no-visual-verification decision. Only when `begin --verification-required` selected the visual route, `verify` returned `ready`, and the registered carrier was actually viewed may `verified_evidence_refs` contain packet refs; each such ref then requires a completed `page-asset-verification` event with non-empty `inspected_paths`.
+The script supplies the omitted ordinary defaults. Only when `query --verification-required` selected the visual route, `verify` returned `ready`, and the registered carrier was actually viewed may `verified_evidence_refs` contain packet refs; each such ref then requires a completed `page-asset-verification` event with non-empty `inspected_paths`.
 
 Follow `event_submission_contract` as well. For an ordinary query, submit `events: []`; query-session already records candidate selection, inspect, reading, assets, and provenance. Do not add a claim, comparison, or evidence ref merely to make an optional event reference count as used.
 
@@ -127,7 +120,7 @@ Finalization accepts only the documented top-level decision and claim fields. `u
 
 Supplemental retrieval is disabled. The retained `supplement` CLI is a compatibility guard: it performs no retrieval and returns `blocked` with `next_command: finalize`. A second `inspect` is also blocked. If the single compact-window inspection leaves material evidence missing, finalize as `incomplete` and state that specific boundary in `unresolved`; do not let answer synthesis turn into another search phase.
 
-For multiple questions, pass the same expected count to every begin. On the final trace, close and render compact capsules in the same command:
+For multiple questions, pass the same expected count to every `query`. On the final trace, close and render compact capsules in the same command:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" finalize \
@@ -141,13 +134,13 @@ python3 "<query-skill-root>/scripts/query_session.py" request-summary \
   <vault-root> <request-id>
 ```
 
-`begin` rejects two or more question marks or numbered question items before trace creation. It also rejects a new trace while the same request has an open trace, duplicate/gapped question indices, and inconsistent expected counts. `--close-request` rejects unfinished or incomplete request groups. Split independently answerable questions under one request ID. Only genuinely coupled subparts may bypass the question-shape guard with `--coupled --coupled-reason "<shared evidence reason>"`.
+`query` rejects two or more question marks or numbered question items before trace creation. It also rejects a new trace while the same request has an open trace, duplicate/gapped question indices, and inconsistent expected counts. `--close-request` rejects unfinished or incomplete request groups. Split independently answerable questions under one request ID. Only genuinely coupled subparts may bypass the question-shape guard with `--coupled --coupled-reason "<shared evidence reason>"`.
 
 ## Search decisions
 
 Use the fused candidate union as scope, not as evidence. Prefer selected governed card/concept/project content when it provides current, direct provenance. Otherwise use the complete source section supplied by `inspect`.
 
-Do not run supplemental lexical search. Treat the returned compact window as the retrieval boundary for this trace, including gap, completeness, audit, conflict, and version-applicability questions. When the inspected window cannot resolve a necessary point, preserve it as a material unresolved item and finalize as `incomplete`. A disabled Provider does not change this boundary; hierarchical candidates remain the normal fallback used by `begin`.
+Do not run supplemental lexical search. Treat the automatically inspected compact window as the retrieval boundary for this trace, including gap, completeness, audit, conflict, and version-applicability questions. When it cannot resolve a necessary point, preserve it as a material unresolved item and finalize as `incomplete`. A disabled Provider does not change this boundary; hierarchical candidates remain the normal fallback used by `query`.
 
 ## Engineering evidence
 
