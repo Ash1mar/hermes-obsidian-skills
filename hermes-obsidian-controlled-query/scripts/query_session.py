@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the low-round-trip begin, inspect, and finalize controlled-query workflow."""
+"""Run the low-round-trip controlled-query workflow."""
 
 from __future__ import annotations
 
@@ -204,8 +204,8 @@ def bootstrap(args: argparse.Namespace) -> dict[str, Any]:
         (
             path
             for path in (
-                skill_root / "config" / "domain-routing.json",
                 skill_root / "config" / "intranet.json",
+                skill_root / "config" / "domain-routing.json",
             )
             if path.is_file()
         ),
@@ -225,7 +225,7 @@ def bootstrap(args: argparse.Namespace) -> dict[str, Any]:
         "routing": load_json(routing_path) if routing_path else None,
         "provider": load_json(provider_path) if provider_path.is_file() else None,
         "verification_runtime": verification_runtime(),
-        "next_command": "begin",
+        "next_command": "query",
     }
 
 
@@ -1117,13 +1117,18 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             "next_command": "finalize",
             "required_status_when_evidence_is_insufficient": "incomplete",
         }
+    embedded_query = bool(getattr(args, "embedded_query", False))
     candidate_review = timed_event(
         stage="candidate-review",
-        route="agent-selection",
+        route="automatic-first-window" if embedded_query else "agent-selection",
         started_at=str(workflow.get("candidate_review_started_at") or state.get("updated") or command_started_at),
         started_monotonic_ns=int(workflow.get("candidate_review_started_monotonic_ns") or command_started_monotonic),
         started_wall_ns=int(workflow.get("candidate_review_started_wall_ns") or command_started_wall),
-        summary="Selected candidates from the returned compact window for the single evidence inspection.",
+        summary=(
+            "Automatically inspected the bounded first-window candidates in the combined query command."
+            if embedded_query
+            else "Selected candidates from the returned compact window for the single evidence inspection."
+        ),
     )
     projections = load_projections(vault_root)
     selected = select_candidates(initial_window_candidates(state), args.candidate)
@@ -1223,7 +1228,7 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             "answer_synthesis_started_at": now_iso(),
             "answer_synthesis_started_monotonic_ns": time.monotonic_ns(),
             "answer_synthesis_started_wall_ns": time.time_ns(),
-            "command_count": int(workflow.get("command_count") or 1) + 1,
+            "command_count": int(workflow.get("command_count") or 1) + (0 if embedded_query else 1),
             "inspection_count": inspection_count + 1,
             "evidence_dirty": False,
             "supplemental_reason": None,
@@ -1302,6 +1307,84 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             ),
         },
         "next_command": "verify" if verification_required else "finalize",
+    }
+
+
+def synthesis_contract(inspection: dict[str, Any]) -> dict[str, Any]:
+    finalize_contract = inspection.get("finalize_contract", {})
+    verification = finalize_contract.get("verification_contract", {})
+    evidence_level = finalize_contract.get("evidence_level_contract", {})
+    ordinary_fast_path = bool(
+        evidence_level.get("direct_use_allowed")
+        and not verification.get("verification_required")
+    )
+    return {
+        "mode": "ordinary-minimal" if ordinary_fast_path else "qualified",
+        "next_action": (
+            "call finalize immediately with only claims and conclusion"
+            if ordinary_fast_path
+            else "follow the dynamic evidence and verification conditions, then finalize"
+        ),
+        "ordinary_script_defaults": (
+            {
+                "status": "completed",
+                "evidence_level": "source-backed",
+                "verified_evidence_refs": [],
+                "events": [],
+                "unresolved": [],
+                "claim_status": "supported",
+            }
+            if ordinary_fast_path
+            else None
+        ),
+        "model_fields": ["claims", "conclusion"] if ordinary_fast_path else [
+            "status",
+            "evidence_level",
+            "claims",
+            "verified_evidence_refs",
+            "events",
+            "conclusion",
+            "unresolved",
+        ],
+        "claim_shape": {"text": "concise supported claim", "evidence_refs": ["P1"]},
+        "claim_policy": (
+            "Use the minimum claims that answer requested outputs; omit unused packets and unrequested context."
+        ),
+        "evidence_policy": {
+            "direct_use_allowed": bool(evidence_level.get("direct_use_allowed")),
+            "blocked_conditions": evidence_level.get("blocked_conditions", []),
+            "non_blocking_diagnostics": evidence_level.get("non_blocking_diagnostics", []),
+        },
+        "verification": {
+            "required": bool(verification.get("verification_required")),
+            "verified_evidence_refs": verification.get("required_verified_evidence_refs"),
+        },
+    }
+
+
+def query(args: argparse.Namespace) -> dict[str, Any]:
+    """Create a trace and inspect the bounded first window without a model selection round."""
+    begun = begin(args)
+    trace_id = str(begun["trace"]["trace_id"])
+    args.trace_id = trace_id
+    inspected = inspect(
+        argparse.Namespace(
+            vault_root=args.vault_root,
+            trace_id=trace_id,
+            candidate=[],
+            max_chars_per_section=args.max_chars_per_section,
+            max_agent_evidence_chars=args.max_agent_evidence_chars,
+            embedded_query=True,
+        )
+    )
+    return {
+        "workflow": WORKFLOW,
+        "trace_id": trace_id,
+        "selected_count": inspected["selected_count"],
+        "evidence_packets": inspected["evidence_packets"],
+        "agent_packet_chars": inspected.get("delivery_metrics", {}).get("agent_packet_chars"),
+        "synthesis_contract": synthesis_contract(inspected),
+        "next_command": inspected["next_command"],
     }
 
 
@@ -1896,6 +1979,8 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
             "query_session_duration_ms": manifest["metrics"]["query_session_duration_ms"],
             "trace_verified": True,
             "answer_capsule": capsule,
+            "final_response": capsule["answer_markdown"],
+            "next_action": "return final_response verbatim without another evidence review",
         }
     )
     if args.close_request:
@@ -1934,7 +2019,41 @@ def build_parser() -> argparse.ArgumentParser:
     bootstrap_parser.add_argument("--max-rule-chars", type=int, default=12000)
     bootstrap_parser.set_defaults(handler=bootstrap)
 
-    begin_parser = subparsers.add_parser("begin", help="Start the trace and return compact fused scope")
+    query_parser = subparsers.add_parser(
+        "query", help="Start the trace and automatically inspect the bounded first candidate window"
+    )
+    query_parser.add_argument("vault_root", type=Path)
+    query_parser.add_argument("question")
+    query_parser.add_argument("--query-type", default="evidence")
+    query_parser.add_argument("--session-id")
+    query_parser.add_argument("--trace-id")
+    query_parser.add_argument("--request-id")
+    query_parser.add_argument("--question-index", type=int)
+    query_parser.add_argument("--question-count", type=int, help="Expected independently auditable questions in this request")
+    query_parser.add_argument("--coupled", action="store_true", help="Allow multiple subparts that require one evidence set")
+    query_parser.add_argument("--coupled-reason", help="Auditable reason that multiple subparts share one evidence set")
+    query_parser.add_argument("--provider-config", type=Path)
+    query_parser.add_argument("--top-k", type=int, default=20)
+    query_parser.add_argument("--top-documents", type=int, default=6)
+    query_parser.add_argument("--top-sections", type=int, default=12)
+    query_parser.add_argument("--compact-limit", type=int, default=5)
+    query_parser.add_argument("--max-chars-per-section", type=int, default=12000)
+    query_parser.add_argument(
+        "--max-agent-evidence-chars",
+        type=int,
+        default=DEFAULT_AGENT_EVIDENCE_BUDGET,
+        help="Aggregate character budget for the agent-facing evidence packet copy",
+    )
+    query_parser.add_argument(
+        "--verification-required",
+        action="store_true",
+        help="Require registered-carrier visual verification; this is never inferred from question wording",
+    )
+    query_parser.set_defaults(handler=query)
+
+    begin_parser = subparsers.add_parser(
+        "begin", help="Compatibility/diagnostic command: start the trace and return compact fused scope"
+    )
     begin_parser.add_argument("vault_root", type=Path)
     begin_parser.add_argument("question")
     begin_parser.add_argument("--query-type", default="evidence")
