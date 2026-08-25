@@ -233,7 +233,7 @@ def test_locator_keeps_multiple_documents_in_the_compact_candidate_window(tmp_pa
     first_three_documents = set(candidate_documents[:3])
     assert len(candidate_documents) == 5
     assert len(first_three_documents) == 3
-    assert result["ranking"]["strategy"] == "score-with-document-and-query-coverage"
+    assert result["ranking"]["strategy"] == "section-specific-score-with-document-and-query-coverage"
     assert result["ranking"]["document_count"] == 3
     assert result["ranking"]["matched_query_term_count"] > 0
 
@@ -266,9 +266,27 @@ def test_candidate_packing_prefers_complementary_query_facets_over_repetition() 
     ]
     selected = module.diversify_candidates(candidates, 5)
     selected_ids = [item["section_id"] for item in selected]
-    assert selected_ids[:3] == ["a1", "b1", "c1"]
-    assert set(selected_ids[3:]) == {"a3", "b2"}
+    assert selected_ids == ["a1", "a3", "b1", "c1", "b2"]
     assert "a2" not in selected_ids
+
+
+def test_section_routing_removes_document_identity_terms_without_domain_rules() -> None:
+    spec = importlib.util.spec_from_file_location("locate_source_sections", LOCATE)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    terms = module.query_terms("离心泵的额定流量和叶轮参数是多少？")
+    _, document_matches = module.match_score(terms, "离心泵技术手册", 5)
+    section_terms = module.section_specific_query_terms(terms, document_matches)
+
+    assert "额定流量" in section_terms
+    assert "叶轮参数" in section_terms
+    assert all(term not in section_terms for term in document_matches)
+    irrelevant_score, _ = module.match_score(section_terms, "离心泵不适用范围", 9)
+    detail_score, _ = module.match_score(section_terms, "额定流量与叶轮参数", 9)
+    assert irrelevant_score == 0
+    assert detail_score > 0
 
 
 def test_compact_scope_exposes_only_complete_bounded_operational_window() -> None:
@@ -474,6 +492,10 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
             "the returned candidates are the complete operational input for first inspection; additional "
             "fused candidates remain trace-only and must not be recovered"
         ),
+        "candidate_purpose_gate": (
+            "inspect a candidate only when it fills an unanswered requested output or resolves a concrete "
+            "conflict; available comparison, background, applicability, or operational material is not a reason"
+        ),
         "do_not_open": ["full-candidate-sidecar", "trace-state"],
         "exact_selector": "copy document_path verbatim, then append ::section_id",
         "downstream_truncation_recovery": (
@@ -490,6 +512,10 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     )
     inspect_result = json.loads(inspected.stdout)
     assert "minimum sufficient claim set" in inspect_result["finalize_contract"]["claim_set_policy"]
+    assert "remove any claim" in inspect_result["finalize_contract"]["claim_pruning_gate"]
+    assert "Evidence availability never creates answer scope" in (
+        inspect_result["finalize_contract"]["claim_pruning_gate"]
+    )
     assert "do not create a separate" in inspect_result["finalize_contract"]["qualification_policy"]
     assert "materially change" in inspect_result["finalize_contract"]["unresolved_policy"]
     assert "do not repeat" in inspect_result["finalize_contract"]["conclusion_policy"]

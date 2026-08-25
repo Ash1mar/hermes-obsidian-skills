@@ -53,7 +53,17 @@ def compact_terms(values: list[str], limit: int = 8) -> list[str]:
 def match_score(terms: list[str], text: str, weight: int) -> tuple[int, list[str]]:
     folded = text.casefold()
     matched = [term for term in terms if term in folded]
-    return sum(weight * max(1, len(term) - 1) for term in matched), matched
+    # Overlapping n-grams describe the same lexical signal and must not inflate
+    # a long background section merely because it repeats the query subject.
+    scored_matches = compact_terms(matched, limit=12)
+    return sum(weight * max(1, len(term) - 1) for term in scored_matches), matched
+
+
+def section_specific_query_terms(terms: list[str], document_matches: list[str]) -> list[str]:
+    """Remove terms already satisfied by document identity when routing sections."""
+    document_coverage = set(document_matches)
+    residual = [term for term in terms if term not in document_coverage]
+    return residual or terms
 
 
 def read_ranges(lines: list[str], ranges: list[dict[str, Any]]) -> str:
@@ -114,19 +124,61 @@ def diversify_candidates(candidates: list[dict[str, Any]], limit: int) -> list[d
         covered_structured.update(candidate_coverage_terms(candidate, "title", "path"))
         covered_all.update(candidate_coverage_terms(candidate, "title", "path", "content", "document"))
 
-    # Reserve one slot for each of the strongest documents. This retains the
-    # cross-document protection while leaving the rest of the fixed window for
-    # sections that add query facets not already represented.
+    # Start with the strongest section, then give its document one early slot
+    # for a section that adds distinct query-language coverage. This lets a
+    # detailed section complement a calculation/overview section before broad
+    # document diversity consumes the fixed window.
+    if candidates:
+        add(candidates[0])
+
+    ranked_positions = {id(candidate): index for index, candidate in enumerate(candidates)}
+    if selected:
+        primary_document = str(selected[0].get("document_path") or "")
+        primary_complements = [
+            candidate
+            for candidate in grouped.get(primary_document, [])[1:]
+            if (str(candidate.get("document_path") or ""), str(candidate.get("section_id") or ""))
+            not in selected_keys
+        ]
+        if primary_complements and len(selected) < bounded_limit:
+            complement = max(
+                primary_complements,
+                key=lambda item: (
+                    marginal_term_weight(
+                        candidate_coverage_terms(item, "title", "path"), covered_structured
+                    ),
+                    marginal_term_weight(
+                        candidate_coverage_terms(item, "title", "path", "content", "document"),
+                        covered_all,
+                    ),
+                    -ranked_positions[id(item)],
+                ),
+            )
+            structured_gain = marginal_term_weight(
+                candidate_coverage_terms(complement, "title", "path"), covered_structured
+            )
+            all_gain = marginal_term_weight(
+                candidate_coverage_terms(complement, "title", "path", "content", "document"),
+                covered_all,
+            )
+            if structured_gain > 0 or all_gain > 0:
+                add(complement)
+
+    # Preserve the strongest section from the remaining documents after the
+    # primary complementary slot has been considered.
     for document_path in document_order:
         if len(selected) >= bounded_limit:
             break
-        add(grouped[document_path][0])
+        candidate = grouped[document_path][0]
+        key = (document_path, str(candidate.get("section_id") or ""))
+        if key not in selected_keys:
+            add(candidate)
 
-    ranked_positions = {id(candidate): index for index, candidate in enumerate(candidates)}
     eligible = [
         candidate
         for document_path in document_order
         for candidate in grouped[document_path][1:]
+        if (document_path, str(candidate.get("section_id") or "")) not in selected_keys
     ]
     while len(selected) < bounded_limit and eligible:
         candidate = max(
@@ -192,6 +244,7 @@ def main() -> int:
     candidates: list[dict[str, Any]] = []
     for document_score, index_path, projection, document_matches in documents[: max(1, args.top_documents)]:
         document = projection.get("document", {})
+        section_terms = section_specific_query_terms(terms, document_matches)
         source_document = vault_root / str(document.get("document_path", ""))
         document_lines: list[str] | None = None
         if not args.no_content_scan and source_document.is_file():
@@ -203,14 +256,19 @@ def main() -> int:
             except OSError as exc:
                 errors.append(f"{source_document}: {exc}")
         for section in projection.get("sections", []):
-            title_score, title_matches = match_score(terms, str(section.get("title", "")), 9)
-            path_score, path_matches = match_score(terms, " / ".join(section.get("path_titles", [])), 4)
+            title_score, title_matches = match_score(section_terms, str(section.get("title", "")), 9)
+            path_score, path_matches = match_score(
+                section_terms, " / ".join(section.get("path_titles", [])), 4
+            )
             content_score = 0
             content_matches: list[str] = []
             if document_lines is not None:
                 content = read_ranges(document_lines, section.get("content_ranges", []))
-                content_score, content_matches = match_score(terms, content, 2)
-            score = document_score + title_score + path_score + content_score
+                content_score, content_matches = match_score(section_terms, content, 2)
+            section_score = title_score + path_score + content_score
+            if section_score <= 0:
+                continue
+            score = min(document_score, 25) + section_score
             if score <= 0:
                 continue
             status = str(section.get("ingest_status", "untracked"))
@@ -253,7 +311,7 @@ def main() -> int:
         "terms": compact_terms(terms, limit=12),
         "candidates": selected_candidates,
         "ranking": {
-            "strategy": "score-with-document-and-query-coverage",
+            "strategy": "section-specific-score-with-document-and-query-coverage",
             "document_count": len({str(item.get("document_path") or "") for item in selected_candidates}),
             "matched_query_term_count": len(
                 {

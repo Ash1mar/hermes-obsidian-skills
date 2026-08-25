@@ -1073,6 +1073,12 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
                 "action; subject qualifiers only narrow scope and do not create claims. Merge closely related "
                 "parameters supported by the same evidence."
             ),
+            "claim_pruning_gate": (
+                "Before finalize, remove any claim whose deletion still leaves every requested output answered. "
+                "Evidence availability never creates answer scope. Put unrequested comparison, background, "
+                "applicability, or operational context only in a necessary qualification on a requested claim; "
+                "otherwise omit it."
+            ),
             "qualification_policy": (
                 "Attach scope or evidence boundaries briefly to the affected claim; do not create a separate "
                 "background or applicability claim unless the question asks for it."

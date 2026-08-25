@@ -370,6 +370,10 @@ def compact_result(result: dict[str, Any], limit: int = DEFAULT_COMPACT_LIMIT) -
                 "the returned candidates are the complete operational input for first inspection; additional "
                 "fused candidates remain trace-only and must not be recovered"
             ),
+            "candidate_purpose_gate": (
+                "inspect a candidate only when it fills an unanswered requested output or resolves a concrete "
+                "conflict; available comparison, background, applicability, or operational material is not a reason"
+            ),
             "do_not_open": ["full-candidate-sidecar", "trace-state"],
             "exact_selector": "copy document_path verbatim, then append ::section_id",
             "downstream_truncation_recovery": (
