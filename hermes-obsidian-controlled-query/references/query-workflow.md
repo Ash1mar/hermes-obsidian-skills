@@ -12,11 +12,11 @@ Use the three-command path for one ordinary question:
 begin -> inspect -> finalize
 ```
 
-When the user or an explicit audit requirement requires visual source verification, use `begin --verification-required -> inspect -> verify -> visual check -> finalize`. `verify` is a single deterministic carrier-preparation attempt. Tables, formulas, engineering parameters, images, and Bundle QA flags do not select this route by themselves, and the script never infers it from question wording. Run a second `inspect` only for a real evidence gap or conflict. A trace permits at most two inspections and one supplement; when those limits are reached, finalize immediately as completed or incomplete instead of modifying or debugging the installed Skill.
+When the user or an explicit audit requirement requires visual source verification, use `begin --verification-required -> inspect -> verify -> visual check -> finalize`. `verify` is a single deterministic carrier-preparation attempt. Tables, formulas, engineering parameters, images, and Bundle QA flags do not select this route by themselves, and the script never infers it from question wording. Exactly one `inspect` is permitted, and `supplement` is disabled. After that inspection, finalize immediately as completed or incomplete instead of searching again, selecting projection-only material, or modifying/debugging the installed Skill.
 
 Do not scan old traces, probe stable CLI help, run inline Python, create temporary formatter scripts, or read source sections one by one. Keep progress narration sparse; the trace carries the operational detail.
 
-The compact candidates are the complete input for the first inspection: `candidate_count` counts the returned window, `candidate_window_complete` is true, and full fused counts remain trace-only. `producer_output_truncated: false` means the producer returned the intentional compact window, not that the trace has no other candidates. Do not open the full candidate sidecar or trace state. If the downstream tool display is genuinely syntactically incomplete, run `inspect` without selectors using the visible trace ID; its bounded default window is the only recovery route. Never use inline Python, a temporary helper script, or a trace read to reconstruct candidates. Select all currently useful visible candidates in one call. For a later exact section, copy a returned `document_path` verbatim and append `::section-id`; do not try document IDs, shortened paths, guessed prefixes, CLI help, or source-code inspection. If the exact selector still fails, stop selector experimentation and finalize from existing evidence, using `incomplete` when necessary.
+The compact candidates are the complete and only inspection input: `candidate_count` counts the returned window, `candidate_window_complete` is true, and full fused counts remain trace-only. `producer_output_truncated: false` means the producer returned the intentional compact window, not that the trace has no other candidates. Do not open the full candidate sidecar or trace state. If the downstream tool display is genuinely syntactically incomplete, run `inspect` without selectors using the visible trace ID; its bounded default window is the only recovery route. Never use inline Python, a temporary helper script, or a trace read to reconstruct candidates. Select all currently useful visible candidates in that one call. An exact `document_path::section-id` selector must match an entry in the returned window; do not try document IDs, shortened paths, guessed prefixes, projection-only sections, CLI help, or source-code inspection. If a selector fails, stop selector experimentation and finalize from the evidence obtained by the one allowed inspection, using `incomplete` when necessary.
 
 ## Begin
 
@@ -45,7 +45,7 @@ python3 "<query-skill-root>/scripts/query_session.py" inspect \
   <vault-root> <trace-id> --candidate 1 --candidate 4
 ```
 
-Selectors may also be a section ID or `document/path::section-id`. The exact document/section form resolves against the query projection even when the section is outside the fused top-k. It never accepts an arbitrary unregistered path or line range. If omitted, the command inspects the first three candidates; explicit selection is preferred.
+Selectors may also be a section ID or `document/path::section-id`, but every form resolves only against candidates actually returned in the compact `begin` window. It never accepts a projection-only section, arbitrary path, or line range. If omitted, the command inspects the first three returned candidates. Select all useful returned candidates in this call because every later `inspect` is blocked.
 
 Each compact evidence packet contains:
 
@@ -63,7 +63,7 @@ Each compact evidence packet contains:
 
 Also follow the returned `evidence_level_contract`. Non-failed `warn`, `pending`, `qa_required`, `ambiguous`, and `incomplete` metadata, including table/image labels, appear under `non_blocking_diagnostics`; they remain directly usable as `source-backed` when substantive content and original source/pages are present. Do not read `references/evidence-levels.md` for these statuses. Exclude only refs listed under `blocked_conditions`: no substantive content, unresolved source/pages, content truncation, or failed/unavailable-class packet, source-map, or asset status. Actual source conflict and explicitly required incomplete visual verification remain hard blockers.
 
-Before delivery, `inspect` applies one aggregate 18,000-character budget across the selected packets. It first removes exact duplicate asset Markdown and ordinary-route visual-audit fields, then—only when still over budget—keeps query-matched Markdown blocks and adjacent context. A packet or asset marked `delivery_excerpted` is a shortened agent copy; it is not a failed source read and must not be confused with `content_truncated`. `delivery_metrics` and the diagnostic `evidence-packet-delivery` event record `full_packet_chars`, `agent_packet_chars`, saved characters, excerpted fields, and whether the budget was satisfied. Do not open the full trace or source to reverse this delivery optimization when the visible content already answers the question.
+Before delivery, `inspect` applies one aggregate 30,000-character budget across the selected packets. It first removes exact duplicate asset Markdown and ordinary-route visual-audit fields, then—only when still over budget—keeps query-matched Markdown blocks and adjacent context. A packet or asset marked `delivery_excerpted` is a shortened agent copy; it is not a failed source read and must not be confused with `content_truncated`. `delivery_metrics` and the diagnostic `evidence-packet-delivery` event record `full_packet_chars`, `agent_packet_chars`, saved characters, excerpted fields, and whether the budget was satisfied. Do not open the full trace or source to reverse this delivery optimization when the visible content already answers the question.
 
 The full provenance catalog and complete source ranges remain in the trace sidecar and are inherited by packet reference; the underlying registered source remains reconstructible from those ranges. The packet is navigation and verification material, not a user-facing citation.
 
@@ -123,16 +123,9 @@ Immediately before finalize, apply `claim_pruning_gate`: remove every claim whos
 
 Finalization accepts only the documented top-level decision and claim fields. `unresolved_items` is a compatibility alias for `unresolved`; other unknown top-level or claim fields are rejected. Event standard fields are `stage`, `route`, `status`, `summary`, `evidence_refs`, `inspected_paths`, `hit_count`, `duration_ms`, and `accounting`. Unknown event fields such as a model-supplied `type` are preserved under `extensions`; they are diagnostic metadata only and cannot satisfy stage, evidence, or verification gates. Events are optional unless an actual visual verification must be recorded. A verified reference requires a completed `page-asset-verification` event with non-empty `inspected_paths`. When the trace marks verification as required, unverified evidence cannot be `clear` or `source-backed`; `needs-qa` also requires a non-empty unresolved item. An invalid or uninspected reference leaves the existing trace in progress without partially adding final evidence or claims. Legacy manifest inputs remain compatibility/debugging interfaces only.
 
-## Supplemental retrieval
+## Single-pass boundary
 
-When a real evidence gap remains, record it and retrieve a focused scope:
-
-```bash
-python3 "<query-skill-root>/scripts/query_session.py" supplement \
-  <vault-root> <trace-id> "<focused query>" --reason "<gap>"
-```
-
-Then run `inspect` on the supplemental candidate. `finalize` rejects a trace with pending supplemental evidence, so supplemental search cannot be hidden inside answer synthesis.
+Supplemental retrieval is disabled. The retained `supplement` CLI is a compatibility guard: it performs no retrieval and returns `blocked` with `next_command: finalize`. A second `inspect` is also blocked. If the single compact-window inspection leaves material evidence missing, finalize as `incomplete` and state that specific boundary in `unresolved`; do not let answer synthesis turn into another search phase.
 
 For multiple questions, pass the same expected count to every begin. On the final trace, close and render compact capsules in the same command:
 
@@ -154,14 +147,7 @@ python3 "<query-skill-root>/scripts/query_session.py" request-summary \
 
 Use the fused candidate union as scope, not as evidence. Prefer selected governed card/concept/project content when it provides current, direct provenance. Otherwise use the complete source section supplied by `inspect`.
 
-Run supplemental lexical search only when:
-
-- a precise identifier or phrase is missing from the packet;
-- the selected candidate does not answer a necessary subpart;
-- a gap, completeness, or audit question requires widening;
-- sources conflict or version applicability is unresolved.
-
-Do not broaden merely because the Provider is disabled. Hierarchical candidates remain the normal fallback.
+Do not run supplemental lexical search. Treat the returned compact window as the retrieval boundary for this trace, including gap, completeness, audit, conflict, and version-applicability questions. When the inspected window cannot resolve a necessary point, preserve it as a material unresolved item and finalize as `incomplete`. A disabled Provider does not change this boundary; hierarchical candidates remain the normal fallback used by `begin`.
 
 ## Engineering evidence
 

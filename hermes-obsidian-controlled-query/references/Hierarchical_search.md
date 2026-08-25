@@ -15,10 +15,10 @@ question
 -> optional coarse recall || hierarchical document / section locator
 -> normalize to complete sections, union, deduplicate, and RRF-rank candidates
 -> governed-layer-first traditional search
--> supplemental scoped exact/lexical search when needed
+-> one compact-window evidence inspection
 -> resolve source-map / ledger metadata
 -> verify document.md, tables, figures, and original pages
--> apply existing evidence levels and answer contract
+-> finalize from that inspection as completed or incomplete
 ```
 
 The hierarchical locator returns only candidate documents and sections. It does not answer the question, replace evidence, or write knowledge artifacts.

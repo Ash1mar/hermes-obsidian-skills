@@ -59,9 +59,8 @@ EVENT_KEYS = {
     "extensions",
 }
 VISUAL_ASSET_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp"}
-MAX_INSPECTIONS = 2
-MAX_SUPPLEMENTS = 1
-DEFAULT_AGENT_EVIDENCE_BUDGET = 18000
+MAX_INSPECTIONS = 1
+DEFAULT_AGENT_EVIDENCE_BUDGET = 30000
 MIN_AGENT_EVIDENCE_BUDGET = 4000
 MIN_DELIVERY_FIELD_CHARS = 400
 DELIVERY_OMISSION_MARKER = "[... unmatched source content omitted from agent delivery ...]"
@@ -336,6 +335,7 @@ def begin(args: argparse.Namespace) -> dict[str, Any]:
                 ),
             ),
         ]
+    compact_scope = compact_result(scope, args.compact_limit)
     state["workflow_state"] = {
         "session_started_at": command_started_at,
         "session_started_monotonic_ns": command_started_monotonic,
@@ -353,12 +353,19 @@ def begin(args: argparse.Namespace) -> dict[str, Any]:
         "verification_required": requires_verification,
         "verification_requirement_reason": "explicit CLI selection" if requires_verification else "not requested",
         "verification_catalog": {},
+        "initial_candidate_window": [
+            {
+                "document_path": candidate.get("document_path"),
+                "section_id": candidate.get("section_id"),
+            }
+            for candidate in compact_scope.get("candidates", [])
+        ],
     }
     write_state(vault_root, state)
     return {
         "workflow": WORKFLOW,
         "trace": started,
-        "scope": compact_result(scope, args.compact_limit),
+        "scope": compact_scope,
         "next_command": "inspect",
     }
 
@@ -370,43 +377,29 @@ def fused_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
     raise ValueError("trace has no candidate-fusion result")
 
 
-def exact_projection_candidate(
-    projections: dict[str, dict[str, Any]], document_path: str, section_id: str
-) -> dict[str, Any] | None:
-    normalized_document = document_path.replace("\\", "/").strip("/")
-    projection = projections.get(normalized_document)
-    if not projection:
-        return None
-    document = projection.get("document", {})
-    for section in projection.get("sections", []):
-        if str(section.get("section_id") or "") != section_id:
-            continue
-        return {
-            "document_path": normalized_document,
-            "source_filename": document.get("source_filename"),
-            "section_id": section.get("section_id"),
-            "title": section.get("title"),
-            "path_titles": section.get("path_titles", []),
-            "start_line": section.get("start_line"),
-            "end_line": section.get("end_line"),
-            "content_ranges": section.get("content_ranges", []),
-            "pages": section.get("pages", []),
-            "assets": section.get("assets", []),
-            "quality": section.get("quality"),
-            "ingest_status": section.get("ingest_status"),
-            "viewer_url": section.get("viewer_url"),
-            "retrieval_routes": ["projection-exact"],
-            "route_ranks": {},
-            "route_scores": {},
-            "selection_origin": "projection-exact",
-        }
-    return None
+def initial_window_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
+    """Resolve only the candidates actually returned by begin."""
+    window = state.get("workflow_state", {}).get("initial_candidate_window")
+    if not isinstance(window, list) or not window:
+        raise ValueError("trace predates the single-pass candidate window; start a new query trace")
+    candidates = fused_candidates(state)
+    by_key = {
+        (str(candidate.get("document_path") or ""), str(candidate.get("section_id") or "")): candidate
+        for candidate in candidates
+    }
+    resolved = []
+    for item in window:
+        key = (str(item.get("document_path") or ""), str(item.get("section_id") or ""))
+        candidate = by_key.get(key)
+        if candidate is None:
+            raise ValueError(f"initial candidate is no longer available: {key[0]}::{key[1]}")
+        resolved.append(candidate)
+    return resolved
 
 
 def select_candidates(
     candidates: list[dict[str, Any]],
     selectors: list[str],
-    projections: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     requested = selectors or [str(index) for index in range(1, min(3, len(candidates)) + 1)]
     selected: list[dict[str, Any]] = []
@@ -429,8 +422,6 @@ def select_candidates(
                 elif str(candidate.get("section_id")) == selector:
                     match = candidate
                     break
-            if match is None and separator and projections is not None:
-                match = exact_projection_candidate(projections, document_part, section_part)
         if match is None:
             raise ValueError(f"candidate selector did not match: {selector}")
         key = (str(match.get("document_path")), str(match.get("section_id")))
@@ -1095,8 +1086,8 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
     inspection_count = int(workflow.get("inspection_count") or 0)
     if inspection_count >= MAX_INSPECTIONS:
         summary = (
-            f"Inspection limit reached ({MAX_INSPECTIONS}); finalize this trace as completed when existing "
-            "evidence is sufficient, otherwise finalize it as incomplete with an unresolved item."
+            "Single-pass inspection is already complete; finalize from the registered first-window evidence. "
+            "Use incomplete with a material unresolved item only when that evidence cannot support the answer."
         )
         if not any(
             event.get("stage") == "query-guardrail" and event.get("route") == "inspection-limit"
@@ -1126,36 +1117,16 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             "next_command": "finalize",
             "required_status_when_evidence_is_insufficient": "incomplete",
         }
-    if inspection_count:
-        review_stage = "evidence-gap-review"
-        review_route = "supplemental-selection" if workflow.get("evidence_dirty") else "agent-follow-up-selection"
-        review_summary = "Inspected additional candidates to close a recorded evidence gap."
-        review_started_at = workflow.get("evidence_gap_review_started_at") or workflow.get("answer_synthesis_started_at")
-        review_started_monotonic = (
-            workflow.get("evidence_gap_review_started_monotonic_ns")
-            or workflow.get("answer_synthesis_started_monotonic_ns")
-        )
-        review_started_wall = (
-            workflow.get("evidence_gap_review_started_wall_ns")
-            or workflow.get("answer_synthesis_started_wall_ns")
-        )
-    else:
-        review_stage = "candidate-review"
-        review_route = "agent-selection"
-        review_summary = "Selected fused candidates for one batched evidence inspection."
-        review_started_at = workflow.get("candidate_review_started_at")
-        review_started_monotonic = workflow.get("candidate_review_started_monotonic_ns")
-        review_started_wall = workflow.get("candidate_review_started_wall_ns")
     candidate_review = timed_event(
-        stage=review_stage,
-        route=review_route,
-        started_at=str(review_started_at or state.get("updated") or command_started_at),
-        started_monotonic_ns=int(review_started_monotonic or command_started_monotonic),
-        started_wall_ns=int(review_started_wall or command_started_wall),
-        summary=review_summary,
+        stage="candidate-review",
+        route="agent-selection",
+        started_at=str(workflow.get("candidate_review_started_at") or state.get("updated") or command_started_at),
+        started_monotonic_ns=int(workflow.get("candidate_review_started_monotonic_ns") or command_started_monotonic),
+        started_wall_ns=int(workflow.get("candidate_review_started_wall_ns") or command_started_wall),
+        summary="Selected candidates from the returned compact window for the single evidence inspection.",
     )
     projections = load_projections(vault_root)
-    selected = select_candidates(fused_candidates(state), args.candidate, projections)
+    selected = select_candidates(initial_window_candidates(state), args.candidate)
     packets: list[dict[str, Any]] = []
     timings = {"document_reading": 0.0, "table_figure_resolution": 0.0, "provenance_resolution": 0.0}
     inspected_paths: list[str] = []
@@ -1334,10 +1305,6 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def candidate_key(candidate: dict[str, Any]) -> tuple[str, str]:
-    return (str(candidate.get("document_path") or ""), str(candidate.get("section_id") or ""))
-
-
 def supplement(args: argparse.Namespace) -> dict[str, Any]:
     command_started_at = now_iso()
     command_started_monotonic = time.monotonic_ns()
@@ -1347,119 +1314,37 @@ def supplement(args: argparse.Namespace) -> dict[str, Any]:
     if state.get("workflow") != WORKFLOW:
         raise ValueError(f"trace does not use {WORKFLOW}")
     workflow = state.setdefault("workflow_state", {})
-    if int(workflow.get("inspection_count") or 0) < 1:
-        raise ValueError("supplement requires an initial inspect")
-    supplement_count = int(workflow.get("supplement_count") or 0)
-    if supplement_count >= MAX_SUPPLEMENTS or int(workflow.get("inspection_count") or 0) >= MAX_INSPECTIONS:
-        summary = (
-            f"Supplement limit reached ({MAX_SUPPLEMENTS}) or no inspection slot remains; finalize this trace "
-            "as completed when existing evidence is sufficient, otherwise finalize it as incomplete."
-        )
-        if not any(
-            event.get("stage") == "query-guardrail" and event.get("route") == "supplement-limit"
-            for event in state.get("events", [])
-        ):
-            state.setdefault("events", []).append(
-                clean_event(
-                    state,
-                    {
-                        "stage": "query-guardrail",
-                        "route": "supplement-limit",
-                        "status": "blocked",
-                        "summary": summary,
-                        "started_at": command_started_at,
-                        "ended_at": now_iso(),
-                        "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
-                    },
-                )
-            )
-            workflow["command_count"] = int(workflow.get("command_count") or 1) + 1
-            write_state(vault_root, state)
-        return {
-            "workflow": WORKFLOW,
-            "trace_id": args.trace_id,
-            "status": "blocked",
-            "reason": summary,
-            "next_command": "finalize",
-            "required_status_when_evidence_is_insufficient": "incomplete",
-        }
-    if workflow.get("evidence_dirty"):
-        raise ValueError("the previous supplement must be inspected before another supplement")
-    scope = retrieve_scope(
-        vault_root,
-        args.query,
-        top_k=args.top_k,
-        top_documents=args.top_documents,
-        top_sections=args.top_sections,
-        provider_config=args.provider_config,
+    summary = (
+        "Supplemental retrieval is disabled by the single-pass policy. Finalize from the first compact-window "
+        "inspection; use incomplete with a material unresolved item only when that evidence cannot support the answer."
     )
-    previous = fused_candidates(state)
-    merged: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for candidate in [*scope.get("candidates", []), *previous]:
-        key = candidate_key(candidate)
-        if key in seen:
-            continue
-        seen.add(key)
-        merged.append(candidate)
-    ended_at = now_iso()
-    state.setdefault("events", []).extend(
-        [
+    if not any(
+        event.get("stage") == "query-guardrail" and event.get("route") == "supplement-disabled"
+        for event in state.get("events", [])
+    ):
+        state.setdefault("events", []).append(
             clean_event(
                 state,
                 {
-                    "stage": "supplemental-retrieval",
-                    "route": "parallel-scope",
-                    "status": scope.get("status"),
-                    "summary": f"Searched for a recorded evidence gap: {args.reason}",
-                    "hit_count": len(scope.get("candidates", [])),
-                    "duration_ms": scope.get("duration_ms"),
+                    "stage": "query-guardrail",
+                    "route": "supplement-disabled",
+                    "status": "blocked",
+                    "summary": summary,
                     "started_at": command_started_at,
-                    "ended_at": ended_at,
-                    "candidates": scope.get("candidates", []),
+                    "ended_at": now_iso(),
+                    "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
                 },
-            ),
-            clean_event(
-                state,
-                {
-                    "stage": "candidate-fusion",
-                    "route": "supplemental-fusion",
-                    "status": "ok" if merged else "empty",
-                    "summary": f"Merged supplemental scope with the prior scope; retained {len(merged)} candidates.",
-                    "hit_count": len(merged),
-                    "duration_ms": 0.0,
-                    "started_at": ended_at,
-                    "ended_at": ended_at,
-                    "accounting": "diagnostic",
-                    "candidates": merged,
-                },
-            ),
-        ]
-    )
-    gap_review_started_at = now_iso()
-    gap_review_started_monotonic = time.monotonic_ns()
-    gap_review_started_wall = time.time_ns()
-    workflow.update(
-        {
-            "evidence_dirty": True,
-            "supplement_count": supplement_count + 1,
-            "supplemental_reason": args.reason,
-            "evidence_gap_review_started_at": gap_review_started_at,
-            "evidence_gap_review_started_monotonic_ns": gap_review_started_monotonic,
-            "evidence_gap_review_started_wall_ns": gap_review_started_wall,
-            "command_count": int(workflow.get("command_count") or 2) + 1,
-        }
-    )
-    write_state(vault_root, state)
-    compact_scope = dict(scope)
-    compact_scope["candidates"] = merged
+            )
+        )
+        workflow["command_count"] = int(workflow.get("command_count") or 1) + 1
+        write_state(vault_root, state)
     return {
         "workflow": WORKFLOW,
         "trace_id": args.trace_id,
-        "reason": args.reason,
-        "duration_ms": elapsed_ms(command_started_monotonic, command_started_wall),
-        "scope": compact_result(compact_scope, args.compact_limit),
-        "next_command": "inspect",
+        "status": "blocked",
+        "reason": summary,
+        "next_command": "finalize",
+        "required_status_when_evidence_is_insufficient": "incomplete",
     }
 
 
@@ -2072,10 +1957,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     begin_parser.set_defaults(handler=begin)
 
-    inspect_parser = subparsers.add_parser("inspect", help="Read selected source sections and evidence assets in one batch")
+    inspect_parser = subparsers.add_parser("inspect", help="Read selected first-window sections in the single permitted batch")
     inspect_parser.add_argument("vault_root", type=Path)
     inspect_parser.add_argument("trace_id")
-    inspect_parser.add_argument("--candidate", action="append", default=[], help="1-based rank, section id, or document::section")
+    inspect_parser.add_argument(
+        "--candidate",
+        action="append",
+        default=[],
+        help="1-based rank, section id, or document::section from the returned begin window",
+    )
     inspect_parser.add_argument("--max-chars-per-section", type=int, default=12000)
     inspect_parser.add_argument(
         "--max-agent-evidence-chars",
@@ -2091,7 +1981,9 @@ def build_parser() -> argparse.ArgumentParser:
     verify_parser.add_argument("--evidence-ref", action="append", default=[])
     verify_parser.set_defaults(handler=prepare_verification)
 
-    supplement_parser = subparsers.add_parser("supplement", help="Retrieve candidates for a recorded evidence gap")
+    supplement_parser = subparsers.add_parser(
+        "supplement", help="Compatibility command; retrieval is disabled and the trace must proceed to finalize"
+    )
     supplement_parser.add_argument("vault_root", type=Path)
     supplement_parser.add_argument("trace_id")
     supplement_parser.add_argument("query")

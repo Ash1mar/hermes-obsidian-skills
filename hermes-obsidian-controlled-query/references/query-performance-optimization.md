@@ -72,7 +72,7 @@ bootstrap（每请求一次）
 3. 上一次 supplement 尚未 inspect 就发起下一次 supplement；
 4. 精确章节选择再次失败后退回临时文件搜索，证据没有完整进入 Claim–Evidence map。
 
-通用修复不根据题目关键词或章节编号做特化：inspect 现在可从 query projection 解析任何已注册的精确 `document::section`，同时仍拒绝任意路径/行号；inspect 返回紧凑 finalize contract；未知 event 字段进入 `extensions`，而顶层 decision、claim、evidence ref 和 verification gate 继续严格。模型知道精确章节时可直接 inspect，不需要为了让它进入 top-k 而反复 supplement。
+当时的通用修复不根据题目关键词或章节编号做特化：inspect 可从 query projection 解析任何已注册的精确 `document::section`，同时仍拒绝任意路径/行号；inspect 返回紧凑 finalize contract；未知 event 字段进入 `extensions`，而顶层 decision、claim、evidence ref 和 verification gate 继续严格。该 projection 外选能力已被后文“回归稳定版与单轮硬门禁”取代，当前只允许 `begin` 实际返回窗口。
 
 ## 2026-08-19 内网单题近 20 分钟中断事故
 
@@ -162,7 +162,7 @@ qmd-like-rag 未配置、被禁用或暂时不可用时，coarse route 记为 di
 - 原始 PDF 路径、页码和 viewer URL。
 - verification readiness 及唯一支持的下一步。
 
-只有出现真实缺口、冲突或漏检来源时才允许第二次 `inspect`。一个 trace 最多两次 inspection 和一次 supplement；超限调用由脚本返回 `blocked -> finalize`，不得继续搜索或调试 Skill。pass-quality Bundle 是默认内部提取载体；内容类型和 Bundle QA flag 本身不要求视觉原页核验。若 Bundle/control metadata 明确标记 QA、警告、歧义或不完整，普通查询直接限定或降级结论；只有用户明确要求视觉审计时才进入 `verify` 路径。
+当前性能优先策略只允许一次 `inspect`，并且只能选择 `begin` 实际返回的 compact window；第二次 inspection 和所有 supplement 都由脚本返回 `blocked -> finalize`，不得继续搜索或调试 Skill。若首轮证据不足，直接以 `incomplete` 和一个实质 unresolved 收口。pass-quality Bundle 是默认内部提取载体；内容类型和 Bundle QA flag 本身不要求视觉原页核验。若 Bundle/control metadata 明确标记 QA、警告、歧义或不完整，普通查询直接限定或降级结论；只有用户明确要求视觉审计时才进入 `verify` 路径。
 
 ### `finalize`
 
@@ -217,13 +217,28 @@ trace `20260825_031033_61bf03fd` 只有一次 inspect 和一次成功 finalize�
 
 本轮采用通用、仅影响 agent delivery 的压缩，不改变候选、证据登记、source ranges、页码、原始 PDF 或 claim-evidence 门禁：
 
-1. `inspect` 对全部所选 packet 的 agent-facing 副本设置默认 18,000 字符总预算，不再允许每个章节、资产和 governed artifact 分别消耗完整上限；
+1. `inspect` 对全部所选 packet 的 agent-facing 副本设置统一字符总预算，不再允许每个章节、资产和 governed artifact 分别消耗完整上限；该预算最初为 18,000，当前提高到 30,000，以降低关键上下文被摘录的概率；
 2. 普通非视觉路径先移除重复资产正文及仅用于视觉审计的 carrier 字段；仍超预算时，按查询词覆盖保留 Markdown 命中块及相邻上下文，并用通用 omission marker 标记中间省略；
 3. `delivery_excerpted` 只表示传输副本被压缩，不能替代或触发 `content_truncated`。完整 provenance 与 source ranges 继续登记在 trace，finalize 仍按 packet handle 继承；
 4. 新增 diagnostic `evidence-packet-delivery` 事件及 `full_packet_chars`、`agent_packet_chars`、`saved_chars`、content 分类字符数、去重/摘录数和预算满足状态；finalize 另记录 `decision_input_chars`；
 5. answer-synthesis 计时改为在 delivery copy 准备完成后开始，其含义明确为“agent 收到证据后到 decision 到达 finalize”的综合区间。finalize contract 同时要求最小有效 decision，但不对语义冗余做脚本拒绝，避免额外重试。
 
-18,000 是总体交付预算而非每份文档配额；CLI 提供最低 4,000 的测试/诊断覆盖，但普通流程不应为了恢复已省略背景而扩大预算或读取 trace。摘录算法只使用查询词匹配、块邻接、字段类型权重和精确重复检测，不包含系统、规范、章节、语言或参数特例。长 packet 回归测试验证 5,000 字符预算下关键查询值和表格行仍保留，同时 trace 中登记压缩前后指标。
+30,000 是当前总体交付预算而非每份文档配额；CLI 提供最低 4,000 的测试/诊断覆盖，但普通流程不应为了恢复已省略背景而读取 trace。预算从 18,000 放宽是因为现有 trace 未显示字符数是主要耗时来源，而过度摘录会增加模型怀疑证据不完整、转向补查的风险。摘录算法只使用查询词匹配、块邻接、字段类型权重和精确重复检测，不包含系统、规范、章节、语言或参数特例。长 packet 回归测试验证 5,000 字符预算下关键查询值和表格行仍保留，同时 trace 中登记压缩前后指标。
+
+### 2026-08-25 回归稳定版与单轮硬门禁
+
+对 `20260825_063514_bea55057` 与 `20260825_063950_14c20554` 的复盘表明，进一步压缩 inspect 输出并没有稳定降低端到端时间。前者总计约 132 秒，其中候选阶段约 38.5 秒、answer-synthesis 约 93.4 秒；后者总计约 295 秒，首轮证据之后又发生缺口判断、supplement、精确 selector 失败和第二轮 inspect 路径，新增证据并未形成有效主张。第二次最主要的性能损失来自模型在首轮证据后重新规划，而非候选数量或 agent-facing 字符数本身。
+
+因此当前实现撤销 `21f0928`（main 对应 `ec078f9`）的 compact inspect response contract，以 intranet `53aab47`（main 对应 `97f36d5`）的稳定行为为基础，只保留以下领域无关的性能门禁：
+
+1. `begin` 把实际返回的 compact candidates 逐项登记为唯一 inspection window；完整 fused scope 与 projection 继续只用于 trace 审计，不能成为后续选择来源；
+2. `inspect` 的数字 rank、section ID 和 `document_path::section-id` 都只在该窗口内解析，窗口外的已知精确章节也拒绝；
+3. 每个 trace 只允许一次 batched inspect，第二次调用确定性返回 `blocked -> finalize`；
+4. `supplement` 保留为兼容命令，但不执行检索，确定性返回 `blocked -> finalize`；
+5. 首轮证据足够时立即 completed finalize；不足时立即 incomplete finalize，并只记录影响答案的 material unresolved；
+6. agent evidence 总预算放宽为 30,000 字符。速度收益依赖消除第二轮规划、检索和 inspect，而不是继续压缩证据文本。
+
+这些规则不识别具体系统、规范、问题、语言或章节，也不给模型判断“是否值得再检索”的自由；其代价是首轮 compact window 漏检时召回率会下降。这个取舍是当前内网性能优先策略的显式边界，后续应通过相同问题、模型和 Vault 的 A/B trace 验证，而不是通过运行时 supplement 补偿。
 
 Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产生明显的跨文件系统开销；这不是 `/opt/data/...` Linux 本地 intranet Vault 的同类路径。若 main 的该场景成为生产目标，应增加单文件聚合索引或 Provider-side cache，而不是牺牲候选完整性。
 
@@ -236,7 +251,7 @@ Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产
 - document reading；
 - table/figure resolution；
 - provenance resolution；
-- evidence-gap review（仅第二次 inspect）；
+- single-pass guardrail（仅当模型误发第二次 inspect 或 supplement 时记录，不执行检索）；
 - answer synthesis；
 - claim-evidence mapping；
 - page/asset verification（声明 original asset verified 时必须提供）。
@@ -275,10 +290,10 @@ trace 同时记录：
 - registered verification carrier 的单次准备与无 carrier/renderer 时的 fast-fail；
 - 同 request 的 open-trace 拒绝、连续 question index/count 和 `--close-request`；
 - unknown 顶层 decision/claim field 拒绝、unknown event field 的 `extensions` 兼容保留及 `unresolved_items` 兼容继承；
-- fused top-k 之外已注册精确章节的 projection 解析；
+- begin 实际返回窗口的持久化与窗口外精确章节拒绝；
 - 显式声明需要视觉核验的证据未核验时拒绝 `clear`/`source-backed`；
 - inspect provenance 自动继承及 ASCII evidence/claim ID；
-- supplement 后缺少第二次 inspect 时拒绝 finalize；
+- 第二次 inspect 与所有 supplement 确定性阻止并导向 finalize；
 - 去重 answer capsule、finalize 自动请求收口与 request-summary 汇总；
 - Hermes session/message 环境继承；
 - 无效 claim 导致 finalization 整体失败且不产生部分写入；
@@ -286,7 +301,7 @@ trace 同时记录：
 - attempted/effective route 区分；
 - evidence/claim 时间戳和请求级计时输出；
 - 紧凑候选和 n-gram 限制；
-- intranet 分支全套测试 63 项通过；
+- main 与 intranet 分支使用同一单轮门禁回归测试；
 - Skill 结构校验通过；
 - 所有 Python 入口保持 Git executable mode `100755`。
 
