@@ -16,6 +16,11 @@ from typing import Any
 
 RRF_K = 60
 DEFAULT_COMPACT_LIMIT = 5
+MAX_COMPACT_SCOPE_CHARS = 8000
+MAX_COMPACT_WARNINGS = 3
+MAX_COMPACT_WARNING_CHARS = 240
+MAX_COMPACT_LABEL_CHARS = 160
+MAX_COMPACT_TERM_CHARS = 64
 
 
 def run_json(command: list[str]) -> dict[str, Any]:
@@ -279,58 +284,146 @@ def fuse_candidates(
     return retained, rejected
 
 
+def bounded_text(value: Any, limit: int) -> str | None:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    return f"{text[: max(1, limit - 1)]}…"
+
+
 def compact_candidate(candidate: dict[str, Any], rank: int | None = None) -> dict[str, Any]:
     matched = candidate.get("matched_terms") or {}
     terms = sorted(
         {term for values in matched.values() if isinstance(values, list) for term in values},
         key=lambda value: (-len(value), value),
     )[:8]
+    pages = list(candidate.get("pages", []))[:8]
+    routes = [
+        bounded_text(route, MAX_COMPACT_TERM_CHARS)
+        for route in list(candidate.get("retrieval_routes", []))[:4]
+    ]
     result = {
         "rank": rank,
+        # These two fields form an exact audited selector and must not be truncated.
         "document_path": candidate.get("document_path") or candidate.get("vault_path"),
-        "source_filename": candidate.get("source_filename"),
         "section_id": candidate.get("section_id"),
-        "title": candidate.get("title") or candidate.get("heading"),
-        "pages": candidate.get("pages", []),
-        "quality": candidate.get("quality"),
-        "ingest_status": candidate.get("ingest_status"),
+        "source_filename": bounded_text(candidate.get("source_filename"), MAX_COMPACT_LABEL_CHARS),
+        "title": bounded_text(candidate.get("title") or candidate.get("heading"), MAX_COMPACT_LABEL_CHARS),
+        "pages": pages,
+        "quality": bounded_text(candidate.get("quality"), MAX_COMPACT_TERM_CHARS),
+        "ingest_status": bounded_text(candidate.get("ingest_status"), MAX_COMPACT_TERM_CHARS),
         "viewer_url": candidate.get("viewer_url"),
-        "retrieval_routes": candidate.get("retrieval_routes", []),
+        "retrieval_routes": [route for route in routes if route],
         "fusion_score": candidate.get("fusion_score"),
-        "matched_terms": terms,
+        "matched_terms": [
+            term
+            for term in (bounded_text(value, MAX_COMPACT_TERM_CHARS) for value in terms)
+            if term
+        ],
     }
     return {key: value for key, value in result.items() if value not in (None, [], {})}
 
 
 def compact_result(result: dict[str, Any], limit: int = DEFAULT_COMPACT_LIMIT) -> dict[str, Any]:
     candidates = result.get("candidates", [])
-    return {
-        "status": result.get("status"),
-        "authority": result.get("authority"),
-        "query": result.get("query"),
-        "duration_ms": result.get("duration_ms"),
-        "routes": result.get("routes", {}),
-        "fusion": result.get("fusion", {}),
-        "ranking": result.get("ranking", {}),
-        "candidate_count": len(candidates),
-        "candidates": [
-            compact_candidate(candidate, rank)
-            for rank, candidate in enumerate(candidates[: max(1, limit)], start=1)
-        ],
-        "warnings": result.get("warnings", []),
-        "answer_contract": result.get("answer_contract"),
-        "selection_contract": {
+    window_limit = min(DEFAULT_COMPACT_LIMIT, max(1, int(limit)))
+    compact_candidates = [
+        compact_candidate(candidate, rank)
+        for rank, candidate in enumerate(candidates[:window_limit], start=1)
+    ]
+    compact_warnings = [
+        warning
+        for warning in (
+            bounded_text(value, MAX_COMPACT_WARNING_CHARS)
+            for value in list(result.get("warnings", []))[:MAX_COMPACT_WARNINGS]
+        )
+        if warning
+    ]
+    compact_routes = {
+        name: {
+            key: value
+            for key, value in route.items()
+            if key in {"status", "provider", "duration_ms"} and value is not None
+        }
+        for name, route in result.get("routes", {}).items()
+        if isinstance(route, dict)
+    }
+    compact_fusion = {
+        key: value
+        for key, value in result.get("fusion", {}).items()
+        if key in {"duration_ms"} and value is not None
+    }
+    compact_ranking = {
+        key: value
+        for key, value in result.get("ranking", {}).items()
+        if key in {"strategy"} and value is not None
+    }
+    selection_contract = {
             "first_inspection_input": "compact-candidates-only",
             "inspect_once": "select all currently useful candidates in one call",
             "coverage_priority": (
                 "select the smallest set that adds requested output attributes or actions; subject qualifiers "
                 "only narrow scope, and contextual or comparative material is not a facet unless requested"
             ),
+            "candidate_window_policy": (
+                "the returned candidates are the complete operational input for first inspection; additional "
+                "fused candidates remain trace-only and must not be recovered"
+            ),
             "do_not_open": ["full-candidate-sidecar", "trace-state"],
             "exact_selector": "copy document_path verbatim, then append ::section_id",
-        },
-        "next_step": result.get("next_step"),
+            "downstream_truncation_recovery": (
+                "if the tool output is syntactically incomplete, run inspect without --candidate to use its "
+                "bounded default window; never run inline Python or create a helper script"
+            ),
     }
+
+    def render(window: list[dict[str, Any]]) -> dict[str, Any]:
+        compact = {
+            "status": result.get("status"),
+            "authority": result.get("authority"),
+            "duration_ms": result.get("duration_ms"),
+            "routes": compact_routes,
+            "fusion": compact_fusion,
+            "ranking": compact_ranking,
+            "candidate_count": len(window),
+            "candidate_window_complete": True,
+            "producer_output_truncated": False,
+            "selection_contract": selection_contract,
+            "candidates": window,
+            "warnings": compact_warnings,
+            "next_step": "inspect",
+        }
+        answer_contract = result.get("answer_contract")
+        if isinstance(answer_contract, dict):
+            compact["answer_contract"] = {
+                "viewer_enabled": bool(answer_contract.get("viewer_enabled")),
+                "final_section": bounded_text(
+                    answer_contract.get("final_section"), MAX_COMPACT_LABEL_CHARS
+                ),
+                "eligible_viewer_urls": list(
+                    dict.fromkeys(
+                        str(candidate["viewer_url"])
+                        for candidate in window
+                        if candidate.get("viewer_url")
+                    )
+                ),
+                "required_action": bounded_text(answer_contract.get("required_action"), 480),
+            }
+        return compact
+
+    packed: list[dict[str, Any]] = []
+    for candidate in compact_candidates:
+        trial = render([*packed, candidate])
+        if packed and len(json.dumps(trial, ensure_ascii=False, indent=2)) > MAX_COMPACT_SCOPE_CHARS:
+            break
+        packed.append(candidate)
+    compact = render(packed)
+    while len(packed) > 1 and len(json.dumps(compact, ensure_ascii=False, indent=2)) > MAX_COMPACT_SCOPE_CHARS:
+        packed.pop()
+        compact = render(packed)
+    return compact
 
 
 def append_trace_events(

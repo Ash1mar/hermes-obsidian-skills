@@ -281,6 +281,57 @@ def test_candidate_packing_prefers_complementary_query_facets_over_repetition() 
     assert "a2" not in selected_ids
 
 
+def test_compact_scope_exposes_only_complete_bounded_operational_window() -> None:
+    spec = importlib.util.spec_from_file_location("retrieve_query_scope", SCOPE)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    candidates = [
+        {
+            "document_path": f"10_Raw/converted/document-{index}/document.md",
+            "source_filename": f"source-{index}-" + ("x" * 500),
+            "section_id": f"section-{index}",
+            "title": "long-title-" + ("y" * 1000),
+            "pages": list(range(1, 40)),
+            "retrieval_routes": ["hierarchical-search", "coarse-recall"],
+            "matched_terms": {"content": ["z" * 200 for _ in range(12)]},
+            "fusion_score": 1.0 / index,
+        }
+        for index in range(1, 13)
+    ]
+    result = module.compact_result(
+        {
+            "status": "ok",
+            "authority": "candidate-navigation-only",
+            "query": "q" * 10000,
+            "duration_ms": 1.0,
+            "routes": {
+                "hierarchical_search": {"status": "ok", "duration_ms": 0.5, "hit_count": 12}
+            },
+            "fusion": {"duration_ms": 0.1, "retained_count": 12, "eliminated_count": 8},
+            "ranking": {"strategy": "test", "document_count": 12},
+            "candidates": candidates,
+            "warnings": ["warning-" + ("w" * 1000) for _ in range(10)],
+        },
+        limit=8,
+    )
+
+    assert result["candidate_count"] == len(result["candidates"]) == 5
+    assert result["candidate_window_complete"] is True
+    assert result["producer_output_truncated"] is False
+    assert result["candidates"][0]["document_path"] == candidates[0]["document_path"]
+    assert result["candidates"][0]["section_id"] == candidates[0]["section_id"]
+    assert len(result["candidates"][0]["title"]) <= module.MAX_COMPACT_LABEL_CHARS
+    assert len(result["warnings"]) == module.MAX_COMPACT_WARNINGS
+    assert all(len(item) <= module.MAX_COMPACT_WARNING_CHARS for item in result["warnings"])
+    assert "query" not in result
+    assert "hit_count" not in result["routes"]["hierarchical_search"]
+    assert "retained_count" not in result["fusion"]
+    assert "document_count" not in result["ranking"]
+    assert len(json.dumps(result, ensure_ascii=False, indent=2)) <= module.MAX_COMPACT_SCOPE_CHARS
+
+
 def test_scope_retrieval_survives_missing_provider_and_keeps_hierarchical_results(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
@@ -421,7 +472,16 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     begin_result = json.loads(begun.stdout)
     trace_id = begin_result["trace"]["trace_id"]
     assert len(begin_result["scope"]["candidates"]) <= 5
+    assert begin_result["scope"]["candidate_count"] == len(begin_result["scope"]["candidates"])
+    assert begin_result["scope"]["candidate_window_complete"] is True
+    assert begin_result["scope"]["producer_output_truncated"] is False
     assert begin_result["scope"]["candidates"][0]["section_id"] == "spray"
+    visible_viewer_urls = [
+        candidate["viewer_url"]
+        for candidate in begin_result["scope"]["candidates"]
+        if candidate.get("viewer_url")
+    ]
+    assert begin_result["scope"]["answer_contract"]["eligible_viewer_urls"] == visible_viewer_urls
     assert begin_result["scope"]["selection_contract"] == {
         "first_inspection_input": "compact-candidates-only",
         "inspect_once": "select all currently useful candidates in one call",
@@ -429,8 +489,16 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
             "select the smallest set that adds requested output attributes or actions; subject qualifiers "
             "only narrow scope, and contextual or comparative material is not a facet unless requested"
         ),
+        "candidate_window_policy": (
+            "the returned candidates are the complete operational input for first inspection; additional "
+            "fused candidates remain trace-only and must not be recovered"
+        ),
         "do_not_open": ["full-candidate-sidecar", "trace-state"],
         "exact_selector": "copy document_path verbatim, then append ::section_id",
+        "downstream_truncation_recovery": (
+            "if the tool output is syntactically incomplete, run inspect without --candidate to use its "
+            "bounded default window; never run inline Python or create a helper script"
+        ),
     }
 
     inspected = subprocess.run(
