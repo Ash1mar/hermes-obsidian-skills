@@ -73,7 +73,7 @@ python3 "<query-skill-root>/scripts/query_session.py" inspect \
   <vault-root> <trace-id> --candidate 1 --candidate 4
 ```
 
-`inspect` reads complete section-owned ranges in one batch and resolves related governed outputs, table/image Markdown, optional verification images, manifest, ledger, source-map, original PDF path/pages, QA status, and viewer URL when available. It registers the complete source ranges and provenance, then returns a delivery-only agent copy under an aggregate 18,000-character budget. When necessary, that copy removes duplicate or ordinary-route audit fields and keeps query-matched Markdown blocks with adjacent context; `delivery_excerpted` and the `evidence-packet-delivery` metrics describe this transfer reduction and do not mean the registered source range was truncated. `content_truncated` remains the separate source-reading blocker. Use only visible delivered content for claims and do not open the trace or source merely to recover delivery omissions. Prefer one inspection call. At most one second inspection is permitted for a real gap, conflict, missed source, or already-known exact section; a third inspection is blocked and requires immediate finalization as completed or incomplete. A `document/path::section-id` selector may name any exact section registered in the query projection, even when it was outside the compact fused top-k; this is the audited route for an already-known section.
+`inspect` reads complete section-owned ranges in one batch and resolves related governed outputs, table/image Markdown, optional verification images, manifest, ledger, source-map, original PDF path/pages, QA status, and viewer URL when available. It registers the complete source ranges and provenance, then returns a delivery-only agent copy under an aggregate 30,000-character budget. When necessary, that copy removes duplicate or ordinary-route audit fields and keeps query-matched Markdown blocks with adjacent context; `delivery_excerpted` and the `evidence-packet-delivery` metrics describe this transfer reduction and do not mean the registered source range was truncated. `content_truncated` remains the separate source-reading blocker. Use only visible delivered content for claims and do not open the trace or source merely to recover delivery omissions. Exactly one inspection call is permitted. Its selectors may reference only candidates actually returned in the compact `begin` window; `document/path::section-id` must match one of those entries exactly. Sections retained only in the full projection or fused sidecar are not inspectable. Select every useful returned candidate in that one batch, then finalize from the registered packets. A second `inspect` is blocked even when a gap, conflict, or known section remains.
 
 Each returned packet has an ASCII `evidence_ref` such as `P1`. The trace stores the corresponding path, version, section, pages, original PDF, and viewer metadata. Retain only the packet reference when synthesizing claims; never copy those provenance fields into finalization input. `inspect` is evidence reading and registration, not visual verification; do not describe it as `verify`, and never treat an inspected packet as a verified reference.
 
@@ -94,12 +94,7 @@ Use the minimum sufficient claim set and apply the returned `claim_pruning_gate`
 
 Preserve the scope expressed by the inspected evidence when writing the conclusion. If the evidence is narrower than the wording of the question, state that boundary as a concise qualification derived from the evidence itself. Do not launch additional retrieval solely to broaden the scope, and do not encode domain-, system-, standard-, language-, or parameter-specific scope rules in the Skill.
 
-If the first evidence packet is insufficient, run `supplement` once with an explicit gap reason and then run `inspect` again. Only one supplement and two total inspections are permitted per trace. Finalization is blocked until that second inspection records `evidence-gap-review`:
-
-```bash
-python3 "<query-skill-root>/scripts/query_session.py" supplement \
-  <vault-root> <trace-id> "<focused query>" --reason "<missing evidence>"
-```
+Supplemental retrieval is disabled for this performance-first workflow. Do not call `supplement`, launch another search, or inspect a projection-only section. If the single first-window inspection cannot support a complete answer, finalize immediately with `status: incomplete` and one material unresolved item. The CLI retains `supplement` only as a compatibility guard and returns structured `blocked -> finalize` without retrieving anything.
 
 Read `references/query-workflow.md` for selectors and the finalization decision. Read `references/query-tracing.md` only for trace schema, legacy fallback, grouped questions, or debugging.
 
@@ -137,7 +132,7 @@ Treat engineering parameters, formulas, tables, and figures as `evidence` even w
 
 ### Search and verification
 
-Consume the fused union. Inspect retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` material first when the evidence packet includes it. Use supplemental scoped exact/lexical search only when the packet is insufficient. Broaden beyond the fused scope only for gap, completeness, conflict, or audit questions.
+Consume only the compact candidate window returned by `begin`. Inspect retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` material first when the selected evidence packet includes it. Do not supplement, broaden, recover trace-only candidates, or run a second inspection. For gap, completeness, conflict, or audit questions, report the boundary from the single inspected window and finalize as incomplete when that boundary prevents a supported answer.
 
 This is governed-layer-first traditional search after candidate fusion. Query must never run Provider `sync` or rebuild operations. extraction QA labels are verification metadata, not relevance boosts or penalties.
 

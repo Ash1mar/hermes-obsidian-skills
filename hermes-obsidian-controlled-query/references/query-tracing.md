@@ -29,7 +29,7 @@ query_session.py inspect
 query_session.py finalize
 ```
 
-The workflow identifier is `query-session/v2` and trace schema is 1.5. A real evidence gap adds `supplement -> inspect`; this is the only supported supplemental evidence path. A query begun with the domain-neutral `--verification-required` policy adds one deterministic `verify` preparation command.
+The workflow identifier is `query-session/v2` and trace schema is 1.5. Every trace has one compact-window inspection; supplemental retrieval and a second inspection are blocked, so an unresolved evidence gap proceeds directly to an `incomplete` finalization. A query begun with the domain-neutral `--verification-required` policy adds one deterministic `verify` preparation command after that inspection.
 
 These three calls automatically record:
 

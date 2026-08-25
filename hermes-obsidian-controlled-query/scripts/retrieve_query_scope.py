@@ -361,21 +361,23 @@ def compact_result(result: dict[str, Any], limit: int = DEFAULT_COMPACT_LIMIT) -
     }
     selection_contract = {
             "first_inspection_input": "compact-candidates-only",
-            "inspect_once": "select all currently useful candidates in one call",
+            "inspect_once": "select all useful returned candidates in the only permitted inspection call",
             "coverage_priority": (
                 "select the smallest set that adds requested output attributes or actions; subject qualifiers "
                 "only narrow scope, and contextual or comparative material is not a facet unless requested"
             ),
             "candidate_window_policy": (
-                "the returned candidates are the complete operational input for first inspection; additional "
-                "fused candidates remain trace-only and must not be recovered"
+                "the returned candidates are the complete and only operational inspection input; additional "
+                "fused candidates remain trace-only and must not be recovered or inspected"
             ),
             "candidate_purpose_gate": (
                 "inspect a candidate only when it fills an unanswered requested output or resolves a concrete "
                 "conflict; available comparison, background, applicability, or operational material is not a reason"
             ),
             "do_not_open": ["full-candidate-sidecar", "trace-state"],
-            "exact_selector": "copy document_path verbatim, then append ::section_id",
+            "exact_selector": "document_path::section_id must exactly match an entry in this returned window",
+            "inspection_limit": 1,
+            "supplement_policy": "disabled; finalize from the single first-window inspection",
             "downstream_truncation_recovery": (
                 "if the tool output is syntactically incomplete, run inspect without --candidate to use its "
                 "bounded default window; never run inline Python or create a helper script"

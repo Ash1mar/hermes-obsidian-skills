@@ -9,8 +9,9 @@ question classification
 -> optional coarse recall || hierarchical routing
 -> normalize, expand, union, deduplicate, and RRF-rank candidate scope
 -> governed-layer-first traditional search
--> supplemental scoped exact/lexical search when needed
--> current-source and original-PDF verification
+-> one compact-window evidence inspection
+-> current-source resolution and optional explicitly requested original-page verification
+-> finalize as completed or incomplete without supplemental retrieval
 ```
 
 Use direct traditional/hierarchical lookup for exact identifiers and verbatim phrases when cheaper. Do not use Provider top-k as a completeness boundary for gap or audit questions.

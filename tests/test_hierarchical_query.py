@@ -483,21 +483,23 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert begin_result["scope"]["candidates"][0]["section_id"] == "spray"
     assert begin_result["scope"]["selection_contract"] == {
         "first_inspection_input": "compact-candidates-only",
-        "inspect_once": "select all currently useful candidates in one call",
+        "inspect_once": "select all useful returned candidates in the only permitted inspection call",
         "coverage_priority": (
             "select the smallest set that adds requested output attributes or actions; subject qualifiers "
             "only narrow scope, and contextual or comparative material is not a facet unless requested"
         ),
         "candidate_window_policy": (
-            "the returned candidates are the complete operational input for first inspection; additional "
-            "fused candidates remain trace-only and must not be recovered"
+            "the returned candidates are the complete and only operational inspection input; additional "
+            "fused candidates remain trace-only and must not be recovered or inspected"
         ),
         "candidate_purpose_gate": (
             "inspect a candidate only when it fills an unanswered requested output or resolves a concrete "
             "conflict; available comparison, background, applicability, or operational material is not a reason"
         ),
         "do_not_open": ["full-candidate-sidecar", "trace-state"],
-        "exact_selector": "copy document_path verbatim, then append ::section_id",
+        "exact_selector": "document_path::section_id must exactly match an entry in this returned window",
+        "inspection_limit": 1,
+        "supplement_policy": "disabled; finalize from the single first-window inspection",
         "downstream_truncation_recovery": (
             "if the tool output is syntactically incomplete, run inspect without --candidate to use its "
             "bounded default window; never run inline Python or create a helper script"
@@ -547,7 +549,7 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert packet["verification"]["status"] == "ready"
     assert packet["evidence_ref"] == "P1"
     assert inspect_result["delivery_metrics"]["budget_satisfied"] is True
-    assert inspect_result["delivery_metrics"]["agent_packet_chars"] <= 18000
+    assert inspect_result["delivery_metrics"]["agent_packet_chars"] <= 30000
     prepared = subprocess.run(
         [sys.executable, str(SESSION), "verify", str(vault), trace_id, "--evidence-ref", "P1"],
         capture_output=True,
@@ -911,7 +913,7 @@ def test_query_session_finalize_is_atomic_on_invalid_claim(tmp_path: Path) -> No
     assert state["claims"] == []
 
 
-def test_query_session_requires_inspect_after_supplement(tmp_path: Path) -> None:
+def test_query_session_blocks_supplement_and_allows_immediate_finalize(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
@@ -928,7 +930,7 @@ def test_query_session_requires_inspect_after_supplement(tmp_path: Path) -> None
         check=True,
     )
     packet_ref = json.loads(inspected.stdout)["evidence_packets"][0]["evidence_ref"]
-    subprocess.run(
+    supplemented = subprocess.run(
         [
             sys.executable,
             str(SESSION),
@@ -943,33 +945,15 @@ def test_query_session_requires_inspect_after_supplement(tmp_path: Path) -> None
         text=True,
         check=True,
     )
+    supplement_result = json.loads(supplemented.stdout)
+    assert supplement_result["status"] == "blocked"
+    assert supplement_result["next_command"] == "finalize"
+    assert "single-pass policy" in supplement_result["reason"]
     decision = {
         "evidence_level": "source-backed",
         "claims": [{"text": "K=60 is present.", "evidence_refs": [packet_ref]}],
         "unresolved": [],
     }
-    blocked = subprocess.run(
-        [
-            sys.executable,
-            str(SESSION),
-            "finalize",
-            str(vault),
-            trace_id,
-            "--decision-json",
-            json.dumps(decision),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert blocked.returncode != 0
-    assert "must be followed by inspect" in blocked.stderr
-    subprocess.run(
-        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
-        capture_output=True,
-        text=True,
-        check=True,
-    )
     finalized = subprocess.run(
         [
             sys.executable,
@@ -986,10 +970,10 @@ def test_query_session_requires_inspect_after_supplement(tmp_path: Path) -> None
     )
     state = json.loads(Path(json.loads(finalized.stdout)["state_path"]).read_text(encoding="utf-8"))
     stages = [event["stage"] for event in state["events"]]
-    assert "supplemental-retrieval" in stages
-    assert "evidence-gap-review" in stages
-    assert "query-command-failure" in stages
-    assert state["metrics"]["command_count"] == 6
+    assert "query-guardrail" in stages
+    assert "supplemental-retrieval" not in stages
+    assert "evidence-gap-review" not in stages
+    assert state["metrics"]["command_count"] == 4
 
 
 def test_query_session_inherits_hermes_session_context(tmp_path: Path) -> None:
@@ -1257,7 +1241,7 @@ def test_query_session_rejects_verified_refs_after_inspect_without_visual_verifi
     assert "inspect reads evidence but does not grant verified status" in rejected.stderr
 
 
-def test_query_session_accepts_exact_projected_section_outside_fused_candidates(tmp_path: Path) -> None:
+def test_query_session_rejects_exact_projected_section_outside_initial_window(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
@@ -1280,7 +1264,7 @@ def test_query_session_accepts_exact_projected_section_outside_fused_candidates(
     trace_id = result["trace"]["trace_id"]
     assert all(candidate["section_id"] != "root" for candidate in result["scope"]["candidates"])
     document_path = "10_Raw/converted/0712XFNPXTS02_document_bundle/document.md"
-    inspected = subprocess.run(
+    rejected = subprocess.run(
         [
             sys.executable,
             str(SESSION),
@@ -1292,13 +1276,18 @@ def test_query_session_accepts_exact_projected_section_outside_fused_candidates(
         ],
         capture_output=True,
         text=True,
+        check=False,
+    )
+    assert rejected.returncode != 0
+    assert "candidate selector did not match" in rejected.stderr
+    inspected = subprocess.run(
+        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
+        capture_output=True,
+        text=True,
         check=True,
     )
     packet = json.loads(inspected.stdout)["evidence_packets"][0]
-    assert packet["document_path"] == document_path
-    assert packet["section_id"] == "root"
-    assert "消防系统" in packet["content"]
-    assert packet["selection_origin"] == "projection-exact"
+    assert packet["section_id"] == result["scope"]["candidates"][0]["section_id"]
 
 
 def test_query_session_resolves_hash_matched_nested_vault_source_before_external_path(tmp_path: Path) -> None:
@@ -1373,7 +1362,7 @@ def test_query_session_does_not_promote_external_source_when_vault_copy_is_missi
     assert packet["source_path"] == "unresolved"
 
 
-def test_reinspection_refreshes_catalog_and_third_inspection_is_blocked(tmp_path: Path) -> None:
+def test_second_inspection_is_blocked_without_refreshing_catalog(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
     begun = subprocess.run(
@@ -1386,21 +1375,15 @@ def test_reinspection_refreshes_catalog_and_third_inspection_is_blocked(tmp_path
     command = [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"]
     subprocess.run(command, check=True, capture_output=True, text=True)
     state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    state["workflow_state"]["evidence_catalog"]["P1"]["original_asset_path"] = "10_Raw/stale.pdf"
-    write_json(state_path, state)
     second = subprocess.run(command, check=True, capture_output=True, text=True)
-    assert json.loads(second.stdout)["evidence_packets"][0]["evidence_ref"] == "P1"
-    refreshed = json.loads(state_path.read_text(encoding="utf-8"))["workflow_state"]["evidence_catalog"]["P1"]
-    assert refreshed["original_asset_path"] == "10_Raw/0712XFNPXTS02.pdf"
-    assert refreshed["inspection_rounds"] == [1, 2]
-    third = subprocess.run(command, check=True, capture_output=True, text=True)
-    blocked = json.loads(third.stdout)
+    blocked = json.loads(second.stdout)
     assert blocked["status"] == "blocked"
     assert blocked["next_command"] == "finalize"
+    catalog = json.loads(state_path.read_text(encoding="utf-8"))["workflow_state"]["evidence_catalog"]["P1"]
+    assert catalog["inspection_rounds"] == [1]
 
 
-def test_query_session_allows_only_one_supplement(tmp_path: Path) -> None:
+def test_query_session_disables_every_supplement_attempt(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     provider_config = tmp_path / "provider.json"
     write_json(provider_config, {"provider": "qmd-like-rag", "enabled": False})
@@ -1439,17 +1422,22 @@ def test_query_session_allows_only_one_supplement(tmp_path: Path) -> None:
         str(provider_config),
     ]
     first = subprocess.run(supplement_command, check=True, capture_output=True, text=True)
-    assert json.loads(first.stdout)["next_command"] == "inspect"
-    subprocess.run(
-        [sys.executable, str(SESSION), "inspect", str(vault), trace_id, "--candidate", "1"],
-        check=True,
-        capture_output=True,
-        text=True,
-    )
+    first_result = json.loads(first.stdout)
+    assert first_result["status"] == "blocked"
+    assert first_result["next_command"] == "finalize"
     second = subprocess.run(supplement_command, check=True, capture_output=True, text=True)
     blocked = json.loads(second.stdout)
     assert blocked["status"] == "blocked"
     assert blocked["next_command"] == "finalize"
+    state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    guardrails = [
+        event
+        for event in state["events"]
+        if event["stage"] == "query-guardrail" and event["route"] == "supplement-disabled"
+    ]
+    assert len(guardrails) == 1
+    assert not any(event["stage"] == "supplemental-retrieval" for event in state["events"])
 
 
 def test_failed_query_command_is_recorded_for_incomplete_finalization(tmp_path: Path) -> None:
@@ -2069,16 +2057,18 @@ def test_query_contract_fuses_parallel_scope_before_governed_first_search() -> N
     assert "query_session.py" in skill
     assert "begin -> inspect -> finalize" in skill
     assert "begin -> inspect -> verify -> one visual check when ready -> finalize" in skill
-    assert "Consume the fused union" in skill
+    assert "Consume only the compact candidate window returned by `begin`" in skill
     assert "Inspect retained `30_Cards/`, `40_Concepts/`, and `50_Projects/` material first" in skill
-    assert "Use supplemental scoped exact/lexical search only" in skill
+    assert "Do not supplement, broaden, recover trace-only candidates, or run a second inspection" in skill
     assert "disabled or unavailable Provider" in workflow
     assert "Supported claims require at least one recorded evidence ID" in workflow
     assert "A table, formula, engineering parameter, image reference, or Bundle QA flag does not trigger it by itself" in skill
     assert "unknown event fields" in skill and "extensions" in skill
-    assert "outside the fused top-k" in workflow
-    assert "compact candidates returned by `begin` as the complete operational input" in skill
-    assert "copy `document_path` verbatim" in skill
+    assert "resolves only against candidates actually returned in the compact `begin` window" in workflow
+    assert "compact candidate window returned by `begin`" in skill
+    assert "must match one of those entries exactly" in skill
+    assert "Supplemental retrieval is disabled" in skill
+    assert "aggregate 30,000-character budget" in workflow
     assert "Do not launch additional retrieval solely to broaden the scope" in skill
     assert "not a domain-specific routing or answer template" in workflow
     assert "`inspect` is evidence reading and registration, not visual verification" in skill
