@@ -207,6 +207,8 @@ trace `20260824_090251_a3624b82` 使用动态 verification contract 后没有 fi
 
 trace `20260824_101544_421650ea` 首次进入 120 秒目标（107942.854 ms），但三个 packet 的 source-map `warn` 仍触发了完整 evidence-level reference 读取，普通 finalize 又因可选 inspect event 引用未使用 handles 而失败并重试。性能优先策略进一步改为 fail-open diagnostics：非 failed 的 `warn`、`pending`、`qa_required`、`ambiguous`、`incomplete`（包括表格/图片标签）可直接作为 `source-backed` 使用，不触发 reference 读取；无正文、原件/页码缺失、答案内容截断、failed/unavailable-class 状态、真实来源冲突和显式视觉核验未完成仍是硬门禁。普通动态 event contract 要求 `events: []`，禁止为满足可选 event 引用而扩大 claim/evidence。规则只读取 packet 控制状态和内容存在性，不包含任何领域或问题特例。
 
+后续内网模型曾把 agent-facing `candidate_count` 的完整融合总数与仅返回前五条的 `candidates` 数组误判为工具输出截断，继而尝试 inline `python3 -c` 和临时脚本读取完整列表。修复消除这一契约歧义：agent-facing `candidate_count` 只表示实际返回数，完整融合数量仅留在 trace；返回 `candidate_window_complete: true` 和 `producer_output_truncated: false`；移除 agent-facing route/fusion 的候选总数，限制可选标签、页码、路由和 warning 长度，并在固定字符预算内打包最多五条。若下游显示确实在 JSON 中途截断，唯一恢复路径是用已返回 trace ID 调用无 selector 的 `inspect` 默认窗口，禁止读取完整 trace、运行 inline Python 或写 helper script。该策略不解析问题、领域、文档或章节内容。
+
 Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产生明显的跨文件系统开销；这不是 `/opt/data/...` Linux 本地 intranet Vault 的同类路径。若 main 的该场景成为生产目标，应增加单文件聚合索引或 Provider-side cache，而不是牺牲候选完整性。
 
 ## 自动 trace 与计时
