@@ -185,7 +185,7 @@ qmd-like-rag 未配置、被禁用或暂时不可用时，coarse route 记为 di
 - 中文查询产生的重叠 n-gram 只保留最长且不同的少量命中词；
 - trace Markdown 只展示最高优先级候选，诊断详情保留在 JSON；
 - `inspect` 只读取已选择候选，不把整个 Vault 或全部候选送回模型。
-- 每题完成后只保留 answer capsule 用于多题汇总，完整 packet 留在 trace sidecar。
+- 每题完成后只保留 answer capsule 用于多题汇总；trace sidecar 保留完整 provenance 和 source ranges，源内容可从登记范围重建，不重复保存或传输整包正文。
 - answer capsule 对来源去重，claims 只保留 `source_ids`，避免同一 PDF/页码在每条 claim 中重复。
 
 一次真实大 Vault 基准中，初始检索输出从 35,204 bytes 降到 4,893 bytes，减少约 86.1%。
@@ -210,6 +210,20 @@ trace `20260824_101544_421650ea` 首次进入 120 秒目标（107942.854 ms）�
 后续内网模型曾把 agent-facing `candidate_count` 的完整融合总数与仅返回前五条的 `candidates` 数组误判为工具输出截断，继而尝试 inline `python3 -c` 和临时脚本读取完整列表。修复消除这一契约歧义：agent-facing `candidate_count` 只表示实际返回数，完整融合数量仅留在 trace；返回 `candidate_window_complete: true` 和 `producer_output_truncated: false`；移除 agent-facing route/fusion 的候选总数，限制可选标签、页码、路由和 warning 长度，并在固定字符预算内打包最多五条。若下游显示确实在 JSON 中途截断，唯一恢复路径是用已返回 trace ID 调用无 selector 的 `inspect` 默认窗口，禁止读取完整 trace、运行 inline Python 或写 helper script。该策略不解析问题、领域、文档或章节内容。
 
 trace `20260825_024105_c3e20311` 在 108982.548 ms 内稳定完成，未再读取完整 trace/reference、运行 helper、重试 finalize 或误用视觉核验；但首轮 inspect 的三个 packet 中一个未用于 claim，另一个只生成未请求的通用对比，真正补齐请求属性的同文档详细章节需要第二轮 inspect，耗费 34946.923 ms 的模型选择时间。通用修复分两层：locator 在 section 路由时扣除已由 document identity 命中的主题词，限制重叠 n-gram 膨胀，并在文档多样性之前给最强文档一个能增加 query-language coverage 的互补章节槽位；模型侧增加 `candidate_purpose_gate` 和 `claim_pruning_gate`，证据存在不再构成 inspect/claim 理由，删除后仍完整回答请求的比较、背景、适用性或运行内容必须省略。规则只比较查询词覆盖和请求输出完整性，不包含系统、规范、章节、语言或参数特例。
+
+### 2026-08-25 答案合成输入优化
+
+trace `20260825_031033_61bf03fd` 只有一次 inspect 和一次成功 finalize，但总计 107468.615 ms 中 `answer-synthesis` 占 97433.471 ms。这个阶段不是“最终中文答案输出”计时：旧边界从 inspect 完成持续到 finalize 调用，混合了工具结果传输、模型服务排队、证据包阅读、推理、decision JSON 生成和调用准备，因此不能仅凭该数值认定模型在写答案。旧 trace 又没有 packet 字符数与 decision 字符数，无法判断主要压力来自证据输入还是决策输出。
+
+本轮采用通用、仅影响 agent delivery 的压缩，不改变候选、证据登记、source ranges、页码、原始 PDF 或 claim-evidence 门禁：
+
+1. `inspect` 对全部所选 packet 的 agent-facing 副本设置默认 18,000 字符总预算，不再允许每个章节、资产和 governed artifact 分别消耗完整上限；
+2. 普通非视觉路径先移除重复资产正文及仅用于视觉审计的 carrier 字段；仍超预算时，按查询词覆盖保留 Markdown 命中块及相邻上下文，并用通用 omission marker 标记中间省略；
+3. `delivery_excerpted` 只表示传输副本被压缩，不能替代或触发 `content_truncated`。完整 provenance 与 source ranges 继续登记在 trace，finalize 仍按 packet handle 继承；
+4. 新增 diagnostic `evidence-packet-delivery` 事件及 `full_packet_chars`、`agent_packet_chars`、`saved_chars`、content 分类字符数、去重/摘录数和预算满足状态；finalize 另记录 `decision_input_chars`；
+5. answer-synthesis 计时改为在 delivery copy 准备完成后开始，其含义明确为“agent 收到证据后到 decision 到达 finalize”的综合区间。finalize contract 同时要求最小有效 decision，但不对语义冗余做脚本拒绝，避免额外重试。
+
+18,000 是总体交付预算而非每份文档配额；CLI 提供最低 4,000 的测试/诊断覆盖，但普通流程不应为了恢复已省略背景而扩大预算或读取 trace。摘录算法只使用查询词匹配、块邻接、字段类型权重和精确重复检测，不包含系统、规范、章节、语言或参数特例。长 packet 回归测试验证 5,000 字符预算下关键查询值和表格行仍保留，同时 trace 中登记压缩前后指标。
 
 Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产生明显的跨文件系统开销；这不是 `/opt/data/...` Linux 本地 intranet Vault 的同类路径。若 main 的该场景成为生产目标，应增加单文件聚合索引或 Provider-side cache，而不是牺牲候选完整性。
 

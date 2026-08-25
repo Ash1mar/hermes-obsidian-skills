@@ -519,6 +519,9 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert "do not create a separate" in inspect_result["finalize_contract"]["qualification_policy"]
     assert "materially change" in inspect_result["finalize_contract"]["unresolved_policy"]
     assert "do not repeat" in inspect_result["finalize_contract"]["conclusion_policy"]
+    assert "smallest valid decision object" in (
+        inspect_result["finalize_contract"]["decision_minimization_policy"]
+    )
     assert inspect_result["finalize_contract"]["verification_contract"] == {
         "verification_required": True,
         "inspect_grants_verified_status": False,
@@ -543,6 +546,8 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert packet["qa"]["source_map_validation_status"] == "pass"
     assert packet["verification"]["status"] == "ready"
     assert packet["evidence_ref"] == "P1"
+    assert inspect_result["delivery_metrics"]["budget_satisfied"] is True
+    assert inspect_result["delivery_metrics"]["agent_packet_chars"] <= 18000
     prepared = subprocess.run(
         [sys.executable, str(SESSION), "verify", str(vault), trace_id, "--evidence-ref", "P1"],
         capture_output=True,
@@ -600,6 +605,9 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     state_path = Path(final_result["state_path"])
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["metrics"]["command_count"] == 4
+    assert state["metrics"]["decision_input_chars"] > 0
+    assert state["metrics"]["last_agent_packet_chars"] > 0
+    assert state["metrics"]["last_full_packet_chars"] >= state["metrics"]["last_agent_packet_chars"]
     assert state["evidence"][0]["evidence_id"] == "E1"
     assert state["evidence"][0]["document_version"] == packet["document_version"]
     assert state["claims"][0]["claim_id"] == "C1"
@@ -613,6 +621,7 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
         "document-reading",
         "table-figure-resolution",
         "provenance-resolution",
+        "evidence-packet-delivery",
         "answer-synthesis",
         "claim-evidence-mapping",
         "page-asset-verification",
@@ -634,6 +643,74 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert "The checked section supports K=60." in request_result["answer_markdown"]
     assert request_result["metrics"]["controlled_request_duration_ms"] >= 0
     assert request_result["metrics"]["measurement_boundary"] == "first query-session begin through last finalized trace"
+
+
+def test_query_session_bounds_agent_evidence_copy_and_keeps_query_matches(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    bundle = vault / "10_Raw" / "converted" / "0712XFNPXTS02_document_bundle"
+    paragraphs = [
+        f"背景段落 {index}：" + ("与当前问题无关的通用说明。" * 10)
+        for index in range(45)
+    ]
+    paragraphs.insert(22, "关键参数：喷头参数 K=60，动作温度为 68 摄氏度。")
+    document_lines = ["# 消防系统", "", "## 水喷雾管网", ""]
+    document_lines.extend("\n\n".join(paragraphs).splitlines())
+    (bundle / "document.md").write_text("\n".join(document_lines) + "\n", encoding="utf-8")
+    end_line = len(document_lines)
+    outline = json.loads((bundle / "outline.json").read_text(encoding="utf-8"))
+    for section in outline["sections"]:
+        if section["id"] in {"root", "spray"}:
+            section["end_line"] = end_line
+    write_json(bundle / "outline.json", outline)
+    ledger_path = vault / "_system" / "reports" / "0712XFNPXTS02.section-ledger.json"
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    for section in ledger["sections"]:
+        if section["id"] == "spray":
+            section["content_ranges"] = [{"start_line": 3, "end_line": end_line}]
+    write_json(ledger_path, ledger)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+
+    begun = subprocess.run(
+        [sys.executable, str(SESSION), "begin", str(vault), "喷头参数 K=60 的动作温度是什么？"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(begun.stdout)["trace"]["trace_id"]
+    inspected = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "inspect",
+            str(vault),
+            trace_id,
+            "--candidate",
+            "1",
+            "--max-agent-evidence-chars",
+            "5000",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = json.loads(inspected.stdout)
+    metrics = result["delivery_metrics"]
+    assert metrics["full_packet_chars"] > metrics["agent_packet_chars"]
+    assert metrics["agent_packet_chars"] <= 5000
+    assert metrics["budget_satisfied"] is True
+    assert metrics["excerpted_field_count"] >= 1
+    packet = result["evidence_packets"][0]
+    assert packet["content_truncated"] is False
+    assert packet["delivery_excerpted"] is True
+    assert "K=60" in packet["content"]
+    assert "68 摄氏度" in packet["content"]
+    assert "| 60 | 68 ℃ |" in packet["assets"][0]["content"]
+
+    state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    event = next(item for item in state["events"] if item["stage"] == "evidence-packet-delivery")
+    assert event["accounting"] == "diagnostic"
+    assert event["extensions"]["agent_packet_chars"] == metrics["agent_packet_chars"]
 
 
 def test_query_session_rejects_multiple_questions_before_trace_creation(tmp_path: Path) -> None:
