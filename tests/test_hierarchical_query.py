@@ -530,26 +530,32 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
         check=True,
     )
     inspect_result = json.loads(inspected.stdout)
-    contract = inspect_result["finalize_contract"]
-    assert contract["version"] == "compact/v1"
-    assert contract["synthesis"] == {
-        "claims": "minimum-requested-outputs;merge-related-same-evidence",
-        "prune": "unrequested-or-redundant",
-        "qualification": "attach-only-if-needed",
-        "unresolved": "material-only",
-        "conclusion": "one-short-no-repeat",
-        "decision": "smallest-valid-object",
+    assert "minimum sufficient claim set" in inspect_result["finalize_contract"]["claim_set_policy"]
+    assert "remove any claim" in inspect_result["finalize_contract"]["claim_pruning_gate"]
+    assert "Evidence availability never creates answer scope" in (
+        inspect_result["finalize_contract"]["claim_pruning_gate"]
+    )
+    assert "do not create a separate" in inspect_result["finalize_contract"]["qualification_policy"]
+    assert "materially change" in inspect_result["finalize_contract"]["unresolved_policy"]
+    assert "do not repeat" in inspect_result["finalize_contract"]["conclusion_policy"]
+    assert "smallest valid decision object" in (
+        inspect_result["finalize_contract"]["decision_minimization_policy"]
+    )
+    assert inspect_result["finalize_contract"]["verification_contract"] == {
+        "verification_required": True,
+        "inspect_grants_verified_status": False,
+        "verified_evidence_refs_policy": (
+            "only refs whose registered carrier was visually checked after verify returned ready"
+        ),
+        "required_verified_evidence_refs": None,
+        "page_asset_verification_event_policy": "required for each verified ref, with inspected_paths",
     }
-    assert contract["verification"] == {
-        "required": True,
-        "inspect_verified": False,
-        "verified_refs": "checked-ready-only",
-        "visual_events": "per-verified-ref",
-    }
-    assert contract["evidence"]["pass_quality"] is True
-    assert contract["evidence"]["direct_use"] is True
-    assert contract["evidence"]["read_reference"] is False
-    assert contract["events"]["submit"] == "actual-visual-check-only"
+    assert inspect_result["finalize_contract"]["evidence_level_contract"]["ordinary_pass_quality"] is True
+    assert inspect_result["finalize_contract"]["evidence_level_contract"]["direct_use_allowed"] is True
+    assert inspect_result["finalize_contract"]["evidence_level_contract"]["full_reference_required"] is False
+    assert "do not read references/evidence-levels.md" in (
+        inspect_result["finalize_contract"]["evidence_level_contract"]["reference_read_policy"]
+    )
     packet = inspect_result["evidence_packets"][0]
     assert "K=60" in packet["content"]
     assert packet["source_exists"] is True
@@ -559,34 +565,8 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert packet["qa"]["source_map_validation_status"] == "pass"
     assert packet["verification"]["status"] == "ready"
     assert packet["evidence_ref"] == "P1"
-    inspect_state_path = (
-        vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
-    )
-    inspect_state = json.loads(inspect_state_path.read_text(encoding="utf-8"))
-    delivery_extensions = next(
-        event["extensions"]
-        for event in inspect_state["events"]
-        if event["stage"] == "evidence-packet-delivery"
-    )
-    assert delivery_extensions["budget_satisfied"] is True
-    assert delivery_extensions["agent_packet_chars"] <= 18000
-    response_metrics = {
-        key: delivery_extensions[key]
-        for key in (
-            "inspect_response_chars",
-            "evidence_packet_chars",
-            "finalize_contract_chars",
-            "other_response_chars",
-        )
-    }
-    assert response_metrics["evidence_packet_chars"] == delivery_extensions["agent_packet_chars"]
-    assert response_metrics["finalize_contract_chars"] == len(
-        json.dumps(contract, ensure_ascii=False, separators=(",", ":"))
-    )
-    assert response_metrics["finalize_contract_chars"] < 1500
-    assert response_metrics["inspect_response_chars"] == len(
-        json.dumps(inspect_result, ensure_ascii=False, separators=(",", ":"))
-    )
+    assert inspect_result["delivery_metrics"]["budget_satisfied"] is True
+    assert inspect_result["delivery_metrics"]["agent_packet_chars"] <= 18000
     prepared = subprocess.run(
         [sys.executable, str(SESSION), "verify", str(vault), trace_id, "--evidence-ref", "P1"],
         capture_output=True,
@@ -647,8 +627,6 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert state["metrics"]["decision_input_chars"] > 0
     assert state["metrics"]["last_agent_packet_chars"] > 0
     assert state["metrics"]["last_full_packet_chars"] >= state["metrics"]["last_agent_packet_chars"]
-    assert state["metrics"]["last_inspect_response_chars"] == response_metrics["inspect_response_chars"]
-    assert state["metrics"]["last_finalize_contract_chars"] == response_metrics["finalize_contract_chars"]
     assert state["evidence"][0]["evidence_id"] == "E1"
     assert state["evidence"][0]["document_version"] == packet["document_version"]
     assert state["claims"][0]["claim_id"] == "C1"
@@ -735,10 +713,7 @@ def test_query_session_bounds_agent_evidence_copy_and_keeps_query_matches(tmp_pa
         check=True,
     )
     result = json.loads(inspected.stdout)
-    state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
-    state = json.loads(state_path.read_text(encoding="utf-8"))
-    event = next(item for item in state["events"] if item["stage"] == "evidence-packet-delivery")
-    metrics = event["extensions"]
+    metrics = result["delivery_metrics"]
     assert metrics["full_packet_chars"] > metrics["agent_packet_chars"]
     assert metrics["agent_packet_chars"] <= 5000
     assert metrics["budget_satisfied"] is True
@@ -750,11 +725,11 @@ def test_query_session_bounds_agent_evidence_copy_and_keeps_query_matches(tmp_pa
     assert "68 摄氏度" in packet["content"]
     assert "| 60 | 68 ℃ |" in packet["assets"][0]["content"]
 
+    state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    event = next(item for item in state["events"] if item["stage"] == "evidence-packet-delivery")
     assert event["accounting"] == "diagnostic"
     assert event["extensions"]["agent_packet_chars"] == metrics["agent_packet_chars"]
-    assert metrics["inspect_response_chars"] == len(
-        json.dumps(result, ensure_ascii=False, separators=(",", ":"))
-    )
 
 
 def test_query_session_rejects_multiple_questions_before_trace_creation(tmp_path: Path) -> None:
@@ -1117,24 +1092,26 @@ def test_query_session_does_not_infer_verification_policy_from_question_terms(tm
     )
     inspect_result = json.loads(inspected.stdout)
     assert inspect_result["next_command"] == "finalize"
-    assert inspect_result["finalize_contract"]["verification"] == {
-        "required": False,
-        "inspect_verified": False,
-        "verified_refs": [],
-        "visual_events": [],
+    assert inspect_result["finalize_contract"]["verification_contract"] == {
+        "verification_required": False,
+        "inspect_grants_verified_status": False,
+        "verified_evidence_refs_policy": "must be empty because visual verification was not requested",
+        "required_verified_evidence_refs": [],
+        "page_asset_verification_event_policy": "omit because visual verification was not requested",
     }
-    level_contract = inspect_result["finalize_contract"]["evidence"]
-    assert level_contract["pass_quality"] is True
-    assert level_contract["direct_use"] is True
-    assert level_contract["read_reference"] is False
-    assert level_contract["blocked"] == []
-    assert level_contract["diagnostics"] == []
-    assert inspect_result["finalize_contract"]["events"] == {
-        "submit": [],
-        "expand_claims_or_refs": False,
-        "extensions": "diagnostic-only",
+    level_contract = inspect_result["finalize_contract"]["evidence_level_contract"]
+    assert level_contract["ordinary_pass_quality"] is True
+    assert level_contract["direct_use_allowed"] is True
+    assert level_contract["full_reference_required"] is False
+    assert level_contract["blocked_conditions"] == []
+    assert level_contract["non_blocking_diagnostics"] == []
+    assert inspect_result["finalize_contract"]["event_submission_contract"] == {
+        "ordinary_events": [],
+        "policy": "set events to []; query-session already records inspect, search, reading, and provenance",
+        "evidence_ref_policy": "never add a claim or evidence ref solely to make an optional event reference valid",
     }
-    assert "type" not in inspect_result["finalize_contract"]["schema"]["decision"]
+    assert "type" not in inspect_result["finalize_contract"]["event_standard_fields"]
+    assert "Unknown event fields are preserved under extensions" in inspect_result["finalize_contract"]["event_extension_policy"]
     state_path = vault / "_system" / "reports" / "query-traces" / "_data" / f"{trace_id}.query-trace.json"
     workflow = json.loads(state_path.read_text(encoding="utf-8"))["workflow_state"]
     assert workflow["verification_required"] is False
@@ -1162,12 +1139,13 @@ def test_query_session_treats_source_map_warn_as_non_blocking_diagnostic(tmp_pat
         text=True,
         check=True,
     )
-    contract = json.loads(inspected.stdout)["finalize_contract"]["evidence"]
-    assert contract["pass_quality"] is True
-    assert contract["direct_use"] is True
-    assert contract["read_reference"] is False
-    assert contract["blocked"] == []
-    assert contract["diagnostics"] == ["P1:source-map-validation=warn"]
+    contract = json.loads(inspected.stdout)["finalize_contract"]["evidence_level_contract"]
+    assert contract["ordinary_pass_quality"] is True
+    assert contract["direct_use_allowed"] is True
+    assert contract["full_reference_required"] is False
+    assert contract["blocked_conditions"] == []
+    assert contract["non_blocking_diagnostics"] == ["P1:source-map-validation=warn"]
+    assert contract["reference_read_policy"].startswith("do not read references/evidence-levels.md")
 
 
 def test_query_session_treats_non_failed_asset_qa_as_non_blocking(tmp_path: Path) -> None:
@@ -1191,11 +1169,11 @@ def test_query_session_treats_non_failed_asset_qa_as_non_blocking(tmp_path: Path
             text=True,
             check=True,
         )
-        contract = json.loads(inspected.stdout)["finalize_contract"]["evidence"]
-        assert contract["direct_use"] is True
-        assert contract["read_reference"] is False
-        assert contract["blocked"] == []
-        assert contract["diagnostics"] == [
+        contract = json.loads(inspected.stdout)["finalize_contract"]["evidence_level_contract"]
+        assert contract["direct_use_allowed"] is True
+        assert contract["full_reference_required"] is False
+        assert contract["blocked_conditions"] == []
+        assert contract["non_blocking_diagnostics"] == [
             f"P1:table_spray-quality={asset_quality}"
         ]
 
@@ -1222,10 +1200,9 @@ def test_query_session_blocks_failed_asset_and_truncated_answer_content(tmp_path
         text=True,
         check=True,
     )
-    contract = json.loads(inspected.stdout)["finalize_contract"]["evidence"]
-    assert contract["direct_use"] is False
-    assert contract["blocked"] == ["P1:table_spray-quality=failed"]
-    assert contract["blocked_refs"] == ["P1"]
+    contract = json.loads(inspected.stdout)["finalize_contract"]["evidence_level_contract"]
+    assert contract["direct_use_allowed"] is False
+    assert contract["blocked_conditions"] == ["P1:table_spray-quality=failed"]
 
     truncated_vault = make_vault(tmp_path / "truncated")
     subprocess.run([sys.executable, str(BUILD), str(truncated_vault)], check=True, capture_output=True, text=True)
@@ -1252,9 +1229,9 @@ def test_query_session_blocks_failed_asset_and_truncated_answer_content(tmp_path
         text=True,
         check=True,
     )
-    contract = json.loads(inspected.stdout)["finalize_contract"]["evidence"]
-    assert contract["direct_use"] is False
-    assert "P1:content-truncated" in contract["blocked"]
+    contract = json.loads(inspected.stdout)["finalize_contract"]["evidence_level_contract"]
+    assert contract["direct_use_allowed"] is False
+    assert "P1:content-truncated" in contract["blocked_conditions"]
 
 
 def test_query_session_rejects_verified_refs_after_inspect_without_visual_verification(tmp_path: Path) -> None:

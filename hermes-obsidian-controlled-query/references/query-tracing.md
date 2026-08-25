@@ -44,7 +44,7 @@ These three calls automatically record:
 - claim–evidence validation;
 - query-session duration and command count.
 
-`inspect` also registers compact evidence handles and complete source-range provenance while returning an aggregate-budgeted agent copy plus `finalize_contract.version: compact/v1`. The diagnostic `evidence-packet-delivery` event records pre-delivery/delivered packet characters, complete compact-JSON response characters, and the contract share without adding a primary stage. `finalize --decision-json` inherits all provenance from those handles, creates deterministic ASCII evidence/claim IDs, and stores a compact answer capsule with one deduplicated source catalog plus claim `source_ids`.
+`inspect` also registers compact evidence handles and complete source-range provenance while returning an aggregate-budgeted agent copy. The diagnostic `evidence-packet-delivery` event records pre-delivery and delivered character counts without adding a primary stage. `finalize --decision-json` inherits all provenance from those handles, creates deterministic ASCII evidence/claim IDs, and stores a compact answer capsule with one deduplicated source catalog plus claim `source_ids`.
 
 Before trace creation, `begin` rejects apparent multi-question input unless the caller explicitly records that the subparts share one evidence set. Finalization rejects empty claim text atomically, so completed Claim–Evidence mappings always identify the assertion being supported.
 
@@ -71,7 +71,7 @@ Schema 1.5 stores `started_at`, `ended_at`, `duration_ms`, and `accounting` on e
 - accounted primary-stage duration;
 - unaccounted query-session duration.
 
-The measurement boundary begins when `query_session.py begin` starts and ends when `finalize` begins final persistence. `answer-synthesis` starts after the complete agent-facing inspect response and compact contract are prepared and ends when the final decision reaches `finalize`; it therefore includes tool-result transfer, model queue/reading/reasoning, and decision serialization, not only prose composition. The trace records `decision_input_chars`, pre-delivery/delivered packet sizes, `last_inspect_response_chars`, and `last_finalize_contract_chars` so these causes can be separated on later runs. It does not include time before the first tool invocation or after the final tool returns. Hermes session and message IDs are inherited automatically from the terminal environment; correlate both with `agent.log` for true request-received-to-answer-emitted timing and approval waits.
+The measurement boundary begins when `query_session.py begin` starts and ends when `finalize` begins final persistence. `answer-synthesis` starts after the agent-facing evidence copy is prepared and ends when the final decision reaches `finalize`; it therefore includes tool-result transfer, model queue/reading/reasoning, and decision serialization, not only prose composition. The trace records `decision_input_chars` plus the last pre-delivery and agent-delivered packet sizes so these causes can be separated on later runs. It does not include time before the first tool invocation or after the final tool returns. Hermes session and message IDs are inherited automatically from the terminal environment; correlate both with `agent.log` for true request-received-to-answer-emitted timing and approval waits.
 
 `attempted_routes` includes disabled/unavailable routes. `effective_routes` and the compatibility `retrieval_route` exclude them.
 
