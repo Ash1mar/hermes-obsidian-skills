@@ -790,47 +790,89 @@ def compact_evidence_packet(packet: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+HARD_FAILURE_STATUSES = {"fail", "failed", "unavailable", "error", "invalid"}
+
+
+def failed_status(value: Any) -> bool:
+    return str(value or "").strip().casefold() in HARD_FAILURE_STATUSES
+
+
+def packet_has_substantive_content(packet: dict[str, Any]) -> bool:
+    content = str(packet.get("content") or "")
+    substantive_lines = [
+        line
+        for line in content.splitlines()
+        if line.strip()
+        and not re.match(r"^\s{0,3}#{1,6}\s+\S+", line)
+        and line.strip() not in {"---", "***", "___"}
+    ]
+    if substantive_lines:
+        return True
+    return any(str(asset.get("content") or "").strip() for asset in packet.get("assets", []))
+
+
 def evidence_level_contract(packets: list[dict[str, Any]]) -> dict[str, Any]:
-    """Return enough generic QA policy to avoid a routine reference-file read."""
-    triggers: list[str] = []
+    """Separate non-blocking diagnostics from evidence-chain hard blockers."""
+    blocked: list[str] = []
+    diagnostics: list[str] = []
+    all_packet_quality_pass = True
     for packet in packets:
         evidence_ref = str(packet.get("evidence_ref") or "unregistered")
         quality = str(packet.get("quality") or "missing").strip().casefold()
         source_map_status = str(
             packet.get("control", {}).get("source_map", {}).get("validation_status") or "missing"
         ).strip().casefold()
+        ingest_status = str(packet.get("ingest_status") or "missing").strip().casefold()
+        all_packet_quality_pass = all_packet_quality_pass and quality == "pass"
         if quality != "pass":
-            triggers.append(f"{evidence_ref}:quality={quality}")
+            diagnostics.append(f"{evidence_ref}:quality={quality}")
+        if failed_status(quality):
+            blocked.append(f"{evidence_ref}:quality={quality}")
         if source_map_status != "pass":
-            triggers.append(f"{evidence_ref}:source-map-validation={source_map_status}")
+            diagnostics.append(f"{evidence_ref}:source-map-validation={source_map_status}")
+        if failed_status(source_map_status):
+            blocked.append(f"{evidence_ref}:source-map-validation={source_map_status}")
+        if ingest_status not in {"ingested", "complete", "completed", "pass"}:
+            diagnostics.append(f"{evidence_ref}:ingest-status={ingest_status}")
+        if not packet_has_substantive_content(packet):
+            blocked.append(f"{evidence_ref}:no-substantive-content")
         if not packet.get("source_exists"):
-            triggers.append(f"{evidence_ref}:original-source-unresolved")
+            blocked.append(f"{evidence_ref}:original-source-unresolved")
         if not packet.get("pages"):
-            triggers.append(f"{evidence_ref}:original-pages-unresolved")
+            blocked.append(f"{evidence_ref}:original-pages-unresolved")
         if packet.get("content_truncated"):
-            triggers.append(f"{evidence_ref}:content-truncated")
+            blocked.append(f"{evidence_ref}:content-truncated")
         for asset in packet.get("assets", []):
             asset_quality = str(asset.get("quality") or "").strip().casefold()
             if asset_quality and asset_quality != "pass":
                 asset_id = str(asset.get("id") or asset.get("type") or "asset")
-                triggers.append(f"{evidence_ref}:{asset_id}-quality={asset_quality}")
-    full_reference_required = bool(triggers)
+                diagnostic = f"{evidence_ref}:{asset_id}-quality={asset_quality}"
+                diagnostics.append(diagnostic)
+                if failed_status(asset_quality):
+                    blocked.append(diagnostic)
+    direct_use_allowed = not blocked
     return {
-        "ordinary_pass_quality": not full_reference_required,
-        "full_reference_required": full_reference_required,
+        "ordinary_pass_quality": all_packet_quality_pass and direct_use_allowed,
+        "direct_use_allowed": direct_use_allowed,
+        "full_reference_required": False,
         "reference_read_policy": (
-            "read references/evidence-levels.md because packet QA/provenance needs exception handling"
-            if full_reference_required
-            else "do not read references/evidence-levels.md; use these inline rules unless an actual conflict, ambiguity, or gap is found"
+            "do not read references/evidence-levels.md for packet statuses; exclude blocked packet refs and use the inline rules"
+            if blocked
+            else "do not read references/evidence-levels.md; non-failed diagnostics remain usable as source-backed evidence"
         ),
-        "triggered_conditions": triggers,
+        "blocked_conditions": list(dict.fromkeys(blocked)),
+        "non_blocking_diagnostics": list(dict.fromkeys(diagnostics)),
         "inline_rules": {
-            "source-backed": "current pass-quality converted evidence resolves to original source and page but lacks a durable governed conclusion",
+            "source-backed": "non-failed converted evidence with substantive content resolves to original source and page; warn, pending, qa_required, ambiguous, or incomplete metadata may be qualified but is not a read blocker",
             "clear": "a governed conclusion or otherwise clearly durable pass-quality source supports the claim and resolves to original source and page",
-            "needs-qa": "a concrete QA warning, ambiguity, incompleteness, conflict, or explicitly required incomplete verification affects the claim",
-            "gap": "adequate original-source evidence is unavailable",
+            "needs-qa": "a hard blocker, actual source conflict, or explicitly required incomplete verification affects the claim",
+            "gap": "substantive original-source evidence is unavailable",
         },
-        "model_escalation_triggers": ["actual source conflict", "answer-relevant ambiguity", "evidence gap"],
+        "model_escalation_triggers": [
+            "actual source conflict",
+            "the answer cannot be determined from the visible substantive content",
+            "explicitly required visual verification is incomplete",
+        ],
     }
 
 
@@ -1004,6 +1046,15 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
         ),
     }
     level_contract = evidence_level_contract(packets)
+    event_contract = {
+        "ordinary_events": [] if not verification_required else None,
+        "policy": (
+            "set events to []; query-session already records inspect, search, reading, and provenance"
+            if not verification_required
+            else "omit inspect/search events; add only an actual completed page-asset-verification event"
+        ),
+        "evidence_ref_policy": "never add a claim or evidence ref solely to make an optional event reference valid",
+    }
     return {
         "workflow": WORKFLOW,
         "trace_id": args.trace_id,
@@ -1016,6 +1067,7 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             "claim_fields": sorted(CLAIM_KEYS),
             "verification_contract": verification_contract,
             "evidence_level_contract": level_contract,
+            "event_submission_contract": event_contract,
             "claim_set_policy": (
                 "Use the minimum sufficient claim set: each claim must answer a requested output attribute or "
                 "action; subject qualifiers only narrow scope and do not create claims. Merge closely related "
