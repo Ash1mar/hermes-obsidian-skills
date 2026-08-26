@@ -1,336 +1,328 @@
-# Controlled Query 时间优化设计
+# Controlled Query 性能优化记录
 
 ## 文档定位
 
-本文件是 `hermes-obsidian-controlled-query` 的维护者参考，记录真实性能事故、可控调用边界、实现策略和回归验收。保留在该 Skill 的 `references/` 下是合适的：内容直接约束 `query_session.py`、trace 和 evidence decision，不属于 Vault 业务知识，也不应在普通查询中默认加载。只有性能优化、trace 诊断或 Skill 维护时才读取。
+本文件是 `hermes-obsidian-controlled-query` 的维护者参考，用于按时间顺序记录性能迭代中出现的问题、原因判断、通用解决思路和当前边界。
 
-若将来出现跨多个 Skill 共用的 Hermes API/VPN、模型服务或全局 prompt-compaction 运维规范，应另建仓库级运行手册，并从这里链接；不要把本文件复制到 Vault 或 Provider 运维文档中造成双份事实来源。
+本文件不属于 Vault 业务知识，也不应在普通查询中默认加载。只有性能优化、运行记录诊断或 Skill 维护时才读取。
 
-## 背景与目标
+所有规则必须保持领域中立。历史样本只用于验证通用机制，不在这里记录或复述具体运行标识、业务系统、用户问题、标准、文档、章节或参数，也不得把它们写入代码、配置、提示或测试作为行为引导。
 
-一次典型的单问题证据查询耗时约 6 分 45 秒。原 trace 表明候选检索本身只占约 1.4 秒；主要时间消耗来自模型与工具之间的多轮编排、反复读取和格式化、逐项证据处理，以及最后逐条写 trace。因此优化顺序是：
+## 当前结论
 
-1. 先减少模型—工具往返和返回上下文；
-2. 再压缩文件读取和 trace 写入次数；
-3. 最后补齐后半段阶段记录与请求级计时，避免可观测性反过来增加查询步骤。
+迭代过程中最稳定的结论是：检索和文件读取通常不是主要耗时，完整模型调用、模型—工具往返、证据返回后的重新规划和 decision 合成才是主要成本。
 
-普通单问题查询的结构目标是两次 query-session 调用：一次组合 `query` 和一次 `finalize`。只有显式的用户/审计视觉核验要求才增加一次确定性 `verify` 准备和一次视觉核验。工程参数、公式、表格、图片和 Bundle QA flag 本身不触发该路径；普通查询信任 Bundle，并在有具体 QA 问题时如实降级或限定结论。每个用户请求另有一次 `bootstrap`，多题最后一次 finalize 通过 `--close-request` 同时返回汇总。端到端验收以 intranet 上等价 A/B 为准，暂定普通证据查询 P50 不超过 180 秒，并以接近或低于 120 秒为进一步目标。脚本耗时、模型思考时间、网络/API 重试、审批等待和回答输出时间必须分开报告。
+优化优先级因此固定为：
 
-## 2026-08-18 真实双题事故
+1. 减少完整模型调用和工具往返；
+2. 阻止第二轮检索、重复 inspect、selector 调试和运行记录恢复；
+3. 只向模型交付首轮证据和最小动态合成契约；
+4. 在不损失关键证据的前提下控制上下文，而不是持续缩小字符预算；
+5. 自动记录计时和 provenance，避免为了可观测性增加模型步骤。
 
-Hermes session `20260818_162026_79f45a` 使用 GPT-5.5 回答两个问题，实际用户端到端约 349.2 秒；controlled request 只记录 262.64 秒。17 次模型调用全部成功，没有 API 自动重试，模型 API 总等待约 292 秒。两次 RAG/层级并行检索工具执行约 47 秒，因此本轮高耗时的主因是调用轮数和大上下文，不是 VPN 失败重试。
-
-### PDF 核验试错链
-
-该次问题涉及多个工程参数，`inspect` 返回了转换章节和原 PDF 页码，但没有可直接查看的 evidence image 或 viewer URL；Hermes 运行环境也没有预先声明可用的视觉渲染能力。Skill 只规定“核验原页”，没有规定能力不可用时的单次停止条件。模型因此自主尝试：
+普通单问题当前目标路径为：
 
 ```text
-pdftotext
--> 检查 Python PDF 库
--> 检查其他 PDF 命令
--> 查页面文件
--> 枚举 Bundle
--> 搜索转换文本
+bootstrap（每个用户请求一次）
+-> query（创建记录、召回并自动 inspect 首个有界窗口）
+-> finalize
+-> 返回 finalize.final_response
 ```
 
-其中 `pdftotext` 本身是文本抽取工具，并不能完成要求的视觉原页检查。其余路径也没有产生可核验页面。六轮模型—工具往返约消耗 101 秒，最终仍把工程参数错误标成 `clear`。
+只有用户或明确审计要求原页视觉检查时，才在 `query` 与 `finalize` 之间增加一次确定性的 `verify` 和一次实际视觉检查。参数、公式、表格、图片或普通 Bundle QA 状态本身不触发视觉路径。
 
-这条试错链的成因不是单一依赖缺失，而是三个契约缺口叠加：
+## 迭代时间线
 
-1. `inspect` 没有明确返回 verification readiness；
-2. 运行时没有一个受支持的、确定性的 page carrier 准备接口；
-3. 核验不可用时没有强制停止、证据降级和 unresolved 门禁。
+### 第一阶段：识别多轮编排是首要瓶颈
 
-同时，模型提交了 `unresolved_items`，旧脚本只读取 `unresolved` 且静默忽略未知字段，导致 trace 显示 `None recorded`。第二题又在第一题 finalize 之前开始，两条 trace 重叠约 80.43 秒，使第一题的 `answer-synthesis` 阶段被第二题工作污染。
+早期测试中，单问题经常需要数分钟。模型会把检索、候选选择、逐段读取、证据登记、原页核验、claim 写入、结论生成和收尾分别处理，每个小步骤都可能形成一次完整模型调用。
 
-### 已采用的解决策略（P1-P6）
+当原页视觉能力不可用时，模型还会尝试多种替代工具、检查运行环境、枚举文件并重新搜索转换内容。这些尝试增加了大量往返，却不能完成真正的视觉核验。
 
-1. **P1 · 确定性核验**：新增显式、领域无关的 `--verification-required` 策略和 `verify`。`query_session.py` 不读取问题关键词、设备名、参数名或语言来猜测是否核验；调用方根据证据要求显式选择。`verify` 只使用 inspect 注册的 evidence image、viewer URL，或单一受支持的 `pdftoppm` 页渲染；结果只可能是 `ready`、`unavailable` 或 `failed`。后两者立即要求 `needs-qa` 和 unresolved，禁止继续探测 `pdftotext`、Python PDF 库、其他二进制、Bundle 文件或转换文本。
-2. **P2 · 请求 bootstrap**：一次返回实际规则文件内容、部署配置、session linkage 和 verification runtime，替代配置搜索和分轮读取。
-3. **P3 · 自动收口**：最后一题 `finalize --close-request` 同时校验请求完整性并返回 request capsules，取消独立 request-summary 模型轮次；独立 `request-summary` 只保留给稍后检查或调试。
-4. **P4 · 顺序门禁**：同一 request 存在 `in_progress` trace 时拒绝新 begin；校验 `--question-count`、连续 index 和重复 index；summary 记录并检查 trace overlap。
-5. **P5 · 分层 decision schema**：顶层 decision 和 claim 字段保持严格，`unresolved_items` 作为兼容别名；event 标准字段固定，模型新增的 event 字段保留到 `extensions`，但不能满足任何门禁；只有显式要求视觉核验时，未核验 evidence 才不得使用 `clear`/`source-backed`；verified ref 必须对应带实际 carrier 路径的完成事件。
-6. **P6 · 上下文压缩**：inspect 返回紧凑 QA/verification packet，完整 provenance 留在 sidecar；answer capsule 使用去重 `sources` 和 claim `source_ids`；最后收口不重新加载 evidence packet。
+同一时期还出现了：
 
-显式视觉核验路径为：
+- 把 `inspect` 误认为已经完成视觉 `verify`；
+- 核验不可用时缺少单次停止条件；
+- decision 字段不一致导致 unresolved 被忽略；
+- 多问题交错执行，污染单题计时；
+- 请求汇总需要额外模型轮次。
 
-```text
-bootstrap（每请求一次）
--> query（创建 trace 并自动 inspect 首个有界窗口）
--> verify（一次；不可用即停止）
--> visual check（仅 ready）
--> finalize [--close-request]
-```
+这一阶段采用的通用策略是：
 
-## 2026-08-19 三题回归暴露的编排浪费
+1. 增加显式、领域无关的 `--verification-required`；
+2. `verify` 只使用已登记载体，并只返回有限状态；不可用或失败时立即停止；
+3. `inspect` 只代表证据读取和登记，绝不授予 verified 状态；
+4. 顶层 decision 和 claim 保持严格校验，必要兼容字段显式归一化；
+5. 多问题严格逐题完成，最后一次 finalize 同时完成请求收口；
+6. `bootstrap` 一次返回规则、部署配置、会话关联和核验能力，取消重复搜索。
 
-三题 controlled request 约 290 秒，Hermes 用户端到端约 350 秒；23 次模型调用累计 API 等待约 246 秒，未发生 API retry。前两题分别约 70 秒和 31 秒，第三题约 175 秒并出现两次 supplement。主要浪费不是检索计算或 VPN 重试，而是四次可避免的失败与随后重新加载/重试：
+### 第二阶段：处理补证、重试和路径异常
 
-1. finalize event 使用模型生成的 `type` 字段，被严格 schema 拒绝；
-2. 已知 `document::section` 不在 fused top-k 时，inspect 拒绝精确章节；
-3. 上一次 supplement 尚未 inspect 就发起下一次 supplement；
-4. 精确章节选择再次失败后退回临时文件搜索，证据没有完整进入 Claim–Evidence map。
+减少基础步骤后，主要浪费转移到失败后的重新规划。常见表现包括：
 
-当时的通用修复不根据题目关键词或章节编号做特化：inspect 可从 query projection 解析任何已注册的精确 `document::section`，同时仍拒绝任意路径/行号；inspect 返回紧凑 finalize contract；未知 event 字段进入 `extensions`，而顶层 decision、claim、evidence ref 和 verification gate 继续严格。该 projection 外选能力已被后文“回归稳定版与单轮硬门禁”取代，当前只允许 `begin` 实际返回窗口。
+- finalize schema 不匹配后重新生成完整 decision；
+- supplement 与 inspect 顺序错误；
+- selector 失败后继续猜测其他写法；
+- 读取稳定 CLI help 或脚本源码；
+- 退回临时文件搜索；
+- 来源路径解析失败后修改已部署 Skill；
+- 同一证据重复 inspect 后仍继承旧 provenance；
+- 候选被单一来源的重复词占满；
+- inspect 和 supplement 次数只有文字限制，没有代码门禁。
 
-## 2026-08-19 内网单题近 20 分钟中断事故
+问题可分为三个责任层次：
 
-内网使用一个包含多个工程参数的单题执行回归，trace `20260819_065942_2e9da9ca` 从 `06:59:42Z` 记录到 `07:17:30Z`，墙钟跨度 1068 秒（17 分 48 秒），随后在尚未 finalize 时中断。trace 保持 `in_progress`，没有 accepted evidence、Claim–Evidence map 或 conclusion。
+- **确定性代码问题**：路径解析、catalog 刷新、候选多样性、schema 和调用次数门禁；
+- **模型编排问题**：重复搜索、猜 selector、修改运行代码、未及时 incomplete 收口；
+- **部署与观测问题**：可选 Provider 状态和会话关联不足，影响候选质量或耗时归因。
 
-已记录的 primary stage duration 为 958127.346 ms，其中 `candidate-review` 和四次 `evidence-gap-review` 合计 957557.064 ms，占已记录耗时 99.94%。检索、文档读取、表格解析和 provenance 脚本均为毫秒级。剩余约 109.9 秒位于未计时的模型/外部工具间隔。由于该部署没有传入 Hermes session/message linkage，只能确认时间消耗发生在 query-session 调用之间，不能仅凭 trace 继续拆分模型 API 排队、生成、shell 工具和网络等待。
+这一阶段采用的通用策略是：
 
-### 触发链
+1. 原始来源只允许从 Vault 内安全解析，外部路径只保留为诊断信息；
+2. 嵌套原件通过精确身份和可用校验信息确认，歧义时返回 unresolved；
+3. 同版本、同 section 的 evidence handle 可以刷新 provenance，版本变化时拒绝静默覆盖；
+4. 候选排序增加跨文档多样性和同文档互补内容机会；
+5. query-session 自动记录失败并返回唯一安全的下一步；
+6. 为 inspect 和 supplement 增加脚本硬门禁；
+7. 查询期间禁止修改 Skill、放宽路径约束或继续实现级调试。
 
-1. intranet 的 qmd-like-rag 部署开关为 disabled，查询按设计继续走 hierarchical fallback；开关本身没有产生等待，但失去了可与层级路线互补的粗召回。
-2. hierarchical locator 先按文档选取范围，再把所有章节放入一个全局 section 排序。同一份来源因重复出现主题词而占满候选窗口，另一份已注册在 query projection 中的相关来源没有进入 compact top-k。supplement 使用相同排序后又返回近似候选。
-3. 模型通过额外搜索找到了工作手册的精确章节，但 query projection/manifest 首先提供了 Vault 外仍存在的原 ingest 路径 `/opt/data/phq/2026.6.12/...`。`resolve_source_path()` 接受该文件，`build_evidence_packet()` 随后调用严格的 `vault_relative()`，对 Vault 外路径抛出异常。Vault 内实际已有位于 `10_Raw` 子目录中的原 PDF 副本，但旧 resolver 只尝试 `10_Raw/<filename>`，不会递归定位。
-4. 模型在正常 query 中读取并多次 patch 已部署 Skill，先尝试接受外部绝对路径，再尝试优先内部副本，最后尝试放宽 finalize 的 `validate_vault_path()`。这违反只读查询和 Skill 维护边界；放宽绝对路径校验还会破坏 Vault evidence containment。
-5. 第一次成功登记的 evidence handle 已保存外部路径。后来同一章节重新 inspect 时，`register_evidence_packets()` 只追加 inspection round，不刷新 provenance，因此 finalize 继续读取旧路径并失败。
-6. Skill 文本要求一次 inspect、真实缺口时最多再 inspect 一次，但脚本没有硬限制。本轮实际执行五次 inspection；模型返回中出现剩余 iteration 倒计时，最终在修补/重试链中耗尽执行轮次。
+这些修复消除了无限补查和路径修补链，耗时从十几分钟级降至数分钟级，但候选选择、补证判断和答案合成仍占主要时间。
 
-### 责任边界
+### 第三阶段：明确 compact candidates 是完整操作输入
 
-- **确定性代码缺陷**：Vault 内原件解析顺序及嵌套目录支持、重复 inspection 的 evidence catalog 刷新、全局 section 排名缺乏跨文档多样性、inspection/supplement 只有文字约束而没有硬门禁、失败事件未自动进入 trace。
-- **模型编排错误**：偏离 `begin -> inspect -> finalize`，在 query 中修改已安装 Skill，提出接受 Vault 外绝对 evidence 路径的错误修法，在已有两轮 inspection 后继续搜索和重试，没有用 `incomplete + unresolved` 及时收口。
-- **部署/运行时条件**：intranet Provider 明确关闭；Hermes session/message 环境未传给 query-session。前者放大 fallback 候选质量问题，后者削弱耗时归因，但两者都不是路径异常本身。
+后续测试暴露出一组相似的小问题：模型没有把脚本返回值视为完整操作输入。
 
-### 采用的通用修复
+常见表现包括：
 
-1. **Vault 内原件优先**：只把 Vault 内文件登记为 `original_asset_path`。先检查 manifest/query projection 中可解析为 Vault 内的候选，再检查 `10_Raw/<filename>`；必要时才在 `10_Raw` 下按精确文件名递归定位。manifest 有 SHA-256 时必须匹配；多个同名匹配无法唯一确定时返回 unresolved。Vault 外 ingest 路径只保留为 control-plane 诊断元数据，不进入 evidence catalog，`validate_vault_path()` 继续严格拒绝绝对路径和 traversal。
-2. **可恢复的 evidence handle**：同文档版本、同 section 再次 inspection 时复用 handle，但刷新页码、block、原件路径、viewer、QA 和 verification assets；若 document version 发生变化则拒绝静默覆盖并要求新 trace。
-3. **跨文档候选覆盖**：hierarchical locator 在最终 section 窗口中先保留最多三个不同文档的最佳章节，再按原始分数补齐剩余位置，并返回 ranking strategy/document count。该策略不依赖任何具体领域词，也不改变 evidence authority。
-4. **硬性止损**：一个 trace 最多两次 inspection、一次 supplement。超限调用返回结构化 `blocked -> finalize`，证据不足时明确要求 `status: incomplete`。query-session 未预期异常自动记录 `query-command-failure` 和 `recommended_next_command: finalize`；模型不得在查询中 patch Skill 或放宽路径边界。
-5. **回归覆盖**：增加“外部路径存在 + Vault 内嵌套副本 + 同名错误副本 + SHA-256 选择”“无 Vault 内副本时不提升外部路径”“重复 inspection 刷新 catalog”“第三次 inspection/第二次 supplement 被阻止”“失败事件落 trace”“单文档高重复分数不能占满 compact window”等测试。
+- 为查看更完整候选而读取 sidecar 或完整运行记录；
+- inline Python 被审批后改写临时 helper script；
+- 探测稳定 CLI help、猜 selector 形状、读取源码；
+- 把候选总数与实际返回数组长度不同误认为输出被截断；
+- 为恢复未展示字段而再次读取来源；
+- 把限定查询对象的词组误当成独立输出维度。
 
-这些修复属于 main/intranet 共用的领域无关查询逻辑，应先在 main 通过测试，再同步到 intranet；两分支的 Provider enabled 状态、Vault 路径和 viewer 配置继续独立维护，不能借通用修复覆盖部署配置。
+对应的通用策略是：
 
-### 第二次内网同题回归与继续优化
+1. compact window 是首次证据读取的完整操作边界；
+2. 完整 fused scope 只留在运行记录中，不对模型开放；
+3. agent-facing count 只表示实际返回数量；
+4. 明确区分生产者主动压缩、证据传输摘录和下游显示截断；
+5. selector 只能来自已返回窗口，不允许猜测或恢复窗口外内容；
+6. 禁止读取完整记录、运行 inline Python、写临时 formatter/helper、探测 help 或源码；
+7. requested facet 只表示用户要求输出的属性、值、条件、比较或动作；subject qualifier 只缩小范围；
+8. 证据存在本身不构成扩大 inspect 或 claim 的理由。
 
-trace `20260819_083733_79e1a696` 已完成并生成 evidence/claims，query-session duration 为 180538.073 ms，较前次 1068 秒墙钟跨度缩短约 83.1%。检索、读取与 provenance 仍低于 1 秒；`candidate-review`、第二轮 `evidence-gap-review` 和 `answer-synthesis` 合计 179913.524 ms，占受控时长 99.65%。因此下一轮继续只优化 compact candidate 覆盖与模型工具纪律，不增加普通查询的验证、检索或判级步骤。
+候选排序也由简单全局分数调整为通用覆盖策略：先保留强候选和文档多样性，再允许最强来源获得一个能增加查询词覆盖的互补 section 槽位。该策略不扩大固定窗口，也不编码领域知识。
 
-本轮候选跨文档覆盖已经生效，但前三个不同文档各取一条后，剩余位置又按全局分数回填，紧凑窗口仍可能错过高相关文档的第二个互补章节。改为对前三个高相关文档按轮次交错选择：先取每个文档的最佳章节，再取各自第二章节，直到填满既有窗口；候选数量不增加，脚本 I/O 不增加。
+### 第四阶段：补齐 verification、evidence 和 event 动态契约
 
-同一回归中，模型在第二次有效 inspection 前查看完整候选、触发 inline Python 审批、探测 CLI help、两次猜测 selector 并读取脚本源码。为消除这些往返，`begin` 的 compact response 增加简短 selection contract，Skill 明确要求：compact candidates 是首次 inspection 的完整操作输入；一次选择全部当前有用候选；精确章节只能逐字复用已返回的 `document_path` 并追加 `::section-id`；不得读取 sidecar/trace state、猜 document ID/短路径、探测 help 或源码。精确形式仍失败时直接从现有证据收口，不继续 selector 试错。
+候选流程稳定后，重复失败主要来自 decision contract 不够动态：
 
-答案作用域只采用领域无关的合成引导：结论保留已检查证据本身表达的适用边界，必要时加一句简短限定；不为扩大答案范围额外检索，也不在脚本、Skill 或模板中编码任何具体领域、系统、标准、语言或参数规则。
+- inspected packet 被误填为 verified evidence；
+- 普通警告或未完成状态触发完整 evidence-level reference 读取；
+- 可选 event 引用未进入 claim 的 packet，导致 finalize 失败；
+- 模型为满足 event 合法性而扩大 evidence 或 claim；
+- 非关键 QA 标签被当作必须停止的错误。
 
-## 原流程的主要耗时来源
+这一阶段将规则改为随当前记录动态返回：
 
-原流程中常见的额外步骤包括：
+1. 未请求视觉核验时，`verified_evidence_refs` 固定为空且不生成 verification event；
+2. 只有实际查看过已登记载体的引用才能进入 verified evidence；
+3. 非 failed 的 `warn`、`pending`、`qa_required`、`ambiguous`、`incomplete` 作为非阻断诊断；
+4. 正文、原件和页码可解析时，非阻断诊断可直接作为 `source-backed` 使用；
+5. 无正文、原件或页码缺失、答案内容截断、failed/unavailable 状态、真实来源冲突及显式视觉核验未完成继续作为硬门禁；
+6. 普通查询 `events: []`，禁止为了 event 合法性增加无关 claim；
+7. 普通状态使用内联 evidence policy，不额外读取完整参考文档。
 
-- 每次重新加载操作说明和配置后再确认一次 Vault；
-- 为新问题枚举近期 request/trace，判断是否存在可恢复任务；
-- 在稳定脚本已经存在时仍探测 CLI `--help` 或读取脚本源码；
-- 因 inline Python 被审批门拦截，再创建临时 formatter/helper 脚本；
-- 先输出完整候选 JSON，再创建格式化工具压缩结果；
-- 按章节、表格、规范和原始 PDF 串行读取，多次往返完成交叉验证；
-- evidence、claim、tag、finish 分别调用并分别落盘；
-- 每个小动作都生成一次模型规划和过程叙述；
-- 后半段依赖模型主动记录阶段，容易被压缩为一个笼统步骤；
-- trace 只有局部脚本耗时，缺少请求级总耗时及无法归因的时间。
+这些修改减少了 reference 读取和 finalize 重试，并保持证据安全边界不变。
 
-这些步骤中，检索计算不是主导项。即使尚未启用 qmd-like-rag，也应优先优化编排和上下文，而不是先替换检索 Provider。
+### 第五阶段：确认 answer-synthesis 是后半段大头
 
-## 当前快速路径
+在检索和文档读取降到秒级以内后，`answer-synthesis` 仍可能持续几十秒甚至更长。该阶段不是单纯的最终答案输出，而是从模型收到 evidence packets 到 decision 到达 finalize 的综合区间，可能包含：
 
-```text
-ordinary:   query -> finalize
-explicit visual-verification policy: query --verification-required -> verify -> optional ready-carrier visual check -> finalize
-```
+- 模型服务排队和首 token 延迟；
+- 阅读 evidence packets；
+- 内部推理与重新评估候选；
+- 组织 claims、qualification、unresolved、events 和 conclusion；
+- 生成 decision JSON 并准备下一次工具调用。
+
+在模型服务本身不可调整的条件下，pipeline 能做的是减少输入、减少 decision 字段并阻止重新规划。
+
+本阶段尝试了 agent-facing evidence 压缩：
+
+- 所有 packet 使用统一总预算；
+- 普通路径移除重复资产正文及视觉审计字段；
+- 超预算时保留查询命中块和相邻上下文；
+- `delivery_excerpted` 与源读取 `content_truncated` 分离；
+- 自动记录压缩前后字符数、内容分类、去重和摘录指标；
+- answer-synthesis 计时从 delivery copy 完成后开始。
+
+实践表明字符量不是主要矛盾。预算过紧会让模型怀疑证据不完整，并触发补查或恢复行为。因此总预算最终放宽，性能收益继续依赖减少模型调用，而不是进一步压缩正文。
+
+### 第六阶段：回归稳定基础并强制单轮证据处理
+
+一次激进压缩和合约调整没有稳定降低端到端时间。部分测试在首轮证据后重新判断缺口，进入 supplement、selector 失败和第二轮 inspect，新增证据又没有形成必要主张，反而显著变慢。
+
+因此实现回到已经验证的稳定基础，只保留以下硬门禁：
+
+1. 首轮 compact window 是唯一 inspection window；
+2. 每个记录只允许一次 batched inspect；
+3. `supplement` 保留兼容入口但始终返回 `blocked -> finalize`；
+4. 首轮足够则 completed，首轮不足则 incomplete；
+5. 不允许模型自由决定第二轮检索；
+6. evidence 总预算保持较宽松水平，避免因为摘录过度产生恢复行为。
+
+这个取舍明确以性能稳定性优先。首轮偶发漏检应通过通用排序和 evidence packet 改进，而不是在运行时恢复 supplement。
+
+### 第七阶段：删除候选选择模型调用
+
+单轮门禁后，普通流程仍包含一次模型候选选择。由于一次完整模型调用通常就在数十秒量级，删除这次调用比优化毫秒级检索更有效。
+
+在不修改外部编排器的条件下，完成了以下改造：
+
+1. 新增组合 `query`，在同一脚本进程内完成 begin、候选融合和首个有界窗口的自动 inspect；
+2. 自动 inspect 前三条，少于三条时全部读取；
+3. 候选列表不再返回给模型，从流程中删除候选选择调用；
+4. `query` 只返回 evidence packets、packet handles、字符指标和小型 `synthesis_contract`；
+5. 普通无阻断路径只要求模型生成 `claims` 和短 `conclusion`；
+6. 固定 status、evidence level、events、verification 和 unresolved 由脚本补齐；
+7. `finalize` 顶层返回已渲染的 `final_response`，最后续写只负责转交；
+8. 清空默认领域路由词，并清理代码、配置、文档和测试中的具体业务示例。
+
+组合路径把受控查询阶段从分钟级进一步降低到约半分钟级。检索、自动候选 review、文档读取和 provenance 仍只占很小比例，剩余时间几乎全部集中在唯一的答案合成模型轮次。
+
+外部编排器当前没有 Skill 级工具结果直返语义，工具结果仍会进入下一次模型续写。因此仅靠 Skill 不能彻底删除 finalize 后的模型调用，也不能为 synthesis 创建真正独立的干净上下文。本轮不修改外部编排器，这两项只保留为需要单独授权的架构选项。
+
+### 当前稳定阶段：效果可接受，小问题暂缓
+
+最近多次内网回归表明：
+
+- 组合 `query -> finalize` 稳定执行；
+- 没有第二轮 supplement 或 inspect；
+- 无正文 packet 可以被模型排除；
+- 检索和读取阶段维持在很低水平；
+- 受控查询总时长已进入可接受区间。
+
+目前仍观察到三个小问题：
+
+- 一个不可用 packet 可能让整个 synthesis contract 进入较大的 qualified 模式，即使其余 packet 已足够；
+- 模型偶尔生成超出用户必要输出的相关 claim；
+- 模型偶尔以恢复完整输出为由尝试向临时目录写 helper script，尽管规则已经禁止。
+
+这些问题尚未造成稳定的检索返工或 finalize 失败，当前暂不修改稳定路径。后续如果数据表明有必要，应采用领域无关方式处理：按 packet 分离 usable/excluded refs、增加明确的 operational-output-complete 标志，并继续通过最小 claim 契约引导收口。真正从权限层禁止任意 shell helper 需要外部编排或审批策略，不属于当前 Skill-only 范围。
+
+## 当前实现边界
 
 ### `query`
 
 一次完成：
 
-- 创建新 trace，不枚举与当前问题无关的旧 trace；
+- 创建运行记录；
 - 并行运行可选 coarse recall 与 hierarchical routing；
-- 融合、去重和排序候选；
-- 在 trace sidecar 保存完整结果；
-- 在脚本内部自动 inspect 排名前三个候选，候选不足三个时全部 inspect；
-- 只向模型返回 evidence packets 和动态的最小合成契约，不返回候选列表。
+- 融合、去重和排序；
+- 将完整候选及拒绝原因保存到 sidecar；
+- 自动 inspect 首个有界窗口；
+- 批量登记 provenance、原始来源、页码、表格/图片和 QA；
+- 在统一总预算内返回 agent-facing evidence copy；
+- 返回当前记录的最小 synthesis contract。
 
-qmd-like-rag 未配置、被禁用或暂时不可用时，coarse route 记为 disabled/unavailable，hierarchical route 继续工作，不额外进入故障排查循环。
-
-### 内嵌 `inspect`
-
-模型不再执行候选选择。脚本在 sidecar 保留完整 provenance，向模型批量返回紧凑内容：
-
-- 完整 section-owned ranges；
-- 关联的 governed outputs；
-- 表格/图片 Markdown 与 verification assets；
-- manifest、ledger、source-map 和 QA 状态；
-- 原始 PDF 路径、页码和 viewer URL。
-- verification readiness 及唯一支持的下一步。
-
-当前性能优先策略只允许组合 `query` 内的一次 `inspect`；兼容命令的第二次 inspection 和所有 supplement 都由脚本返回 `blocked -> finalize`，不得继续搜索或调试 Skill。若首轮证据不足，直接以 `incomplete` 和一个实质 unresolved 收口。pass-quality Bundle 是默认内部提取载体；内容类型和 Bundle QA flag 本身不要求视觉原页核验。若 Bundle/control metadata 明确标记 QA、警告、歧义或不完整，普通查询直接限定或降级结论；只有用户明确要求视觉审计时才进入 `verify` 路径。
+可选 Provider disabled/unavailable 时不进入故障排查循环，hierarchical route 继续工作。查询期间不得同步或重建 Provider。
 
 ### `finalize`
 
-普通路径只提交 claims、packet 引用和短 conclusion；脚本补齐固定 decision 字段。存在硬阻断或显式核验要求时才提交完整动态字段。脚本从 evidence catalog 自动继承路径、版本、章节、页码和原始 PDF，生成 ASCII evidence/claim ID，再原子化写入最终状态和 Markdown trace。`finalize` 在顶层返回已渲染的 `final_response`，最后一次模型续写只逐字转交该字段，不重新阅读证据或组织答案。Hermes 0.17.0 没有 Skill 级 `return_direct`，因此不修改 Hermes 的前提下不能彻底删除这次续写。多题最后一题使用 `--close-request` 原子校验请求并返回 capsules。
+普通路径只提交最小 claims 与 conclusion。脚本负责：
 
-## 具体优化机制
+- 校验 packet handles 与 claim–evidence map；
+- 补齐固定 decision 字段；
+- 从 evidence catalog 继承版本、section、页码和原始来源；
+- 生成稳定 evidence/claim IDs；
+- 原子写入 state 和 Markdown；
+- 返回去重 answer capsule 和顶层 `final_response`。
 
-### 减少工具往返
+脚本不对语义冗余做强制拒绝，避免误判后触发额外 finalize 重试。最小 claim 仍由动态契约引导。
 
-- 用 `query_session.py` 聚合原来分散的 start、retrieve、read、evidence、claim 和 finish 操作；
-- 正常查询不读取稳定脚本源码，不探测 CLI help；
-- 不为结果查看创建临时 Python formatter；
-- 不为每条 evidence/claim 单独启动进程和写一次状态；
-- 不创建或 patch 临时 manifest，正常 finalize 直接使用 `--decision-json`；
-- 多问题仍逐题完成，以维持一题一 trace 的治理边界。
+## 责任边界
 
-### 减少模型上下文
+| 类别 | 典型问题 | 当前处理方式 |
+| --- | --- | --- |
+| query-session 代码 | 路径解析、catalog 刷新、候选窗口、调用次数、schema、计时 | 确定性脚本修复并自动测试 |
+| Skill 与模型编排 | 重复搜索、补证、helper、selector 调试、冗余 claim | 缩短流程、返回动态契约、设置硬停止条件 |
+| 外部编排器 | 工具结果无法直接返回、无法创建真正干净 synthesis 上下文、任意 shell 权限 | 当前不修改；需要单独授权 |
+| 模型服务 | 排队、首 token、内部 reasoning 速度 | pipeline 无法直接控制，只能减少调用和输入 |
+| Provider 与部署 | enabled 状态、索引和运行时路径 | 部署独立配置，不写入通用查询逻辑 |
 
-- `query` 不向模型返回候选列表，完整 fused scope 保留在 sidecar；
-- 中文查询产生的重叠 n-gram 只保留最长且不同的少量命中词；
-- trace Markdown 只展示最高优先级候选，诊断详情保留在 JSON；
-- `inspect` 只读取已选择候选，不把整个 Vault 或全部候选送回模型。
-- 每题完成后只保留 answer capsule 用于多题汇总；trace sidecar 保留完整 provenance 和 source ranges，源内容可从登记范围重建，不重复保存或传输整包正文。
-- answer capsule 对来源去重，claims 只保留 `source_ids`，避免同一 PDF/页码在每条 claim 中重复。
+## 自动记录与计时
 
-一次真实大 Vault 基准中，初始检索输出从 35,204 bytes 降到 4,893 bytes，减少约 86.1%。
+query-session 自动记录：
 
-### 减少文件与状态 I/O
+- preflight、coarse recall、hierarchical routing、fusion 和 scope retrieval；
+- automatic candidate review、document reading、asset 与 provenance resolution；
+- evidence packet delivery 的压缩前后字符指标；
+- answer synthesis、claim-evidence mapping 和可选 visual verification；
+- command count、inspection count、attempted/effective routes；
+- accounted/unaccounted duration；
+- evidence/claim 时间戳和请求级计时；
+- 可用时继承会话和消息关联。
 
-- hierarchical locator 对每个文档只读取一次 `document.md`，全部章节复用内存行；
-- hierarchical locator 在固定 compact window 内先为最多三个高相关文档各保留一个强候选，再按 title/path 优先、content/document 次优的新增 query-term 覆盖选择剩余章节。这样不把 top 5 扩为 top 8、不增加 I/O，却能让同一文档中排名稍低但回答另一问题维度的章节越过重复候选；
-- 原始 PDF 只从 Vault 内安全解析；外部 ingest 路径保留为诊断元数据，嵌套 `10_Raw` 副本按文件名和可用 SHA-256 确认；
-- route trace 事件批量追加；
-- finalization 在一次状态写入中记录 evidence、claims、events、metrics 和完成状态；
-- 完整检索结果写 sidecar，不在模型与工具之间重复传输。
+计时从 `query_session.py query` 开始，到 `finalize` 验证并持久化为止。以下时间不应伪装成脚本阶段：
 
-finalize packet 同时返回通用的 minimum-sufficient decision contract：每条 claim 必须对应必要的提问维度，同证据支持的紧密相关参数应合并；作用域、适用性或证据边界优先附着为简短 qualification，不默认成为独立 claim；只有实质影响正确性或使用方式的问题进入 `unresolved`；结论只做一次简短综合，不逐条复述 claims。该契约不按领域、系统、标准、语言或参数硬编码，也不新增模型调用。脚本不对语义冗余做强制拒绝，避免误判后触发额外 finalize 重试。
+- 用户消息到第一次工具调用；
+- bootstrap 前后的模型调用；
+- finalize 返回后的最终模型续写；
+- 模型服务排队、网络等待和审批等待。
 
-trace `20260824_083500_bc7fe661` 使用旧版 `65ad59e` 时在未启用视觉核验的普通查询中把 inspected packet `P1` 填入 `verified_evidence_refs`，第一次 finalize 被严格门禁拒绝，随后约 23 秒才完成修正重试。根因是模型把“inspect/读取证据”叙述成“核验”，而通用 decision 示例又默认展示了非空 verified refs。修复后，inspect 按当前 trace 状态返回动态 verification contract：`inspect_grants_verified_status: false`；未请求视觉核验时唯一合法值为 `verified_evidence_refs: []` 且不得生成 `page-asset-verification` 事件；请求视觉核验时仍只允许实际查看过 registered carrier 的引用。普通示例同步改为空列表，finalize 对误填返回明确错误但不静默降级或吞掉错误。该修复不增加调用、检索或验证步骤。
-
-trace `20260824_090251_a3624b82` 使用动态 verification contract 后没有 finalize 重试，但模型把限定查询对象的词组误当成独立答案维度，首轮 inspect 扩大到四个章节，并按旧规则因工程参数/表格额外读取完整 `evidence-levels.md`。修复继续保持领域无关：requested facet 仅指用户要求输出的属性、值、条件、比较或动作；subject qualifier 只缩小作用域，不占候选槽位或生成 claim。inspect 同时根据 packet 的内容质量、source-map、原件/页码、截断和资产 QA 返回紧凑 `evidence_level_contract`。普通 pass-quality packet 使用内联四级规则直接 finalize；只有具体 QA/provenance trigger，或实际冲突、答案相关歧义、gap 才读取完整 reference。该规则不解析问题关键词，不包含系统、标准、章节、语言或参数特例，也不增加调用。
-
-trace `20260824_101544_421650ea` 首次进入 120 秒目标（107942.854 ms），但三个 packet 的 source-map `warn` 仍触发了完整 evidence-level reference 读取，普通 finalize 又因可选 inspect event 引用未使用 handles 而失败并重试。性能优先策略进一步改为 fail-open diagnostics：非 failed 的 `warn`、`pending`、`qa_required`、`ambiguous`、`incomplete`（包括表格/图片标签）可直接作为 `source-backed` 使用，不触发 reference 读取；无正文、原件/页码缺失、答案内容截断、failed/unavailable-class 状态、真实来源冲突和显式视觉核验未完成仍是硬门禁。普通动态 event contract 要求 `events: []`，禁止为满足可选 event 引用而扩大 claim/evidence。规则只读取 packet 控制状态和内容存在性，不包含任何领域或问题特例。
-
-后续内网模型曾把 agent-facing `candidate_count` 的完整融合总数与仅返回前五条的 `candidates` 数组误判为工具输出截断，继而尝试 inline `python3 -c` 和临时脚本读取完整列表。修复消除这一契约歧义：agent-facing `candidate_count` 只表示实际返回数，完整融合数量仅留在 trace；返回 `candidate_window_complete: true` 和 `producer_output_truncated: false`；移除 agent-facing route/fusion 的候选总数，限制可选标签、页码、路由和 warning 长度，并在固定字符预算内打包最多五条。若下游显示确实在 JSON 中途截断，唯一恢复路径是用已返回 trace ID 调用无 selector 的 `inspect` 默认窗口，禁止读取完整 trace、运行 inline Python 或写 helper script。该策略不解析问题、领域、文档或章节内容。
-
-trace `20260825_024105_c3e20311` 在 108982.548 ms 内稳定完成，未再读取完整 trace/reference、运行 helper、重试 finalize 或误用视觉核验；但首轮 inspect 的三个 packet 中一个未用于 claim，另一个只生成未请求的通用对比，真正补齐请求属性的同文档详细章节需要第二轮 inspect，耗费 34946.923 ms 的模型选择时间。通用修复分两层：locator 在 section 路由时扣除已由 document identity 命中的主题词，限制重叠 n-gram 膨胀，并在文档多样性之前给最强文档一个能增加 query-language coverage 的互补章节槽位；模型侧增加 `candidate_purpose_gate` 和 `claim_pruning_gate`，证据存在不再构成 inspect/claim 理由，删除后仍完整回答请求的比较、背景、适用性或运行内容必须省略。规则只比较查询词覆盖和请求输出完整性，不包含系统、规范、章节、语言或参数特例。
-
-### 2026-08-25 答案合成输入优化
-
-trace `20260825_031033_61bf03fd` 只有一次 inspect 和一次成功 finalize，但总计 107468.615 ms 中 `answer-synthesis` 占 97433.471 ms。这个阶段不是“最终中文答案输出”计时：旧边界从 inspect 完成持续到 finalize 调用，混合了工具结果传输、模型服务排队、证据包阅读、推理、decision JSON 生成和调用准备，因此不能仅凭该数值认定模型在写答案。旧 trace 又没有 packet 字符数与 decision 字符数，无法判断主要压力来自证据输入还是决策输出。
-
-本轮采用通用、仅影响 agent delivery 的压缩，不改变候选、证据登记、source ranges、页码、原始 PDF 或 claim-evidence 门禁：
-
-1. `inspect` 对全部所选 packet 的 agent-facing 副本设置统一字符总预算，不再允许每个章节、资产和 governed artifact 分别消耗完整上限；该预算最初为 18,000，当前提高到 30,000，以降低关键上下文被摘录的概率；
-2. 普通非视觉路径先移除重复资产正文及仅用于视觉审计的 carrier 字段；仍超预算时，按查询词覆盖保留 Markdown 命中块及相邻上下文，并用通用 omission marker 标记中间省略；
-3. `delivery_excerpted` 只表示传输副本被压缩，不能替代或触发 `content_truncated`。完整 provenance 与 source ranges 继续登记在 trace，finalize 仍按 packet handle 继承；
-4. 新增 diagnostic `evidence-packet-delivery` 事件及 `full_packet_chars`、`agent_packet_chars`、`saved_chars`、content 分类字符数、去重/摘录数和预算满足状态；finalize 另记录 `decision_input_chars`；
-5. answer-synthesis 计时改为在 delivery copy 准备完成后开始，其含义明确为“agent 收到证据后到 decision 到达 finalize”的综合区间。finalize contract 同时要求最小有效 decision，但不对语义冗余做脚本拒绝，避免额外重试。
-
-30,000 是当前总体交付预算而非每份文档配额；CLI 提供最低 4,000 的测试/诊断覆盖，但普通流程不应为了恢复已省略背景而读取 trace。预算从 18,000 放宽是因为现有 trace 未显示字符数是主要耗时来源，而过度摘录会增加模型怀疑证据不完整、转向补查的风险。摘录算法只使用查询词匹配、块邻接、字段类型权重和精确重复检测，不包含系统、规范、章节、语言或参数特例。长 packet 回归测试验证 5,000 字符预算下关键查询值和表格行仍保留，同时 trace 中登记压缩前后指标。
-
-### 2026-08-25 回归稳定版与单轮硬门禁
-
-对 `20260825_063514_bea55057` 与 `20260825_063950_14c20554` 的复盘表明，进一步压缩 inspect 输出并没有稳定降低端到端时间。前者总计约 132 秒，其中候选阶段约 38.5 秒、answer-synthesis 约 93.4 秒；后者总计约 295 秒，首轮证据之后又发生缺口判断、supplement、精确 selector 失败和第二轮 inspect 路径，新增证据并未形成有效主张。第二次最主要的性能损失来自模型在首轮证据后重新规划，而非候选数量或 agent-facing 字符数本身。
-
-因此当前实现撤销 `21f0928`（main 对应 `ec078f9`）的 compact inspect response contract，以 intranet `53aab47`（main 对应 `97f36d5`）的稳定行为为基础，只保留以下领域无关的性能门禁：
-
-1. `begin` 把实际返回的 compact candidates 逐项登记为唯一 inspection window；完整 fused scope 与 projection 继续只用于 trace 审计，不能成为后续选择来源；
-2. `inspect` 的数字 rank、section ID 和 `document_path::section-id` 都只在该窗口内解析，窗口外的已知精确章节也拒绝；
-3. 每个 trace 只允许一次 batched inspect，第二次调用确定性返回 `blocked -> finalize`；
-4. `supplement` 保留为兼容命令，但不执行检索，确定性返回 `blocked -> finalize`；
-5. 首轮证据足够时立即 completed finalize；不足时立即 incomplete finalize，并只记录影响答案的 material unresolved；
-6. agent evidence 总预算放宽为 30,000 字符。速度收益依赖消除第二轮规划、检索和 inspect，而不是继续压缩证据文本。
-
-这些规则不识别具体系统、规范、问题、语言或章节，也不给模型判断“是否值得再检索”的自由；其代价是首轮 compact window 漏检时召回率会下降。这个取舍是当前内网性能优先策略的显式边界，后续应通过相同问题、模型和 Vault 的 A/B trace 验证，而不是通过运行时 supplement 补偿。
-
-Windows Vault 经 `/mnt/c` 被 WSL 访问时，多文件索引读取仍可能产生明显的跨文件系统开销；这不是 `/opt/data/...` Linux 本地 intranet Vault 的同类路径。若 main 的该场景成为生产目标，应增加单文件聚合索引或 Provider-side cache，而不是牺牲候选完整性。
-
-## 自动 trace 与计时
-
-`query-session/v2`、trace schema 1.5 自动记录以下阶段：
-
-- scope retrieval；
-- candidate review；
-- document reading；
-- table/figure resolution；
-- provenance resolution；
-- single-pass guardrail（仅当模型误发第二次 inspect 或 supplement 时记录，不执行检索）；
-- answer synthesis；
-- claim-evidence mapping；
-- page/asset verification（声明 original asset verified 时必须提供）。
-
-trace 同时记录：
-
-- query-session 开始、结束和总耗时；
-- primary stages 的 accounted duration；
-- 总耗时与已核算阶段之差，即 unaccounted duration；
-- 每个事件的 `started_at`、`ended_at`、`duration_ms`；
-- attempted routes 与 effective routes，disabled/unavailable route 不冒充实际检索路线；
-- evidence 和 claim 的 `recorded_at`；
-- command count 与 inspection count。
-- Hermes session ID、message ID 与 platform，由运行时环境自动继承。
-- 多题 request summary 的 controlled request duration（首个 begin 到最后一个 finalize）。
-- begin 在任何检索前拒绝未分组的明显多问题输入、同 request 并发 trace、重复/跳号 index 和 count 冲突；finalize 原子拒绝空 claim 文本及未知 decision 字段。
-- request summary 记录 expected/recorded count、重叠次数和重叠时长，不能再把实际交错执行表述为 sequential。
-
-计时边界从 `query_session.py query` 调用开始，到 `finalize` 开始最终持久化为止。用户请求到第一条工具调用之前、最后工具返回到答案发出之后、模型服务排队以及审批等待，需要通过 Hermes session ID 和 `agent.log` 补齐，不能伪装成脚本阶段耗时。
+要获得真正 request-to-answer 时间和完整模型调用数，必须关联外部运行日志。会话关联缺失时，只能对 query-session 内部区间作确定性判断。
 
 ## 不因性能优化而改变的约束
 
-- 原始 PDF 仍是用户可见证据来源；Bundle、索引、ledger 和 trace 只是导航或核验载体；
+- 原始 PDF 仍是用户可见证据来源；Bundle、索引、ledger 和运行记录只是导航或核验载体；
+- governed Vault 内容保持只读，只允许写当前非权威查询记录；
 - 查询不得重建或同步 Provider；
-- governed Vault 内容保持只读，仅允许写当前非权威 query trace；
-- pass-quality Bundle 默认可作为内部提取载体；视觉核验只由显式用户/审计要求触发，具体 QA/歧义状态直接体现在证据等级和限定语中；
 - Provider 不可用不得阻塞已有 hierarchical fallback；
-- 可独立回答的多个问题仍按顺序分别完成 trace。
+- 视觉核验只由明确用户或审计要求触发；
+- 硬 evidence-chain blocker 不得因性能要求而静默放行；
+- 可独立回答的多个问题仍逐题完成；
+- 各部署分支共用领域无关逻辑，Vault 路径、viewer 和 Provider 状态保持独立；
+- 不在代码、Skill、配置、文档或测试中加入具体问题作为行为引导。
 
-## 验证结果
+## 验证与验收
 
-当前实现完成了以下自动验证：
+当前自动验证覆盖：
 
-- 两调用组合 query/finalize workflow 的集成测试；
-- bootstrap 一次返回规则、配置和 verification capability；
-- registered verification carrier 的单次准备与无 carrier/renderer 时的 fast-fail；
-- 同 request 的 open-trace 拒绝、连续 question index/count 和 `--close-request`；
-- unknown 顶层 decision/claim field 拒绝、unknown event field 的 `extensions` 兼容保留及 `unresolved_items` 兼容继承；
-- begin 实际返回窗口的持久化与窗口外精确章节拒绝；
-- 显式声明需要视觉核验的证据未核验时拒绝 `clear`/`source-backed`；
-- inspect provenance 自动继承及 ASCII evidence/claim ID；
-- 第二次 inspect 与所有 supplement 确定性阻止并导向 finalize；
-- 去重 answer capsule、finalize 自动请求收口与 request-summary 汇总；
-- Hermes session/message 环境继承；
-- 无效 claim 导致 finalization 整体失败且不产生部分写入；
-- required-stage coverage 检查；
-- attempted/effective route 区分；
-- evidence/claim 时间戳和请求级计时输出；
-- 紧凑候选和 n-gram 限制；
-- main 与 intranet 分支使用同一单轮门禁回归测试；
-- Skill 结构校验通过；
-- 所有 Python 入口保持 Git executable mode `100755`。
+- 组合 `query -> finalize` 两调用 workflow；
+- automatic first-window inspect；
+- 第二次 inspect 和 supplement 硬阻止；
+- bootstrap 规则、配置与 verification capability；
+- evidence delivery 总预算和关键内容保留；
+- 动态 verification/evidence/event contract；
+- Vault 内 provenance 继承和路径安全；
+- strict decision/claim schema 与原子 finalize；
+- answer capsule、`final_response` 和 request closure；
+- attempted/effective route、计时和字符指标；
+- 各部署分支的领域中立回归；
+- Python 入口的 Git executable mode。
 
-本地 Windows 侧真实 Vault 的 scope retrieval 约为 0.39 秒。通过 `/mnt/c` 由 WSL 读取同一 Vault 的结果受跨文件系统多文件访问影响，不能代替 intranet Linux 本地 Vault 的验收数据。
-
-## Intranet A/B 验收方法
-
-在部署前后使用相同问题、相同模型、相同 Vault 状态和相同证据要求，至少各执行五次，分别记录冷启动和稳态结果。建议至少统计：
+部署前后 A/B 应在相同模型、Vault 状态和证据要求下统计冷启动与稳态数据，至少记录：
 
 | 指标 | 目的 |
 | --- | --- |
-| request-to-answer wall time | 判断用户实际等待时间 |
-| query-session duration | 判断 Skill 可控制的端到端时间 |
-| accounted/unaccounted duration | 识别模型思考、等待或漏记阶段 |
-| script command count | 确认普通路径是否稳定为两次 |
-| inspection count | 识别候选质量或证据包是否导致返工 |
-| retrieval duration by route | 判断 qmd-like-rag/hierarchical 的真实贡献 |
-| returned bytes/tokens | 判断上下文压缩效果 |
-| evidence level and coverage gaps | 防止速度提升来自证据降级 |
+| request-to-answer wall time | 判断用户真实等待 |
+| query-session duration | 判断 Skill 可控区间 |
+| answer-synthesis duration | 判断剩余模型调用成本 |
+| command/inspection count | 识别流程是否重新膨胀 |
+| retrieval duration by route | 判断 Provider 的真实贡献 |
+| agent/full packet chars | 判断上下文压缩是否有效 |
+| decision input chars | 判断收口是否保持最小 |
+| evidence level and gaps | 防止速度来自证据降级 |
 
-验收时应同时检查最终答案、trace Markdown、trace JSON sidecar 和 Hermes `agent.log`。如果 query-session 很短而 request-to-answer 仍很长，下一轮应优先优化模型提示和输出；如果 retrieval route 占主导，再优化索引或 Provider。
+## 暂缓事项
 
-## 后续优化优先级
+当前组合路径已经达到可接受效果。以下优化暂缓，只有回归数据再次显示稳定收益时才继续：
 
-1. 在 intranet 完成同题 A/B，取得真实 request-to-answer P50/P95；
-2. 对 unaccounted duration 最大的样本关联 Hermes 日志，区分模型思考、服务排队、审批和答案输出；
-3. 若首个自动窗口经常留下证据缺口，调整通用排序或 evidence packet，而不是恢复模型候选选择或第二轮检索；
-4. qmd-like-rag 启用后保持与 hierarchical route 并行，并用 route timing 判断收益；
-5. 若 Windows-mounted Vault 成为长期运行路径，构建单文件聚合索引或 Linux-local Provider cache；
-6. Hermes prompt 的独立合成上下文和工具结果直返都需要编排器支持；本轮按约束不修改 Hermes，仅保留为需要单独授权的架构选项。
+1. 按 packet 分离 usable/excluded evidence，避免无效 packet 扩大整个 decision；
+2. 增加更明确的 output-complete/no-recovery contract，进一步减少 helper script 偶发行为；
+3. 继续改进通用 claim pruning，但不增加语义硬拒绝和 finalize 重试；
+4. 启用 Provider 后用实际 route timing 判断收益，不预设单一路线必然更快；
+5. 外部编排器级独立 synthesis context 或工具结果直返，仅在获得单独授权后评估。
 
-本设计的核心不是让模型“更快地执行原来的十几个步骤”，而是取消不必要的步骤，把稳定、可验证的工作下沉到确定性脚本中，并让可观测性自动产生。
+本轮迭代的核心不是让模型更快地执行原来的许多步骤，而是取消不必要的步骤，并把稳定、可验证、领域无关的工作下沉到确定性脚本中。
