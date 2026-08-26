@@ -9,11 +9,12 @@ For standalone image sources, do not use the PDF figure policy. Read `image-bund
 1. Design goals
 2. Bundle profiles
 3. Engineering bundle contract
-4. Default ingest order
-5. Conversion commands
-6. Local MinerU environment
-7. Quality gates
-8. Legacy bundle handling
+4. Reviewed MinerU output and correction
+5. Default ingest order
+6. Conversion commands
+7. Local MinerU environment
+8. Quality gates
+9. Legacy bundle handling
 
 ## Design Goals
 
@@ -174,6 +175,14 @@ This is a non-default QA layer. It may contain:
 
 Do not recursively scan `_evidence/` during ordinary ingestion. Open only the specific evidence file needed to resolve a layout, page-order, formula, table, or extraction dispute.
 
+## Reviewed MinerU Output and Correction
+
+The current Bundle renderer actively consumes the original PDF, one legacy flat `*content_list.json`, and the assets referenced by that content list. Other selected MinerU JSON/PDF outputs are retained for diagnosis and QA, not used to render a normal Bundle. MinerU Markdown is only an incomplete fallback when the flat content list is absent.
+
+Keep the complete machine output immutable. Human corrections belong in a separate review layer that records structured content and structure changes, produces a reviewed content list and reviewed assets, and generates a candidate Bundle before promotion. Do not ask reviewers to recalculate MinerU `bbox`; preserve it as a machine locator, compose original locators for split/merge operations, and mark unreliable geometry rather than inventing coordinates.
+
+Read `mineru-output-review.md` before retaining output for review, correcting extraction, or rebuilding a Bundle from reviewed MinerU intermediates. It records the current dependency contract, asset references, review operations, bbox policy, candidate promotion procedure, and capabilities that remain unimplemented.
+
 ## Default Ingest Order
 
 ```text
@@ -311,6 +320,8 @@ Defaults:
 
 Use `--no-evidence` only when storage constraints explicitly outweigh later QA requirements.
 
+When later human extraction review is anticipated, retain a complete raw MinerU output or a review package containing the flat content list and every referenced asset. The default selected `_evidence/mineru/` archive does not include the complete original asset tree and is not necessarily sufficient for standalone Bundle regeneration.
+
 Reuse existing MinerU output without reparsing:
 
 ```bash
@@ -323,6 +334,8 @@ python3 \
 ```
 
 Reused output records conversion settings as unknown by default. If the original invocation is known, add `--record-conversion-settings` together with the original `--backend`, `--method`, feature flags, effort, and model source so the manifest retains accurate provenance.
+
+The current reuse path searches recursively and heuristically chooses one `*content_list.json`. Until explicit content-list and asset-root options exist, keep the intended reviewed content list isolated from the immutable machine copy under the supplied `--from-mineru-output` root.
 
 ## Local MinerU Environment
 
