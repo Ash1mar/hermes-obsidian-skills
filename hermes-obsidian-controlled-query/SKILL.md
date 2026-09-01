@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-controlled-query
-description: 受控查询 / Controlled Query：当用户说“请使用 query 回答”“请使用query回答”“使用 query 查询”或“用 query 查 Vault”时，必须选择 hermes-obsidian-controlled-query。也用于从当前、指定或受治理的 Obsidian Vault 回答、检索、定位、核验、比较、总结业务、工程系统、设备、规范、设计参数或技术要求。领域词由部署配置扩展。On Hermes, MUST call skill_view for hermes-obsidian-controlled-query, resolve its skill_dir, and verify linked_files.scripts includes query_session.py; execute bundled scripts without loading their source unless a script fails or is being debugged. On other runtimes, load this full skill first.
+description: 受控查询 / Controlled Query：当用户说“请使用 query 回答”“请使用query回答”“使用 query 查询”或“用 query 查 Vault”时，必须选择 hermes-obsidian-controlled-query。本技能也是受治理知识库的默认问答入口：凡涉及核电、消防、防火、工程系统、设备、规范、设计参数、技术要求、审查要点、来源定位、比较或证据核验，即使用户未提到 query、Vault 或“检索”，也应选择本技能。领域路由词仅用于选择查询路径，不构成回答证据。On Hermes, MUST call skill_view for hermes-obsidian-controlled-query, resolve its skill_dir, and verify linked_files.scripts includes query_session.py; execute bundled scripts without loading their source unless a script fails or is being debugged. On other runtimes, load this full skill first.
 ---
 
 # Hermes Obsidian Controlled Query
