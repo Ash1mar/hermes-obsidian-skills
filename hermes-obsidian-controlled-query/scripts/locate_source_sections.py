@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -17,11 +18,34 @@ from typing import Any
 from urllib.parse import urlencode
 
 
+DEFAULT_DEPLOYMENT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "deployment.json"
+
+
 def load_json(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError(f"Expected a JSON object: {path}")
     return data
+
+
+def load_deployment_config(explicit_path: Path | None = None) -> dict[str, Any]:
+    env_path = os.environ.get("HERMES_DEPLOYMENT_CONFIG")
+    configured_path = explicit_path or (Path(env_path).expanduser() if env_path else None)
+    path = configured_path or DEFAULT_DEPLOYMENT_CONFIG
+    if not path.is_file():
+        if configured_path is not None:
+            raise ValueError(f"Deployment config does not exist: {path}")
+        return {}
+    return load_json(path)
+
+
+def load_viewer_base_url(
+    explicit_url: str | None,
+    deployment_config: dict[str, Any],
+) -> str | None:
+    value = explicit_url if explicit_url is not None else deployment_config.get("viewer_base_url")
+    text = str(value or "").strip()
+    return text.rstrip("?") or None
 
 
 def query_terms(text: str) -> list[str]:
@@ -83,23 +107,8 @@ def display_path(path: Path, root: Path) -> str:
         return path.resolve().as_posix()
 
 
-def load_viewer_base_url(explicit_url: str | None) -> str | None:
-    """Resolve the optional deployment-local source viewer URL."""
-    if explicit_url:
-        return explicit_url.rstrip("?")
-    config_path = Path(__file__).resolve().parents[1] / "config" / "intranet.json"
-    if not config_path.is_file():
-        return None
-    try:
-        config = load_json(config_path)
-    except (OSError, ValueError, json.JSONDecodeError):
-        return None
-    value = str(config.get("viewer_base_url") or "").strip()
-    return value.rstrip("?") or None
-
-
 def match_line_range(section: dict[str, Any]) -> tuple[int | None, int | None]:
-    """Return the complete matched section range used for viewer highlighting."""
+    """Return the complete matched range used for optional viewer highlighting."""
     try:
         start = int(section.get("start_line"))
         end = int(section.get("end_line"))
@@ -129,7 +138,8 @@ def build_viewer_url(
 ) -> str | None:
     if not base_url or not document_id or not section_id or start_line is None or end_line is None:
         return None
-    return f"{base_url}?{urlencode({'doc': document_id, 'section': section_id, 'from': start_line, 'to': end_line})}"
+    separator = "&" if "?" in base_url else "?"
+    return f"{base_url}{separator}{urlencode({'doc': document_id, 'section': section_id, 'from': start_line, 'to': end_line})}"
 
 
 def candidate_coverage_terms(candidate: dict[str, Any], *fields: str) -> set[str]:
@@ -270,12 +280,25 @@ def main() -> int:
     parser.add_argument("--no-content-scan", action="store_true", help="Score only document routing and section paths")
     parser.add_argument("--trace-id", help="Append actual candidates to an active query trace")
     parser.add_argument("--viewer-base-url", help="Override the optional deployment-local source viewer URL")
+    parser.add_argument(
+        "--deployment-config",
+        type=Path,
+        help=(
+            "Optional deployment defaults. Falls back to HERMES_DEPLOYMENT_CONFIG, then "
+            "config/deployment.json when present."
+        ),
+    )
     args = parser.parse_args()
     started = time.monotonic_ns()
 
     vault_root = args.vault_root.resolve()
     index_dir = (args.index_dir or vault_root / "_system" / "reports" / "query-index").resolve()
-    viewer_base_url = load_viewer_base_url(args.viewer_base_url)
+    try:
+        deployment_config = load_deployment_config(args.deployment_config)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    viewer_base_url = load_viewer_base_url(args.viewer_base_url, deployment_config)
     terms = query_terms(args.query)
     documents: list[tuple[int, Path, dict[str, Any], list[str]]] = []
     errors: list[str] = []

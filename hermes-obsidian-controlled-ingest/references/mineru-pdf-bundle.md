@@ -222,7 +222,7 @@ cd /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills
 python3 \
   "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py" \
   "/mnt/c/path/to/input.pdf" \
-  -o "/opt/data/phq/testVault/10_Raw/converted/input_document_bundle" \
+  -o "/mnt/c/path/to/vault/10_Raw/converted/input_document_bundle" \
   --mineru-command "/usr/local/bin/mineru" \
   --model-source local \
   --backend hybrid-engine \
@@ -240,7 +240,7 @@ For a CPU fallback:
 python3 \
   "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py" \
   "/mnt/c/path/to/input.pdf" \
-  -o "/opt/data/phq/testVault/10_Raw/converted/input_document_bundle" \
+  -o "/mnt/c/path/to/vault/10_Raw/converted/input_document_bundle" \
   --mineru-command "/usr/local/bin/mineru" \
   --model-source local \
   --backend pipeline \
@@ -249,18 +249,14 @@ python3 \
   --overwrite
 ```
 
-On the `intranet` branch, Bundle conversion defaults to the MinerU HTTP API at
-`http://10.27.17.35:7861`. No `export MINERU_API_URL=...` is required unless the
-service address changes. Override with `--mineru-api-url` or `MINERU_API_URL` when
-needed.
-
-For an intranet MinerU HTTP API:
+For a MinerU HTTP API when no local MinerU CLI is available:
 
 ```bash
 python3 \
   "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py" \
   "/path/to/input.pdf" \
-  -o "/opt/data/phq/testVault/10_Raw/converted/input_document_bundle" \
+  -o "/path/to/vault/10_Raw/converted/input_document_bundle" \
+  --mineru-api-url "https://mineru.example.internal" \
   --mineru-api-mode sync \
   --backend hybrid-engine \
   --effort high \
@@ -296,7 +292,8 @@ the asynchronous task API:
 python3 \
   "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py" \
   "/path/to/input.pdf" \
-  -o "/opt/data/phq/testVault/10_Raw/converted/input_document_bundle" \
+  -o "/path/to/vault/10_Raw/converted/input_document_bundle" \
+  --mineru-api-url "https://mineru.example.internal" \
   --mineru-api-mode async \
   --mineru-api-poll-timeout 7200 \
   --backend hybrid-engine \
@@ -306,9 +303,11 @@ python3 \
   --overwrite
 ```
 
-To force the local MinerU CLI instead of the intranet API on this branch, pass
-`--mineru-invocation cli` together with the usual `--mineru-command` and
-`--model-source` settings.
+A deployment that always uses the HTTP service may package `config/deployment.json`
+beside the Skill. Set `mineru_invocation` to `api` and `mineru_api_url` to the
+deployment URL; the same commands then work without repeating either option. An
+explicit `--mineru-invocation`, `--mineru-api-url`, or `MINERU_API_URL` overrides the
+packaged defaults.
 
 Defaults:
 

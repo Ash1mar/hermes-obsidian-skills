@@ -148,6 +148,31 @@ class VaultLintTest(unittest.TestCase):
         )
         return vault
 
+    def test_lint_uses_deployment_vault_without_runtime_path_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            vault = self.create_vault(root)
+            config = root / "deployment.json"
+            config.write_text(json.dumps({"vault_path": str(vault)}), encoding="utf-8")
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(SCRIPT),
+                    "--deployment-config",
+                    str(config),
+                    "--profile",
+                    "post-ingest",
+                    "--ingest-skill-path",
+                    str(INGEST),
+                    "--json",
+                ],
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+            self.assertEqual(0, result.returncode, msg=result.stderr)
+            self.assertEqual("pass-with-warnings", json.loads(result.stdout)["status"])
+
     def add_second_source(self, vault: Path) -> str:
         bundle_id = "bundle-v2-" + ("b" * 16)
         reports = vault / "_system" / "reports"

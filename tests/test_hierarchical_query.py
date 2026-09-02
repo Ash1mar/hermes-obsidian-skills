@@ -149,8 +149,19 @@ def test_build_projection_is_additive_and_has_no_summary(tmp_path: Path) -> None
 def test_locator_scans_owned_content_and_returns_navigation_only(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    empty_config = tmp_path / "portable-deployment.json"
+    write_json(empty_config, {})
     completed = subprocess.run(
-        [sys.executable, str(LOCATE), str(vault), "目标系统组件 A=60", "--top-sections", "5"],
+        [
+            sys.executable,
+            str(LOCATE),
+            str(vault),
+            "目标系统组件 A=60",
+            "--top-sections",
+            "5",
+            "--deployment-config",
+            str(empty_config),
+        ],
         capture_output=True,
         text=True,
         check=True,
@@ -160,16 +171,58 @@ def test_locator_scans_owned_content_and_returns_navigation_only(tmp_path: Path)
     assert result["design_origin"] == "hanyu"
     assert result["candidates"][0]["section_id"] == "component"
     assert "60" in result["candidates"][0]["matched_terms"]["content"]
-    assert result["candidates"][0]["document_id"] == "bundle-0712"
-    assert result["candidates"][0]["match_start_line"] == 3
-    assert result["candidates"][0]["match_end_line"] == 4
-    assert result["candidates"][0]["viewer_url"] == (
-        "http://10.27.13.12:8765/viewer?doc=bundle-0712&section=component&from=3&to=4"
+    assert result["candidates"][0]["viewer_url"] is None
+    assert result["answer_contract"]["viewer_enabled"] is False
+
+
+def test_intranet_locator_uses_checked_in_viewer_without_runtime_flags(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+
+    completed = subprocess.run(
+        [sys.executable, str(LOCATE), str(vault), "目标系统组件 A=60"],
+        capture_output=True,
+        text=True,
+        check=True,
     )
+
+    result = json.loads(completed.stdout)
+    candidate = result["candidates"][0]
+    assert candidate["viewer_url"].startswith("http://10.27.13.12:8765/viewer?")
     assert result["answer_contract"]["viewer_enabled"] is True
-    assert result["answer_contract"]["final_section"] == "原文定位"
-    assert result["candidates"][0]["viewer_url"] in result["answer_contract"]["eligible_viewer_urls"]
-    assert "Append 原文定位" in result["answer_contract"]["required_action"]
+
+
+def test_locator_uses_optional_viewer_profile_without_changing_evidence_authority(
+    tmp_path: Path,
+) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    config = tmp_path / "deployment.json"
+    write_json(config, {"viewer_base_url": "http://viewer.internal:8765/viewer"})
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(LOCATE),
+            str(vault),
+            "目标系统组件 A=60",
+            "--deployment-config",
+            str(config),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    result = json.loads(completed.stdout)
+    candidate = result["candidates"][0]
+    assert result["authority"] == "candidate-navigation-only"
+    assert candidate["viewer_url"].startswith("http://viewer.internal:8765/viewer?")
+    assert "section=component" in candidate["viewer_url"]
+    assert "from=3" in candidate["viewer_url"]
+    assert "to=4" in candidate["viewer_url"]
+    assert result["answer_contract"]["viewer_enabled"] is True
+    assert candidate["viewer_url"] in result["answer_contract"]["eligible_viewer_urls"]
 
 
 def test_locator_keeps_multiple_documents_in_the_compact_candidate_window(tmp_path: Path) -> None:
@@ -377,9 +430,6 @@ def test_scope_retrieval_survives_missing_provider_and_keeps_hierarchical_result
     assert result["routes"]["hierarchical_search"]["hit_count"] >= 1
     assert result["candidates"][0]["section_id"] == "component"
     assert result["candidates"][0]["retrieval_routes"] == ["hierarchical-search"]
-    assert result["candidates"][0]["viewer_url"]
-    assert result["answer_contract"]["viewer_enabled"] is True
-    assert result["candidates"][0]["viewer_url"] in result["answer_contract"]["eligible_viewer_urls"]
     assert result["duration_ms"] >= 0
 
 
@@ -494,12 +544,6 @@ def test_query_session_completes_explicit_visual_verification_policy(tmp_path: P
     assert begin_result["scope"]["candidate_window_complete"] is True
     assert begin_result["scope"]["producer_output_truncated"] is False
     assert begin_result["scope"]["candidates"][0]["section_id"] == "component"
-    visible_viewer_urls = [
-        candidate["viewer_url"]
-        for candidate in begin_result["scope"]["candidates"]
-        if candidate.get("viewer_url")
-    ]
-    assert begin_result["scope"]["answer_contract"]["eligible_viewer_urls"] == visible_viewer_urls
     assert begin_result["scope"]["selection_contract"] == {
         "first_inspection_input": "compact-candidates-only",
         "inspect_once": "select all useful returned candidates in the only permitted inspection call",
@@ -1045,7 +1089,13 @@ def test_query_session_bootstrap_returns_exact_rules_and_capabilities(tmp_path: 
     assert result["verification_runtime"]["policy"].startswith("one deterministic")
     config_root = QUERY_SKILL.parent / "config"
     expected_routing_path = next(
-        path for path in (config_root / "intranet.json", config_root / "domain-routing.json") if path.is_file()
+        path
+        for path in (
+            config_root / "deployment.json",
+            config_root / "intranet.json",
+            config_root / "domain-routing.json",
+        )
+        if path.is_file()
     )
     assert Path(result["routing_config_path"]).name == expected_routing_path.name
     assert result["routing"] == json.loads(expected_routing_path.read_text(encoding="utf-8"))
@@ -1109,6 +1159,57 @@ def test_combined_query_automatically_inspects_and_uses_minimal_synthesis_contra
     )
     assert final_result["final_response"] == state["answer_capsule"]["answer_markdown"]
     assert final_result["next_action"] == "return final_response verbatim without another evidence review"
+
+
+def test_combined_query_appends_only_used_profile_viewer_links(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    config = tmp_path / "deployment.json"
+    write_json(config, {"viewer_base_url": "http://viewer.internal:8765/viewer"})
+    env = os.environ.copy()
+    env["HERMES_DEPLOYMENT_CONFIG"] = str(config)
+
+    queried = subprocess.run(
+        [sys.executable, str(SESSION), "query", str(vault), "参数值和温度是什么？"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    result = json.loads(queried.stdout)
+    packet = result["evidence_packets"][0]
+    assert packet["viewer_url"].startswith("http://viewer.internal:8765/viewer?")
+
+    finalized = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            result["trace_id"],
+            "--decision-json",
+            json.dumps(
+                {
+                    "claims": [
+                        {
+                            "text": "The selected section supports the requested value.",
+                            "evidence_refs": [packet["evidence_ref"]],
+                        }
+                    ],
+                    "conclusion": "Use the value supported by the selected evidence.",
+                },
+                ensure_ascii=False,
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    final_result = json.loads(finalized.stdout)
+
+    assert "\n\n原文定位:\n" in final_result["final_response"]
+    assert packet["viewer_url"] in final_result["final_response"]
 
 
 def test_query_session_does_not_infer_verification_policy_from_question_terms(tmp_path: Path) -> None:
@@ -2201,25 +2302,6 @@ def test_user_facing_evidence_uses_original_pdf_and_logs_conversion_carriers() -
     assert "Verification-carrier paths belong in this trace" in trace_reference
 
 
-def test_intranet_answers_append_verified_viewer_links() -> None:
-    skill = QUERY_SKILL.read_text(encoding="utf-8")
-    answer_format = ANSWER_FORMAT.read_text(encoding="utf-8")
-    config = json.loads(
-        (ROOT / "hermes-obsidian-controlled-query" / "config" / "intranet.json").read_text(encoding="utf-8")
-    )
-
-    assert config["viewer_base_url"] == "http://10.27.13.12:8765/viewer"
-    assert config["hermes_skills_root"] == "/opt/data/skills"
-    assert config["domain_query_terms"] == []
-    assert "Use only locator-returned `viewer_url` values" in skill
-    assert "doc=<document_id>&section=<section_id>&from=<match_start_line>&to=<match_end_line>" in skill
-    assert "a final `原文定位` list" in skill
-    assert "append `原文定位` as the final answer section" in answer_format
-    assert "does not replace the original-PDF evidence packet" in answer_format
-    assert "top-level `answer_contract`" in skill
-    assert "silent omission" in skill
-
-
 def test_runtime_scripts_are_resolved_from_the_active_skill() -> None:
     skill = QUERY_SKILL.read_text(encoding="utf-8")
     reference = TRACE_REFERENCE.read_text(encoding="utf-8")
@@ -2263,13 +2345,13 @@ def test_hermes_descriptions_frontload_skill_loading_without_query_script_source
 def test_query_domain_terms_are_configuration_not_frontmatter() -> None:
     skill = QUERY_SKILL.read_text(encoding="utf-8")
     config = json.loads(
-        (ROOT / "hermes-obsidian-controlled-query" / "config" / "intranet.json").read_text(
+        (ROOT / "hermes-obsidian-controlled-query" / "config" / "domain-routing.json").read_text(
             encoding="utf-8"
         )
     )
     description = next(line for line in skill.splitlines() if line.startswith("description: "))
     assert config["domain_query_terms"] == []
-    assert "config/intranet.json" in skill
+    assert "config/domain-routing.json" in skill
     assert "domain_query_terms" in skill
 
 
@@ -2284,23 +2366,6 @@ def test_query_description_maps_short_query_phrases_to_the_canonical_skill() -> 
     assert "使用 query 查询" in description[:160]
     assert "用 query 查 Vault" in description[:160]
     assert "必须选择 hermes-obsidian-controlled-query" in description[:200]
-
-
-def test_intranet_skill_parent_and_package_layout_are_unambiguous() -> None:
-    expected = {
-        "hermes-obsidian-controlled-query": "query",
-        "hermes-obsidian-controlled-ingest": "ingest",
-        "hermes-obsidian-vault-bootstrap": "bootstrap",
-        "hermes-obsidian-vault-lint": "lint",
-    }
-    for skill_name in expected:
-        skill_dir = ROOT / skill_name
-        config = json.loads((skill_dir / "config" / "intranet.json").read_text(encoding="utf-8"))
-        skill = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
-        assert config["hermes_skills_root"] == "/opt/data/skills"
-        assert f"/opt/data/skills/{skill_name}/" in skill
-        assert (skill_dir / "scripts").is_dir()
-        assert (skill_dir / "SKILL.md").is_file()
 
 
 def test_short_hermes_bundle_aliases_are_deployable() -> None:

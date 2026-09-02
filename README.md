@@ -2,6 +2,8 @@
 
 This repository stores local skills and tool-integration notes for the Hermes + Obsidian knowledge workflow. It also maintains `qmd-like-rag/`, the independently installed coarse-recall Provider used by the ingest/query Skills; it is repository code, not a fifth Skill.
 
+See [`charts.md`](charts.md) for editable Mermaid diagrams of the complete bootstrap, ingest, lint, query, retrieval, and branch-specific deployment flow.
+
 ## Skills
 
 - `hermes-obsidian-controlled-ingest/`
@@ -20,7 +22,7 @@ This repository stores local skills and tool-integration notes for the Hermes + 
   - Prevents query runs from creating or modifying cards, concepts, reports, or raw material unless writeback is explicitly requested.
 
 - `hermes-obsidian-vault-lint/`
-  - Audits governed Obsidian vault health against the configured intranet vault.
+  - Audits governed Obsidian vault health without assuming a fixed vault path.
   - Checks bootstrap structure, bundle validation, section ledgers, source maps, governed Markdown evidence, structured multi-source synthesis, and QA authority boundaries.
   - Provides `post-ingest`, `query-ready`, `strict`, and `qa-review` profiles with stable JSON and Markdown report output.
   - Reuses the controlled-ingest bundle validator when available.
@@ -29,10 +31,16 @@ This repository stores local skills and tool-integration notes for the Hermes + 
   - Initializes governed Obsidian vaults.
   - Creates the standard folder layout, prompts, templates, metadata registries, Dataview indexes, and setup report.
   - Supports `general` and `meeting` profiles.
-  - Can copy `.obsidian/` and base concept pages from a template vault; runtime Skills and their installation paths stay outside the Vault.
+  - Can copy `.obsidian/`, base concept pages, and skill notes from a template vault.
   - Does not copy raw sources, test cards, test projects, or historical reports by default.
 
-On the `intranet` branch, bootstrap, ingest, query, and lint use the vault path configured in each skill's `config/intranet.json`, currently `/opt/data/phq/testVault`. The same config records the Hermes-visible Skills parent as `/opt/data/skills`; each package remains a child such as `/opt/data/skills/hermes-obsidian-controlled-query/`, with its own `SKILL.md` and `scripts/`. The controlled-query config also defines `domain_query_terms` for deployment-specific subject triggers and `viewer_base_url`; verified query hits are returned with `doc`, `section`, `from`, and `to` parameters so answers can end with clickable `原文定位` links into the intranet Bundle Markdown viewer.
+On the `intranet` branch, bootstrap, ingest, query, and lint each ship a
+`config/deployment.json`. Downloading this branch is sufficient for the current
+deployment: the Skills default to Vault `/opt/data/phq/testVault` and Skills parent
+`/opt/data/skills`; controlled ingest uses MinerU at
+`http://10.27.17.35:7861`, while controlled query emits `原文定位` links for
+`http://10.27.13.12:8765/viewer`. Change the checked-in deployment files only when
+the server deployment changes; normal prompts do not need to repeat these values.
 
 ## Hermes Slash Aliases
 
@@ -97,6 +105,12 @@ python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-sk
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-lint\scripts\lint_vault.py"
 ```
 
+Run tests with:
+
+```powershell
+python -m unittest discover "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\tests"
+```
+
 ## MinerU PDF Bundle Integration
 
 MinerU is optional. This repository does not install it automatically.
@@ -130,7 +144,7 @@ For staged or multi-session ingestion, initialize a human-readable source map an
 ```bash
 python3 hermes-obsidian-controlled-ingest/scripts/manage_bundle_ingest.py \
   init "/path/to/input_document_bundle" \
-  --reports-dir "/opt/data/phq/testVault/_system/reports"
+  --reports-dir "/path/to/vault/_system/reports"
 ```
 
 Hermes uses ledger revisions and per-section content hashes to resume work, prevent duplicate ingestion, and mark changed completed sections as stale.
@@ -139,7 +153,7 @@ By default, figures and charts are extracted as visual evidence files and refere
 
 The helper accepts `--mineru-command` or `MINERU_COMMAND`. In the configured WSL runtime, use `/usr/local/bin/mineru`, which selects local model snapshots and delegates to the native WSL virtual environment.
 
-On the `intranet` branch, the helper defaults to the MinerU 3.x HTTP API at `http://10.27.17.35:7861`, so prompts do not need to repeat the API URL. Override it with `--mineru-api-url` or `MINERU_API_URL` if the service address changes. The helper posts to `/file_parse` or `/tasks`, requests `response_format_zip=true`, extracts the returned ZIP, and continues with the same Bundle v2 builder. The API ZIP must include at least Markdown and content-list outputs; middle/model JSON and images are requested for evidence. Some API deployments do not include `layout.pdf` or `span.pdf`, so those QA PDFs may be absent from `_evidence/`. To force a local MinerU CLI on this branch, pass `--mineru-invocation cli`.
+On this branch, checked-in deployment config selects the MinerU HTTP service at `http://10.27.17.35:7861`, so normal commands need no API flags. The helper posts to `/file_parse` or `/tasks`, requests a ZIP result, and continues through the same Bundle v2 builder. The ZIP must contain Markdown and content-list outputs; middle/model JSON and referenced images are requested for evidence. Some API deployments do not return `layout.pdf` or `span.pdf`, so those QA overlays may be absent from `_evidence/`. Use `--mineru-invocation cli` only for an explicit local-CLI override.
 
 ## Standalone Image Bundle Integration
 

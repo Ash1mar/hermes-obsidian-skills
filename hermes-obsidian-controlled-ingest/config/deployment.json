@@ -1,0 +1,7 @@
+{
+  "profile": "intranet",
+  "vault_path": "/opt/data/phq/testVault",
+  "hermes_skills_root": "/opt/data/skills",
+  "mineru_invocation": "api",
+  "mineru_api_url": "http://10.27.17.35:7861"
+}

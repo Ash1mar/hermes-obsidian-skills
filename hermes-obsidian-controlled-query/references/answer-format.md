@@ -22,17 +22,14 @@ Evidence:
 Uncertainty / gaps:
 - <what is not proven, conflicting, or needs QA>
 
-原文定位:
-1. [<original PDF filename> §<section_id>](<locator-returned viewer_url>)
+原文定位: <included automatically only when cited evidence has a deployment-provided viewer URL>
+- [<original PDF filename> §<section_id>](<registered viewer_url>)
 ```
 
 Do not include writeback recommendations in the user-facing answer by default.
 If the user explicitly asks whether to persist the result, briefly state the candidate decision and likely artifact type.
 Do not include source-map, ledger, Bundle, `document.md`, table Markdown, extracted-image, or page-image paths in the user-facing answer. Record those verification carriers in the query trace. The trace path itself may still be reported as the required audit status.
-
-When the active deployment config defines `viewer_base_url`, append `原文定位` as the final answer section. Include only deduplicated `viewer_url` values returned by the locator for source hits actually used in the answer. A viewer URL is a navigation aid and the sole permitted user-facing Bundle-carrier exception; it does not replace the original-PDF evidence packet. If no verified hit has a complete `document_id`, `section_id`, `match_start_line`, and `match_end_line`, omit the list and state that source positioning is unavailable under uncertainty/gaps.
-
-Use the locator result's top-level `answer_contract` as the final pre-return gate. When `viewer_enabled` is true, returning neither eligible links for used verified hits nor an explicit unavailable explanation is invalid and must be corrected before the answer is sent.
+Do not construct viewer URLs from filenames or guessed line ranges. On viewer-enabled deployments, `finalize` appends only the registered URLs attached to evidence actually used by retained claims. A viewer link is a navigation aid and does not replace original-PDF provenance.
 
 ## Short Locating Answer
 

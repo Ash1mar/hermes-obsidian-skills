@@ -7,16 +7,18 @@ description: 受控摄取 / Controlled Ingest：新增、导入、恢复、继�
 
 Turn source files into governed Obsidian artifacts without rewriting raw material or overcreating concepts.
 
-## Intranet Vault Configuration
+## Intranet Deployment
 
-On the `intranet` branch, the governed vault path is fixed by this skill's config:
+Read `config/deployment.json` and use its fixed deployment defaults:
 
-- config file: `config/intranet.json`
-- configured vault path: `/opt/data/phq/testVault`
-- Hermes-visible Skills parent directory: `/opt/data/skills`
-- configured ingest Skill directory: `/opt/data/skills/hermes-obsidian-controlled-ingest`
+- Vault: `/opt/data/phq/testVault`
+- Skills parent: `/opt/data/skills`
+- this package: `/opt/data/skills/hermes-obsidian-controlled-ingest/`
+- MinerU transport: HTTP API at `http://10.27.17.35:7861`
 
-Use this configured path as the vault root for source onboarding, conversion output, source maps, section ledgers, governed artifacts, and ingest reports. If the server vault path changes, update `config/intranet.json`; do not switch vaults by prompt wording.
+Normal ingest prompts and commands do not need to repeat these values. If the
+server deployment changes, update `config/deployment.json`; do not switch Vaults
+or MinerU services from prompt wording alone.
 
 ## Runtime Skill Boundary
 
@@ -24,7 +26,9 @@ Use `<ingest-skill-root>` as the runtime-neutral directory containing this activ
 
 Resolve bundled `scripts/`, `references/`, and `config/` against `<ingest-skill-root>`. Execute Python entry points as `python3 "<ingest-skill-root>/scripts/<script>.py"`. Never infer a conventional installation path. On Hermes, inspect `skill_view` and `linked_files.scripts` before declaring a script uninstalled; a terminal sandbox path failure may instead mean the host Skill directory is not mounted. Never copy replacement Skill scripts into the Vault.
 
-On this branch, `/opt/data/skills` from `config/intranet.json` is the parent containing all Skills, not `<ingest-skill-root>`. The expected package is `/opt/data/skills/hermes-obsidian-controlled-ingest/`, containing `SKILL.md`, `scripts/`, `references/`, and `config/`. Prefer the loader-returned `skill_dir`; use the configured package as a fallback and consistency check when linked scripts are omitted. Never interpret `/opt/data/skills/scripts` as this Skill's script directory.
+`/opt/data/skills` is the parent containing all Skills, not
+`<ingest-skill-root>`. Prefer the loader-returned Skill directory and use the
+configured package path only as a deployment consistency check.
 
 ```text
 external or vault source
@@ -79,7 +83,7 @@ Do not rely on filenames alone. Use raw SHA-256, Bundle validation, and ledger r
 
 When the source is outside the vault:
 
-1. Require the configured governed vault at `/opt/data/phq/testVault`. If it does not exist, use `hermes-obsidian-vault-bootstrap` first.
+1. Require an initialized governed vault. If it does not exist, use `hermes-obsidian-vault-bootstrap` first.
 2. Copy the source unchanged into `10_Raw/`; never overwrite a conflicting file.
 3. Verify the copied source against the original by SHA-256, then treat it as read-only.
 4. Run all conversion from the vault copy and write derived output under `10_Raw/converted/`.
@@ -114,7 +118,7 @@ document_bundle/
   _evidence/
 ```
 
-Use `python3 "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py"`. On the `intranet` branch, the helper defaults to the MinerU HTTP API at `http://10.27.17.35:7861` and requests a ZIP result containing Markdown, content lists, middle/model JSON, and images. Do not require prompts to restate the API URL unless the service address changes. If a local MinerU CLI must be used instead, pass `--mineru-invocation cli` and use `--model-source local` in the repaired offline MinerU environment. Read `references/mineru-pdf-bundle.md` before conversion or validation. Before preserving, reusing, human-reviewing, or rebuilding from MinerU intermediates, also read `references/mineru-output-review.md`; keep the original MinerU output immutable and treat reviewed content lists as derived artifacts. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
+Use `python3 "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py"`. On this branch, `config/deployment.json` selects the MinerU HTTP API and the helper requests a ZIP containing Markdown, content lists, middle/model JSON, and referenced images. Do not require prompts to restate the API URL. For an explicit local MinerU override, pass `--mineru-invocation cli` and use `--model-source local`. Read `references/mineru-pdf-bundle.md` before conversion or validation. Before preserving, reusing, human-reviewing, or rebuilding from MinerU intermediates, also read `references/mineru-output-review.md`; keep the original MinerU output immutable and treat reviewed content lists as derived artifacts. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
 
 For standalone image sources (`.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.gif`, `.tif`, `.tiff`) where the image itself is the source material, create an image Bundle v2 instead of treating the image like a PDF figure:
 
@@ -144,7 +148,7 @@ Keep the agent-facing path small. Do not recursively scan a bundle.
 
 1. Read `manifest.json` first.
 2. Run `python3 "<ingest-skill-root>/scripts/validate_document_bundle.py" <bundle>` before downstream writes.
-3. Run `python3 "<ingest-skill-root>/scripts/manage_bundle_ingest.py" init <bundle> --reports-dir /opt/data/phq/testVault/_system/reports` at the start of every session. This creates or reconciles the source map and section ledger.
+3. Run `python3 "<ingest-skill-root>/scripts/manage_bundle_ingest.py" init <bundle> --reports-dir <vault>/_system/reports` at the start of every session. This creates or reconciles the source map and section ledger.
 4. Use recovery rules when validation returns `fail`; stop at an ingest log or QA report when recovery is unavailable or retry fails.
 5. Allow a source map when status is `warn`, but do not promote affected formulas, tables, figures, or parameters as authoritative facts.
 6. Select an eligible ledger section. Do not duplicate an `ingested` section or reuse a `stale` section without review.

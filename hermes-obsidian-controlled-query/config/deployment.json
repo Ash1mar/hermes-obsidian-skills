@@ -1,4 +1,5 @@
 {
+  "profile": "intranet",
   "vault_path": "/opt/data/phq/testVault",
   "viewer_base_url": "http://10.27.13.12:8765/viewer",
   "hermes_skills_root": "/opt/data/skills",

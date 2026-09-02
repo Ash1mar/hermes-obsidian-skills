@@ -200,14 +200,17 @@ def bootstrap(args: argparse.Namespace) -> dict[str, Any]:
             }
         )
     skill_root = Path(__file__).resolve().parent.parent
+    deployment_config_env = os.environ.get("HERMES_DEPLOYMENT_CONFIG")
     routing_path = next(
         (
             path
             for path in (
+                Path(deployment_config_env).expanduser() if deployment_config_env else None,
+                skill_root / "config" / "deployment.json",
                 skill_root / "config" / "intranet.json",
                 skill_root / "config" / "domain-routing.json",
             )
-            if path.is_file()
+            if path is not None and path.is_file()
         ),
         None,
     )
@@ -1835,6 +1838,19 @@ def build_answer_capsule(state: dict[str, Any], manifest: dict[str, Any]) -> dic
             for item in claim_sources
         )
         markdown.append(f"- {claim_text}" + (f" ({citation})" if citation else ""))
+    viewer_links: list[tuple[str, str]] = []
+    seen_viewer_urls: set[str] = set()
+    for source in sources:
+        viewer_url = str(source.get("viewer_url") or "").strip()
+        if not viewer_url or viewer_url in seen_viewer_urls:
+            continue
+        seen_viewer_urls.add(viewer_url)
+        filename = str(source.get("original_pdf_filename") or "source")
+        section_id = str(source.get("section_id") or "section")
+        viewer_links.append((f"{filename} §{section_id}", viewer_url))
+    if viewer_links:
+        markdown.extend(["", "原文定位:"])
+        markdown.extend(f"- [{label}]({url})" for label, url in viewer_links)
     return {
         "trace_id": state.get("trace_id"),
         "question_index": state.get("question_index"),

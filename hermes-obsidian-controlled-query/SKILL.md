@@ -9,7 +9,7 @@ Answer from a governed Vault with original-PDF evidence while keeping governed k
 
 ## Intranet deployment
 
-On the `intranet` branch, read `config/intranet.json` and use its `vault_path` as the governed Vault root. The current deployment uses `/opt/data/phq/testVault`. If the server path changes, update the config; do not switch Vaults from prompt wording.
+On the `intranet` branch, read `config/deployment.json` and use its `vault_path` as the governed Vault root. The current deployment uses `/opt/data/phq/testVault`. If the server path changes, update the config; do not switch Vaults from prompt wording.
 
 `hermes_skills_root` is the parent containing all Skills, not `<query-skill-root>`. Prefer the loader-returned Skill directory; use `/opt/data/skills/hermes-obsidian-controlled-query/` only as the configured deployment fallback and consistency check. Report a loader/config mismatch instead of searching the Vault.
 
@@ -27,7 +27,7 @@ Run Python entry points as `python3 "<query-skill-root>/scripts/<script>.py"`. N
 
 Do not read bundled script source during a normal query. Read it only after a concrete failure or when modifying/debugging the Skill. Do not announce that scripts are missing until `skill_view` confirms the active package is incomplete rather than merely unmounted in a shell sandbox.
 
-Read `config/domain-routing.json` or `config/intranet.json` when present. Treat configured domain terms as routing hints, never evidence. The retrieval Provider configuration remains deployment-specific; do not invent an intranet endpoint.
+Read `config/deployment.json` first and merge its deployment routing hints with `config/domain-routing.json` when needed. Treat configured domain terms as routing hints, never evidence. The retrieval Provider configuration remains deployment-specific; do not invent an intranet endpoint.
 
 ## Fast path
 
@@ -98,7 +98,7 @@ python3 "<query-skill-root>/scripts/query_session.py" finalize \
 
 For `synthesis_contract.mode: ordinary-minimal`, submit only `claims` and `conclusion`; the script defaults `status: completed`, `evidence_level: source-backed`, `verified_evidence_refs: []`, `events: []`, `unresolved: []`, and claim status. Include additional fields only when the dynamic contract reports blockers or required verification. Top-level decision and claim fields remain strict, packet refs must be inspected, and only an actual visual check may add verification fields/events. The script assigns evidence/claim IDs, inherits provenance, and verifies the trace note exists. Do not create or patch a temporary manifest.
 
-`finalize` returns the rendered capsule at top-level `final_response` and sets `next_action` to copy it. Hermes has no Skill-level `return_direct` behavior, so one final model continuation still occurs. In that continuation, return `final_response` verbatim without reopening evidence, recomputing claims, or adding material.
+`finalize` returns the rendered capsule at top-level `final_response` and sets `next_action` to copy it. When inspected evidence contains deployment-provided `viewer_url` values, the capsule automatically appends a deduplicated `原文定位` section using only sources actually cited by retained claims; never construct or alter viewer URLs in the model. Hermes has no Skill-level `return_direct` behavior, so one final model continuation still occurs. In that continuation, return `final_response` verbatim without reopening evidence, recomputing claims, or adding material.
 
 Use the minimum sufficient claim set and apply the returned `claim_pruning_gate` immediately before finalize: delete any claim whose removal still leaves every requested output answered. Evidence availability never expands answer scope. Every retained claim must answer a requested output attribute or action; subject qualifiers narrow scope but do not create claims. Merge closely related parameters when the same evidence supports them. Put a necessary scope or evidence boundary in a short qualification on the affected claim; omit unrequested background, comparison, applicability, or operational material instead of creating a separate claim. Keep only unresolved items that materially change correctness or use of the answer. Write one short conclusion that synthesizes rather than repeats the claims.
 

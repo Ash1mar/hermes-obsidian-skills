@@ -47,7 +47,56 @@ EVIDENCE_PATTERNS = (
     "*layout.pdf",
     "*span.pdf",
 )
-DEFAULT_MINERU_API_URL = "http://10.27.17.35:7861"
+DEFAULT_DEPLOYMENT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "deployment.json"
+
+
+def load_deployment_config(explicit_path: Path | None = None) -> dict[str, Any]:
+    """Load optional deployment defaults without coupling behavior to a Git branch."""
+    env_path = os.environ.get("HERMES_DEPLOYMENT_CONFIG")
+    configured_path = explicit_path or (Path(env_path).expanduser() if env_path else None)
+    path = configured_path or DEFAULT_DEPLOYMENT_CONFIG
+    if not path.is_file():
+        if configured_path is not None:
+            raise ValueError(f"Deployment config does not exist: {path}")
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Cannot read deployment config {path}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"Deployment config must contain a JSON object: {path}")
+    return data
+
+
+def apply_mineru_deployment_defaults(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+) -> None:
+    """Resolve CLI/API selection with explicit arguments taking precedence."""
+    explicit_api_url = args.mineru_api_url or os.environ.get("MINERU_API_URL")
+    configured_api_url = str(config.get("mineru_api_url") or "").strip() or None
+    configured_invocation = str(config.get("mineru_invocation") or "").strip() or None
+    if configured_invocation not in {None, "cli", "api"}:
+        raise ValueError("mineru_invocation in deployment config must be 'cli' or 'api'")
+
+    if args.mineru_invocation:
+        invocation = args.mineru_invocation
+    elif explicit_api_url:
+        invocation = "api"
+    elif configured_invocation:
+        invocation = configured_invocation
+    elif configured_api_url:
+        invocation = "api"
+    else:
+        invocation = "cli"
+
+    args.mineru_invocation = invocation
+    args.mineru_api_url = explicit_api_url or configured_api_url
+    if invocation == "api" and not args.from_mineru_output and not args.mineru_api_url:
+        raise ValueError(
+            "MinerU HTTP transport requires mineru_api_url in deployment.json, "
+            "--mineru-api-url, or MINERU_API_URL"
+        )
 
 
 def parse_bool(value: str | bool) -> bool:
@@ -112,10 +161,6 @@ def run_mineru(args: argparse.Namespace, work_dir: Path) -> None:
 
 def api_url(base_url: str, path: str) -> str:
     return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
-
-
-def configured_mineru_api_url(args: argparse.Namespace) -> str | None:
-    return args.mineru_api_url or os.environ.get("MINERU_API_URL") or DEFAULT_MINERU_API_URL
 
 
 def parse_headers(values: list[str] | None) -> dict[str, str]:
@@ -252,7 +297,7 @@ def extract_api_zip_response(data: bytes, work_dir: Path) -> None:
 
 
 def run_mineru_api(args: argparse.Namespace, work_dir: Path) -> None:
-    base_url = configured_mineru_api_url(args)
+    base_url = args.mineru_api_url
     if not base_url:
         raise ValueError("Missing MinerU API URL")
 
@@ -931,6 +976,14 @@ def main() -> int:
     parser.add_argument("input", type=Path, help="Input PDF path")
     parser.add_argument("-o", "--output", type=Path, required=True, help="Output document_bundle directory")
     parser.add_argument(
+        "--deployment-config",
+        type=Path,
+        help=(
+            "Optional deployment defaults. Falls back to HERMES_DEPLOYMENT_CONFIG, then "
+            "config/deployment.json when present."
+        ),
+    )
+    parser.add_argument(
         "--from-mineru-output",
         type=Path,
         help="Reuse an existing MinerU output directory instead of running the MinerU CLI",
@@ -959,14 +1012,13 @@ def main() -> int:
         "--mineru-api-url",
         help=(
             "Call a remote MinerU HTTP API directly instead of invoking the local MinerU CLI. "
-            f"Defaults to {DEFAULT_MINERU_API_URL}; override with MINERU_API_URL."
+            "Can also be set with MINERU_API_URL."
         ),
     )
     parser.add_argument(
         "--mineru-invocation",
-        choices=["api", "cli"],
-        default="api",
-        help="Choose the MinerU invocation path. The intranet branch defaults to the HTTP API.",
+        choices=["cli", "api"],
+        help="Select the local CLI or HTTP API. Defaults to deployment config, then CLI.",
     )
     parser.add_argument(
         "--mineru-api-mode",
@@ -1031,6 +1083,13 @@ def main() -> int:
         help="Do not preserve selected MinerU QA files or blocks.jsonl",
     )
     args = parser.parse_args()
+
+    try:
+        deployment_config = load_deployment_config(args.deployment_config)
+        apply_mineru_deployment_defaults(args, deployment_config)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
     input_path = args.input.expanduser().resolve()
     args.input = input_path
@@ -1150,7 +1209,6 @@ def main() -> int:
         review_required.append("figure-internals-when-used-as-evidence")
 
     settings_known = not args.from_mineru_output or args.record_conversion_settings
-    mineru_api_url = configured_mineru_api_url(args)
     if args.from_mineru_output:
         invocation = "reused-output"
     elif args.mineru_invocation == "api":
@@ -1171,7 +1229,7 @@ def main() -> int:
             "engine": "MinerU",
             "engine_version": mineru_version(),
             "invocation": invocation,
-            "api_url": mineru_api_url if (settings_known and invocation == "http-api") else None,
+            "api_url": args.mineru_api_url if (settings_known and invocation == "http-api") else None,
             "api_mode": args.mineru_api_mode if (settings_known and invocation == "http-api") else None,
             "backend": args.backend if settings_known else None,
             "method": args.method if settings_known else None,

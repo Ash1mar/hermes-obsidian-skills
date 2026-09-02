@@ -57,7 +57,7 @@ Existing artifacts are not modified:
 
 ### Query-side candidate locator
 
-`python3 "<query-skill-root>/scripts/locate_source_sections.py"` reads the projections, scores document routing and section title/path matches, and dynamically scans the authoritative `document.md` owned ranges. It emits candidate JSON containing paths, document and section IDs, `match_start_line` / `match_end_line`, pages, quality/status, matched terms, and scores. On the intranet branch it also composes a deployment-local `viewer_url` from those four positioning fields and `config/intranet.json`; this URL remains a navigation aid rather than evidence.
+`python3 "<query-skill-root>/scripts/locate_source_sections.py"` reads the projections, scores document routing and section title/path matches, and dynamically scans the authoritative `document.md` owned ranges. It emits candidate JSON containing paths, section IDs, line ranges, pages, quality/status, matched terms, and scores. When `config/deployment.json`, `HERMES_DEPLOYMENT_CONFIG`, or `--viewer-base-url` supplies a viewer base URL, it also emits a navigation-only `viewer_url` derived from the registered document/section IDs and complete line range.
 
 The controlled-query fast path calls this locator through `query_session.py query`, which reuses `retrieve_query_scope.py` internally. It expands Provider chunks to complete projected/ledger-owned sections, takes the union, merges duplicate document/section or overlapping same-title ranges, preserves route scores/ranks, and records RRF ordering plus rejection reasons. The same command automatically reads the bounded first-window ranges and their provenance/assets. If no projection is present, the hierarchical route is recorded as empty/unavailable and traditional fallback continues unchanged.
 
@@ -110,7 +110,7 @@ The following implementation details were intentionally not carried forward:
 - direct use of index content as answer evidence;
 - vector retrieval, BM25, reranking, or other later-phase retrieval methods.
 
-The main branch accepts an explicit Vault root. The intranet branch continues to resolve its fixed Vault root from `config/intranet.json`, currently `/opt/data/phq/testVault`, and passes that root to the same scripts.
+The main branch accepts an explicit Vault root. The intranet branch continues to resolve its fixed Vault root from checked-in `config/deployment.json`, currently `/opt/data/phq/testVault`, and passes that root to the same scripts.
 
 ## Operation
 

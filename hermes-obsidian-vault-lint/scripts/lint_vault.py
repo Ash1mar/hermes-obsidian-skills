@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import re
 import sys
 import time
@@ -52,20 +53,33 @@ QA_BOUNDARY_TERMS = (
 )
 HIGH_AUTHORITY_STATUSES = {"approved", "authoritative", "final", "published", "verified"}
 HIGH_AUTHORITY_EVIDENCE_LEVELS = {"clear", "source-backed"}
-DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "intranet.json"
+DEFAULT_DEPLOYMENT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "deployment.json"
 
 
-def configured_vault_path() -> Path:
+def configured_vault_path(explicit_config: Path | None = None) -> Path:
+    env_path = os.environ.get("HERMES_DEPLOYMENT_CONFIG")
+    configured_path = explicit_config or (Path(env_path).expanduser() if env_path else None)
+    path = configured_path or DEFAULT_DEPLOYMENT_CONFIG
+    if not path.is_file():
+        if configured_path is not None:
+            raise ValueError(f"Deployment config does not exist: {path}")
+        raise ValueError("--vault is required when config/deployment.json is absent")
     try:
-        data = json.loads(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
-    except OSError as exc:
-        raise SystemExit(f"Cannot read intranet vault config: {DEFAULT_CONFIG_PATH}: {exc}") from exc
-    except json.JSONDecodeError as exc:
-        raise SystemExit(f"Cannot parse intranet vault config: {DEFAULT_CONFIG_PATH}: {exc}") from exc
-    value = data.get("vault_path")
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Cannot read deployment config {path}: {exc}") from exc
+    value = data.get("vault_path") if isinstance(data, dict) else None
     if not isinstance(value, str) or not value.strip():
-        raise SystemExit(f"intranet vault config must define a non-empty vault_path: {DEFAULT_CONFIG_PATH}")
+        raise ValueError(f"Deployment config must define a non-empty vault_path: {path}")
     return Path(value).expanduser()
+
+
+def resolve_configured_vault_path(args: argparse.Namespace) -> Path:
+    return (
+        Path(args.vault).expanduser()
+        if args.vault
+        else configured_vault_path(args.deployment_config)
+    ).resolve()
 
 
 @dataclass
@@ -865,7 +879,7 @@ def build_markdown_report(result: dict[str, Any]) -> str:
 
 def lint(args: argparse.Namespace) -> dict[str, Any]:
     started = time.perf_counter()
-    vault = (Path(args.vault).expanduser() if args.vault else configured_vault_path()).resolve()
+    vault = resolve_configured_vault_path(args)
     profile = args.profile
     issues: list[Issue] = []
     metrics: dict[str, Any] = {}
@@ -909,7 +923,15 @@ def lint(args: argparse.Namespace) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Read-only Hermes + Obsidian vault governance lint")
-    parser.add_argument("--vault", help="Path to the governed Obsidian vault. Defaults to config/intranet.json on this branch.")
+    parser.add_argument(
+        "--vault",
+        help="Path to the governed Obsidian vault. Defaults to config/deployment.json when present.",
+    )
+    parser.add_argument(
+        "--deployment-config",
+        type=Path,
+        help="Override HERMES_DEPLOYMENT_CONFIG and config/deployment.json.",
+    )
     parser.add_argument("--profile", choices=sorted(ALLOWED_PROFILES), default="post-ingest")
     parser.add_argument("--json", action="store_true", help="Print JSON result")
     parser.add_argument("--markdown-report", type=Path, help="Optional path for a persisted Markdown lint report")
@@ -921,20 +943,24 @@ def main() -> int:
     try:
         result = lint(args)
     except Exception as exc:  # pragma: no cover - final safety net
+        try:
+            failed_vault = str(resolve_configured_vault_path(args))
+        except Exception:
+            failed_vault = str(Path(args.vault).expanduser()) if args.vault else "unresolved"
         result = {
             "tool": TOOL_NAME,
             "schema_version": SCHEMA_VERSION,
             "ok": False,
             "status": "internal-error",
             "profile": args.profile,
-            "vault": str(Path(args.vault).expanduser() if args.vault else configured_vault_path()),
+            "vault": failed_vault,
             "summary": {"errors": 1, "warnings": 0, "info": 0},
             "metrics": {},
             "issues": [
                 Issue(
                     "lint.internal_error",
                     "error",
-                    str(Path(args.vault).expanduser() if args.vault else configured_vault_path()),
+                    failed_vault,
                     f"Lint crashed: {exc}",
                 ).to_dict()
             ],

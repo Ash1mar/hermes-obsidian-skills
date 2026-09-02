@@ -13,12 +13,12 @@ Use this skill for vault setup only. Use `hermes-obsidian-controlled-ingest` for
 
 On the `intranet` branch, the target vault path is fixed by this skill's config:
 
-- config file: `config/intranet.json`
+- config file: `config/deployment.json`
 - configured vault path: `/opt/data/phq/testVault`
 - Hermes-visible Skills parent directory: `/opt/data/skills`
 - configured bootstrap Skill directory: `/opt/data/skills/hermes-obsidian-vault-bootstrap`
 
-Use that configured path for bootstrap by default. If the server vault path changes, update `config/intranet.json`; do not rely on a prompt-level vault path change.
+Use that configured path for bootstrap by default. If the server vault path changes, update `config/deployment.json`; do not rely on a prompt-level vault path change.
 
 ## Runtime Skill Boundary
 
@@ -26,7 +26,7 @@ Use `<bootstrap-skill-root>` as the runtime-neutral directory containing this ac
 
 Resolve bundled `scripts/`, `references/`, `config/`, and templates against `<bootstrap-skill-root>`. Execute Python entry points as `python3 "<bootstrap-skill-root>/scripts/<script>.py"`. Never infer a conventional installation path. On Hermes, inspect `skill_view` and its linked files before declaring the package incomplete. Never copy replacement Skill resources or runtime installation paths into the target Vault.
 
-On this branch, `/opt/data/skills` from `config/intranet.json` is the parent containing all Skills, not `<bootstrap-skill-root>`. The expected package is `/opt/data/skills/hermes-obsidian-vault-bootstrap/`, with the script at `/opt/data/skills/hermes-obsidian-vault-bootstrap/scripts/init_obsidian_vault.py`. Prefer `skill_view.skill_dir`; use the configured package only as a fallback and consistency check.
+On this branch, `/opt/data/skills` from `config/deployment.json` is the parent containing all Skills, not `<bootstrap-skill-root>`. The expected package is `/opt/data/skills/hermes-obsidian-vault-bootstrap/`, with the script at `/opt/data/skills/hermes-obsidian-vault-bootstrap/scripts/init_obsidian_vault.py`. Prefer `skill_view.skill_dir`; use the configured package only as a fallback and consistency check.
 
 ## Workflow
 
@@ -55,9 +55,13 @@ Prefer the bundled script for repeatable initialization:
 python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" --profile meeting --template-vault "<template-vault>" --copy-obsidian-config --copy-base-concepts
 ```
 
+This branch packages `config/deployment.json`, so its `vault_path` is used and
+`--vault-path` is normally omitted. An explicit path remains available for a
+deliberate one-off override.
+
 Useful options:
 
-- `--vault-path <path>` for explicit one-off compatibility only; normal intranet deployments should edit `config/intranet.json`
+- `--vault-path <path>` for explicit one-off compatibility only; normal intranet deployments should edit `config/deployment.json`
 - `--profile general|meeting`
 - `--template-vault <path>`
 - `--copy-obsidian-config`

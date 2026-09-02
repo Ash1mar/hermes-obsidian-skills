@@ -7,7 +7,7 @@ python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" `
   --profile meeting
 ```
 
-On the `intranet` branch, the vault path defaults to `/opt/data/phq/testVault` from `config/intranet.json`.
+On the `intranet` branch, the vault path defaults to `/opt/data/phq/testVault` from `config/deployment.json`.
 Change that config file if the server path changes.
 
 ## Use A Template Vault
