@@ -160,6 +160,41 @@ def test_locator_scans_owned_content_and_returns_navigation_only(tmp_path: Path)
     assert result["design_origin"] == "hanyu"
     assert result["candidates"][0]["section_id"] == "component"
     assert "60" in result["candidates"][0]["matched_terms"]["content"]
+    assert result["candidates"][0]["viewer_url"] is None
+    assert result["answer_contract"]["viewer_enabled"] is False
+
+
+def test_locator_uses_optional_viewer_profile_without_changing_evidence_authority(
+    tmp_path: Path,
+) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    config = tmp_path / "deployment.json"
+    write_json(config, {"viewer_base_url": "http://viewer.internal:8765/viewer"})
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(LOCATE),
+            str(vault),
+            "目标系统组件 A=60",
+            "--deployment-config",
+            str(config),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    result = json.loads(completed.stdout)
+    candidate = result["candidates"][0]
+    assert result["authority"] == "candidate-navigation-only"
+    assert candidate["viewer_url"].startswith("http://viewer.internal:8765/viewer?")
+    assert "section=component" in candidate["viewer_url"]
+    assert "from=3" in candidate["viewer_url"]
+    assert "to=4" in candidate["viewer_url"]
+    assert result["answer_contract"]["viewer_enabled"] is True
+    assert candidate["viewer_url"] in result["answer_contract"]["eligible_viewer_urls"]
 
 
 def test_locator_keeps_multiple_documents_in_the_compact_candidate_window(tmp_path: Path) -> None:
@@ -1026,7 +1061,13 @@ def test_query_session_bootstrap_returns_exact_rules_and_capabilities(tmp_path: 
     assert result["verification_runtime"]["policy"].startswith("one deterministic")
     config_root = QUERY_SKILL.parent / "config"
     expected_routing_path = next(
-        path for path in (config_root / "intranet.json", config_root / "domain-routing.json") if path.is_file()
+        path
+        for path in (
+            config_root / "deployment.json",
+            config_root / "intranet.json",
+            config_root / "domain-routing.json",
+        )
+        if path.is_file()
     )
     assert Path(result["routing_config_path"]).name == expected_routing_path.name
     assert result["routing"] == json.loads(expected_routing_path.read_text(encoding="utf-8"))
@@ -1090,6 +1131,57 @@ def test_combined_query_automatically_inspects_and_uses_minimal_synthesis_contra
     )
     assert final_result["final_response"] == state["answer_capsule"]["answer_markdown"]
     assert final_result["next_action"] == "return final_response verbatim without another evidence review"
+
+
+def test_combined_query_appends_only_used_profile_viewer_links(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    config = tmp_path / "deployment.json"
+    write_json(config, {"viewer_base_url": "http://viewer.internal:8765/viewer"})
+    env = os.environ.copy()
+    env["HERMES_DEPLOYMENT_CONFIG"] = str(config)
+
+    queried = subprocess.run(
+        [sys.executable, str(SESSION), "query", str(vault), "参数值和温度是什么？"],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    result = json.loads(queried.stdout)
+    packet = result["evidence_packets"][0]
+    assert packet["viewer_url"].startswith("http://viewer.internal:8765/viewer?")
+
+    finalized = subprocess.run(
+        [
+            sys.executable,
+            str(SESSION),
+            "finalize",
+            str(vault),
+            result["trace_id"],
+            "--decision-json",
+            json.dumps(
+                {
+                    "claims": [
+                        {
+                            "text": "The selected section supports the requested value.",
+                            "evidence_refs": [packet["evidence_ref"]],
+                        }
+                    ],
+                    "conclusion": "Use the value supported by the selected evidence.",
+                },
+                ensure_ascii=False,
+            ),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+        env=env,
+    )
+    final_result = json.loads(finalized.stdout)
+
+    assert "\n\n原文定位:\n" in final_result["final_response"]
+    assert packet["viewer_url"] in final_result["final_response"]
 
 
 def test_query_session_does_not_infer_verification_policy_from_question_terms(tmp_path: Path) -> None:

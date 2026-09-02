@@ -9,11 +9,16 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode
+
+
+DEFAULT_DEPLOYMENT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "deployment.json"
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -21,6 +26,26 @@ def load_json(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Expected a JSON object: {path}")
     return data
+
+
+def load_deployment_config(explicit_path: Path | None = None) -> dict[str, Any]:
+    env_path = os.environ.get("HERMES_DEPLOYMENT_CONFIG")
+    configured_path = explicit_path or (Path(env_path).expanduser() if env_path else None)
+    path = configured_path or DEFAULT_DEPLOYMENT_CONFIG
+    if not path.is_file():
+        if configured_path is not None:
+            raise ValueError(f"Deployment config does not exist: {path}")
+        return {}
+    return load_json(path)
+
+
+def load_viewer_base_url(
+    explicit_url: str | None,
+    deployment_config: dict[str, Any],
+) -> str | None:
+    value = explicit_url if explicit_url is not None else deployment_config.get("viewer_base_url")
+    text = str(value or "").strip()
+    return text.rstrip("?") or None
 
 
 def query_terms(text: str) -> list[str]:
@@ -80,6 +105,41 @@ def display_path(path: Path, root: Path) -> str:
         return path.resolve().relative_to(root.resolve()).as_posix()
     except ValueError:
         return path.resolve().as_posix()
+
+
+def match_line_range(section: dict[str, Any]) -> tuple[int | None, int | None]:
+    """Return the complete matched range used for optional viewer highlighting."""
+    try:
+        start = int(section.get("start_line"))
+        end = int(section.get("end_line"))
+    except (TypeError, ValueError):
+        starts: list[int] = []
+        ends: list[int] = []
+        for item in section.get("content_ranges", []):
+            try:
+                starts.append(int(item["start_line"]))
+                ends.append(int(item["end_line"]))
+            except (KeyError, TypeError, ValueError):
+                continue
+        if not starts or not ends:
+            return None, None
+        start, end = min(starts), max(ends)
+    if start < 1 or end < start:
+        return None, None
+    return start, end
+
+
+def build_viewer_url(
+    base_url: str | None,
+    document_id: Any,
+    section_id: Any,
+    start_line: int | None,
+    end_line: int | None,
+) -> str | None:
+    if not base_url or not document_id or not section_id or start_line is None or end_line is None:
+        return None
+    separator = "&" if "?" in base_url else "?"
+    return f"{base_url}{separator}{urlencode({'doc': document_id, 'section': section_id, 'from': start_line, 'to': end_line})}"
 
 
 def candidate_coverage_terms(candidate: dict[str, Any], *fields: str) -> set[str]:
@@ -219,11 +279,26 @@ def main() -> int:
     parser.add_argument("--index-dir", type=Path, help="Defaults to <vault>/_system/reports/query-index")
     parser.add_argument("--no-content-scan", action="store_true", help="Score only document routing and section paths")
     parser.add_argument("--trace-id", help="Append actual candidates to an active query trace")
+    parser.add_argument("--viewer-base-url", help="Override the optional deployment-local source viewer URL")
+    parser.add_argument(
+        "--deployment-config",
+        type=Path,
+        help=(
+            "Optional deployment defaults. Falls back to HERMES_DEPLOYMENT_CONFIG, then "
+            "config/deployment.json when present."
+        ),
+    )
     args = parser.parse_args()
     started = time.monotonic_ns()
 
     vault_root = args.vault_root.resolve()
     index_dir = (args.index_dir or vault_root / "_system" / "reports" / "query-index").resolve()
+    try:
+        deployment_config = load_deployment_config(args.deployment_config)
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    viewer_base_url = load_viewer_base_url(args.viewer_base_url, deployment_config)
     terms = query_terms(args.query)
     documents: list[tuple[int, Path, dict[str, Any], list[str]]] = []
     errors: list[str] = []
@@ -256,6 +331,7 @@ def main() -> int:
             except OSError as exc:
                 errors.append(f"{source_document}: {exc}")
         for section in projection.get("sections", []):
+            match_start_line, match_end_line = match_line_range(section)
             title_score, title_matches = match_score(section_terms, str(section.get("title", "")), 9)
             path_score, path_matches = match_score(
                 section_terms, " / ".join(section.get("path_titles", [])), 4
@@ -287,6 +363,15 @@ def main() -> int:
                     "path_titles": section.get("path_titles", []),
                     "start_line": section.get("start_line"),
                     "end_line": section.get("end_line"),
+                    "match_start_line": match_start_line,
+                    "match_end_line": match_end_line,
+                    "viewer_url": build_viewer_url(
+                        viewer_base_url,
+                        document.get("document_id"),
+                        section.get("section_id"),
+                        match_start_line,
+                        match_end_line,
+                    ),
                     "content_ranges": section.get("content_ranges", []),
                     "pages": section.get("pages", []),
                     "assets": section.get("assets", []),
@@ -303,6 +388,9 @@ def main() -> int:
 
     candidates.sort(key=lambda item: (-int(item["score"]), str(item["source_filename"]), str(item["section_id"])))
     selected_candidates = diversify_candidates(candidates, args.top_sections)
+    eligible_viewer_urls = list(
+        dict.fromkeys(str(item["viewer_url"]) for item in selected_candidates if item.get("viewer_url"))
+    )
     result = {
         "status": "warn" if errors else "ok",
         "authority": "candidate-navigation-only",
@@ -319,6 +407,17 @@ def main() -> int:
                     for item in selected_candidates
                     for term in candidate_coverage_terms(item, "title", "path", "content", "document")
                 }
+            ),
+        },
+        "answer_contract": {
+            "viewer_enabled": bool(viewer_base_url),
+            "final_section": "原文定位",
+            "eligible_viewer_urls": eligible_viewer_urls,
+            "required_action": (
+                "Append 原文定位 as the final answer section for verified candidates actually used; "
+                "if none has a complete locator, state source positioning is unavailable under uncertainty/gaps."
+                if viewer_base_url
+                else "No viewer section is required because viewer_base_url is not configured."
             ),
         },
         "errors": errors,

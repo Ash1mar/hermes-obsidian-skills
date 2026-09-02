@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 from pathlib import Path
@@ -45,3 +46,25 @@ def test_bootstrap_cli_cannot_persist_a_skill_repository_path() -> None:
         check=True,
     )
     assert "--skill-repo" not in completed.stdout
+
+
+def test_bootstrap_uses_deployment_vault_without_runtime_path_flag(tmp_path: Path) -> None:
+    vault = tmp_path / "configured-vault"
+    config = tmp_path / "deployment.json"
+    config.write_text(json.dumps({"vault_path": str(vault)}), encoding="utf-8")
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(BOOTSTRAP),
+            "--deployment-config",
+            str(config),
+            "--profile",
+            "general",
+        ],
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert (vault / "AGENTS.md").is_file()

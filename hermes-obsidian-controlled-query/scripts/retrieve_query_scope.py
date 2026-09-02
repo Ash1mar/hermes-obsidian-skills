@@ -314,6 +314,7 @@ def compact_candidate(candidate: dict[str, Any], rank: int | None = None) -> dic
         "pages": pages,
         "quality": bounded_text(candidate.get("quality"), MAX_COMPACT_TERM_CHARS),
         "ingest_status": bounded_text(candidate.get("ingest_status"), MAX_COMPACT_TERM_CHARS),
+        "viewer_url": candidate.get("viewer_url"),
         "retrieval_routes": [route for route in routes if route],
         "fusion_score": candidate.get("fusion_score"),
         "matched_terms": [
@@ -385,7 +386,7 @@ def compact_result(result: dict[str, Any], limit: int = DEFAULT_COMPACT_LIMIT) -
     }
 
     def render(window: list[dict[str, Any]]) -> dict[str, Any]:
-        return {
+        compact = {
             "status": result.get("status"),
             "authority": result.get("authority"),
             "duration_ms": result.get("duration_ms"),
@@ -400,6 +401,23 @@ def compact_result(result: dict[str, Any], limit: int = DEFAULT_COMPACT_LIMIT) -
             "warnings": compact_warnings,
             "next_step": "inspect",
         }
+        answer_contract = result.get("answer_contract")
+        if isinstance(answer_contract, dict):
+            compact["answer_contract"] = {
+                "viewer_enabled": bool(answer_contract.get("viewer_enabled")),
+                "final_section": bounded_text(
+                    answer_contract.get("final_section"), MAX_COMPACT_LABEL_CHARS
+                ),
+                "eligible_viewer_urls": list(
+                    dict.fromkeys(
+                        str(candidate["viewer_url"])
+                        for candidate in window
+                        if candidate.get("viewer_url")
+                    )
+                ),
+                "required_action": bounded_text(answer_contract.get("required_action"), 480),
+            }
+        return compact
 
     packed: list[dict[str, Any]] = []
     for candidate in compact_candidates:
@@ -549,6 +567,17 @@ def retrieve_scope(
         "warnings": warnings,
         "next_step": "Inspect governed candidates first; when insufficient, run exact lexical search within this fused scope, then verify current source/PDF evidence.",
     }
+    if hierarchical.get("answer_contract"):
+        result["answer_contract"] = {
+            **hierarchical["answer_contract"],
+            "eligible_viewer_urls": list(
+                dict.fromkeys(
+                    str(candidate["viewer_url"])
+                    for candidate in fused
+                    if candidate.get("viewer_url")
+                )
+            ),
+        }
     return result
 
 

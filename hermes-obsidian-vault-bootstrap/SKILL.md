@@ -42,6 +42,11 @@ Prefer the bundled script for repeatable initialization:
 python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" --vault-path "<target-vault>" --profile meeting --template-vault "<template-vault>" --copy-obsidian-config --copy-base-concepts
 ```
 
+When a deployment packages `config/deployment.json` beside the Skill, its
+`vault_path` is the default and `--vault-path` may be omitted. An explicit path
+always wins, so the main branch remains portable while deployment branches can be
+ready to run immediately.
+
 Useful options:
 
 - `--profile general|meeting`

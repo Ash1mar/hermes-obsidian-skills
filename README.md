@@ -145,6 +145,8 @@ By default, figures and charts are extracted as visual evidence files and refere
 
 The helper accepts `--mineru-command` or `MINERU_COMMAND`. In the configured WSL runtime, use `/usr/local/bin/mineru`, which selects local model snapshots and delegates to the native WSL virtual environment.
 
+When a deployment config selects MinerU HTTP transport, or `--mineru-api-url` / `MINERU_API_URL` is supplied explicitly, the helper posts to `/file_parse` or `/tasks`, requests a ZIP result, and continues through the same Bundle v2 builder. The ZIP must contain Markdown and content-list outputs; middle/model JSON and referenced images are requested for evidence. Some API deployments do not return `layout.pdf` or `span.pdf`, so those QA overlays may be absent from `_evidence/`.
+
 ## Standalone Image Bundle Integration
 
 Use `hermes-obsidian-controlled-ingest/scripts/convert_image_with_ocr_bundle.py` for image-only sources where the image itself carries source content, such as scanned pages, table screenshots, diagrams, forms, or image-based specifications.

@@ -54,7 +54,8 @@ Keep `enabled: false` while the Provider has no ready index. After ingest perfor
 successful sync, enable both the ingest and query adapters together. The host config pins the
 models and host-local state location; it is not Vault content.
 
-The intranet branch may replace that file or point its existing `config/intranet.json` deployment policy at HTTP:
+The intranet branch may replace that file or point its checked-in
+`config/deployment.json` deployment policy at HTTP:
 
 ```json
 {

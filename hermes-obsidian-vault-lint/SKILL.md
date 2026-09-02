@@ -40,6 +40,10 @@ python3 "<lint-skill-root>/scripts/lint_vault.py" \
   --json
 ```
 
+When a deployment packages `config/deployment.json` beside the Skill, its
+`vault_path` is the default and `--vault` may be omitted. An explicit `--vault`
+always wins.
+
 Use `--markdown-report <path>` only when the user explicitly asks to persist a lint report.
 
 If the script cannot locate the controlled-ingest skill automatically, pass:

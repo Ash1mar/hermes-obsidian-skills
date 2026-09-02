@@ -101,7 +101,7 @@ document_bundle/
   _evidence/
 ```
 
-Use `python3 "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py"`. Use `--model-source local` in the repaired offline MinerU environment. Read `references/mineru-pdf-bundle.md` before conversion or validation. Before preserving, reusing, human-reviewing, or rebuilding from MinerU intermediates, also read `references/mineru-output-review.md`; keep the original MinerU output immutable and treat reviewed content lists as derived artifacts. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
+Use `python3 "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py"`. The helper uses the local MinerU CLI by default; a deployment config or explicit `--mineru-api-url` may select the HTTP transport, which must return a ZIP containing Markdown, content lists, middle/model JSON, and referenced images. Use `--model-source local` in the repaired offline MinerU CLI environment. Read `references/mineru-pdf-bundle.md` before conversion or validation. Before preserving, reusing, human-reviewing, or rebuilding from MinerU intermediates, also read `references/mineru-output-review.md`; keep the original MinerU output immutable and treat reviewed content lists as derived artifacts. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
 
 For standalone image sources (`.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.gif`, `.tif`, `.tiff`) where the image itself is the source material, create an image Bundle v2 instead of treating the image like a PDF figure:
 
