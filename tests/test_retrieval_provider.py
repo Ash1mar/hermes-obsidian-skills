@@ -40,7 +40,7 @@ if args.command == 'recall':
   base.update({'status':'ok','authority':'candidate-navigation-only','index_fingerprint':'idx','warnings':[],
     'candidates':[{'vault_path':'10_Raw/converted/example/document.md','line_start':2,'line_end':3,'source_sha256':digest,'snippet':'供水'}]})
 else:
-  base.update({'status':'ready','configuration_fingerprint':'cfg','model_fingerprint':'model','corpus_fingerprint':'corpus','index_fingerprint':'idx','document_count':1,'chunk_count':2,'errors':[]})
+  base.update({'status':'ready','configuration':{'chunk_size':800,'include_patterns':['30_Cards/**/*.md']},'configuration_fingerprint':'cfg','model_fingerprint':'model','models':{'embedding':{'identity':'BAAI/bge-m3','revision':'0'*40,'dimension':1024},'reranker':None},'corpus_fingerprint':'corpus','index_fingerprint':'idx','document_count':1,'chunk_count':2,'errors':[]})
 print(json.dumps(base, ensure_ascii=False))
 """,
         encoding="utf-8",
@@ -116,6 +116,59 @@ def test_default_provider_configs_disable_query_and_sync_until_deployed(tmp_path
     assert sync_result["index"]["errors"] == []
 
 
+def test_disabled_adapters_do_not_require_provider_runtime_or_models(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    config = tmp_path / "disabled-provider.json"
+    config.write_text(
+        json.dumps(
+            {
+                "provider": "qmd-like-rag",
+                "enabled": False,
+                "transport": "command",
+                "command": [str(tmp_path / "provider-is-not-installed")],
+                "provider_config": str(tmp_path / "models-are-not-installed.json"),
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    query = subprocess.run(
+        [
+            sys.executable,
+            str(QUERY_ADAPTER),
+            str(vault),
+            "供电可用性",
+            "--provider-config",
+            str(config),
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    query_result = json.loads(query.stdout)
+    assert query_result["status"] == "disabled"
+    assert query_result["candidates"] == []
+    assert query_result["warnings"] == []
+
+    sync = subprocess.run(
+        [
+            sys.executable,
+            str(INGEST_ADAPTER),
+            str(vault),
+            "--provider-config",
+            str(config),
+            "--no-write-manifest",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    sync_result = json.loads(sync.stdout)
+    assert sync.returncode == 2
+    assert sync_result["index"]["status"] == "disabled"
+    assert sync_result["index"]["errors"] == []
+
+
 def test_ingest_adapter_writes_portable_manifest(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     provider = tmp_path / "provider.py"
@@ -132,6 +185,8 @@ def test_ingest_adapter_writes_portable_manifest(tmp_path: Path) -> None:
     assert result["status"] == "ok"
     assert manifest["status"] == "ready"
     assert manifest["provider_version"] == "test"
+    assert manifest["configuration"]["chunk_size"] == 800
+    assert manifest["models"]["embedding"]["dimension"] == 1024
     assert manifest["last_success"]
     serialized = json.dumps(manifest)
     assert str(tmp_path) not in serialized

@@ -26,6 +26,8 @@
 - query `enabled: false`：跳过 qmd-like-rag 粗召回分支；层级检索和传统检索继续工作。
 - query `enabled: true`：query Skill 可以只读调用 `qmd-like-rag recall`；不会建立、同步或重建索引。
 - ingest `enabled: true`：ingest Skill 可以通过 `sync_retrieval_index.py` 写入或同步 Provider 索引。
+
+`main` 与 `intranet` 均维护 qmd-like-rag `0.3.0` 源码。版本统一不等于已经部署模型：当两个 adapter 均为 `enabled: false` 时，它们必须在解析 Provider 命令、主机配置、模型路径或模型依赖之前短路。因而可以先更新 intranet 分支代码，待模型、运行环境和索引准备完成后再单独启用 adapter。
 - 关闭适配器不会删除 Chroma、BM25、模型或 Vault manifest；重新开启后仍可使用兼容的 ready 索引。
 
 ## Query session 开发准则

@@ -40,9 +40,30 @@ Override patterns and models with a JSON config passed through `--config`. Machi
 
 ## main and intranet
 
-On `main`, install the package in the Hermes WSL environment and use the local command transport. The Vault remains under `/mnt/c/...`; provider state remains on the WSL-native filesystem.
+On `main`, install the package in the Hermes WSL environment and use the local command transport. The Vault remains under `/mnt/c/...`; provider state remains on the WSL-native filesystem. The deployed layout is:
 
-On `intranet`, do not deploy QMD. Install this package locally when the Hermes host can run it. If retrieval must run on another server, start the same package with `qmd-like-rag serve` and configure the Skill adapter to use HTTP. The initial HTTP `sync` route assumes that the provider process can read its configured Vault path; document-upload synchronization is a later extension.
+```text
+source       /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag
+environment  /root/.venvs/qmd-like-rag
+command      /usr/local/bin/qmd-like-rag
+state root   /root/.local/state/qmd-like-rag
+vault state  /root/.local/state/qmd-like-rag/<vault-id>/
+host config  /root/.config/qmd-like-rag/main.json
+```
+
+`/usr/local/bin/qmd-like-rag` is only a stable symlink to the virtual environment's console command; it is not another installation. The virtual environment contains replaceable software. The state root contains mutable, rebuildable indexes and must survive routine virtual-environment replacement. `config/main.example.json` is the source template for the host config.
+
+On `intranet`, do not deploy QMD. Install this package locally when the Hermes host can run it. The Vault is `/opt/data/phq/testVault`; the default example places Provider state beside that Vault but outside it:
+
+```text
+vault       /opt/data/phq/testVault
+state root  /opt/data/phq/qmd-like-rag-state
+vault state /opt/data/phq/qmd-like-rag-state/<vault-id>/
+```
+
+Set the actual Linux-local sibling path through `state_root` in the deployment's Provider config, using `config/intranet.example.json` as the template. Do not put the state root below `/opt/data/phq/testVault`, and exclude it from Obsidian, Vault synchronization, and governed-content backups. If retrieval must run on another server, start the same package with `qmd-like-rag serve` and configure the Skill adapter to use HTTP. The initial HTTP `sync` route assumes that the provider process can read its configured Vault path; document-upload synchronization is a later extension.
+
+Both repository branches carry Provider `0.3.0`. This source-level convergence is safe before intranet models are deployed: with both Skill adapters checked in as `enabled: false`, neither query nor ingest starts the command or HTTP transport. Installing dependencies, placing audited model revisions, building an index, and enabling either adapter remain explicit deployment steps.
 
 ## HTTP transport
 
@@ -67,12 +88,28 @@ Bind beyond localhost only behind the intranet's authentication and network cont
 
 Build and install from a tagged repository revision. Do not run the heavy environment directly from a Windows-mounted virtual environment.
 
+The tested `main` GPU runtime is pinned in `requirements-gpu-cu130.txt`. Install that runtime into qmd-like-rag's own virtual environment before installing the Provider. Do not add qmd-like-rag to MinerU's Python environment and do not add MinerU's site-packages directory to qmd-like-rag's import path.
+
 ```bash
 python3 -m venv /root/.venvs/qmd-like-rag
-/root/.venvs/qmd-like-rag/bin/python -m pip install ./qmd-like-rag
+/root/.venvs/qmd-like-rag/bin/python -m pip install \
+  -r /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag/requirements-gpu-cu130.txt
+/root/.venvs/qmd-like-rag/bin/python -m pip install \
+  /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag
+install -d -m 0755 /root/.config/qmd-like-rag
+install -m 0644 \
+  /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag/config/main.example.json \
+  /root/.config/qmd-like-rag/main.json
+ln -s /root/.venvs/qmd-like-rag/bin/qmd-like-rag /usr/local/bin/qmd-like-rag
 ```
 
-Create a stable wrapper or symlink for the console command according to the deployment policy. Record `provider_version`, configuration/model fingerprints, and the indexed corpus fingerprint in the Vault index manifest.
+The CUDA 13.0 lock was validated on WSL with Torch `2.11.0+cu130` and an NVIDIA GeForce RTX 5070 Ti Laptop GPU. Reusing locally installed wheel payloads to avoid a second large download is an installation optimization only: copy them into the independent qmd-like-rag environment by their wheel `RECORD` manifests, then require `pip check` and a real CUDA tensor operation to pass. Never make qmd-like-rag import MinerU's environment at runtime.
+
+Replace an existing stable link only after confirming its resolved target belongs to the prior qmd-like-rag deployment. `qmd-like-rag doctor` must report Provider `0.3.0`, `cuda_available: true`, CUDA `13.0`, and the expected GPU on the tested `main` host. The `main` host config sets `device` to `cuda`, which is passed explicitly to both the embedding model and reranker.
+
+Pin Hugging Face models to full commit hashes in Provider configuration. Download them as a separate deployment step, then keep `local_files_only: true` during sync and recall so a running Provider cannot silently move to a newer model revision. The model audit record includes identity, immutable revision, embedding dimension, and a fingerprint derived from those values.
+
+For a CPU-only deployment, install a CPU Torch build and set `device` to `cpu`; do not use the CUDA `main` example unchanged. A successful doctor report proves package and accelerator readiness only. It does not prove that models are downloaded or that a Vault index exists. Record `provider_version`, configuration/model fingerprints, and the indexed corpus fingerprint in the Vault index manifest only after a successful model-resolved index build.
 
 ## Removed prototype features
 

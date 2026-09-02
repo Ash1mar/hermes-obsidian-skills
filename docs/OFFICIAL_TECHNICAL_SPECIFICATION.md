@@ -333,7 +333,7 @@ bootstrap once per request
 
 ## 12. 检索 Provider 合同
 
-qmd-like-rag 的包版本随分支演进：本规范基线下 `main` 声明 `0.3.0`，`intranet` 声明 `0.1.0`；两者都实现稳定协议 `hermes-coarse-recall/v1`。包版本是部署与审计事实，不是跨分支不变量；Skill 与 Provider 的兼容边界是协议和响应合同。Provider 可以使用 command 或 HTTP transport，但必须返回协议兼容的候选响应。
+`main` 与 `intranet` 统一维护 qmd-like-rag `0.3.0`，并实现稳定协议 `hermes-coarse-recall/v1`。代码版本统一不表示运行时、模型或索引已经部署：当 query/ingest adapter 为 `enabled: false` 时，Skill 必须在启动 Provider 命令、读取主机模型配置或加载模型库之前返回 disabled。Provider 可以使用 command 或 HTTP transport，但必须返回协议兼容的候选响应。
 
 Provider 的职责边界：
 
@@ -360,7 +360,7 @@ Provider 的职责边界：
 
 | 项目 | `main` | `intranet` |
 | --- | --- | --- |
-| Vault | 用户请求或当前任务明确指定；当前主机通常从 WSL 访问 `/mnt/c/...` | 使用当前分支 `config/intranet.json` 固定的 `/opt/data/phq/testVault` |
+| Vault | 用户请求或当前任务明确指定；当前主机通常从 WSL 访问 `/mnt/c/...` | 使用当前分支 `config/deployment.json` 固定的 `/opt/data/phq/testVault` |
 | Skill 解析 | 必须优先使用 runtime loader 返回目录，不假定安装路径 | 同样优先 loader；配置的 `/opt/data/skills/<skill-name>/` 只作部署后备检查 |
 | PDF 转换 | 通常调用 WSL 本地 `/usr/local/bin/mineru` | 分支实现默认使用已配置的 MinerU HTTP API；明确要求时可切换本地 CLI |
 | Query Provider 默认 | qmd-like-rag command adapter 启用 | 仓库默认关闭，部署时必须显式配置并启用 command 或 HTTP transport |
@@ -408,7 +408,7 @@ Provider 的职责边界：
 | --- | --- |
 | Bundle validation `fail` | 阻断知识写入；最多按 Skill 支持的参数重试一次；保留 QA/失败记录 |
 | Section revision 冲突 | 停止写入，重新读取 ledger；不得覆盖另一运行的状态 |
-| Provider disabled/unavailable | 记录 attempted 状态并继续 hierarchical route；不得在 Query 中临时部署或重建 |
+| Provider disabled/unavailable | disabled 时不得启动 Provider 或加载模型；记录 attempted 状态并继续 hierarchical route；不得在 Query 中临时部署或重建 |
 | Query 首窗证据不足 | 以 `incomplete` 和具体 unresolved 收口；不得补检索 |
 | 显式视觉核验 unavailable/failed | 停止替代尝试；使用 `needs-qa` 并公开未解决项 |
 | Query Session 内部失败 | 保留失败 trace；影响回答时原子收口为 `incomplete`；只在主入口失效时使用已记录 legacy fallback |

@@ -1,0 +1,10 @@
+# GPU runtime validated for qmd-like-rag on the main WSL host.
+# Model weights are deliberately not part of this runtime lock.
+torch==2.11.0
+triton==3.6.0; platform_system == "Linux"
+cuda-bindings==13.3.1; platform_system == "Linux"
+cuda-toolkit[cublas,cudart,cufft,cufile,cupti,curand,cusolver,cusparse,nvjitlink,nvrtc,nvtx]==13.0.2; platform_system == "Linux"
+nvidia-cudnn-cu13==9.19.0.56; platform_system == "Linux"
+nvidia-cusparselt-cu13==0.8.0; platform_system == "Linux"
+nvidia-nccl-cu13==2.28.9; platform_system == "Linux"
+nvidia-nvshmem-cu13==3.4.5; platform_system == "Linux"

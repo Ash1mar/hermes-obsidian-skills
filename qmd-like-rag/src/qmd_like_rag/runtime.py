@@ -18,8 +18,10 @@ def read_status(config: ProviderConfig) -> dict[str, Any]:
             "provider_version": __version__,
             "vault_id": config.vault_id,
             "status": "absent",
+            "configuration": config.portable_dict(),
             "configuration_fingerprint": config.config_fingerprint(),
             "model_fingerprint": config.model_fingerprint(),
+            "models": config.model_manifest(),
             "index_fingerprint": None,
             "document_count": 0,
             "chunk_count": 0,
@@ -35,10 +37,6 @@ def sync(config: ProviderConfig, rebuild: bool = False) -> dict[str, Any]:
 
 
 def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict[str, Any]:
-    from .indexer import HybridIndexer
-    from .reranker import BgeReranker
-    from .retriever import HybridRetriever
-
     state = read_status(config)
     if state.get("status") != "ready":
         return recall_response(
@@ -47,6 +45,22 @@ def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict
             candidates=[],
             warnings=["index-not-ready"],
         )
+    compatibility_warnings: list[str] = []
+    if state.get("configuration_fingerprint") != config.config_fingerprint():
+        compatibility_warnings.append("index-configuration-mismatch")
+    if state.get("model_fingerprint") != config.model_fingerprint():
+        compatibility_warnings.append("index-model-mismatch")
+    if compatibility_warnings:
+        return recall_response(
+            vault_id=config.vault_id,
+            index_fingerprint=state.get("index_fingerprint"),
+            candidates=[],
+            warnings=compatibility_warnings,
+        )
+    from .indexer import HybridIndexer
+    from .reranker import BgeReranker
+    from .retriever import HybridRetriever
+
     indexer = HybridIndexer(config)
     indexer.load()
     limit = max(1, top_k or config.rerank_top_k)
@@ -54,7 +68,12 @@ def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict
     warnings: list[str] = []
     if config.use_reranker and raw:
         try:
-            raw = BgeReranker(config.reranker_model).rerank(query, raw, limit)
+            raw = BgeReranker(
+                config.reranker_model,
+                config.device,
+                revision=config.reranker_revision,
+                local_files_only=config.local_files_only,
+            ).rerank(query, raw, limit)
         except Exception as exc:
             warnings.append(f"reranker-unavailable:{type(exc).__name__}")
             raw = raw[:limit]
@@ -74,10 +93,31 @@ def doctor() -> dict[str, Any]:
         name: importlib.util.find_spec(name) is not None
         for name in ("chromadb", "rank_bm25", "sentence_transformers", "tiktoken")
     }
+    torch_runtime: dict[str, Any] = {
+        "version": None,
+        "cuda_available": False,
+        "cuda_version": None,
+        "device_name": None,
+    }
+    if packages["sentence_transformers"]:
+        try:
+            import torch
+
+            torch_runtime.update(
+                {
+                    "version": torch.__version__,
+                    "cuda_available": torch.cuda.is_available(),
+                    "cuda_version": torch.version.cuda,
+                    "device_name": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+                }
+            )
+        except Exception as exc:
+            torch_runtime["error"] = f"{type(exc).__name__}: {exc}"
     return {
         "protocol_version": PROTOCOL_VERSION,
         "provider": PROVIDER_ID,
         "provider_version": __version__,
         "status": "ok" if all(packages.values()) else "unavailable",
         "packages": packages,
+        "torch": torch_runtime,
     }

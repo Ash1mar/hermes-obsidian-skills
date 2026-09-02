@@ -1,4 +1,5 @@
 {
+  "state_root": "/root/.local/state/qmd-like-rag",
   "include_patterns": [
     "30_Cards/**/*.md",
     "40_Concepts/**/*.md",
@@ -9,5 +10,11 @@
   ],
   "embedding_model": "BAAI/bge-m3",
   "reranker_model": "BAAI/bge-reranker-large",
+  "embedding_revision": "5617a9f61b028005a4858fdac845db406aefb181",
+  "reranker_revision": "55611d7bca2a7133960a6d3b71e083071bbfc312",
+  "embedding_dimension": 1024,
+  "local_files_only": true,
+  "require_immutable_model_revisions": true,
+  "device": "cuda",
   "use_reranker": true
 }

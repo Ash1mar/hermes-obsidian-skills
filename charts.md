@@ -6,7 +6,7 @@
 
 | 项目 | `main` | `intranet` |
 | --- | --- | --- |
-| Vault 位置 | 使用用户指定或当前任务中的 Vault；当前部署从 WSL 通过 `/mnt/c/...` 访问 Windows 工作区 | 固定使用 `config/intranet.json` 中的 `/opt/data/phq/testVault`，不根据 prompt 临时切换 Vault |
+| Vault 位置 | 使用用户指定或当前任务中的 Vault；当前部署从 WSL 通过 `/mnt/c/...` 访问 Windows 工作区 | 固定使用 `config/deployment.json` 中的 `/opt/data/phq/testVault`，不根据 prompt 临时切换 Vault |
 | Skill 位置 | 优先使用 Hermes loader 返回的实际 Skill 目录，不假定固定安装路径 | 仍优先使用 loader 返回的目录；配置的后备检查位置是 `/opt/data/skills/<skill-name>/` |
 | PDF 转换 | 通常在 WSL 调用 `/usr/local/bin/mineru`，实际执行 `/root/.venvs/mineru/bin/mineru` | 默认调用 MinerU HTTP API `http://10.27.17.35:7861`；只有明确传入 `--mineru-invocation cli` 时才改用本地 CLI |
 | 粗召回检索 | 通过 `/usr/local/bin/qmd-like-rag` 调用独立虚拟环境 `/root/.venvs/qmd-like-rag`；Query 仓库配置当前 `enabled: true` | 使用同一 `hermes-coarse-recall/v1` 协议；Query 仓库配置当前 `enabled: false`，部署时必须明确选择本地命令或 HTTP 服务，不能猜测服务地址 |
@@ -14,7 +14,7 @@
 | 检索索引存放 | Provider 状态根目录为 `/root/.local/state/qmd-like-rag`，按 Vault 隔离；Chroma、BM25、模型和缓存不放入 Windows Vault | 示例配置使用 Vault 外的 `/opt/data/phq/qmd-like-rag-state`，不放入 `/opt/data/phq/testVault` |
 | Provider 模型和设备 | `BAAI/bge-m3` + `BAAI/bge-reranker-large` 固定到不可变 revision，`local_files_only: true`，当前主机使用 CUDA | 使用相同模型 revision；示例从 `/opt/models/...` 本地读取并使用 CPU，实际部署可按主机能力调整，但不能使用未审计模型 |
 | 用户查看原文位置 | 答案给出原 PDF 文件名、Vault 相对路径、页码、相关段落和图表位置 | 除相同的原 PDF 证据外，对答案实际使用的命中去重列出 locator 返回的 `原文定位` viewer 链接；没有合格链接时明确说明不可用 |
-| 领域短语触发配置 | 从 Query Skill 的 `config/domain-routing.json` 读取 | 从 Query Skill 的 `config/intranet.json` 读取；同一文件还保存固定 Vault 和 viewer 地址 |
+| 领域短语触发配置 | 从 Query Skill 的 `config/domain-routing.json` 读取 | 从 Query Skill 的 `config/domain-routing.json` 与 `config/deployment.json` 读取；部署文件还保存固定 Vault 和 viewer 地址 |
 | Vault 中是否放 Skill 副本 | Bootstrap 保留可选的 `--copy-skill-note` 用法 | 运行时 Skill 始终位于 `/opt/data/skills/<skill-name>/`，不把 Skill 或安装路径复制进 Vault |
 
 `qmd-like-rag` 是独立安装的检索 Provider，不是第五个 Skill。Query adapter（Query 是否可以只读调用粗召回的开关）和 ingest adapter（Ingest 是否可以维护索引的开关）彼此独立。Vault 内只保存可审计的检索配置和索引状态；可重建的向量、BM25 索引和模型文件保存在 Provider 主机上。
