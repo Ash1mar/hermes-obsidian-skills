@@ -7,6 +7,13 @@ description: Vault 只读审计 / Read-only Vault Lint：检查受治理 Obsidia
 
 Audit a governed Hermes + Obsidian vault without changing it.
 
+## Deployment Profile
+
+Resolve the target from an explicit `--vault` or optional `config/deployment.json`. A packaged
+`vault_path` is the normal deployment default; an explicit path is a deliberate operational
+override. Treat `hermes_skills_root` only as a consistency check for the loader-returned Skill
+directory. When deployment config is absent, require the Vault from the user/task context.
+
 ## Runtime Skill Boundary
 
 Use `<lint-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`, not the parent directory that contains multiple Skills. The package layout is `<lint-skill-root>/SKILL.md`, `<lint-skill-root>/scripts/*.py`, `<lint-skill-root>/references/*.md`, and optional `<lint-skill-root>/config/*.json`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-vault-lint")`; on another runtime, use its equivalent active-skill directory.
@@ -15,7 +22,7 @@ Resolve bundled `scripts/`, `references/`, and `config/` against `<lint-skill-ro
 
 ```text
 prompt scope
--> choose vault path from user request or current context
+-> resolve explicit or deployment-configured vault path
 -> choose lint profile
 -> run read-only lint script
 -> report errors, warnings, metrics, and next actions
@@ -23,7 +30,7 @@ prompt scope
 
 ## Boundary
 
-- Do not hard-code a vault path. Use the vault requested in the prompt or the current task context.
+- Do not hard-code a Vault in shared instructions. Use checked-in deployment config when present; otherwise use the Vault requested in the task context.
 - Treat lint as read-only. Do not create, edit, move, rename, or delete vault files unless the user explicitly asks for a report file or a later fix operation.
 - Do not run controlled ingest or controlled query as part of lint. Lint may point to those workflows as follow-up actions.
 - Do not treat `qa_required` as a failure by default. It is a controlled open QA state unless the selected profile says otherwise.

@@ -7,6 +7,15 @@ description: 受控摄取 / Controlled Ingest：新增、导入、恢复、继�
 
 Turn source files into governed Obsidian artifacts without rewriting raw material or overcreating concepts.
 
+## Deployment Profile
+
+Read optional `config/deployment.json` before selecting runtime paths or MinerU transport. When
+present, use its `vault_path` as the governed Vault default, treat `hermes_skills_root` only as a
+deployment consistency check, and honor its `mineru_invocation` and `mineru_api_url`. Explicit CLI
+arguments may override packaged defaults for a deliberate operation; prompt wording alone must not
+silently switch a configured Vault or service. When the file is absent, require the Vault from the
+user/task context and keep the local MinerU CLI fallback.
+
 ## Runtime Skill Boundary
 
 Use `<ingest-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`, not the parent directory that contains multiple Skills. The package layout is `<ingest-skill-root>/SKILL.md`, `<ingest-skill-root>/scripts/*.py`, `<ingest-skill-root>/references/*.md`, and optional `<ingest-skill-root>/config/*.json`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-controlled-ingest")`; on another runtime, use its equivalent active-skill directory.

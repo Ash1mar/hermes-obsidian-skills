@@ -36,6 +36,20 @@ See [`DOCUMENTATION.md`](DOCUMENTATION.md) for a file-by-file documentation map 
   - Can copy `.obsidian/`, base concept pages, and skill notes from a template vault.
   - Does not copy raw sources, test cards, test projects, or historical reports by default.
 
+## Branch Deployment Profiles
+
+The Skill implementation and UI metadata are shared across both maintained branches. Runtime
+differences are checked-in configuration, not duplicated instructions or scripts:
+
+| Branch | Deployment profile |
+| --- | --- |
+| `main` | No packaged `config/deployment.json`; callers provide the Vault, local MinerU CLI remains the fallback, and viewer links are absent unless explicitly configured. |
+| `intranet` | Each applicable Skill packages `config/deployment.json`; the current profile selects Vault `/opt/data/phq/testVault`, Skills parent `/opt/data/skills`, MinerU HTTP `http://10.27.17.35:7861`, and viewer `http://10.27.13.12:8765/viewer`. |
+
+Downloading `intranet` is therefore sufficient for its current deployment. Change the checked-in
+profile only when the server deployment changes; ordinary prompts do not need to repeat those
+values.
+
 ## Hermes Slash Aliases
 
 The `hermes-skill-bundles/` directory contains single-skill Hermes bundles that provide deterministic short slash commands:
@@ -149,7 +163,7 @@ By default, figures and charts are extracted as visual evidence files and refere
 
 The helper accepts `--mineru-command` or `MINERU_COMMAND`. In the configured WSL runtime, use `/usr/local/bin/mineru`, which selects local model snapshots and delegates to the native WSL virtual environment.
 
-When a deployment config selects MinerU HTTP transport, or `--mineru-api-url` / `MINERU_API_URL` is supplied explicitly, the helper posts to `/file_parse` or `/tasks`, requests a ZIP result, and continues through the same Bundle v2 builder. The ZIP must contain Markdown and content-list outputs; middle/model JSON and referenced images are requested for evidence. Some API deployments do not return `layout.pdf` or `span.pdf`, so those QA overlays may be absent from `_evidence/`.
+On `main`, the helper falls back to the local MinerU CLI. On `intranet`, checked-in deployment config selects MinerU HTTP at `http://10.27.17.35:7861`, so normal commands need no API flags. A deployment config, `--mineru-api-url`, or `MINERU_API_URL` may select or override HTTP transport; the helper posts to `/file_parse` or `/tasks`, requests a ZIP result, and continues through the same Bundle v2 builder. The ZIP must contain Markdown and content-list outputs; middle/model JSON and referenced images are requested for evidence. Some API deployments do not return `layout.pdf` or `span.pdf`, so those QA overlays may be absent from `_evidence/`.
 
 ## Standalone Image Bundle Integration
 

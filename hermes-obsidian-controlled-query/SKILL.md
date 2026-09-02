@@ -7,6 +7,16 @@ description: 受控查询 / Controlled Query：当用户说“请使用 query �
 
 Answer from a governed Vault with original-PDF evidence while keeping governed knowledge read-only. Write only the required non-authoritative query trace unless the user explicitly opts out or the Vault is unwritable.
 
+## Deployment Profile
+
+Read optional `config/deployment.json` before selecting the Vault or viewer behavior. When present,
+use its `vault_path` as the governed Vault default, treat `hermes_skills_root` only as a deployment
+consistency check, and treat `domain_query_terms` as routing hints rather than evidence. Preserve
+only locator-returned `viewer_url` values when `viewer_base_url` is configured; finalization appends
+links only for sources used by retained claims. When deployment config is absent, use the Vault from
+the user/task context and do not invent a viewer URL. Provider transport remains governed separately
+by `config/retrieval-provider.json`.
+
 ## Runtime boundary
 
 Resolve `<query-skill-root>` from the active loader:
@@ -19,7 +29,7 @@ Run Python entry points as `python3 "<query-skill-root>/scripts/<script>.py"`. N
 
 Do not read bundled script source during a normal query. Read it only after a concrete failure or when modifying/debugging the Skill. Do not announce that scripts are missing until `skill_view` confirms the active package is incomplete rather than merely unmounted in a shell sandbox.
 
-Read `config/domain-routing.json` when present. Treat `domain_query_terms` as routing hints, never evidence. The retrieval Provider configuration remains deployment-specific; do not invent an intranet endpoint.
+Use `config/deployment.json` when present; otherwise read `config/domain-routing.json`. Treat `domain_query_terms` as routing hints, never evidence. The retrieval Provider configuration remains deployment-specific; do not invent an endpoint.
 
 ## Fast path
 

@@ -4,17 +4,20 @@
 
 ```powershell
 python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" `
-  --vault-path "C:\Users\vimdr\Desktop\hermes-workspace\Hermes-MeetingVault" `
+  --vault-path "<target-vault>" `
   --profile meeting
 ```
+
+When `config/deployment.json` is packaged with the Skill, its `vault_path` is used and
+`--vault-path` may be omitted. Change the checked-in profile only when the deployment changes.
 
 ## Use A Template Vault
 
 ```powershell
 python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" `
-  --vault-path "C:\Users\vimdr\Desktop\hermes-workspace\Hermes-MeetingVault" `
+  --vault-path "<target-vault>" `
   --profile meeting `
-  --template-vault "C:\Users\vimdr\Desktop\hermes-workspace\Hermes-Obsidian-TestVault" `
+  --template-vault "<template-vault>" `
   --copy-obsidian-config `
   --copy-base-concepts
 ```

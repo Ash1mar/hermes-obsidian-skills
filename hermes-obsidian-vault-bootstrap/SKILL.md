@@ -9,6 +9,13 @@ description: Vault 初始化 / Vault Bootstrap：创建、配置、准备、克�
 
 Use this skill for vault setup only. Use `hermes-obsidian-controlled-ingest` for processing source files after the vault exists.
 
+## Deployment Profile
+
+Resolve the target from an explicit `--vault-path` or optional `config/deployment.json`. A packaged
+`vault_path` is the normal deployment default; an explicit path is a deliberate one-off override.
+Treat `hermes_skills_root` only as a consistency check for the loader-returned Skill directory.
+When deployment config is absent, require an explicit target path.
+
 ## Runtime Skill Boundary
 
 Use `<bootstrap-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`, not the parent directory that contains multiple Skills. The package layout is `<bootstrap-skill-root>/SKILL.md`, `<bootstrap-skill-root>/scripts/*.py`, `<bootstrap-skill-root>/references/*.md`, and optional `<bootstrap-skill-root>/config/*.json`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-vault-bootstrap")`; on another runtime, use its equivalent active-skill directory.
@@ -17,7 +24,7 @@ Resolve bundled `scripts/`, `references/`, `config/`, and templates against `<bo
 
 ## Workflow
 
-1. Identify the target vault path and profile.
+1. Resolve the target vault path and identify the profile.
 2. Refuse to overwrite a non-empty target unless the user explicitly asked for overwrite behavior.
 3. Create the standard folder layout.
 4. Write `AGENTS.md`, `README.md`, prompts, metadata registries, templates, Dataview indexes, and setup report.
@@ -44,11 +51,12 @@ python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" --vault-path "<t
 
 When a deployment packages `config/deployment.json` beside the Skill, its
 `vault_path` is the default and `--vault-path` may be omitted. An explicit path
-always wins, so the main branch remains portable while deployment branches can be
-ready to run immediately.
+always wins. This keeps packages without deployment config portable while configured
+packages remain ready to run immediately.
 
 Useful options:
 
+- `--vault-path <path>` for an explicit target or deliberate deployment override
 - `--profile general|meeting`
 - `--template-vault <path>`
 - `--copy-obsidian-config`
