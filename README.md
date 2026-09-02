@@ -2,7 +2,9 @@
 
 This repository stores local skills and tool-integration notes for the Hermes + Obsidian knowledge workflow. It also maintains `qmd-like-rag/`, the independently installed coarse-recall Provider used by the ingest/query Skills; it is repository code, not a fifth Skill.
 
-See [`charts.md`](charts.md) for editable Mermaid diagrams of the complete bootstrap, ingest, lint, query, retrieval, and branch-specific deployment flow.
+The system-level architecture, data authority, interface, compatibility, and acceptance baseline is defined in [`docs/OFFICIAL_TECHNICAL_SPECIFICATION.md`](docs/OFFICIAL_TECHNICAL_SPECIFICATION.md).
+
+See [`DOCUMENTATION.md`](DOCUMENTATION.md) for a file-by-file documentation map and [`charts.md`](charts.md) for editable Mermaid diagrams of the complete bootstrap, ingest, lint, query, retrieval, and branch-specific deployment flow.
 
 ## Skills
 
@@ -53,7 +55,9 @@ The `hermes-skill-bundles/` directory contains single-skill Hermes bundles that 
 
 Hermes normalizes bundle names to lowercase slugs, so use the lowercase forms above. Deploy these YAML files to the active instance's `<HERMES_HOME>/skill-bundles/` directory and run `hermes bundles reload`. The aliases are runtime adapters; canonical skill names and cross-runtime skill-root placeholders remain unchanged.
 
-## Repository Layout
+## Representative Package Layout
+
+The compact tree below illustrates the shared package shape with two representative Skills; it is not an exhaustive inventory. The current four-Skill, Provider, bundle, test, and documentation map is maintained in [`DOCUMENTATION.md`](DOCUMENTATION.md).
 
 ```text
 hermes-obsidian-skills/
@@ -176,13 +180,13 @@ The image remains the visual evidence. OCR text can be supplied with `--ocr-text
 
 MarkItDown is optional. This repository does not install it automatically.
 
-Two integration modes are planned:
+Two integration surfaces are documented:
 
-1. Local conversion script:
+1. Supported local conversion script:
    - `hermes-obsidian-controlled-ingest/scripts/convert_with_markitdown.py`
    - Converts non-Markdown sources into Markdown before governed ingestion.
 
-2. MCP tool integration:
+2. Optional MCP tool integration:
    - Example config: `mcp/markitdown-mcp.example.json`
    - Actual MCP configuration should live in the Hermes runtime config, not inside the skill.
 
