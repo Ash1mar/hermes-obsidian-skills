@@ -7,28 +7,20 @@ description: 受控摄取 / Controlled Ingest：新增、导入、恢复、继�
 
 Turn source files into governed Obsidian artifacts without rewriting raw material or overcreating concepts.
 
-## Intranet Deployment
+## Deployment Profile
 
-Read `config/deployment.json` and use its fixed deployment defaults:
-
-- Vault: `/opt/data/phq/testVault`
-- Skills parent: `/opt/data/skills`
-- this package: `/opt/data/skills/hermes-obsidian-controlled-ingest/`
-- MinerU transport: HTTP API at `http://10.27.17.35:7861`
-
-Normal ingest prompts and commands do not need to repeat these values. If the
-server deployment changes, update `config/deployment.json`; do not switch Vaults
-or MinerU services from prompt wording alone.
+Read optional `config/deployment.json` before selecting runtime paths or MinerU transport. When
+present, use its `vault_path` as the governed Vault default, treat `hermes_skills_root` only as a
+deployment consistency check, and honor its `mineru_invocation` and `mineru_api_url`. Explicit CLI
+arguments may override packaged defaults for a deliberate operation; prompt wording alone must not
+silently switch a configured Vault or service. When the file is absent, require the Vault from the
+user/task context and keep the local MinerU CLI fallback.
 
 ## Runtime Skill Boundary
 
 Use `<ingest-skill-root>` as the runtime-neutral directory containing this active `SKILL.md`, not the parent directory that contains multiple Skills. The package layout is `<ingest-skill-root>/SKILL.md`, `<ingest-skill-root>/scripts/*.py`, `<ingest-skill-root>/references/*.md`, and optional `<ingest-skill-root>/config/*.json`. Resolve it from the active runtime's loader. On Hermes, use the concrete expanded `${HERMES_SKILL_DIR}` or the `skill_dir` returned by `skill_view(name="hermes-obsidian-controlled-ingest")`; on another runtime, use its equivalent active-skill directory.
 
 Resolve bundled `scripts/`, `references/`, and `config/` against `<ingest-skill-root>`. Execute Python entry points as `python3 "<ingest-skill-root>/scripts/<script>.py"`. Never infer a conventional installation path. On Hermes, inspect `skill_view` and `linked_files.scripts` before declaring a script uninstalled; a terminal sandbox path failure may instead mean the host Skill directory is not mounted. Never copy replacement Skill scripts into the Vault.
-
-`/opt/data/skills` is the parent containing all Skills, not
-`<ingest-skill-root>`. Prefer the loader-returned Skill directory and use the
-configured package path only as a deployment consistency check.
 
 ```text
 external or vault source
@@ -118,7 +110,7 @@ document_bundle/
   _evidence/
 ```
 
-Use `python3 "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py"`. On this branch, `config/deployment.json` selects the MinerU HTTP API and the helper requests a ZIP containing Markdown, content lists, middle/model JSON, and referenced images. Do not require prompts to restate the API URL. For an explicit local MinerU override, pass `--mineru-invocation cli` and use `--model-source local`. Read `references/mineru-pdf-bundle.md` before conversion or validation. Before preserving, reusing, human-reviewing, or rebuilding from MinerU intermediates, also read `references/mineru-output-review.md`; keep the original MinerU output immutable and treat reviewed content lists as derived artifacts. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
+Use `python3 "<ingest-skill-root>/scripts/convert_pdf_with_mineru_bundle.py"`. The helper uses the local MinerU CLI by default; a deployment config or explicit `--mineru-api-url` may select the HTTP transport, which must return a ZIP containing Markdown, content lists, middle/model JSON, and referenced images. Use `--model-source local` in the repaired offline MinerU CLI environment. Read `references/mineru-pdf-bundle.md` before conversion or validation. Before preserving, reusing, human-reviewing, or rebuilding from MinerU intermediates, also read `references/mineru-output-review.md`; keep the original MinerU output immutable and treat reviewed content lists as derived artifacts. Read `references/bundle-source-map-ledger.md` before staged or multi-session ingestion.
 
 For standalone image sources (`.png`, `.jpg`, `.jpeg`, `.webp`, `.bmp`, `.gif`, `.tif`, `.tiff`) where the image itself is the source material, create an image Bundle v2 instead of treating the image like a PDF figure:
 

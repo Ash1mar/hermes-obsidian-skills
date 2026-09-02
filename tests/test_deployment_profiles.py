@@ -16,6 +16,12 @@ CONVERTER = (
     / "scripts"
     / "convert_pdf_with_mineru_bundle.py"
 )
+SKILL_ROOTS = [
+    ROOT / "hermes-obsidian-controlled-ingest",
+    ROOT / "hermes-obsidian-controlled-query",
+    ROOT / "hermes-obsidian-vault-bootstrap",
+    ROOT / "hermes-obsidian-vault-lint",
+]
 
 
 def load_converter():
@@ -124,6 +130,28 @@ def test_http_bundle_form_contains_required_mineru_fields(tmp_path: Path) -> Non
     assert fields["return_content_list"] == "true"
     assert f"--{content_boundary}".encode() in body
     assert b'filename="sample.pdf"' in body
+
+
+def test_skill_entrypoints_and_ui_metadata_are_deployment_neutral() -> None:
+    for skill_root in SKILL_ROOTS:
+        skill = (skill_root / "SKILL.md").read_text(encoding="utf-8")
+        interface = (skill_root / "agents" / "openai.yaml").read_text(encoding="utf-8")
+        assert "config/deployment.json" in skill
+        assert "10.27." not in interface
+        assert "/opt/data/" not in interface
+
+    direct_references = [
+        ROOT
+        / "hermes-obsidian-controlled-ingest"
+        / "references"
+        / "bundle-source-map-ledger.md",
+        ROOT / "hermes-obsidian-controlled-ingest" / "references" / "image-bundle.md",
+        ROOT / "hermes-obsidian-vault-bootstrap" / "references" / "script-usage.md",
+        ROOT / "hermes-obsidian-vault-lint" / "references" / "output-contract.md",
+    ]
+    for reference in direct_references:
+        content = reference.read_text(encoding="utf-8")
+        assert "/opt/data/phq/testVault" not in content
 
 
 def test_intranet_checked_in_profiles_are_ready_without_runtime_configuration(

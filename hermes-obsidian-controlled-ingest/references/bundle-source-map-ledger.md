@@ -50,7 +50,7 @@ Run:
 python3 \
   "<ingest-skill-root>/scripts/manage_bundle_ingest.py" \
   init "/path/to/input_document_bundle" \
-  --reports-dir "/opt/data/phq/testVault/_system/reports"
+  --reports-dir "/path/to/vault/_system/reports"
 ```
 
 Initialization performs these operations without reading the full evidence archive:
@@ -110,7 +110,7 @@ Run `init` at the beginning of every new session, then inspect:
 
 ```bash
 python3 "<ingest-skill-root>/scripts/manage_bundle_ingest.py" \
-  status "/opt/data/phq/testVault/_system/reports/<source>.section-ledger.json"
+  status "/path/to/vault/_system/reports/<source>.section-ledger.json"
 ```
 
 Stop downstream writes when:

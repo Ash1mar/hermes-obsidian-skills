@@ -9,16 +9,12 @@ description: Vault 初始化 / Vault Bootstrap：创建、配置、准备、克�
 
 Use this skill for vault setup only. Use `hermes-obsidian-controlled-ingest` for processing source files after the vault exists.
 
-## Intranet Vault Configuration
+## Deployment Profile
 
-On the `intranet` branch, the target vault path is fixed by this skill's config:
-
-- config file: `config/deployment.json`
-- configured vault path: `/opt/data/phq/testVault`
-- Hermes-visible Skills parent directory: `/opt/data/skills`
-- configured bootstrap Skill directory: `/opt/data/skills/hermes-obsidian-vault-bootstrap`
-
-Use that configured path for bootstrap by default. If the server vault path changes, update `config/deployment.json`; do not rely on a prompt-level vault path change.
+Resolve the target from an explicit `--vault-path` or optional `config/deployment.json`. A packaged
+`vault_path` is the normal deployment default; an explicit path is a deliberate one-off override.
+Treat `hermes_skills_root` only as a consistency check for the loader-returned Skill directory.
+When deployment config is absent, require an explicit target path.
 
 ## Runtime Skill Boundary
 
@@ -26,11 +22,9 @@ Use `<bootstrap-skill-root>` as the runtime-neutral directory containing this ac
 
 Resolve bundled `scripts/`, `references/`, `config/`, and templates against `<bootstrap-skill-root>`. Execute Python entry points as `python3 "<bootstrap-skill-root>/scripts/<script>.py"`. Never infer a conventional installation path. On Hermes, inspect `skill_view` and its linked files before declaring the package incomplete. Never copy replacement Skill resources or runtime installation paths into the target Vault.
 
-On this branch, `/opt/data/skills` from `config/deployment.json` is the parent containing all Skills, not `<bootstrap-skill-root>`. The expected package is `/opt/data/skills/hermes-obsidian-vault-bootstrap/`, with the script at `/opt/data/skills/hermes-obsidian-vault-bootstrap/scripts/init_obsidian_vault.py`. Prefer `skill_view.skill_dir`; use the configured package only as a fallback and consistency check.
-
 ## Workflow
 
-1. Use the configured intranet vault path and identify the profile.
+1. Resolve the target vault path and identify the profile.
 2. Refuse to overwrite a non-empty target unless the user explicitly asked for overwrite behavior.
 3. Create the standard folder layout.
 4. Write `AGENTS.md`, `README.md`, prompts, metadata registries, templates, Dataview indexes, and setup report.
@@ -52,16 +46,17 @@ Profile details are in `references/profiles.md`.
 Prefer the bundled script for repeatable initialization:
 
 ```powershell
-python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" --profile meeting --template-vault "<template-vault>" --copy-obsidian-config --copy-base-concepts
+python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" --vault-path "<target-vault>" --profile meeting --template-vault "<template-vault>" --copy-obsidian-config --copy-base-concepts
 ```
 
-This branch packages `config/deployment.json`, so its `vault_path` is used and
-`--vault-path` is normally omitted. An explicit path remains available for a
-deliberate one-off override.
+When a deployment packages `config/deployment.json` beside the Skill, its
+`vault_path` is the default and `--vault-path` may be omitted. An explicit path
+always wins. This keeps packages without deployment config portable while configured
+packages remain ready to run immediately.
 
 Useful options:
 
-- `--vault-path <path>` for explicit one-off compatibility only; normal intranet deployments should edit `config/deployment.json`
+- `--vault-path <path>` for an explicit target or deliberate deployment override
 - `--profile general|meeting`
 - `--template-vault <path>`
 - `--copy-obsidian-config`
@@ -83,7 +78,7 @@ Before writing:
 
 After setup, report:
 
-1. configured vault path
+1. vault path
 2. selected profile
 3. copied template components
 4. created directories

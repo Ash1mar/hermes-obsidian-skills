@@ -1,4 +1,4 @@
 interface:
   display_name: "Hermes Obsidian Controlled Ingest"
   short_description: "受控摄取 PDF、图片、来源和查询回写"
-  default_prompt: "使用 $hermes-obsidian-controlled-ingest 在内网固定 Vault /opt/data/phq/testVault 判断来源、Bundle 或候选状态，默认通过 MinerU HTTP API 按质量门禁恢复、转换和摄取，并生成可追溯知识及保守双链。"
+  default_prompt: "使用 $hermes-obsidian-controlled-ingest 判断 Vault、来源、Bundle 或候选状态，按质量门禁恢复、转换和摄取，并生成可追溯知识及保守双链。"

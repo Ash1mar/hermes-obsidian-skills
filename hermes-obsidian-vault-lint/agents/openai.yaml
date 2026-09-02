@@ -1,4 +1,4 @@
 interface:
   display_name: "Hermes Obsidian Vault Lint"
   short_description: "只读审计受治理 Vault 健康状态"
-  default_prompt: "使用 $hermes-obsidian-vault-lint 只读检查内网固定 Vault /opt/data/phq/testVault，并报告证据链、ledger、Bundle 和 QA 问题。"
+  default_prompt: "使用 $hermes-obsidian-vault-lint 只读检查受治理 Vault，并报告证据链、ledger、Bundle 和 QA 问题。"

@@ -7,12 +7,12 @@ description: Vault 只读审计 / Read-only Vault Lint：检查受治理 Obsidia
 
 Audit a governed Hermes + Obsidian vault without changing it.
 
-## Intranet Deployment
+## Deployment Profile
 
-Use `config/deployment.json` as the default lint target. It fixes the Vault at
-`/opt/data/phq/testVault` and the Hermes Skills parent at `/opt/data/skills`.
-Normal lint runs must not ask the user for a Vault path; use `--vault` only for a
-deliberate operational override.
+Resolve the target from an explicit `--vault` or optional `config/deployment.json`. A packaged
+`vault_path` is the normal deployment default; an explicit path is a deliberate operational
+override. Treat `hermes_skills_root` only as a consistency check for the loader-returned Skill
+directory. When deployment config is absent, require the Vault from the user/task context.
 
 ## Runtime Skill Boundary
 
@@ -20,14 +20,9 @@ Use `<lint-skill-root>` as the runtime-neutral directory containing this active 
 
 Resolve bundled `scripts/`, `references/`, and `config/` against `<lint-skill-root>`. Execute Python entry points as `python3 "<lint-skill-root>/scripts/<script>.py"`. Never infer a conventional installation path. On Hermes, inspect `skill_view` and `linked_files.scripts` before declaring the lint script uninstalled; a terminal sandbox path failure may instead be a missing mount. Lint remains read-only and must not repair the Vault itself.
 
-`/opt/data/skills` is the parent containing all Skills, not `<lint-skill-root>`.
-Prefer the loader-returned package and use
-`/opt/data/skills/hermes-obsidian-vault-lint/` only as a deployment consistency
-check.
-
 ```text
 prompt scope
--> use configured intranet vault path
+-> resolve explicit or deployment-configured vault path
 -> choose lint profile
 -> run read-only lint script
 -> report errors, warnings, metrics, and next actions
@@ -35,7 +30,7 @@ prompt scope
 
 ## Boundary
 
-- Do not choose another Vault from prompt wording. Use the checked-in intranet deployment path unless the user explicitly requests an operational override.
+- Do not hard-code a Vault in shared instructions. Use checked-in deployment config when present; otherwise use the Vault requested in the task context.
 - Treat lint as read-only. Do not create, edit, move, rename, or delete vault files unless the user explicitly asks for a report file or a later fix operation.
 - Do not run controlled ingest or controlled query as part of lint. Lint may point to those workflows as follow-up actions.
 - Do not treat `qa_required` as a failure by default. It is a controlled open QA state unless the selected profile says otherwise.
@@ -52,9 +47,9 @@ python3 "<lint-skill-root>/scripts/lint_vault.py" \
   --json
 ```
 
-This branch packages `config/deployment.json`, so its `vault_path` is used and
-`--vault` is normally omitted. An explicit `--vault` remains available for a
-deliberate one-off override.
+When a deployment packages `config/deployment.json` beside the Skill, its
+`vault_path` is the default and `--vault` may be omitted. An explicit `--vault`
+always wins.
 
 Use `--markdown-report <path>` only when the user explicitly asks to persist a lint report.
 

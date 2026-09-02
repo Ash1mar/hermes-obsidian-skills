@@ -7,13 +7,15 @@ description: 受控查询 / Controlled Query：当用户说“请使用 query �
 
 Answer from a governed Vault with original-PDF evidence while keeping governed knowledge read-only. Write only the required non-authoritative query trace unless the user explicitly opts out or the Vault is unwritable.
 
-## Intranet deployment
+## Deployment Profile
 
-On the `intranet` branch, read `config/deployment.json` and use its `vault_path` as the governed Vault root. The current deployment uses `/opt/data/phq/testVault`. If the server path changes, update the config; do not switch Vaults from prompt wording.
-
-`hermes_skills_root` is the parent containing all Skills, not `<query-skill-root>`. Prefer the loader-returned Skill directory; use `/opt/data/skills/hermes-obsidian-controlled-query/` only as the configured deployment fallback and consistency check. Report a loader/config mismatch instead of searching the Vault.
-
-Treat `domain_query_terms` as routing hints, never evidence. When `viewer_base_url` is configured, preserve the locator-returned viewer URLs for the final `原文定位` section.
+Read optional `config/deployment.json` before selecting the Vault or viewer behavior. When present,
+use its `vault_path` as the governed Vault default, treat `hermes_skills_root` only as a deployment
+consistency check, and treat `domain_query_terms` as routing hints rather than evidence. Preserve
+only locator-returned `viewer_url` values when `viewer_base_url` is configured; finalization appends
+links only for sources used by retained claims. When deployment config is absent, use the Vault from
+the user/task context and do not invent a viewer URL. Provider transport remains governed separately
+by `config/retrieval-provider.json`.
 
 ## Runtime boundary
 
@@ -27,7 +29,7 @@ Run Python entry points as `python3 "<query-skill-root>/scripts/<script>.py"`. N
 
 Do not read bundled script source during a normal query. Read it only after a concrete failure or when modifying/debugging the Skill. Do not announce that scripts are missing until `skill_view` confirms the active package is incomplete rather than merely unmounted in a shell sandbox.
 
-Read `config/deployment.json` first and merge its deployment routing hints with `config/domain-routing.json` when needed. Treat configured domain terms as routing hints, never evidence. The retrieval Provider configuration remains deployment-specific; do not invent an intranet endpoint.
+Use `config/deployment.json` when present; otherwise read `config/domain-routing.json`. Treat `domain_query_terms` as routing hints, never evidence. The retrieval Provider configuration remains deployment-specific; do not invent an endpoint.
 
 ## Fast path
 
@@ -168,8 +170,6 @@ For each substantive conclusion provide:
 5. evidence quality and unresolved limits.
 
 Never substitute a Bundle, Markdown, source-map, ledger, spec index, trace, or extracted-asset path for the original PDF citation. The Bundle is trusted as the default internal extraction carrier when its quality metadata passes; trusting it does not change the user-facing original-PDF citation. Record source maps, ledgers, `document.md`, tables, extracted images, and page images only in the trace. They are internal retrieval and QA details, not user-facing evidence sources.
-
-Inspect the top-level `answer_contract`. When `viewer_enabled` is true, produce a final `原文定位` list. Use only locator-returned `viewer_url` values for every verified candidate actually used, deduplicate identical URLs, and label each with the original PDF filename and section ID. The URL shape is `doc=<document_id>&section=<section_id>&from=<match_start_line>&to=<match_end_line>`; never invent a document ID or line range. Viewer URLs are navigation aids, not evidence. If no used hit has an eligible URL, state under uncertainty/gaps that source positioning is unavailable; do not allow silent omission of both the links and the unavailable status.
 
 Read `references/answer-format.md` only when a non-trivial answer needs the full response template.
 

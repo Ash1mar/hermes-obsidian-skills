@@ -1,4 +1,4 @@
 interface:
   display_name: "Hermes Obsidian Vault Bootstrap"
   short_description: "初始化受治理 Obsidian Vault"
-  default_prompt: "使用 $hermes-obsidian-vault-bootstrap 在内网固定路径 /opt/data/phq/testVault 创建受治理 Vault 的标准目录、规则、Dataview、模板和元数据注册表。"
+  default_prompt: "使用 $hermes-obsidian-vault-bootstrap 创建受治理 Obsidian Vault 的标准目录、规则、Dataview、模板和元数据注册表。"

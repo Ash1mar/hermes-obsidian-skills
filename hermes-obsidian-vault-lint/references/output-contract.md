@@ -11,7 +11,7 @@
   "ok": true,
   "status": "pass|pass-with-warnings|fail|internal-error",
   "profile": "post-ingest",
-  "vault": "/opt/data/phq/testVault",
+  "vault": "/absolute/path/to/vault",
   "summary": {
     "errors": 0,
     "warnings": 0,
