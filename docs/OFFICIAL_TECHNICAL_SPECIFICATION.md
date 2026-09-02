@@ -471,6 +471,11 @@ Provider 的职责边界：
 
 ## 20. 变更管理
 
+共享实现以 `main` 为主线，并通过 merge 单向进入 `intranet`。完成历史基线 merge 后，不再以
+cherry-pick 或并行 worktree 作为日常双分支同步方式。`intranet` 不反向 merge 到 `main`；在内网
+发现的共享缺陷必须先回到 `main` 修复，再向前合并。受保护配置、冲突规则和命令顺序见
+[`BRANCH_MAINTENANCE.md`](../BRANCH_MAINTENANCE.md)。
+
 对系统级变化，提交说明或评审记录应回答：
 
 1. 变更影响哪个组件和哪条工作流；
