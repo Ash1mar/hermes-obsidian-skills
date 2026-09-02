@@ -21,6 +21,7 @@
 | [`DOCUMENTATION.md`](DOCUMENTATION.md) | 当前文档索引，说明每份文档讲什么、应该何时阅读，以及哪些仓库外资料仅作关联参考。 |
 | [`docs/OFFICIAL_TECHNICAL_SPECIFICATION.md`](docs/OFFICIAL_TECHNICAL_SPECIFICATION.md) | 项目级官方技术规范：统一定义系统范围、架构、组件职责、数据权威、schema/协议、四条工作流、分支部署、QA、安全、故障降级、兼容性与验收标准。 |
 | [`charts.md`](charts.md) | Mermaid 端到端流程图：`main`/`intranet` 环境差异、建库、摄取、Lint、单遍 Query Session、Provider 与 Vault 的读写关系。 |
+| [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md) | 双分支维护合同：共享变更先进入 `main`，再 merge 到 `intranet`；定义受保护配置、冲突处理、验证和推送顺序。 |
 | [`RETRIEVAL_PROVIDER_OPERATIONS.md`](RETRIEVAL_PROVIDER_OPERATIONS.md) | 检索 Provider 运维说明：仓库默认、主机部署、Provider 主机三层配置，query/ingest 开关，启用门禁和验证命令。 |
 | [`MINERU_WSL_ENVIRONMENT_RUNBOOK.md`](MINERU_WSL_ENVIRONMENT_RUNBOOK.md) | MinerU 在 WSL2 中的安装、模型缓存、离线配置、迁移、pipeline/hybrid 验证、CUDA/vLLM 排障经验。它是环境运行手册，不是 Bundle 摄取步骤。 |
 

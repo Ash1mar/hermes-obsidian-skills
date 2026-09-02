@@ -6,6 +6,9 @@ The system-level architecture, data authority, interface, compatibility, and acc
 
 See [`DOCUMENTATION.md`](DOCUMENTATION.md) for a file-by-file documentation map and [`charts.md`](charts.md) for editable Mermaid diagrams of the complete bootstrap, ingest, lint, query, retrieval, and branch-specific deployment flow.
 
+Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): implement shared work on
+`main`, then merge `main` into `intranet` while preserving checked-in deployment configuration.
+
 ## Skills
 
 - `hermes-obsidian-controlled-ingest/`
