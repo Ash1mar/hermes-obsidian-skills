@@ -12,9 +12,10 @@ The script reads `config/retrieval-provider.json` unless `--provider-config` or 
 
 Run incremental sync after completed source ingest or at a related batch boundary. Do not sync after every intermediate section write. Use `--rebuild` only for explicit maintenance or an incompatible/corrupt index.
 
-On `main`, keep `provider_config` pointed at `/root/.config/qmd-like-rag/main.json`. Leave both
-Skill adapters disabled until the first explicit ingest-owned sync succeeds; model download or
-runtime installation alone is not permission to build an index. Query never performs that first
+Leave both Skill adapters disabled until the Provider runtime, audited models, host configuration,
+and first explicit ingest-owned sync are ready. When enabling command transport, point
+`provider_config` at the deployment's host-local qmd-like-rag configuration. Model download or
+runtime installation alone is not permission to build an index, and Query never performs the first
 sync.
 
 The script writes `_system/reports/retrieval-index-manifest.json` atomically. Preserve the prior `last_success` when a new attempt fails. The manifest contains portable protocol/provider/model/config/corpus/index fingerprints and counts, never an absolute state path or service credential.

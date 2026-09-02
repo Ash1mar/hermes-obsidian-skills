@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import json
 import sys
 from pathlib import Path
@@ -71,6 +72,27 @@ def test_absent_status_does_not_load_heavy_runtime(tmp_path: Path) -> None:
     assert result["configuration"]["embedding_model"] == "BAAI/bge-m3"
     assert result["model_fingerprint"].startswith("sha256:")
     assert result["models"]["embedding"]["identity"] == "BAAI/bge-m3"
+
+
+def test_absent_recall_does_not_import_model_or_index_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    real_import = builtins.__import__
+    blocked = {"chromadb", "sentence_transformers", "torch"}
+
+    def guarded_import(name, *args, **kwargs):
+        if name.split(".", 1)[0] in blocked:
+            raise AssertionError(f"heavy runtime import attempted: {name}")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guarded_import)
+    config = ProviderConfig(vault_root=tmp_path / "vault", state_root=tmp_path / "state")
+
+    result = recall(config, "test")
+
+    assert result["candidates"] == []
+    assert result["warnings"] == ["index-not-ready"]
 
 
 def test_short_vault_id_still_produces_valid_chroma_name(tmp_path: Path) -> None:

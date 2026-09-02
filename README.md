@@ -76,7 +76,7 @@ hermes-obsidian-skills/
 
 The package exposes the `qmd-like-rag` CLI and an optional HTTP server. On `main`, install it into a WSL-native virtual environment and use the Skill adapters' command transport. On `intranet`, do not deploy QMD; install the same tagged qmd-like-rag release locally or configure the branch's Skill adapters to call its HTTP transport.
 
-Provider source and Skills share one Git revision, but deployment remains separate: copying Skill folders does not install qmd-like-rag or its model dependencies. See `qmd-like-rag/README.md`.
+Both maintained branches now carry qmd-like-rag `0.3.0` and the stable `hermes-coarse-recall/v1` protocol. Provider source and Skills share one Git revision, but deployment remains separate: copying either branch does not install qmd-like-rag, its model dependencies, models, or indexes. A deployment whose query and ingest adapters remain `enabled: false` never invokes the Provider, so an intranet checkout may be upgraded before its Provider runtime is provisioned. See `qmd-like-rag/README.md`.
 
 ## Validation
 

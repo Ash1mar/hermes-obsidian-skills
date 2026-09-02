@@ -63,6 +63,8 @@ vault state /opt/data/phq/qmd-like-rag-state/<vault-id>/
 
 Set the actual Linux-local sibling path through `state_root` in the deployment's Provider config, using `config/intranet.example.json` as the template. Do not put the state root below `/opt/data/phq/testVault`, and exclude it from Obsidian, Vault synchronization, and governed-content backups. If retrieval must run on another server, start the same package with `qmd-like-rag serve` and configure the Skill adapter to use HTTP. The initial HTTP `sync` route assumes that the provider process can read its configured Vault path; document-upload synchronization is a later extension.
 
+Both repository branches carry Provider `0.3.0`. This source-level convergence is safe before intranet models are deployed: with both Skill adapters checked in as `enabled: false`, neither query nor ingest starts the command or HTTP transport. Installing dependencies, placing audited model revisions, building an index, and enabling either adapter remain explicit deployment steps.
+
 ## HTTP transport
 
 The optional standard-library server exposes:
