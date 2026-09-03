@@ -203,13 +203,15 @@ bootstrap（每个用户请求一次）
 - 检索和读取阶段维持在很低水平；
 - 受控查询总时长已进入可接受区间。
 
-目前仍观察到三个小问题：
+这一阶段曾观察到三个小问题：
 
 - 一个不可用 packet 可能让整个 synthesis contract 进入较大的 qualified 模式，即使其余 packet 已足够；
 - 模型偶尔生成超出用户必要输出的相关 claim；
 - 模型偶尔以恢复完整输出为由尝试向临时目录写 helper script，尽管规则已经禁止。
 
-这些问题尚未造成稳定的检索返工或 finalize 失败，当前暂不修改稳定路径。后续如果数据表明有必要，应采用领域无关方式处理：按 packet 分离 usable/excluded refs、增加明确的 operational-output-complete 标志，并继续通过最小 claim 契约引导收口。真正从权限层禁止任意 shell helper 需要外部编排或审批策略，不属于当前 Skill-only 范围。
+随后以领域无关方式完成了窄修复：按 packet 分离 `usable_evidence_refs` 与 `excluded_evidence_refs`；在最小合约中加入 semantic sufficiency gate 和 `incomplete-minimal` fallback；组合查询使用单行紧凑 JSON 并分别报告 evidence 与完整 stdout 字符；finalize 支持 stdin decision，避免临时文件和 shell 参数转义。候选补充槽先保留相对相关性底线，再按正文与结构的完整词汇覆盖和新增覆盖共同排序，不包含任何领域、系统、设备或规范专用词。
+
+真正从权限层禁止任意 shell helper 仍需要外部编排或审批策略，不属于当前 Skill-only 范围。
 
 ## 当前实现边界
 
