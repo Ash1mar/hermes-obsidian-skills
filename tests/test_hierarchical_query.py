@@ -333,6 +333,71 @@ def test_candidate_packing_prefers_complementary_query_facets_over_repetition() 
     assert "a2" not in selected_ids
 
 
+def test_candidate_packing_prefers_answer_content_over_entity_only_titles() -> None:
+    spec = importlib.util.spec_from_file_location("locate_source_sections", LOCATE)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def candidate(
+        section: str,
+        *,
+        title_terms: list[str],
+        content_terms: list[str],
+        score: int = 0,
+    ) -> dict:
+        return {
+            "document_path": "manual.md",
+            "section_id": section,
+            "score": score,
+            "matched_terms": {
+                "title": title_terms,
+                "path": [],
+                "content": content_terms,
+                "document": [],
+            },
+        }
+
+    candidates = [
+        candidate(
+            "component-overview",
+            title_terms=["primary assembly", "secondary assembly"],
+            content_terms=["primary assembly", "secondary assembly"],
+            score=100,
+        ),
+        candidate(
+            "component-operation",
+            title_terms=["secondary assembly"],
+            content_terms=["secondary assembly", "operation"],
+            score=70,
+        ),
+        candidate(
+            "classification-rule",
+            title_terms=[],
+            content_terms=[
+                "primary assembly",
+                "secondary assembly",
+                "classification",
+                "category alpha",
+            ],
+            score=60,
+        ),
+        candidate(
+            "broad-low-score",
+            title_terms=[],
+            content_terms=["unrelated breadth", "extra facet", "another facet"],
+            score=10,
+        ),
+    ]
+
+    selected = module.diversify_candidates(candidates, 2)
+
+    assert [item["section_id"] for item in selected] == [
+        "component-overview",
+        "classification-rule",
+    ]
+
+
 def test_section_routing_removes_document_identity_terms_without_domain_rules() -> None:
     spec = importlib.util.spec_from_file_location("locate_source_sections", LOCATE)
     assert spec and spec.loader
@@ -350,6 +415,18 @@ def test_section_routing_removes_document_identity_terms_without_domain_rules() 
     detail_score, _ = module.match_score(section_terms, "额定流量与叶轮参数", 9)
     assert irrelevant_score == 0
     assert detail_score > 0
+
+
+def test_coverage_packing_deduplicates_shifted_ngrams_without_changing_match_scores() -> None:
+    spec = importlib.util.spec_from_file_location("locate_source_sections", LOCATE)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    terms = ["abcd", "bcde", "cdef", "wxyz"]
+
+    assert module.compact_terms(terms, limit=8) == terms
+    assert module.compact_coverage_terms(terms, limit=8) == ["abcd", "cdef", "wxyz"]
 
 
 def test_compact_scope_exposes_only_complete_bounded_operational_window() -> None:
@@ -1124,10 +1201,20 @@ def test_combined_query_automatically_inspects_and_uses_minimal_synthesis_contra
     assert result["next_command"] == "finalize"
     assert 1 <= result["selected_count"] <= 3
     assert result["agent_packet_chars"] > 0
+    assert result["delivery_metrics"]["agent_packet_chars"] == result["agent_packet_chars"]
+    assert result["output_metrics"]["serialization"] == "compact-json"
+    assert result["output_metrics"]["output_complete"] is True
+    assert result["output_metrics"]["stdout_chars"] == len(queried.stdout)
+    assert result["output_metrics"]["response_overhead_chars"] > 0
+    assert "\n" not in queried.stdout.rstrip("\n")
     assert result["synthesis_contract"]["mode"] == "ordinary-minimal"
     assert result["synthesis_contract"]["model_fields"] == ["claims", "conclusion"]
     assert result["synthesis_contract"]["ordinary_script_defaults"]["events"] == []
     assert result["synthesis_contract"]["evidence_policy"]["direct_use_allowed"] is True
+    assert result["synthesis_contract"]["evidence_policy"]["usable_evidence_refs"]
+    assert result["synthesis_contract"]["evidence_policy"]["excluded_evidence_refs"] == []
+    assert result["synthesis_contract"]["incomplete_fallback"]["mode"] == "incomplete-minimal"
+    assert "Packet validity is not proof" in result["synthesis_contract"]["semantic_sufficiency_gate"]
     packet = result["evidence_packets"][0]
     finalized = subprocess.run(
         [
@@ -1159,6 +1246,113 @@ def test_combined_query_automatically_inspects_and_uses_minimal_synthesis_contra
     )
     assert final_result["final_response"] == state["answer_capsule"]["answer_markdown"]
     assert final_result["next_action"] == "return final_response verbatim without another evidence review"
+
+
+def test_evidence_contract_keeps_usable_refs_when_another_packet_is_blocked() -> None:
+    spec = importlib.util.spec_from_file_location("query_session", SESSION)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    sys.path.insert(0, str(SESSION.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path.pop(0)
+
+    base = {
+        "content": "A substantive answer.",
+        "quality": "pass",
+        "ingest_status": "ingested",
+        "source_exists": True,
+        "pages": [1],
+        "content_truncated": False,
+        "assets": [],
+        "control": {"source_map": {"validation_status": "pass"}},
+    }
+    contract = module.evidence_level_contract(
+        [
+            {**base, "evidence_ref": "P1"},
+            {**base, "evidence_ref": "P2", "source_exists": False},
+        ]
+    )
+
+    assert contract["direct_use_allowed"] is True
+    assert contract["all_packets_direct_use_allowed"] is False
+    assert contract["usable_evidence_refs"] == ["P1"]
+    assert contract["excluded_evidence_refs"] == ["P2"]
+    assert contract["packet_blocked_conditions"]["P2"] == ["P2:original-source-unresolved"]
+
+    synthesis = module.synthesis_contract(
+        {
+            "finalize_contract": {
+                "verification_contract": {"verification_required": False},
+                "evidence_level_contract": contract,
+            }
+        }
+    )
+    assert synthesis["mode"] == "ordinary-minimal"
+    assert synthesis["evidence_policy"]["usable_evidence_refs"] == ["P1"]
+    assert synthesis["evidence_policy"]["excluded_evidence_refs"] == ["P2"]
+
+
+def test_finalize_accepts_decision_stdin_and_renders_incomplete_boundary(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    queried = subprocess.run(
+        [sys.executable, str(SESSION), "query", str(vault), "目标系统组件参数是什么？"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(queried.stdout)["trace_id"]
+    decision = {
+        "status": "incomplete",
+        "evidence_level": "gap",
+        "claims": [],
+        "conclusion": "The requested output cannot be established from the visible evidence window.",
+        "unresolved": ["The requested output is not supported by the inspected packets."],
+    }
+    finalized = subprocess.run(
+        [sys.executable, str(SESSION), "finalize", str(vault), trace_id, "--decision-stdin"],
+        input=json.dumps(decision),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    result = json.loads(finalized.stdout)
+
+    assert result["final_response"].startswith(decision["conclusion"])
+    assert "未解决:" in result["final_response"]
+    assert decision["unresolved"][0] in result["final_response"]
+
+
+def test_incomplete_decision_requires_material_unresolved_item(tmp_path: Path) -> None:
+    vault = make_vault(tmp_path)
+    subprocess.run([sys.executable, str(BUILD), str(vault)], check=True, capture_output=True, text=True)
+    queried = subprocess.run(
+        [sys.executable, str(SESSION), "query", str(vault), "目标系统组件参数是什么？"],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    trace_id = json.loads(queried.stdout)["trace_id"]
+    rejected = subprocess.run(
+        [sys.executable, str(SESSION), "finalize", str(vault), trace_id, "--decision-stdin"],
+        input=json.dumps(
+            {
+                "status": "incomplete",
+                "evidence_level": "gap",
+                "claims": [],
+                "conclusion": "Insufficient evidence.",
+                "unresolved": [],
+            }
+        ),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert rejected.returncode != 0
+    assert "requires at least one material unresolved string" in rejected.stderr
 
 
 def test_combined_query_appends_only_used_profile_viewer_links(tmp_path: Path) -> None:
@@ -2254,6 +2448,11 @@ def test_query_contract_fuses_parallel_scope_before_governed_first_search() -> N
     assert "The script supplies the omitted ordinary defaults" in workflow
     assert "while subject qualifiers only narrow its scope" in workflow
     assert "Do not read `references/evidence-levels.md`" in workflow
+    assert "never pipe it through `head`, `tail`" in skill
+    assert "`output_metrics.stdout_chars`" in skill
+    assert "--decision-stdin" in skill and "--decision-stdin" in workflow
+    assert "`usable_evidence_refs`" in workflow
+    assert "`incomplete_fallback`" in skill
 
 
 def test_skill_name_alone_activates_complete_query_contract() -> None:

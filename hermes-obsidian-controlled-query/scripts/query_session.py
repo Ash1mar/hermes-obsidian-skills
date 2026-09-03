@@ -10,6 +10,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -793,6 +794,31 @@ def serialized_chars(value: Any) -> int:
     return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
 
 
+def attach_query_output_metrics(result: dict[str, Any]) -> dict[str, Any]:
+    """Record the exact compact stdout size used by the combined query command."""
+    delivery = result.get("delivery_metrics", {})
+    result["output_metrics"] = {
+        "serialization": "compact-json",
+        "stdout_chars": 0,
+        "evidence_packet_chars": int(delivery.get("agent_packet_chars") or 0),
+        "response_overhead_chars": 0,
+        "output_complete": True,
+    }
+    # The digit width of stdout_chars can change the serialized length. Iterate
+    # until the recorded value includes the final newline emitted by print().
+    for _ in range(8):
+        stdout_chars = serialized_chars(result) + 1
+        metrics = result["output_metrics"]
+        metrics["stdout_chars"] = stdout_chars
+        metrics["response_overhead_chars"] = max(
+            0,
+            stdout_chars - int(metrics["evidence_packet_chars"]),
+        )
+        if serialized_chars(result) + 1 == stdout_chars:
+            break
+    return result
+
+
 def content_field_chars(packets: list[dict[str, Any]]) -> dict[str, int]:
     return {
         "section": sum(len(str(packet.get("content") or "")) for packet in packets),
@@ -1012,33 +1038,36 @@ def evidence_level_contract(packets: list[dict[str, Any]]) -> dict[str, Any]:
     """Separate non-blocking diagnostics from evidence-chain hard blockers."""
     blocked: list[str] = []
     diagnostics: list[str] = []
-    all_packet_quality_pass = True
+    usable_evidence_refs: list[str] = []
+    excluded_evidence_refs: list[str] = []
+    packet_conditions: dict[str, list[str]] = {}
+    usable_quality_pass: list[bool] = []
     for packet in packets:
         evidence_ref = str(packet.get("evidence_ref") or "unregistered")
+        packet_blocked: list[str] = []
         quality = str(packet.get("quality") or "missing").strip().casefold()
         source_map_status = str(
             packet.get("control", {}).get("source_map", {}).get("validation_status") or "missing"
         ).strip().casefold()
         ingest_status = str(packet.get("ingest_status") or "missing").strip().casefold()
-        all_packet_quality_pass = all_packet_quality_pass and quality == "pass"
         if quality != "pass":
             diagnostics.append(f"{evidence_ref}:quality={quality}")
         if failed_status(quality):
-            blocked.append(f"{evidence_ref}:quality={quality}")
+            packet_blocked.append(f"{evidence_ref}:quality={quality}")
         if source_map_status != "pass":
             diagnostics.append(f"{evidence_ref}:source-map-validation={source_map_status}")
         if failed_status(source_map_status):
-            blocked.append(f"{evidence_ref}:source-map-validation={source_map_status}")
+            packet_blocked.append(f"{evidence_ref}:source-map-validation={source_map_status}")
         if ingest_status not in {"ingested", "complete", "completed", "pass"}:
             diagnostics.append(f"{evidence_ref}:ingest-status={ingest_status}")
         if not packet_has_substantive_content(packet):
-            blocked.append(f"{evidence_ref}:no-substantive-content")
+            packet_blocked.append(f"{evidence_ref}:no-substantive-content")
         if not packet.get("source_exists"):
-            blocked.append(f"{evidence_ref}:original-source-unresolved")
+            packet_blocked.append(f"{evidence_ref}:original-source-unresolved")
         if not packet.get("pages"):
-            blocked.append(f"{evidence_ref}:original-pages-unresolved")
+            packet_blocked.append(f"{evidence_ref}:original-pages-unresolved")
         if packet.get("content_truncated"):
-            blocked.append(f"{evidence_ref}:content-truncated")
+            packet_blocked.append(f"{evidence_ref}:content-truncated")
         for asset in packet.get("assets", []):
             asset_quality = str(asset.get("quality") or "").strip().casefold()
             if asset_quality and asset_quality != "pass":
@@ -1046,16 +1075,31 @@ def evidence_level_contract(packets: list[dict[str, Any]]) -> dict[str, Any]:
                 diagnostic = f"{evidence_ref}:{asset_id}-quality={asset_quality}"
                 diagnostics.append(diagnostic)
                 if failed_status(asset_quality):
-                    blocked.append(diagnostic)
-    direct_use_allowed = not blocked
+                    packet_blocked.append(diagnostic)
+        packet_conditions[evidence_ref] = list(dict.fromkeys(packet_blocked))
+        if packet_blocked:
+            excluded_evidence_refs.append(evidence_ref)
+            blocked.extend(packet_blocked)
+        else:
+            usable_evidence_refs.append(evidence_ref)
+            usable_quality_pass.append(quality == "pass")
+    direct_use_allowed = bool(usable_evidence_refs)
     return {
-        "ordinary_pass_quality": all_packet_quality_pass and direct_use_allowed,
+        "ordinary_pass_quality": bool(usable_quality_pass) and all(usable_quality_pass),
         "direct_use_allowed": direct_use_allowed,
+        "all_packets_direct_use_allowed": bool(packets) and not blocked,
+        "usable_evidence_refs": usable_evidence_refs,
+        "excluded_evidence_refs": excluded_evidence_refs,
+        "packet_blocked_conditions": packet_conditions,
         "full_reference_required": False,
         "reference_read_policy": (
-            "do not read references/evidence-levels.md for packet statuses; exclude blocked packet refs and use the inline rules"
-            if blocked
-            else "do not read references/evidence-levels.md; non-failed diagnostics remain usable as source-backed evidence"
+            "do not read references/evidence-levels.md; cite only usable_evidence_refs and exclude excluded_evidence_refs"
+            if excluded_evidence_refs and usable_evidence_refs
+            else (
+                "do not read references/evidence-levels.md; all packet refs are excluded, so use the inline qualified or incomplete route"
+                if excluded_evidence_refs
+                else "do not read references/evidence-levels.md; non-failed diagnostics remain usable as source-backed evidence"
+            )
         ),
         "blocked_conditions": list(dict.fromkeys(blocked)),
         "non_blocking_diagnostics": list(dict.fromkeys(diagnostics)),
@@ -1226,6 +1270,7 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
     delivery_event["accounting"] = "diagnostic"
     delivery_event["extensions"] = delivery_metrics
     state.setdefault("events", []).append(clean_event(state, delivery_event))
+    level_contract = evidence_level_contract(packets)
     workflow.update(
         {
             "answer_synthesis_started_at": now_iso(),
@@ -1239,6 +1284,7 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             "evidence_gap_review_started_monotonic_ns": None,
             "evidence_gap_review_started_wall_ns": None,
             "last_delivery_metrics": delivery_metrics,
+            "evidence_level_contract": level_contract,
         }
     )
     write_state(vault_root, state)
@@ -1257,7 +1303,6 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
             else "omit because visual verification was not requested"
         ),
     }
-    level_contract = evidence_level_contract(packets)
     event_contract = {
         "ordinary_events": [] if not verification_required else None,
         "policy": (
@@ -1350,11 +1395,32 @@ def synthesis_contract(inspection: dict[str, Any]) -> dict[str, Any]:
             "unresolved",
         ],
         "claim_shape": {"text": "concise supported claim", "evidence_refs": ["P1"]},
+        "semantic_sufficiency_gate": (
+            "Use ordinary-minimal only when the visible usable packets answer every requested output. "
+            "Packet validity is not proof of answer completeness."
+        ),
+        "incomplete_fallback": {
+            "mode": "incomplete-minimal",
+            "when": "the visible usable packets cannot support every requested output",
+            "model_fields": ["status", "evidence_level", "claims", "conclusion", "unresolved"],
+            "required_status": "incomplete",
+            "evidence_level_policy": (
+                "use source-backed when retaining supported claims; use gap when no requested output is supported"
+            ),
+            "claim_policy": (
+                "retain only supported requested outputs; use a gap claim with no evidence refs only when needed "
+                "to make the missing result explicit"
+            ),
+            "unresolved_shape": ["one material missing-output statement"],
+            "script_defaults": {"verified_evidence_refs": [], "events": []},
+        },
         "claim_policy": (
             "Use the minimum claims that answer requested outputs; omit unused packets and unrequested context."
         ),
         "evidence_policy": {
             "direct_use_allowed": bool(evidence_level.get("direct_use_allowed")),
+            "usable_evidence_refs": evidence_level.get("usable_evidence_refs", []),
+            "excluded_evidence_refs": evidence_level.get("excluded_evidence_refs", []),
             "blocked_conditions": evidence_level.get("blocked_conditions", []),
             "non_blocking_diagnostics": evidence_level.get("non_blocking_diagnostics", []),
         },
@@ -1380,15 +1446,17 @@ def query(args: argparse.Namespace) -> dict[str, Any]:
             embedded_query=True,
         )
     )
-    return {
+    result = {
         "workflow": WORKFLOW,
         "trace_id": trace_id,
         "selected_count": inspected["selected_count"],
         "evidence_packets": inspected["evidence_packets"],
         "agent_packet_chars": inspected.get("delivery_metrics", {}).get("agent_packet_chars"),
+        "delivery_metrics": inspected.get("delivery_metrics", {}),
         "synthesis_contract": synthesis_contract(inspected),
         "next_command": inspected["next_command"],
     }
+    return attach_query_output_metrics(result)
 
 
 def supplement(args: argparse.Namespace) -> dict[str, Any]:
@@ -1639,6 +1707,8 @@ def normalize_decision(decision: dict[str, Any]) -> dict[str, Any]:
     verified = normalized.get("verified_evidence_refs", [])
     if not isinstance(verified, list):
         raise ValueError("decision verified_evidence_refs must be a list")
+    if normalized.get("status") == "incomplete" and not normalized["unresolved"]:
+        raise ValueError("incomplete decision requires at least one material unresolved string")
     return normalized
 
 
@@ -1713,6 +1783,14 @@ def decision_to_manifest(state: dict[str, Any], decision: dict[str, Any]) -> dic
     missing = [handle for handle in handles if handle not in catalog]
     if missing:
         raise ValueError(f"claims reference uninspected evidence handles: {', '.join(missing)}")
+    excluded = set(
+        workflow.get("evidence_level_contract", {}).get("excluded_evidence_refs", [])
+    )
+    blocked_handles = sorted(set(handles) & excluded)
+    if blocked_handles:
+        raise ValueError(
+            f"claims reference excluded evidence handles: {', '.join(blocked_handles)}"
+        )
     verified = {str(item) for item in decision.get("verified_evidence_refs", [])}
     missing_verified = sorted(verified - set(catalog))
     if missing_verified:
@@ -1851,6 +1929,14 @@ def build_answer_capsule(state: dict[str, Any], manifest: dict[str, Any]) -> dic
     if viewer_links:
         markdown.extend(["", "原文定位:"])
         markdown.extend(f"- [{label}]({url})" for label, url in viewer_links)
+    if manifest.get("status") == "incomplete":
+        conclusion = str(manifest.get("conclusion") or "").strip()
+        if not markdown and conclusion:
+            markdown.append(conclusion)
+        unresolved = [str(item).strip() for item in manifest.get("unresolved", []) if str(item).strip()]
+        if unresolved:
+            markdown.extend(["", "未解决:"])
+            markdown.extend(f"- {item}" for item in unresolved)
     return {
         "trace_id": state.get("trace_id"),
         "question_index": state.get("question_index"),
@@ -1865,12 +1951,20 @@ def build_answer_capsule(state: dict[str, Any], manifest: dict[str, Any]) -> dic
 
 
 def load_manifest(args: argparse.Namespace) -> dict[str, Any]:
-    provided = sum(bool(value) for value in (args.manifest, args.manifest_json, args.decision_json))
+    provided = sum(
+        bool(value)
+        for value in (args.manifest, args.manifest_json, args.decision_json, args.decision_stdin)
+    )
     if provided != 1:
-        raise ValueError("provide exactly one of --decision-json, --manifest, or --manifest-json")
+        raise ValueError(
+            "provide exactly one of --decision-json, --decision-stdin, --manifest, or --manifest-json"
+        )
     if args.manifest:
         return load_json(args.manifest)
-    value = json.loads(args.manifest_json or args.decision_json)
+    raw = sys.stdin.read() if args.decision_stdin else (args.manifest_json or args.decision_json)
+    if args.decision_stdin and not str(raw or "").strip():
+        raise ValueError("--decision-stdin requires one JSON object on standard input")
+    value = json.loads(raw)
     if not isinstance(value, dict):
         raise ValueError("finalization input must contain one JSON object")
     return value
@@ -1938,7 +2032,7 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
         validate_close_request(vault_root, state)
     payload = load_manifest(args)
     decision_input_chars = serialized_chars(payload)
-    if args.decision_json:
+    if args.decision_json or args.decision_stdin:
         manifest = decision_to_manifest(state, payload)
     else:
         manifest = payload
@@ -2136,6 +2230,11 @@ def build_parser() -> argparse.ArgumentParser:
     finalize_parser.add_argument("--manifest", type=Path)
     finalize_parser.add_argument("--manifest-json")
     finalize_parser.add_argument("--decision-json")
+    finalize_parser.add_argument(
+        "--decision-stdin",
+        action="store_true",
+        help="Read one compact decision JSON object from standard input",
+    )
     finalize_parser.add_argument("--close-request", action="store_true", help="Validate and return the completed request capsules")
     finalize_parser.set_defaults(handler=finalize)
 
@@ -2190,7 +2289,10 @@ def main() -> int:
     except Exception as error:
         record_command_failure(args, error)
         raise
-    print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.command == "query":
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    else:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
 

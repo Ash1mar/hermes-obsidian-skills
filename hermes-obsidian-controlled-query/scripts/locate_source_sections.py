@@ -19,6 +19,9 @@ from urllib.parse import urlencode
 
 
 DEFAULT_DEPLOYMENT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "deployment.json"
+MIN_COMPLEMENT_SCORE_RATIO = 1 / 3
+STRUCTURED_COVERAGE_WEIGHT = 6
+TOTAL_COVERAGE_WEIGHT = 2
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -68,6 +71,28 @@ def compact_terms(values: list[str], limit: int = 8) -> list[str]:
     retained: list[str] = []
     for value in sorted(set(values), key=lambda item: (-len(item), item)):
         if any(value in existing for existing in retained):
+            continue
+        retained.append(value)
+        if len(retained) >= limit:
+            break
+    return retained
+
+
+def overlapping_coverage_signal(left: str, right: str) -> bool:
+    """Recognize shifted n-grams as one signal only for coverage packing."""
+    if left in right or right in left:
+        return True
+    overlap_floor = max(2, min(len(left), len(right)) - 1)
+    for size in range(min(len(left), len(right)), overlap_floor - 1, -1):
+        if left[-size:] == right[:size] or right[-size:] == left[:size]:
+            return True
+    return False
+
+
+def compact_coverage_terms(values: list[str], limit: int = 16) -> list[str]:
+    retained: list[str] = []
+    for value in sorted(set(values), key=lambda item: (-len(item), item)):
+        if any(overlapping_coverage_signal(value, existing) for existing in retained):
             continue
         retained.append(value)
         if len(retained) >= limit:
@@ -151,11 +176,31 @@ def candidate_coverage_terms(candidate: dict[str, Any], *fields: str) -> set[str
         for value in matched.get(field, [])
         if str(value).strip()
     ]
-    return set(compact_terms(values, limit=16))
+    return set(compact_coverage_terms(values, limit=16))
 
 
 def marginal_term_weight(terms: set[str], covered: set[str]) -> int:
     return sum(max(1, len(term)) for term in terms - covered)
+
+
+def complementary_coverage_key(
+    candidate: dict[str, Any],
+    covered_all: set[str],
+    covered_structured: set[str],
+) -> tuple[int, int, int, int]:
+    """Balance new query coverage with a candidate's complete answer coverage."""
+    all_terms = candidate_coverage_terms(candidate, "title", "path", "content", "document")
+    structured_terms = candidate_coverage_terms(candidate, "title", "path")
+    marginal = marginal_term_weight(all_terms, covered_all)
+    total = sum(max(1, len(term)) for term in all_terms)
+    structured = marginal_term_weight(structured_terms, covered_structured)
+    completeness = marginal + TOTAL_COVERAGE_WEIGHT * total
+    return (
+        STRUCTURED_COVERAGE_WEIGHT * structured + completeness,
+        structured,
+        completeness,
+        marginal,
+    )
 
 
 def diversify_candidates(candidates: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
@@ -200,17 +245,20 @@ def diversify_candidates(candidates: list[dict[str, Any]], limit: int) -> list[d
             if (str(candidate.get("document_path") or ""), str(candidate.get("section_id") or ""))
             not in selected_keys
         ]
+        primary_score = max(0.0, float(selected[0].get("score") or 0.0))
+        relevant_complements = [
+            candidate
+            for candidate in primary_complements
+            if primary_score <= 0.0
+            or float(candidate.get("score") or 0.0) >= primary_score * MIN_COMPLEMENT_SCORE_RATIO
+        ]
+        if relevant_complements:
+            primary_complements = relevant_complements
         if primary_complements and len(selected) < bounded_limit:
             complement = max(
                 primary_complements,
                 key=lambda item: (
-                    marginal_term_weight(
-                        candidate_coverage_terms(item, "title", "path"), covered_structured
-                    ),
-                    marginal_term_weight(
-                        candidate_coverage_terms(item, "title", "path", "content", "document"),
-                        covered_all,
-                    ),
+                    *complementary_coverage_key(item, covered_all, covered_structured),
                     -ranked_positions[id(item)],
                 ),
             )

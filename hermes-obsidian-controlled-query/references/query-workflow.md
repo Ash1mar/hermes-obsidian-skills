@@ -34,7 +34,7 @@ Optional flags:
 - `--provider-config` for an explicitly deployed Provider configuration;
 - `--top-sections` or `--compact-limit` only when the defaults are demonstrably insufficient.
 
-The response contains the trace ID, up to three automatically registered evidence packets, and a minimal dynamic synthesis contract. It does not expose candidate lists or the full static finalize contract. Section routing and fixed-window diversity remain deterministic inside the script. A disabled or unavailable Provider remains an attempted route but not an effective route.
+The response contains the trace ID, up to three automatically registered evidence packets, and a minimal dynamic synthesis contract. It is serialized as one compact JSON line. Consume it directly; do not use `head`, `tail`, or another line-limiting pipe. `delivery_metrics` describes the evidence copy, while `output_metrics.stdout_chars` measures the exact complete stdout including outer response overhead and its newline. Require `output_metrics.output_complete: true`; never rerun `query`, open the trace, or read source files to recover a downstream-truncated response. The response does not expose candidate lists or the full static finalize contract. Section routing and fixed-window diversity remain deterministic inside the script. A disabled or unavailable Provider remains an attempted route but not an effective route.
 
 ## Compatibility split inspection
 
@@ -61,9 +61,9 @@ Each compact evidence packet contains:
 
 `inspect` reads and registers evidence; it never performs visual verification and never grants verified status. Follow the returned `verification_contract`. For the ordinary route, it states `verification_required: false`, requires `verified_evidence_refs: []`, and requires omission of `page-asset-verification` events.
 
-Also follow the returned `evidence_level_contract`. Non-failed `warn`, `pending`, `qa_required`, `ambiguous`, and `incomplete` metadata, including table/image labels, appear under `non_blocking_diagnostics`; they remain directly usable as `source-backed` when substantive content and original source/pages are present. Do not read `references/evidence-levels.md` for these statuses. Exclude only refs listed under `blocked_conditions`: no substantive content, unresolved source/pages, content truncation, or failed/unavailable-class packet, source-map, or asset status. Actual source conflict and explicitly required incomplete visual verification remain hard blockers.
+Also follow the returned `evidence_level_contract`. Non-failed `warn`, `pending`, `qa_required`, `ambiguous`, and `incomplete` metadata, including table/image labels, appear under `non_blocking_diagnostics`; they remain directly usable as `source-backed` when substantive content and original source/pages are present. Do not read `references/evidence-levels.md` for these statuses. Cite only `usable_evidence_refs`; `excluded_evidence_refs` have packet-local blockers listed in `packet_blocked_conditions` and do not disqualify other usable refs. Actual source conflict and explicitly required incomplete visual verification remain hard blockers.
 
-Before delivery, `inspect` applies one aggregate 30,000-character budget across the selected packets. It first removes exact duplicate asset Markdown and ordinary-route visual-audit fields, then—only when still over budget—keeps query-matched Markdown blocks and adjacent context. A packet or asset marked `delivery_excerpted` is a shortened agent copy; it is not a failed source read and must not be confused with `content_truncated`. `delivery_metrics` and the diagnostic `evidence-packet-delivery` event record `full_packet_chars`, `agent_packet_chars`, saved characters, excerpted fields, and whether the budget was satisfied. Do not open the full trace or source to reverse this delivery optimization when the visible content already answers the question.
+Before delivery, `inspect` applies one aggregate 30,000-character budget across the selected packets. It first removes exact duplicate asset Markdown and ordinary-route visual-audit fields, then—only when still over budget—keeps query-matched Markdown blocks and adjacent context. A packet or asset marked `delivery_excerpted` is a shortened agent copy; it is not a failed source read and must not be confused with `content_truncated`. `delivery_metrics` and the diagnostic `evidence-packet-delivery` event record `full_packet_chars`, `agent_packet_chars`, saved characters, excerpted fields, and whether the evidence budget was satisfied. The combined command separately records total compact stdout and response overhead in `output_metrics`; the evidence budget is not falsely presented as a total-output limit. Do not open the full trace or source to reverse delivery optimization.
 
 The full provenance catalog and complete source ranges remain in the trace sidecar and are inherited by packet reference; the underlying registered source remains reconstructible from those ranges. The packet is navigation and verification material, not a user-facing citation.
 
@@ -81,11 +81,13 @@ Do not probe `pdftotext`, Python PDF packages, alternative binaries, Bundle list
 
 ## Finalize
 
-Use `--decision-json`. For ordinary-minimal mode, send only `claims` and `conclusion`; do not write a temporary manifest:
+Prefer `--decision-stdin` so JSON bypasses shell argument quoting. For ordinary-minimal mode, send only `claims` and `conclusion`; do not write a temporary manifest or decision file:
 
 ```bash
 python3 "<query-skill-root>/scripts/query_session.py" finalize \
-  <vault-root> <trace-id> --decision-json '<json-object>'
+  <vault-root> <trace-id> --decision-stdin <<'JSON'
+{"claims":[{"text":"Concise final claim.","evidence_refs":["P1"]}],"conclusion":"Short supported conclusion."}
+JSON
 ```
 
 Keep the conclusion within the scope supported by inspected evidence. Express a narrower scope as a short evidence-derived qualification without launching additional retrieval merely to make the answer broader. This is a general synthesis rule, not a domain-specific routing or answer template.
@@ -107,6 +109,8 @@ Ordinary-minimal decision shape:
 ```
 
 The script supplies the omitted ordinary defaults. Only when `query --verification-required` selected the visual route, `verify` returned `ready`, and the registered carrier was actually viewed may `verified_evidence_refs` contain packet refs; each such ref then requires a completed `page-asset-verification` event with non-empty `inspected_paths`.
+
+Before using those defaults, apply the returned `semantic_sufficiency_gate`: visible packet validity is not proof that every requested output was answered. When any requested output lacks support, use the returned `incomplete_fallback` without reading another reference. Set `status: incomplete`, use `source-backed` if supported requested claims remain and otherwise `gap`, keep only those supported claims, and provide at least one material string in `unresolved`. The script defaults verification refs and events to empty on this ordinary incomplete route and renders the conclusion plus unresolved boundary even when there are no supported claims.
 
 Follow `event_submission_contract` as well. For an ordinary query, submit `events: []`; query-session already records candidate selection, inspect, reading, assets, and provenance. Do not add a claim, comparison, or evidence ref merely to make an optional event reference count as used.
 
