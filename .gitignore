@@ -5,6 +5,7 @@ __pycache__/
 venv/
 .env
 .env.*
+!qmd-like-rag/deploy/intranet/.env.example
 *.log
 *.egg-info/
 build/

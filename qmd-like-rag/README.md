@@ -104,19 +104,27 @@ install -d -m 0750 /data/data/hermes_agent0/.hermes/qmd-like-rag/config
 install -d -o 10001 -g 10001 -m 0750 /data/data/hermes_agent0/.hermes/phq/qmd-like-rag-state
 install -o 10001 -g 10001 -m 0640 config/intranet.example.json \
   /data/data/hermes_agent0/.hermes/qmd-like-rag/config/intranet.json
+cp deploy/intranet/.env.example deploy/intranet/.env
 docker network inspect hermes-runtime >/dev/null || docker network create hermes-runtime
-docker compose -f deploy/intranet/compose.example.yml up -d
+docker compose --env-file deploy/intranet/.env \
+  -f deploy/intranet/compose.example.yml config
+docker compose --env-file deploy/intranet/.env \
+  -f deploy/intranet/compose.example.yml up -d
 ```
+
+Open `deploy/intranet/.env` and verify all three host paths before either Compose command. The Compose file uses required-variable expressions and refuses to create a container when any path variable is absent. The real `.env` is ignored by Git; only `.env.example` is versioned.
 
 The existing Hermes container must also join `hermes-runtime`. From Hermes, `qmd-like-rag` must resolve as a service name. Do not publish port 8781 on the host unless an external client actually needs it.
 
 Validate in this order before enabling either Skill adapter:
 
 ```bash
-docker compose -f deploy/intranet/compose.example.yml exec qmd-like-rag \
+docker compose --env-file deploy/intranet/.env \
+  -f deploy/intranet/compose.example.yml exec qmd-like-rag \
   qmd-like-rag status --vault-root /opt/data/phq/testVault \
   --config /etc/qmd-like-rag/intranet.json
-docker compose -f deploy/intranet/compose.example.yml exec qmd-like-rag \
+docker compose --env-file deploy/intranet/.env \
+  -f deploy/intranet/compose.example.yml exec qmd-like-rag \
   qmd-like-rag sync --rebuild --vault-root /opt/data/phq/testVault \
   --config /etc/qmd-like-rag/intranet.json
 curl -fsS http://qmd-like-rag:8781/status
