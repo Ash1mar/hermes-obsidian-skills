@@ -14,8 +14,10 @@ sys.path.insert(0, str(SRC))
 
 from qmd_like_rag.chunker import chunk_markdown_file
 from qmd_like_rag.config import ProviderConfig
+from qmd_like_rag.embeddings import OpenAIHttpEmbeddingBackend
 from qmd_like_rag.contract import normalize_candidate
 from qmd_like_rag.corpus import resolve_sources
+from qmd_like_rag.reranker import OpenAIHttpReranker
 from qmd_like_rag.runtime import read_status, recall
 
 
@@ -113,6 +115,11 @@ def test_branch_examples_keep_provider_state_outside_the_vault() -> None:
     assert main["embedding_dimension"] == 1024
     assert intranet["state_root"] == "/opt/data/phq/qmd-like-rag-state"
     assert intranet["device"] == "cpu"
+    assert intranet["embedding_backend"] == "openai_http"
+    assert intranet["reranker_backend"] == "openai_http"
+    assert intranet["model_audit_mode"] == "name-only"
+    assert intranet["embedding_revision"] is None
+    assert intranet["reranker_revision"] is None
     assert not intranet["state_root"].startswith("/opt/data/phq/testVault/")
 
 
@@ -157,3 +164,120 @@ def test_recall_rejects_an_index_built_with_different_models(tmp_path: Path) -> 
 
     assert result["candidates"] == []
     assert result["warnings"] == ["index-model-mismatch"]
+
+
+def test_new_remote_defaults_do_not_change_legacy_local_fingerprints(tmp_path: Path) -> None:
+    config = ProviderConfig(vault_root=tmp_path / "vault", state_root=tmp_path / "state")
+    portable = config.portable_dict()
+    assert portable == {
+        "vault_id": config.vault_id,
+        "include_patterns": config.include_patterns,
+        "embedding_model": "BAAI/bge-m3",
+        "reranker_model": "BAAI/bge-reranker-large",
+        "embedding_revision": None,
+        "reranker_revision": None,
+        "embedding_dimension": None,
+        "local_files_only": False,
+        "require_immutable_model_revisions": False,
+        "device": "cpu",
+        "use_reranker": True,
+        "chunk_size": 800,
+        "chunk_overlap": 0.15,
+        "top_k": 20,
+        "rerank_top_k": 12,
+        "rrf_k": 60,
+        "dedup_similarity_threshold": 0.7,
+        "max_same_parent": 1,
+        "ignore_chunk_types": ["navigation", "backlink"],
+    }
+    assert config.model_manifest() == {
+        "embedding": {"identity": "BAAI/bge-m3", "revision": None, "dimension": None},
+        "reranker": {"identity": "BAAI/bge-reranker-large", "revision": None},
+        "local_files_only": False,
+    }
+
+
+def remote_config(tmp_path: Path) -> ProviderConfig:
+    return ProviderConfig(
+        vault_root=tmp_path / "vault",
+        state_root=tmp_path / "state",
+        embedding_backend="openai_http",
+        embedding_endpoint="http://models.internal/v1/embeddings",
+        embedding_model="bge-m3",
+        embedding_dimension=3,
+        embedding_batch_size=2,
+        reranker_backend="openai_http",
+        reranker_endpoint="http://models.internal/v1/rerank",
+        reranker_model="bge-reranker-v2-m3",
+        model_audit_mode="name-only",
+    )
+
+
+def test_remote_config_is_name_only_and_redacts_endpoints(tmp_path: Path) -> None:
+    config = remote_config(tmp_path)
+    portable = config.portable_dict()
+    serialized = json.dumps(portable)
+    assert "models.internal" not in serialized
+    assert portable["embedding_endpoint_fingerprint"].startswith("sha256:")
+    assert portable["reranker_endpoint_fingerprint"].startswith("sha256:")
+    assert config.model_manifest()["embedding"] == {
+        "identity": "bge-m3",
+        "revision": None,
+        "dimension": 3,
+        "backend": "openai_http",
+        "assurance": "name-only",
+    }
+
+
+def test_batch_embedding_uses_array_and_restores_index_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    calls: list[dict] = []
+
+    def fake_post(endpoint, payload, **kwargs):
+        calls.append(payload)
+        return {
+            "object": "list",
+            "model": "/srv/models/bge-m3",
+            "data": [
+                {"object": "embedding", "index": 1, "embedding": [4, 5, 6]},
+                {"object": "embedding", "index": 0, "embedding": [1, 2, 3]},
+            ],
+        }
+
+    monkeypatch.setattr("qmd_like_rag.embeddings.post_json", fake_post)
+    result = OpenAIHttpEmbeddingBackend(remote_config(tmp_path)).embed(["甲", "乙"])
+    assert calls == [{"input": ["甲", "乙"]}]
+    assert result == [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+
+
+def test_batch_embedding_rejects_wrong_dimension(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "qmd_like_rag.embeddings.post_json",
+        lambda *args, **kwargs: {"data": [{"index": 0, "embedding": [1, 2]}]},
+    )
+    with pytest.raises(RuntimeError, match="dimension mismatch"):
+        OpenAIHttpEmbeddingBackend(remote_config(tmp_path)).embed(["甲"])
+
+
+def test_remote_reranker_maps_results_by_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        "qmd_like_rag.reranker.post_json",
+        lambda endpoint, payload, **kwargs: {
+            "id": "rerank-test",
+            "model": "bge-reranker-v2-m3",
+            "results": [
+                {"index": 1, "document": {"text": "乙"}, "relevance_score": 0.9},
+                {"index": 0, "document": {"text": "甲"}, "relevance_score": 0.2},
+            ],
+        },
+    )
+    result = OpenAIHttpReranker(remote_config(tmp_path)).rerank(
+        "问题", [{"id": "a", "text": "甲"}, {"id": "b", "text": "乙"}], 2
+    )
+    assert [item["id"] for item in result] == ["b", "a"]
+    assert all(item["score_type"] == "remote-cross-encoder" for item in result)

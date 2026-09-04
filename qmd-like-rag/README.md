@@ -53,7 +53,7 @@ host config  /root/.config/qmd-like-rag/main.json
 
 `/usr/local/bin/qmd-like-rag` is only a stable symlink to the virtual environment's console command; it is not another installation. The virtual environment contains replaceable software. The state root contains mutable, rebuildable indexes and must survive routine virtual-environment replacement. `config/main.example.json` is the source template for the host config.
 
-On `intranet`, do not deploy QMD. Install this package locally when the Hermes host can run it. The Vault is `/opt/data/phq/testVault`; the default example places Provider state beside that Vault but outside it:
+On `intranet`, do not deploy QMD. Run this package as a CPU-only Docker service on the Hermes server. It reads the same host Vault through its own read-only bind mount and keeps indexes in a separate read-write mount:
 
 ```text
 vault       /opt/data/phq/testVault
@@ -61,9 +61,13 @@ state root  /opt/data/phq/qmd-like-rag-state
 vault state /opt/data/phq/qmd-like-rag-state/<vault-id>/
 ```
 
-Set the actual Linux-local sibling path through `state_root` in the deployment's Provider config, using `config/intranet.example.json` as the template. Do not put the state root below `/opt/data/phq/testVault`, and exclude it from Obsidian, Vault synchronization, and governed-content backups. If retrieval must run on another server, start the same package with `qmd-like-rag serve` and configure the Skill adapter to use HTTP. The initial HTTP `sync` route assumes that the provider process can read its configured Vault path; document-upload synchronization is a later extension.
+`config/intranet.example.json` uses the confirmed batch embedding endpoint and OpenAI-style rerank endpoint. The Huawei accelerator is owned by those model services; the Provider container does not need Huawei drivers, Torch, CUDA, or model files. It validates the returned embedding count, indices, finite values, and configured 1024 dimension before writing vectors.
 
-Both repository branches carry Provider `0.3.0`. This source-level convergence is safe before intranet models are deployed: with both Skill adapters checked in as `enabled: false`, neither query nor ingest starts the command or HTTP transport. Installing dependencies, placing audited model revisions, building an index, and enabling either adapter remain explicit deployment steps.
+The intranet model audit is deliberately `name-only`: the logical names and embedding dimension are recorded while revisions remain JSON `null`. This is a lower-assurance transitional mode, not a fabricated immutable revision. A model service change under the same name cannot be detected automatically; after such a change, rebuild the complete index. Endpoint URLs are represented in the portable manifest only by SHA-256 fingerprints, and API tokens are never written there.
+
+The Provider and Hermes containers do not see each other's filesystems. They independently mount the same host Vault, and communicate over the shared Docker network using `http://qmd-like-rag:8781`. This is why colocating them on one server remains useful even though the runtime call is HTTP.
+
+Both repository branches carry the same Provider release after `main` is merged forward into `intranet`. Keeping intranet adapters disabled until health, initial rebuild, status, and manifest checks pass remains an explicit deployment gate.
 
 ## HTTP transport
 
@@ -82,7 +86,43 @@ qmd-like-rag serve \
   --port 8781
 ```
 
-Bind beyond localhost only behind the intranet's authentication and network controls.
+Bind beyond localhost only on the private Docker network and behind the intranet's network controls. The built-in service does not add application authentication.
+
+## Intranet container deployment
+
+Build the same source revision that will be tagged for the internal release:
+
+```bash
+cd qmd-like-rag
+docker build -t qmd-like-rag:0.4.0-intranet .
+```
+
+On the target host, prepare configuration and state. UID/GID `10001` is the non-root user inside the image:
+
+```bash
+install -d -m 0750 /data/data.hermes/qmd-like-rag/config
+install -d -o 10001 -g 10001 -m 0750 /data/data.hermes/phq/qmd-like-rag-state
+install -o 10001 -g 10001 -m 0640 config/intranet.example.json \
+  /data/data.hermes/qmd-like-rag/config/intranet.json
+docker network inspect hermes-runtime >/dev/null || docker network create hermes-runtime
+docker compose -f deploy/intranet/compose.example.yml up -d
+```
+
+The existing Hermes container must also join `hermes-runtime`. From Hermes, `qmd-like-rag` must resolve as a service name. Do not publish port 8781 on the host unless an external client actually needs it.
+
+Validate in this order before enabling either Skill adapter:
+
+```bash
+docker compose -f deploy/intranet/compose.example.yml exec qmd-like-rag \
+  qmd-like-rag status --vault-root /opt/data/phq/testVault \
+  --config /etc/qmd-like-rag/intranet.json
+docker compose -f deploy/intranet/compose.example.yml exec qmd-like-rag \
+  qmd-like-rag sync --rebuild --vault-root /opt/data/phq/testVault \
+  --config /etc/qmd-like-rag/intranet.json
+curl -fsS http://qmd-like-rag:8781/status
+```
+
+Run the first rebuild from a container on the shared network, then enable ingest long enough to write the portable Vault manifest. Enable query only after status and manifest fingerprints agree. An image built on an internet-connected workstation can be exported with `docker save`, copied through the approved transfer path, loaded with `docker load`, and run on the intranet host; the target must have a compatible Linux container architecture and access to the internal model URLs.
 
 ## Installation
 
@@ -95,7 +135,7 @@ python3 -m venv /root/.venvs/qmd-like-rag
 /root/.venvs/qmd-like-rag/bin/python -m pip install \
   -r /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag/requirements-gpu-cu130.txt
 /root/.venvs/qmd-like-rag/bin/python -m pip install \
-  /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag
+  '/mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag[local-models]'
 install -d -m 0755 /root/.config/qmd-like-rag
 install -m 0644 \
   /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/qmd-like-rag/config/main.example.json \
@@ -105,7 +145,7 @@ ln -s /root/.venvs/qmd-like-rag/bin/qmd-like-rag /usr/local/bin/qmd-like-rag
 
 The CUDA 13.0 lock was validated on WSL with Torch `2.11.0+cu130` and an NVIDIA GeForce RTX 5070 Ti Laptop GPU. Reusing locally installed wheel payloads to avoid a second large download is an installation optimization only: copy them into the independent qmd-like-rag environment by their wheel `RECORD` manifests, then require `pip check` and a real CUDA tensor operation to pass. Never make qmd-like-rag import MinerU's environment at runtime.
 
-Replace an existing stable link only after confirming its resolved target belongs to the prior qmd-like-rag deployment. `qmd-like-rag doctor` must report Provider `0.3.0`, `cuda_available: true`, CUDA `13.0`, and the expected GPU on the tested `main` host. The `main` host config sets `device` to `cuda`, which is passed explicitly to both the embedding model and reranker.
+Replace an existing stable link only after confirming its resolved target belongs to the prior qmd-like-rag deployment. `qmd-like-rag doctor` must report the expected Provider release, `cuda_available: true`, CUDA `13.0`, and the expected GPU on the tested `main` host. The `main` host config sets `device` to `cuda`, which is passed explicitly to both the embedding model and reranker. The new backend fields are omitted from legacy local-model fingerprints, so upgrading alone does not invalidate an existing compatible WSL index.
 
 Pin Hugging Face models to full commit hashes in Provider configuration. Download them as a separate deployment step, then keep `local_files_only: true` during sync and recall so a running Provider cannot silently move to a newer model revision. The model audit record includes identity, immutable revision, embedding dimension, and a fingerprint derived from those values.
 

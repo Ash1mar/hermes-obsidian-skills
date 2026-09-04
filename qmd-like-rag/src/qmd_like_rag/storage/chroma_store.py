@@ -8,33 +8,43 @@ class ChromaStore:
         try:
             import chromadb
             from chromadb.config import Settings
-            from chromadb.utils import embedding_functions
         except ImportError as exc:
             raise RuntimeError("Install qmd-like-rag runtime dependencies before using Chroma") from exc
 
         self.config = config
         self.path = config.chroma_path()
         self.path.mkdir(parents=True, exist_ok=True)
-        self.embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-            model_name=config.embedding_model,
-            device=config.device,
-            revision=config.embedding_revision,
-            local_files_only=config.local_files_only,
-        )
-        self.embedding_dimension = int(self.embed_fn._model.get_sentence_embedding_dimension())
-        if (
-            config.embedding_dimension is not None
-            and self.embedding_dimension != config.embedding_dimension
-        ):
-            raise RuntimeError(
-                "Embedding dimension mismatch: "
-                f"expected {config.embedding_dimension}, got {self.embedding_dimension}"
+        self.remote_embeddings = config.embedding_backend == "openai_http"
+        if self.remote_embeddings:
+            from ..embeddings import OpenAIHttpEmbeddingBackend
+
+            self.embedder = OpenAIHttpEmbeddingBackend(config)
+            self.embed_fn = None
+            self.embedding_dimension = self.embedder.embedding_dimension
+        else:
+            from chromadb.utils import embedding_functions
+
+            self.embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+                model_name=config.embedding_model,
+                device=config.device,
+                revision=config.embedding_revision,
+                local_files_only=config.local_files_only,
             )
+            self.embedder = None
+            self.embedding_dimension = int(self.embed_fn._model.get_sentence_embedding_dimension())
+            if config.embedding_dimension is not None and self.embedding_dimension != config.embedding_dimension:
+                raise RuntimeError(
+                    "Embedding dimension mismatch: "
+                    f"expected {config.embedding_dimension}, got {self.embedding_dimension}"
+                )
         self.client = chromadb.PersistentClient(
             path=str(self.path), settings=Settings(anonymized_telemetry=False)
         )
-        self.collection = self.client.get_or_create_collection(
-            name=config.collection_name,
+        self.collection = self._collection()
+
+    def _collection(self):
+        return self.client.get_or_create_collection(
+            name=self.config.collection_name,
             embedding_function=self.embed_fn,
             metadata={"hnsw:space": "cosine"},
         )
@@ -44,11 +54,7 @@ class ChromaStore:
             self.client.delete_collection(self.config.collection_name)
         except Exception:
             pass
-        self.collection = self.client.get_or_create_collection(
-            name=self.config.collection_name,
-            embedding_function=self.embed_fn,
-            metadata={"hnsw:space": "cosine"},
-        )
+        self.collection = self._collection()
 
     def upsert(self, chunks: list[dict[str, Any]]) -> None:
         if not chunks:
@@ -68,7 +74,10 @@ class ChromaStore:
             }
             for chunk in chunks
         ]
-        self.collection.upsert(ids=ids, documents=documents, metadatas=metadata)
+        kwargs: dict[str, Any] = {"ids": ids, "documents": documents, "metadatas": metadata}
+        if self.remote_embeddings:
+            kwargs["embeddings"] = self.embedder.embed(documents)
+        self.collection.upsert(**kwargs)
 
     def delete_source(self, source: str) -> None:
         # Chroma versions differ in how they handle a delete against an empty
@@ -84,11 +93,15 @@ class ChromaStore:
         count = self.count()
         if count == 0:
             return []
-        result = self.collection.query(
-            query_texts=[query],
-            n_results=min(top_k, count),
-            include=["documents", "metadatas", "distances"],
-        )
+        query_args: dict[str, Any] = {
+            "n_results": min(top_k, count),
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if self.remote_embeddings:
+            query_args["query_embeddings"] = self.embedder.embed([query])
+        else:
+            query_args["query_texts"] = [query]
+        result = self.collection.query(**query_args)
         ids = result.get("ids", [[]])[0]
         documents = result.get("documents", [[]])[0]
         metadatas = result.get("metadatas", [[]])[0]

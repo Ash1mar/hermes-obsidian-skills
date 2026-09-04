@@ -91,9 +91,9 @@ hermes-obsidian-skills/
 
 `qmd-like-rag/` is derived from the earlier `qmd-rag-v2.1` prototype and retains Markdown chunking, Chroma, BM25, RRF, deduplication, parent expansion, reranking, and incremental fingerprints. Standalone LLM answer generation and the prototype Skill wrapper were removed because controlled-query owns answer synthesis and evidence verification.
 
-The package exposes the `qmd-like-rag` CLI and an optional HTTP server. On `main`, install it into a WSL-native virtual environment and use the Skill adapters' command transport. On `intranet`, do not deploy QMD; install the same tagged qmd-like-rag release locally or configure the branch's Skill adapters to call its HTTP transport.
+The package exposes the `qmd-like-rag` CLI and an optional HTTP server. On `main`, install it with the `local-models` extra into a WSL-native virtual environment and use the Skill adapters' command transport. On `intranet`, do not deploy QMD; run the same tagged qmd-like-rag release as a CPU-only container and let it call the approved remote embedding/reranker services.
 
-Both maintained branches now carry qmd-like-rag `0.3.0` and the stable `hermes-coarse-recall/v1` protocol. Provider source and Skills share one Git revision, but deployment remains separate: copying either branch does not install qmd-like-rag, its model dependencies, models, or indexes. A deployment whose query and ingest adapters remain `enabled: false` never invokes the Provider, so an intranet checkout may be upgraded before its Provider runtime is provisioned. See `qmd-like-rag/README.md`.
+Both maintained branches receive qmd-like-rag from `main` and retain the stable `hermes-coarse-recall/v1` protocol. Provider source and Skills share one Git revision, but deployment remains separate: copying either branch does not install qmd-like-rag, its model services, or indexes. A deployment whose query and ingest adapters remain `enabled: false` never invokes the Provider, so an intranet checkout may be upgraded before its Provider runtime is provisioned. See `qmd-like-rag/README.md`.
 
 ## Validation
 

@@ -50,6 +50,17 @@ class ProviderConfig:
     require_immutable_model_revisions: bool = False
     device: str = "cpu"
     use_reranker: bool = True
+    embedding_backend: str = "sentence_transformers"
+    reranker_backend: str = "cross_encoder"
+    embedding_endpoint: str | None = None
+    reranker_endpoint: str | None = None
+    embedding_request_model: str | None = None
+    embedding_api_key_env: str | None = None
+    reranker_api_key_env: str | None = None
+    embedding_batch_size: int = 32
+    model_request_timeout_seconds: float = 120.0
+    model_request_max_retries: int = 2
+    model_audit_mode: str | None = None
     chunk_size: int = 800
     chunk_overlap: float = 0.15
     top_k: int = 20
@@ -72,7 +83,25 @@ class ProviderConfig:
             raise ValueError("device must be one of: cpu, cuda, mps")
         if self.embedding_dimension is not None and self.embedding_dimension < 1:
             raise ValueError("embedding_dimension must be positive")
-        if self.require_immutable_model_revisions:
+        if self.embedding_backend not in {"sentence_transformers", "openai_http"}:
+            raise ValueError("embedding_backend must be one of: sentence_transformers, openai_http")
+        if self.reranker_backend not in {"cross_encoder", "openai_http"}:
+            raise ValueError("reranker_backend must be one of: cross_encoder, openai_http")
+        if self.embedding_batch_size < 1:
+            raise ValueError("embedding_batch_size must be positive")
+        if self.model_request_timeout_seconds <= 0 or self.model_request_max_retries < 0:
+            raise ValueError("model request timeout must be positive and retries must be non-negative")
+        if self.model_audit_mode not in {None, "immutable-revision", "name-only"}:
+            raise ValueError("model_audit_mode must be one of: immutable-revision, name-only")
+        if self.embedding_backend == "openai_http":
+            if not self.embedding_endpoint:
+                raise ValueError("embedding_endpoint is required for openai_http")
+            if self.embedding_dimension is None:
+                raise ValueError("embedding_dimension is required for openai_http")
+        if self.use_reranker and self.reranker_backend == "openai_http" and not self.reranker_endpoint:
+            raise ValueError("reranker_endpoint is required for openai_http")
+        immutable_audit = self.require_immutable_model_revisions or self.model_audit_mode == "immutable-revision"
+        if immutable_audit:
             revision_pattern = re.compile(r"^[0-9a-f]{40}$")
             for name, revision in (
                 ("embedding_revision", self.embedding_revision),
@@ -114,7 +143,41 @@ class ProviderConfig:
         data = asdict(self)
         data.pop("vault_root", None)
         data.pop("state_root", None)
+        new_fields = {
+            "embedding_backend",
+            "reranker_backend",
+            "embedding_endpoint",
+            "reranker_endpoint",
+            "embedding_request_model",
+            "embedding_api_key_env",
+            "reranker_api_key_env",
+            "embedding_batch_size",
+            "model_request_timeout_seconds",
+            "model_request_max_retries",
+            "model_audit_mode",
+        }
+        remote = self.embedding_backend != "sentence_transformers" or (
+            self.use_reranker and self.reranker_backend != "cross_encoder"
+        )
+        if not remote and self.model_audit_mode is None:
+            # Keep 0.3.x local-model fingerprints byte-for-byte compatible so
+            # existing WSL indexes remain usable after upgrading the package.
+            for name in new_fields:
+                data.pop(name, None)
+        else:
+            embedding_endpoint = data.pop("embedding_endpoint", None)
+            reranker_endpoint = data.pop("reranker_endpoint", None)
+            data.pop("embedding_api_key_env", None)
+            data.pop("reranker_api_key_env", None)
+            if embedding_endpoint:
+                data["embedding_endpoint_fingerprint"] = self._endpoint_fingerprint(embedding_endpoint)
+            if reranker_endpoint:
+                data["reranker_endpoint_fingerprint"] = self._endpoint_fingerprint(reranker_endpoint)
         return data
+
+    @staticmethod
+    def _endpoint_fingerprint(endpoint: str) -> str:
+        return "sha256:" + hashlib.sha256(endpoint.encode("utf-8")).hexdigest()
 
     def config_fingerprint(self) -> str:
         payload = json.dumps(self.portable_dict(), ensure_ascii=False, sort_keys=True).encode("utf-8")
@@ -125,7 +188,7 @@ class ProviderConfig:
         return "sha256:" + hashlib.sha256(payload).hexdigest()
 
     def model_manifest(self) -> dict[str, Any]:
-        return {
+        manifest: dict[str, Any] = {
             "embedding": {
                 "identity": self.embedding_model,
                 "revision": self.embedding_revision,
@@ -141,6 +204,21 @@ class ProviderConfig:
             ),
             "local_files_only": self.local_files_only,
         }
+        remote = self.embedding_backend != "sentence_transformers" or (
+            self.use_reranker and self.reranker_backend != "cross_encoder"
+        )
+        if remote or self.model_audit_mode is not None:
+            assurance = self.model_audit_mode or (
+                "immutable-revision" if self.require_immutable_model_revisions else "name-only"
+            )
+            manifest["embedding"].update(
+                {"backend": self.embedding_backend, "assurance": assurance}
+            )
+            if manifest["reranker"] is not None:
+                manifest["reranker"].update(
+                    {"backend": self.reranker_backend, "assurance": assurance}
+                )
+        return manifest
 
 
 def load_config(

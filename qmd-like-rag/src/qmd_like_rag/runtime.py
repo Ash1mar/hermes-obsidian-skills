@@ -58,7 +58,7 @@ def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict
             warnings=compatibility_warnings,
         )
     from .indexer import HybridIndexer
-    from .reranker import BgeReranker
+    from .reranker import configured_reranker
     from .retriever import HybridRetriever
 
     indexer = HybridIndexer(config)
@@ -68,12 +68,7 @@ def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict
     warnings: list[str] = []
     if config.use_reranker and raw:
         try:
-            raw = BgeReranker(
-                config.reranker_model,
-                config.device,
-                revision=config.reranker_revision,
-                local_files_only=config.local_files_only,
-            ).rerank(query, raw, limit)
+            raw = configured_reranker(config).rerank(query, raw, limit)
         except Exception as exc:
             warnings.append(f"reranker-unavailable:{type(exc).__name__}")
             raw = raw[:limit]
@@ -117,7 +112,8 @@ def doctor() -> dict[str, Any]:
         "protocol_version": PROTOCOL_VERSION,
         "provider": PROVIDER_ID,
         "provider_version": __version__,
-        "status": "ok" if all(packages.values()) else "unavailable",
+        "status": "ok" if all(packages[name] for name in ("chromadb", "rank_bm25", "tiktoken")) else "unavailable",
         "packages": packages,
+        "optional_local_models_available": packages["sentence_transformers"],
         "torch": torch_runtime,
     }
