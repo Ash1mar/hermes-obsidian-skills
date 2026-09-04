@@ -14,9 +14,9 @@ services:
       - --port
       - "8781"
     volumes:
-      - /data/data.hermes/phq/testVault:/opt/data/phq/testVault:ro
-      - /data/data.hermes/phq/qmd-like-rag-state:/opt/data/phq/qmd-like-rag-state:rw
-      - /data/data.hermes/qmd-like-rag/config/intranet.json:/etc/qmd-like-rag/intranet.json:ro
+      - /data/data/hermes_agent0/.hermes/phq/testVault:/opt/data/phq/testVault:ro
+      - /data/data/hermes_agent0/.hermes/phq/qmd-like-rag-state:/opt/data/phq/qmd-like-rag-state:rw
+      - /data/data/hermes_agent0/.hermes/qmd-like-rag/config/intranet.json:/etc/qmd-like-rag/intranet.json:ro
     networks:
       - hermes-runtime
     healthcheck:

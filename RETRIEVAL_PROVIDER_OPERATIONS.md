@@ -124,7 +124,7 @@ main 和 intranet 应分别维护各自主机的部署开关。intranet 默认�
 
 ## intranet 容器门禁
 
-intranet 的 Hermes 与 qmd-like-rag 容器必须加入同一个 Docker 网络。两个容器分别将宿主机 `/data/data.hermes/phq/testVault` 挂载为 `/opt/data/phq/testVault`；qmd-like-rag 额外挂载宿主机 `/data/data.hermes/phq/qmd-like-rag-state` 为可写状态目录。Hermes 不需要看见 Provider 的状态目录。
+intranet 的 Hermes 与 qmd-like-rag 容器必须加入同一个 Docker 网络。两个容器分别将宿主机 `/data/data/hermes_agent0/.hermes/phq/testVault` 挂载为 `/opt/data/phq/testVault`；qmd-like-rag 额外挂载宿主机 `/data/data/hermes_agent0/.hermes/phq/qmd-like-rag-state` 为可写状态目录。Hermes 不需要看见 Provider 的状态目录。
 
 Provider 使用 `config/intranet.example.json` 中的远端 `bge-m3` batch embedding 和 `bge-reranker-v2-m3` rerank 服务。当前审计模式为 `name-only`，revision 必须保持 `null`，不得填写猜测值。若模型服务在名称不变的情况下升级，运维方必须主动执行完整 rebuild，并重新生成 Vault manifest。
 

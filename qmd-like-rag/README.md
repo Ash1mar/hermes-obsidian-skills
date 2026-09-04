@@ -100,10 +100,10 @@ docker build -t qmd-like-rag:0.4.0-intranet .
 On the target host, prepare configuration and state. UID/GID `10001` is the non-root user inside the image:
 
 ```bash
-install -d -m 0750 /data/data.hermes/qmd-like-rag/config
-install -d -o 10001 -g 10001 -m 0750 /data/data.hermes/phq/qmd-like-rag-state
+install -d -m 0750 /data/data/hermes_agent0/.hermes/qmd-like-rag/config
+install -d -o 10001 -g 10001 -m 0750 /data/data/hermes_agent0/.hermes/phq/qmd-like-rag-state
 install -o 10001 -g 10001 -m 0640 config/intranet.example.json \
-  /data/data.hermes/qmd-like-rag/config/intranet.json
+  /data/data/hermes_agent0/.hermes/qmd-like-rag/config/intranet.json
 docker network inspect hermes-runtime >/dev/null || docker network create hermes-runtime
 docker compose -f deploy/intranet/compose.example.yml up -d
 ```
