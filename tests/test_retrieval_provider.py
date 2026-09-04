@@ -98,8 +98,14 @@ def test_default_provider_configs_disable_query_and_sync_until_deployed(tmp_path
         check=True,
     )
     query_result = json.loads(query.stdout)
-    assert json.loads(QUERY_CONFIG.read_text(encoding="utf-8"))["enabled"] is False
-    assert json.loads(INGEST_CONFIG.read_text(encoding="utf-8"))["enabled"] is False
+    query_config = json.loads(QUERY_CONFIG.read_text(encoding="utf-8"))
+    ingest_config = json.loads(INGEST_CONFIG.read_text(encoding="utf-8"))
+    assert query_config["enabled"] is False
+    assert ingest_config["enabled"] is False
+    assert query_config["transport"] == "http"
+    assert ingest_config["transport"] == "http"
+    assert query_config["base_url"] == "http://qmd-like-rag:8781"
+    assert ingest_config["base_url"] == "http://qmd-like-rag:8781"
     assert query_result["status"] == "disabled"
     assert query_result["candidates"] == []
 

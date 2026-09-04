@@ -1,7 +1,7 @@
 {
   "provider": "qmd-like-rag",
   "enabled": false,
-  "transport": "command",
-  "command": ["qmd-like-rag"],
-  "timeout_seconds": 60
+  "transport": "http",
+  "base_url": "http://qmd-like-rag:8781",
+  "timeout_seconds": 120
 }
