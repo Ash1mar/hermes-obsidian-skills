@@ -14,9 +14,9 @@ services:
       - --port
       - "8781"
     volumes:
-      - "${QMD_VAULT_HOST_PATH:?set QMD_VAULT_HOST_PATH}:/opt/data/phq/testVault:ro"
-      - "${QMD_STATE_HOST_PATH:?set QMD_STATE_HOST_PATH}:/opt/data/phq/qmd-like-rag-state:rw"
-      - "${QMD_CONFIG_HOST_PATH:?set QMD_CONFIG_HOST_PATH}:/etc/qmd-like-rag/intranet.json:ro"
+      - "${HERMES_HOST_DATA_ROOT:?set HERMES_HOST_DATA_ROOT}/phq/testVault:/opt/data/phq/testVault:ro"
+      - "${HERMES_HOST_DATA_ROOT:?set HERMES_HOST_DATA_ROOT}/phq/qmd-like-rag-state:/opt/data/phq/qmd-like-rag-state:rw"
+      - "${HERMES_HOST_DATA_ROOT:?set HERMES_HOST_DATA_ROOT}/qmd-like-rag/config/intranet.json:/etc/qmd-like-rag/intranet.json:ro"
     networks:
       - hermes-runtime
     healthcheck:

@@ -112,7 +112,7 @@ docker compose --env-file deploy/intranet/.env \
   -f deploy/intranet/compose.example.yml up -d
 ```
 
-Open `deploy/intranet/.env` and verify all three host paths before either Compose command. The Compose file uses required-variable expressions and refuses to create a container when any path variable is absent. The real `.env` is ignored by Git; only `.env.example` is versioned.
+Open `deploy/intranet/.env` and verify `HERMES_HOST_DATA_ROOT` before either Compose command. It is currently `/data/data/hermes_agent0/.hermes`; Compose derives the Vault, Provider state, and Provider config paths below that root. The required-variable expression refuses to create a container when the root is absent. The real `.env` is ignored by Git; only `.env.example` is versioned.
 
 The existing Hermes container must also join `hermes-runtime`. From Hermes, `qmd-like-rag` must resolve as a service name. Do not publish port 8781 on the host unless an external client actually needs it.
 

@@ -126,7 +126,7 @@ main 和 intranet 应分别维护各自主机的部署开关。intranet 默认�
 
 intranet 的 Hermes 与 qmd-like-rag 容器必须加入同一个 Docker 网络。两个容器分别将宿主机 `/data/data/hermes_agent0/.hermes/phq/testVault` 挂载为 `/opt/data/phq/testVault`；qmd-like-rag 额外挂载宿主机 `/data/data/hermes_agent0/.hermes/phq/qmd-like-rag-state` 为可写状态目录。Hermes 不需要看见 Provider 的状态目录。
 
-Compose 不直接硬编码宿主机路径。部署时从 `qmd-like-rag/deploy/intranet/.env.example` 复制生成 `.env`，逐项核对 `QMD_VAULT_HOST_PATH`、`QMD_STATE_HOST_PATH` 和 `QMD_CONFIG_HOST_PATH`。三个变量均为必填项，缺失时 Compose 必须拒绝创建容器；实际 `.env` 不进入 Git。
+Compose 不直接硬编码三个宿主机路径。部署时从 `qmd-like-rag/deploy/intranet/.env.example` 复制生成 `.env`，核对 `HERMES_HOST_DATA_ROOT=/data/data/hermes_agent0/.hermes`。Compose 在该根目录下派生 Vault、Provider 状态和 Provider 配置路径；变量缺失时必须拒绝创建容器。实际 `.env` 不进入 Git。
 
 Provider 使用 `config/intranet.example.json` 中的远端 `bge-m3` batch embedding 和 `bge-reranker-v2-m3` rerank 服务。当前审计模式为 `name-only`，revision 必须保持 `null`，不得填写猜测值。若模型服务在名称不变的情况下升级，运维方必须主动执行完整 rebuild，并重新生成 Vault manifest。
 
