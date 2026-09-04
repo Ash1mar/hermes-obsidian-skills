@@ -27,7 +27,7 @@
 - query `enabled: true`：query Skill 可以只读调用 `qmd-like-rag recall`；不会建立、同步或重建索引。
 - ingest `enabled: true`：ingest Skill 可以通过 `sync_retrieval_index.py` 写入或同步 Provider 索引。
 
-`main` 与 `intranet` 均维护 qmd-like-rag `0.3.0` 源码。版本统一不等于已经部署模型：当两个 adapter 均为 `enabled: false` 时，它们必须在解析 Provider 命令、主机配置、模型路径或模型依赖之前短路。因而可以先更新 intranet 分支代码，待模型、运行环境和索引准备完成后再单独启用 adapter。
+`main` 与 `intranet` 通过 main 向 intranet 的合并维护同一套 qmd-like-rag 源码。版本统一不等于已经部署模型：当两个 adapter 均为 `enabled: false` 时，它们必须在解析 Provider 命令、主机配置、模型路径或模型依赖之前短路。因而可以先更新 intranet 分支代码，待容器、远端模型、索引和 manifest 准备完成后再单独启用 adapter。
 - 关闭适配器不会删除 Chroma、BM25、模型或 Vault manifest；重新开启后仍可使用兼容的 ready 索引。
 
 ## Query session 开发准则
@@ -121,3 +121,11 @@ grep -n '"enabled"' \
 `main` 当前已满足 Provider ready 门禁，因此仓库 query 配置为 `enabled: true`。新部署在复制该配置前必须完成同样的 doctor、status 和 manifest 校验；未满足时应在部署层显式关闭 query，而不是允许 query 自行建立索引。
 
 main 和 intranet 应分别维护各自主机的部署开关。intranet 默认仍关闭，还必须明确配置本地 command 或 HTTP transport，不能照搬 main 的主机路径或猜测服务地址。
+
+## intranet 容器门禁
+
+intranet 的 Hermes 与 qmd-like-rag 容器必须加入同一个 Docker 网络。两个容器分别将宿主机 `/data/data.hermes/phq/testVault` 挂载为 `/opt/data/phq/testVault`；qmd-like-rag 额外挂载宿主机 `/data/data.hermes/phq/qmd-like-rag-state` 为可写状态目录。Hermes 不需要看见 Provider 的状态目录。
+
+Provider 使用 `config/intranet.example.json` 中的远端 `bge-m3` batch embedding 和 `bge-reranker-v2-m3` rerank 服务。当前审计模式为 `name-only`，revision 必须保持 `null`，不得填写猜测值。若模型服务在名称不变的情况下升级，运维方必须主动执行完整 rebuild，并重新生成 Vault manifest。
+
+推荐门禁顺序：容器 health 为 ok；容器内能读取 Vault；用两条以上输入验证 batch embedding 返回 1024 维；执行一次 `sync --rebuild`；确认 `/status` 为 ready 且文档/分块数大于零；启用 ingest 写 manifest；确认 manifest 与 status 的配置、模型及索引指纹一致；最后才启用 query。

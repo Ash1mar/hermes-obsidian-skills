@@ -1,16 +1,20 @@
 from __future__ import annotations
 
 import json
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any
 
 from .config import ProviderConfig
+from . import __version__
 from .runtime import doctor, read_status, recall, sync
 
 
 def make_handler(config: ProviderConfig) -> type[BaseHTTPRequestHandler]:
+    runtime_lock = threading.RLock()
+
     class Handler(BaseHTTPRequestHandler):
-        server_version = "qmd-like-rag/0.1"
+        server_version = f"qmd-like-rag/{__version__}"
 
         def _write(self, status: int, payload: dict[str, Any]) -> None:
             body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -22,6 +26,8 @@ def make_handler(config: ProviderConfig) -> type[BaseHTTPRequestHandler]:
 
         def _payload(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length", "0"))
+            if length > 1024 * 1024:
+                raise ValueError("Request body exceeds 1 MiB")
             data = json.loads(self.rfile.read(length).decode("utf-8") or "{}")
             if not isinstance(data, dict):
                 raise ValueError("Request body must be a JSON object")
@@ -31,7 +37,8 @@ def make_handler(config: ProviderConfig) -> type[BaseHTTPRequestHandler]:
             if self.path == "/health":
                 self._write(200, doctor())
             elif self.path == "/status":
-                self._write(200, read_status(config))
+                with runtime_lock:
+                    self._write(200, read_status(config))
             else:
                 self._write(404, {"status": "error", "error": "not-found"})
 
@@ -42,9 +49,13 @@ def make_handler(config: ProviderConfig) -> type[BaseHTTPRequestHandler]:
                     query = str(payload.get("query") or "").strip()
                     if not query:
                         raise ValueError("query is required")
-                    self._write(200, recall(config, query, int(payload.get("top_k") or config.rerank_top_k)))
+                    with runtime_lock:
+                        result = recall(config, query, int(payload.get("top_k") or config.rerank_top_k))
+                    self._write(200, result)
                 elif self.path == "/sync":
-                    self._write(200, sync(config, bool(payload.get("rebuild", False))))
+                    with runtime_lock:
+                        result = sync(config, bool(payload.get("rebuild", False)))
+                    self._write(200, result)
                 else:
                     self._write(404, {"status": "error", "error": "not-found"})
             except Exception as exc:
