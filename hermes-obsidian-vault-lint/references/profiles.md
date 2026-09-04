@@ -12,6 +12,7 @@ Use after controlled ingest or batch ingest.
 - bundle validation `fail` is error.
 - weak QA boundaries and unstructured multi-source synthesis are warnings.
 - authoritative promotion of QA-affected evidence is error.
+- engineering governance `readiness: draft` is warning.
 
 ## query-ready
 
@@ -38,3 +39,11 @@ Use to plan manual QA.
 - grouped QA metrics matter more than pass/fail.
 - weak QA boundaries are warnings so reviewers can prioritize missing safeguards.
 - authoritative promotion remains error because it hides the QA state.
+
+## Governance readiness
+
+All profiles validate an enabled engineering control plane with the same stable rule codes. Invalid IDs,
+schemas, references, states, paths, or version relationships are errors. `readiness: draft` is a warning
+for `post-ingest`, `query-ready`, and `qa-review`, but an error for `strict`. A Vault without
+`_system/vault.json` remains in `legacy` governance mode. Candidate source organizations follow the
+same severity rule as draft readiness.

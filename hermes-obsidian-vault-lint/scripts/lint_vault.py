@@ -12,8 +12,10 @@ import sys
 import time
 from collections import Counter
 from dataclasses import dataclass, field
-from pathlib import Path
+from datetime import datetime
+from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 
 SCHEMA_VERSION = "1.0"
@@ -37,6 +39,13 @@ BUNDLE_ID_PATTERN = re.compile(r"bundle-v2-[0-9a-fA-F]{16,64}")
 WIKILINK_PATTERN = re.compile(r"\[\[[^\[\]\r\n|#]+(?:[|#][^\[\]\r\n]+)?\]\]")
 GENERATOR_PLACEHOLDER_PATTERN = re.compile(r"\{[^{}\r\n]*\.join\([^{}\r\n]*\)[^{}\r\n]*\}")
 ELLIPSIS_EVIDENCE_ROW_PATTERN = re.compile(r"(?m)^\s*\|\s*(?:…|\.\.\.)\s*\|")
+STABLE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,127}$")
+SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+ALLOWED_GOVERNANCE_STORAGE_SCHEMES = {"local", "oss", "s3"}
+PROCESSING_STATUSES = {"pending", "processing", "completed", "failed"}
+GOVERNANCE_STATUSES = {"candidate", "active", "superseded", "withdrawn", "unknown"}
+AUTHORITY_STATUSES = {"official", "reference", "draft", "unofficial", "unknown"}
+GOVERNANCE_CONTRACT = "hermes-governance/v1"
 QA_BOUNDARY_TERMS = (
     "needs-qa",
     "qa_required",
@@ -316,6 +325,432 @@ def lint_structure(vault: Path, issues: list[Issue], metrics: dict[str, Any]) ->
         if not target.is_file():
             add_issue(issues, "vault.missing_governance_file", "warning", item, f"Governance file is missing: {item}")
     metrics["required_dirs_checked"] = len(REQUIRED_DIRS)
+
+
+def load_governance_json(
+    path: Path,
+    vault: Path,
+    issues: list[Issue],
+    code: str,
+) -> dict[str, Any] | None:
+    if not path.is_file():
+        add_issue(
+            issues,
+            "governance.missing_file",
+            "error",
+            rel(path, vault),
+            "Enabled governance control plane references a missing file.",
+            missing_code=code,
+        )
+        return None
+    try:
+        value = json.loads(read_text(path))
+    except Exception as exc:
+        add_issue(
+            issues,
+            "governance.invalid_json",
+            "error",
+            rel(path, vault),
+            f"Cannot parse governance JSON: {exc}",
+            document=code,
+        )
+        return None
+    if not isinstance(value, dict):
+        add_issue(
+            issues,
+            "governance.invalid_shape",
+            "error",
+            rel(path, vault),
+            "Governance JSON root must be an object.",
+            document=code,
+        )
+        return None
+    return value
+
+
+def governance_control_path(
+    vault: Path,
+    value: Any,
+    label: str,
+    issues: list[Issue],
+) -> Path | None:
+    if not isinstance(value, str) or not value.strip():
+        add_issue(
+            issues,
+            "governance.invalid_control_path",
+            "error",
+            "_system/vault.json",
+            f"Governance control path is missing or invalid: {label}",
+        )
+        return None
+    normalized = value.strip().replace("\\", "/")
+    pure = PurePosixPath(normalized)
+    if pure.is_absolute() or ".." in pure.parts or ":" in pure.parts[0]:
+        add_issue(
+            issues,
+            "governance.invalid_control_path",
+            "error",
+            "_system/vault.json",
+            f"Governance control path must be relative and remain inside the Vault: {label}",
+            value=value,
+        )
+        return None
+    return vault.joinpath(*pure.parts)
+
+
+def valid_stable_id(value: Any) -> bool:
+    return isinstance(value, str) and STABLE_ID_PATTERN.fullmatch(value) is not None
+
+
+def valid_governance_timestamp(value: Any) -> bool:
+    if not isinstance(value, str) or "T" not in value:
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return parsed.tzinfo is not None
+
+
+def valid_governance_storage_uri(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    parsed = urlsplit(value)
+    return (
+        parsed.scheme in ALLOWED_GOVERNANCE_STORAGE_SCHEMES
+        and bool(parsed.netloc or parsed.path)
+        and parsed.username is None
+        and parsed.password is None
+        and not parsed.query
+        and not parsed.fragment
+    )
+
+
+def lint_source_organizations(
+    value: dict[str, Any],
+    path: Path,
+    vault: Path,
+    profile: str,
+    issues: list[Issue],
+    metrics: dict[str, Any],
+) -> dict[str, str]:
+    if value.get("schema_version") != "1.0":
+        add_issue(issues, "governance.schema_mismatch", "error", rel(path, vault), "Unsupported source-organization schema version.")
+    revision = value.get("registry_revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+        add_issue(issues, "governance.invalid_revision", "error", rel(path, vault), "Organization registry_revision must be a non-negative integer.")
+    organizations = value.get("organizations")
+    if not isinstance(organizations, list):
+        add_issue(issues, "governance.invalid_shape", "error", rel(path, vault), "organizations must be a list.")
+        return {}
+
+    statuses: dict[str, str] = {}
+    labels: dict[str, str] = {}
+    for index, organization in enumerate(organizations):
+        item_path = f"{rel(path, vault)}#organizations[{index}]"
+        if not isinstance(organization, dict):
+            add_issue(issues, "governance.invalid_shape", "error", item_path, "Organization must be an object.")
+            continue
+        organization_id = organization.get("id")
+        if not valid_stable_id(organization_id):
+            add_issue(issues, "governance.invalid_id", "error", item_path, "Organization id is not a valid stable ID.")
+            continue
+        if organization_id in statuses:
+            add_issue(issues, "governance.duplicate_id", "error", item_path, "Organization id is duplicated.", organization_id=organization_id)
+        name = organization.get("name")
+        if not isinstance(name, str) or not name.strip():
+            add_issue(issues, "governance.missing_field", "error", item_path, "Organization name is required.")
+        status = organization.get("status")
+        if status not in {"candidate", "approved", "retired"}:
+            add_issue(issues, "governance.invalid_status", "error", item_path, "Organization status must be candidate, approved, or retired.")
+        elif status == "candidate":
+            severity = "error" if profile == "strict" else "warning"
+            add_issue(issues, "governance.organization_unapproved", severity, item_path, "Source organization is still a candidate.")
+        statuses[organization_id] = str(status)
+        aliases = organization.get("aliases", [])
+        if not isinstance(aliases, list) or any(not isinstance(alias, str) or not alias.strip() for alias in aliases):
+            add_issue(issues, "governance.invalid_shape", "error", item_path, "Organization aliases must be non-empty strings in a list.")
+            aliases = []
+        for label in [name, *aliases]:
+            if not isinstance(label, str) or not label.strip():
+                continue
+            normalized = label.strip().casefold()
+            owner = labels.get(normalized)
+            if owner is not None and owner != organization_id:
+                add_issue(
+                    issues,
+                    "governance.organization_alias_conflict",
+                    "error",
+                    item_path,
+                    "Organization name or alias resolves to more than one stable ID.",
+                    label=label,
+                    organizations=sorted({owner, organization_id}),
+                )
+            labels[normalized] = organization_id
+    lint_governance_events(value.get("events"), path, vault, revision, issues)
+    metrics["governance_organizations"] = len(statuses)
+    metrics["governance_organization_revision"] = revision if isinstance(revision, int) else None
+    return statuses
+
+
+def lint_governance_events(
+    events: Any,
+    path: Path,
+    vault: Path,
+    current_revision: Any,
+    issues: list[Issue],
+) -> None:
+    relative = rel(path, vault)
+    if not isinstance(events, list):
+        add_issue(issues, "governance.invalid_shape", "error", relative, "Governance events must be a list.")
+        return
+    event_ids: set[str] = set()
+    for index, event in enumerate(events):
+        item_path = f"{relative}#events[{index}]"
+        if not isinstance(event, dict):
+            add_issue(issues, "governance.invalid_shape", "error", item_path, "Governance event must be an object.")
+            continue
+        event_id = event.get("event_id")
+        if not valid_stable_id(event_id):
+            add_issue(issues, "governance.invalid_id", "error", item_path, "event_id is not a valid stable ID.")
+        elif event_id in event_ids:
+            add_issue(issues, "governance.duplicate_id", "error", item_path, "event_id is duplicated.")
+        else:
+            event_ids.add(event_id)
+        if not isinstance(event.get("actor"), str) or not event["actor"].strip():
+            add_issue(issues, "governance.missing_field", "error", item_path, "Event actor is required.")
+        if not isinstance(event.get("action"), str) or not event["action"].strip():
+            add_issue(issues, "governance.missing_field", "error", item_path, "Event action is required.")
+        if not valid_governance_timestamp(event.get("at")):
+            add_issue(issues, "governance.invalid_timestamp", "error", item_path, "Event timestamp must include date, time, and timezone.")
+        event_revision = event.get("registry_revision")
+        if (
+            not isinstance(event_revision, int)
+            or isinstance(event_revision, bool)
+            or event_revision < 1
+            or (isinstance(current_revision, int) and event_revision > current_revision)
+        ):
+            add_issue(issues, "governance.invalid_revision", "error", item_path, "Event revision is outside registry history.")
+
+
+def lint_document_registry(
+    value: dict[str, Any],
+    path: Path,
+    vault: Path,
+    organization_statuses: dict[str, str],
+    issues: list[Issue],
+    metrics: dict[str, Any],
+) -> None:
+    relative = rel(path, vault)
+    if value.get("schema_version") != "1.0" or value.get("repository_contract") != GOVERNANCE_CONTRACT:
+        add_issue(issues, "governance.schema_mismatch", "error", relative, "Document registry schema or repository contract is unsupported.")
+    if value.get("backend") != "json":
+        add_issue(issues, "governance.backend_unsupported", "error", relative, "Only the stage-1 JSON governance backend is currently implemented.")
+    revision = value.get("registry_revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+        add_issue(issues, "governance.invalid_revision", "error", relative, "Document registry_revision must be a non-negative integer.")
+    records = value.get("records")
+    if not isinstance(records, list):
+        add_issue(issues, "governance.invalid_shape", "error", relative, "Document registry records must be a list.")
+        return
+
+    required = {
+        "document_id",
+        "version_id",
+        "collection_id",
+        "title",
+        "resource_id",
+        "storage_uri",
+        "content_sha256",
+        "processing_status",
+        "governance_status",
+        "authority_status",
+        "source_occurrences",
+        "created_at",
+        "updated_at",
+    }
+    versions: dict[str, dict[str, Any]] = {}
+    resources: dict[str, str] = {}
+    content_hashes: dict[str, str] = {}
+    active_by_document: Counter[str] = Counter()
+    occurrence_ids: set[str] = set()
+    for index, record in enumerate(records):
+        item_path = f"{relative}#records[{index}]"
+        if not isinstance(record, dict):
+            add_issue(issues, "governance.invalid_shape", "error", item_path, "Document version must be an object.")
+            continue
+        missing = sorted(field for field in required if record.get(field) in (None, ""))
+        if missing:
+            add_issue(issues, "governance.missing_field", "error", item_path, "Document version is missing required fields.", missing=missing)
+        for field_name in ("document_id", "version_id", "collection_id", "resource_id"):
+            if not valid_stable_id(record.get(field_name)):
+                add_issue(issues, "governance.invalid_id", "error", item_path, f"{field_name} is not a valid stable ID.")
+        version_id = record.get("version_id")
+        if isinstance(version_id, str):
+            if version_id in versions:
+                add_issue(issues, "governance.duplicate_id", "error", item_path, "version_id is duplicated.", version_id=version_id)
+            versions[version_id] = record
+        resource_id = record.get("resource_id")
+        if isinstance(resource_id, str):
+            prior_resource_version = resources.get(resource_id)
+            if prior_resource_version is not None and prior_resource_version != version_id:
+                add_issue(issues, "governance.duplicate_resource", "error", item_path, "resource_id belongs to multiple versions.", resource_id=resource_id)
+            resources[resource_id] = str(version_id)
+        content_hash = record.get("content_sha256")
+        if not isinstance(content_hash, str) or SHA256_PATTERN.fullmatch(content_hash) is None:
+            add_issue(issues, "governance.invalid_hash", "error", item_path, "content_sha256 must be 64 lowercase hexadecimal characters.")
+        else:
+            prior_hash_version = content_hashes.get(content_hash)
+            if prior_hash_version is not None and prior_hash_version != version_id:
+                add_issue(issues, "governance.duplicate_content", "error", item_path, "content_sha256 belongs to multiple versions.", content_sha256=content_hash)
+            content_hashes[content_hash] = str(version_id)
+        for field_name in ("created_at", "updated_at"):
+            if not valid_governance_timestamp(record.get(field_name)):
+                add_issue(issues, "governance.invalid_timestamp", "error", item_path, f"{field_name} must include date, time, and timezone.")
+        storage_uri = record.get("storage_uri")
+        if not valid_governance_storage_uri(storage_uri):
+            add_issue(issues, "governance.invalid_storage_uri", "error", item_path, "storage_uri must be a credential-free local://, oss://, or s3:// reference.")
+        status_values = (
+            ("processing_status", PROCESSING_STATUSES),
+            ("governance_status", GOVERNANCE_STATUSES),
+            ("authority_status", AUTHORITY_STATUSES),
+        )
+        for field_name, allowed in status_values:
+            if record.get(field_name) not in allowed:
+                add_issue(issues, "governance.invalid_status", "error", item_path, f"Unsupported {field_name}.", value=record.get(field_name))
+        document_id = record.get("document_id")
+        if record.get("governance_status") == "active" and isinstance(document_id, str):
+            active_by_document[document_id] += 1
+            if record.get("processing_status") != "completed":
+                add_issue(issues, "governance.active_not_completed", "error", item_path, "An active version must have completed processing.")
+
+        occurrences = record.get("source_occurrences")
+        if not isinstance(occurrences, list):
+            add_issue(issues, "governance.invalid_shape", "error", item_path, "source_occurrences must be a list.")
+            continue
+        if not occurrences:
+            add_issue(issues, "governance.missing_source_occurrence", "error", item_path, "Every document version must retain at least one source occurrence.")
+        for source_index, occurrence in enumerate(occurrences):
+            source_path = f"{item_path}.source_occurrences[{source_index}]"
+            if not isinstance(occurrence, dict):
+                add_issue(issues, "governance.invalid_shape", "error", source_path, "Source occurrence must be an object.")
+                continue
+            occurrence_id = occurrence.get("source_occurrence_id")
+            organization_id = occurrence.get("source_organization_id")
+            source_collection_id = occurrence.get("source_collection_id")
+            if not valid_stable_id(occurrence_id) or not valid_stable_id(organization_id) or not valid_stable_id(source_collection_id):
+                add_issue(issues, "governance.invalid_id", "error", source_path, "Source occurrence IDs must be valid stable IDs.")
+            if isinstance(occurrence_id, str):
+                if occurrence_id in occurrence_ids:
+                    add_issue(issues, "governance.duplicate_id", "error", source_path, "source_occurrence_id is duplicated.", source_occurrence_id=occurrence_id)
+                occurrence_ids.add(occurrence_id)
+            if isinstance(organization_id, str) and organization_id not in organization_statuses:
+                add_issue(issues, "governance.unknown_organization", "error", source_path, "Source occurrence references an unknown organization.", organization_id=organization_id)
+            elif record.get("governance_status") == "active" and organization_statuses.get(str(organization_id)) != "approved":
+                add_issue(issues, "governance.active_source_unapproved", "error", source_path, "An active version requires approved source organizations.", organization_id=organization_id)
+            original_path = occurrence.get("original_relative_path")
+            if not isinstance(original_path, str) or not original_path.strip():
+                add_issue(issues, "governance.missing_field", "error", source_path, "original_relative_path is required.")
+            elif PurePosixPath(original_path.replace("\\", "/")).is_absolute() or ".." in PurePosixPath(original_path.replace("\\", "/")).parts:
+                add_issue(issues, "governance.invalid_source_path", "error", source_path, "original_relative_path must be relative and cannot traverse upward.")
+            if not valid_governance_timestamp(occurrence.get("received_at")):
+                add_issue(issues, "governance.invalid_timestamp", "error", source_path, "received_at must include date, time, and timezone.")
+
+    for document_id, count in active_by_document.items():
+        if count > 1:
+            add_issue(issues, "governance.multiple_active_versions", "error", relative, "A logical document has more than one active version.", document_id=document_id, active_versions=count)
+
+    for version_id, record in versions.items():
+        superseded = record.get("supersedes_version_id")
+        if superseded in (None, ""):
+            continue
+        target = versions.get(str(superseded))
+        if target is None:
+            add_issue(issues, "governance.unknown_superseded_version", "error", relative, "supersedes_version_id does not exist.", version_id=version_id, supersedes_version_id=superseded)
+        elif target.get("document_id") != record.get("document_id"):
+            add_issue(issues, "governance.cross_document_supersedes", "error", relative, "A version can only supersede a version of the same logical document.", version_id=version_id, supersedes_version_id=superseded)
+
+    for start in versions:
+        seen: set[str] = set()
+        current: str | None = start
+        while current is not None and current in versions:
+            if current in seen:
+                add_issue(issues, "governance.version_cycle", "error", relative, "Version supersedes relationships contain a cycle.", version_id=start)
+                break
+            seen.add(current)
+            next_value = versions[current].get("supersedes_version_id")
+            current = str(next_value) if next_value not in (None, "") else None
+
+    lint_governance_events(value.get("events"), path, vault, revision, issues)
+    metrics["governance_document_versions"] = len(records)
+    metrics["governance_source_occurrences"] = len(occurrence_ids)
+    metrics["governance_registry_revision"] = revision if isinstance(revision, int) else None
+
+
+def lint_governance_control_plane(
+    vault: Path,
+    profile: str,
+    issues: list[Issue],
+    metrics: dict[str, Any],
+) -> None:
+    manifest_path = vault / "_system" / "vault.json"
+    if not manifest_path.is_file():
+        metrics["governance_mode"] = "legacy"
+        return
+    manifest = load_governance_json(manifest_path, vault, issues, "vault")
+    if manifest is None:
+        metrics["governance_mode"] = "invalid"
+        return
+    metrics["governance_mode"] = "enabled"
+    if manifest.get("schema_version") != "1.0":
+        add_issue(issues, "governance.schema_mismatch", "error", rel(manifest_path, vault), "Unsupported Vault governance schema version.")
+    vault_config = manifest.get("vault")
+    governance = manifest.get("governance")
+    if not isinstance(vault_config, dict) or not isinstance(governance, dict):
+        add_issue(issues, "governance.invalid_shape", "error", rel(manifest_path, vault), "vault and governance must be objects.")
+        return
+    for field_name in ("id", "security_domain"):
+        if not valid_stable_id(vault_config.get(field_name)):
+            add_issue(issues, "governance.invalid_id", "error", rel(manifest_path, vault), f"vault.{field_name} is not a valid stable ID.")
+    if vault_config.get("profile") != "engineering":
+        add_issue(issues, "governance.profile_mismatch", "error", rel(manifest_path, vault), "Governance control plane currently requires the engineering profile.")
+    if governance.get("enabled") is not True:
+        add_issue(issues, "governance.invalid_shape", "error", rel(manifest_path, vault), "governance.enabled must be true when vault.json exists.")
+    readiness = governance.get("readiness")
+    if readiness not in {"draft", "ready"}:
+        add_issue(issues, "governance.invalid_status", "error", rel(manifest_path, vault), "governance.readiness must be draft or ready.")
+    elif readiness == "draft":
+        severity = "error" if profile == "strict" else "warning"
+        add_issue(issues, "governance.readiness_draft", severity, rel(manifest_path, vault), "Governance control plane is still draft.", "Approve source organizations and the pilot governance configuration before production use.")
+    repository = governance.get("repository")
+    if not isinstance(repository, dict):
+        add_issue(issues, "governance.invalid_shape", "error", rel(manifest_path, vault), "governance.repository must be an object.")
+        return
+    if repository.get("contract") != GOVERNANCE_CONTRACT:
+        add_issue(issues, "governance.schema_mismatch", "error", rel(manifest_path, vault), "Unsupported governance repository contract.")
+    if repository.get("backend") != "json":
+        add_issue(issues, "governance.backend_unsupported", "error", rel(manifest_path, vault), "Only the stage-1 JSON governance backend is currently implemented.")
+
+    schema_path = governance_control_path(vault, governance.get("schema_path"), "schema_path", issues)
+    organizations_path = governance_control_path(vault, governance.get("organizations_path"), "organizations_path", issues)
+    registry_path = governance_control_path(vault, repository.get("registry_path"), "repository.registry_path", issues)
+    if schema_path is None or organizations_path is None or registry_path is None:
+        return
+    schema = load_governance_json(schema_path, vault, issues, "schema")
+    organizations = load_governance_json(organizations_path, vault, issues, "organizations")
+    registry = load_governance_json(registry_path, vault, issues, "document-registry")
+    if schema is not None:
+        mapping = schema.get("x-hermes-database-mapping")
+        planned = mapping.get("planned_backends") if isinstance(mapping, dict) else None
+        if schema.get("$id") != "urn:hermes:document-governance:1.0" or not isinstance(planned, list) or not {"sqlite", "postgresql"}.issubset(set(planned)):
+            add_issue(issues, "governance.schema_mismatch", "error", rel(schema_path, vault), "Governance schema lacks the approved JSON-to-SQL persistence mapping.")
+    organization_statuses = (
+        lint_source_organizations(organizations, organizations_path, vault, profile, issues, metrics)
+        if organizations is not None
+        else {}
+    )
+    if registry is not None:
+        lint_document_registry(registry, registry_path, vault, organization_statuses, issues, metrics)
 
 
 def find_bundles(vault: Path) -> list[Path]:
@@ -892,6 +1327,7 @@ def lint(args: argparse.Namespace) -> dict[str, Any]:
         return value
 
     stage("structure", lambda: lint_structure(vault, issues, metrics))
+    stage("governance", lambda: lint_governance_control_plane(vault, profile, issues, metrics))
     ingest_skill = discover_ingest_skill(Path(__file__), args.ingest_skill_path)
     validator = load_bundle_validator(ingest_skill)
     stage("bundles", lambda: lint_bundles(vault, validator, issues, metrics))

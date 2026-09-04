@@ -28,6 +28,7 @@ Resolve bundled `scripts/`, `references/`, `config/`, and templates against `<bo
 2. Refuse to overwrite a non-empty target unless the user explicitly asked for overwrite behavior.
 3. Create the standard folder layout.
 4. Write `AGENTS.md`, `README.md`, prompts, metadata registries, templates, Dataview indexes, and setup report.
+   For `engineering`, also create the revision-0 JSON governance control plane and database mapping.
 5. If requested, copy `.obsidian/` config from a template vault.
 6. If requested, copy only base concept pages and concept registry from a template vault.
 7. Do not copy raw sources, generated cards, project notes, or historical reports unless explicitly requested.
@@ -39,7 +40,11 @@ Use `general` for normal knowledge vaults.
 
 Use `meeting` when the user says the vault is for meeting minutes, meeting records, action items, decisions, related meeting materials, or recurring workstream meetings.
 
-Profile details are in `references/profiles.md`.
+Use `engineering` when document identity, multiple source organizations, business versions, authority,
+or future storage/database migration must be governed. Its control plane starts as `readiness: draft`.
+
+Profile details are in `references/profiles.md`. Read `references/governance-control-plane.md` before
+creating or maintaining an engineering governance control plane.
 
 ## Scripted Setup
 
@@ -57,7 +62,8 @@ packages remain ready to run immediately.
 Useful options:
 
 - `--vault-path <path>` for an explicit target or deliberate deployment override
-- `--profile general|meeting`
+- `--profile general|meeting|engineering`
+- `--vault-id <stable-id>`, `--vault-name <display-name>`, and `--security-domain <stable-id>` for engineering
 - `--template-vault <path>`
 - `--copy-obsidian-config`
 - `--copy-base-concepts`
@@ -71,6 +77,8 @@ Before writing:
 
 - Confirm the target path is not an existing non-empty directory unless overwrite was explicitly requested.
 - Keep raw source areas empty during bootstrap.
+- Never overwrite or upgrade existing engineering governance JSON, including with `--force-empty`.
+- Do not treat `readiness: draft` as production approval.
 - Do not import test artifacts into a real vault.
 - Treat `.obsidian/` as configuration only; do not copy workspace history if it would point to obsolete files unless the script rewrites it.
 
@@ -85,4 +93,5 @@ After setup, report:
 5. created system files
 6. copied base concepts count
 7. validation results
-8. next prompt the user can give Hermes for ingestion
+8. governance backend and readiness for the engineering profile
+9. next prompt the user can give Hermes for ingestion

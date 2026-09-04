@@ -35,6 +35,8 @@ prompt scope
 - Do not run controlled ingest or controlled query as part of lint. Lint may point to those workflows as follow-up actions.
 - Do not treat `qa_required` as a failure by default. It is a controlled open QA state unless the selected profile says otherwise.
 - Do not promote formulas, table values, figure internals, or engineering parameters from warning-affected evidence.
+- If `_system/vault.json` exists, validate the declared `hermes-governance/v1` JSON control plane. Its
+  absence is legacy compatibility, not an automatic failure.
 
 ## Quick Start
 
@@ -106,6 +108,8 @@ Rules cover:
 - bundle/section validity for row-level synthesis evidence
 - explicit `needs-qa` boundaries around QA-affected evidence
 - rejection of authoritative status or evidence levels over QA-affected sections
+- engineering governance identity, source-organization aliases, content hashes, storage URIs, statuses,
+  source occurrences, single-active-version and acyclic supersedes constraints
 
 Read `references/rule-catalog.md` before adding or changing rule codes.
 
