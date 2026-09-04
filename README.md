@@ -19,6 +19,7 @@ Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): impl
   - Supports layered MinerU document bundle v2 for engineering manuals, with a small agent-facing Markdown/outline contract and a non-default QA evidence layer.
   - Supports standalone image Bundle v2 for scanned pages, table screenshots, diagrams, and other image-only sources with OCR review controls.
   - Supports MarkItDown as an optional pre-ingestion conversion layer for non-PDF sources and simple fallback conversion.
+  - Manages engineering document identity, source organizations, source occurrences, versions, status, and atomic activation through the `hermes-governance/v1` JSON repository.
 
 - `hermes-obsidian-controlled-query/`
   - Governed read-only query workflow for existing Hermes + Obsidian vaults.
@@ -28,15 +29,15 @@ Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): impl
 
 - `hermes-obsidian-vault-lint/`
   - Audits governed Obsidian vault health without assuming a fixed vault path.
-  - Checks bootstrap structure, bundle validation, section ledgers, source maps, governed Markdown evidence, structured multi-source synthesis, and QA authority boundaries.
+  - Checks bootstrap structure, bundle validation, section ledgers, source maps, governed Markdown evidence, structured multi-source synthesis, QA authority boundaries, and optional engineering document-governance invariants.
   - Provides `post-ingest`, `query-ready`, `strict`, and `qa-review` profiles with stable JSON and Markdown report output.
   - Reuses the controlled-ingest bundle validator when available.
 
 - `hermes-obsidian-vault-bootstrap/`
   - Initializes governed Obsidian vaults.
   - Creates the standard folder layout, prompts, templates, metadata registries, Dataview indexes, and setup report.
-  - Supports `general` and `meeting` profiles.
-  - Can copy `.obsidian/`, base concept pages, and skill notes from a template vault.
+  - Supports `general`, `meeting`, and `engineering` profiles; engineering creates a draft JSON governance repository with a future SQLite/PostgreSQL mapping.
+  - Can copy `.obsidian/` and base concept pages from a template vault.
   - Does not copy raw sources, test cards, test projects, or historical reports by default.
 
 ## Branch Deployment Profiles
@@ -113,6 +114,8 @@ python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-sk
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\convert_image_with_ocr_bundle.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\validate_document_bundle.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\manage_bundle_ingest.py"
+python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\governance_repository.py"
+python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\manage_document_governance.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest\scripts\convert_with_markitdown.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-bootstrap\scripts\init_obsidian_vault.py"
 python -m py_compile "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-lint\scripts\lint_vault.py"
@@ -123,6 +126,20 @@ Run tests with:
 ```powershell
 python -m unittest discover "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\tests"
 ```
+
+## Document Governance Manager
+
+An engineering-profile Vault uses `hermes-governance/v1` with a JSON repository. Validate it with:
+
+```bash
+python3 hermes-obsidian-controlled-ingest/scripts/manage_document_governance.py \
+  --vault "/path/to/Vault" validate --json
+```
+
+The same entry point manages source organizations, immutable document versions, repeated source
+occurrences, status changes, and atomic activation. Mutations require an expected revision and actor;
+conversion and Bundle processing are not automatically connected until stage 3. See
+`hermes-obsidian-controlled-ingest/references/document-governance.md`.
 
 ## MinerU PDF Bundle Integration
 

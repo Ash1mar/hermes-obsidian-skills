@@ -137,9 +137,9 @@ flowchart LR
 
 | 组件 | 核心职责 | 允许写入 | 禁止行为 |
 | --- | --- | --- | --- |
-| Vault Bootstrap | 创建标准目录、规则、模板、注册表、Dataview 和 setup report | 新 Vault 的治理骨架 | 自动摄取业务原文；把运行时 Skill 路径固化为可移植 Vault 内容 |
-| Controlled Ingest | 保存原件、转换、校验、管理 ledger、生成或更新治理知识、记录 ingest/QA、可选同步 Provider | `10_Raw/` 新原件、`10_Raw/converted/` 派生物、治理目录和 `_system/reports/` | 覆盖冲突原件；跳过 Bundle/ledger 门禁；把 QA 内容静默提升为权威事实 |
-| Vault Lint | 按 profile 只读检查 Vault 健康、证据链和 QA 边界 | 无 | 自动修复 Vault 或改变业务状态 |
+| Vault Bootstrap | 创建标准目录、规则、模板、注册表、Dataview 和 setup report；engineering profile 创建 revision-0 JSON 文档治理控制面 | 新 Vault 的治理骨架 | 自动摄取业务原文；覆盖或升级已有治理控制面；把运行时 Skill 路径固化为可移植 Vault 内容 |
+| Controlled Ingest | 保存原件、转换、校验、管理 ledger、通过治理管理器登记文档/版本/来源、生成或更新治理知识、记录 ingest/QA、可选同步 Provider | `10_Raw/` 新原件、`10_Raw/converted/` 派生物、治理注册表、治理目录和 `_system/reports/` | 直接手改治理注册表；覆盖冲突原件；跳过 Bundle/ledger 门禁；把 QA 内容静默提升为权威事实 |
+| Vault Lint | 按 profile 只读检查 Vault 健康、证据链、QA 边界及可选 engineering 治理不变量 | 无 | 自动修复 Vault 或改变业务状态 |
 | Controlled Query | 融合候选、自动检查首窗、形成可追溯答案并写 trace | 当前查询 trace | 修改治理知识；查询时同步索引；补检索绕过单遍边界 |
 | MinerU/OCR/MarkItDown | 把外部格式转换为可检查的派生表示 | 转换输出目录 | 决定知识产物、批准概念或替代人工专业判断 |
 | qmd-like-rag | 建立可重建索引并按协议返回候选路径和范围 | Provider 主机数据面 | 生成最终业务答案；把索引当成证据；在 Query 调用中隐式重建 |
@@ -157,21 +157,24 @@ flowchart LR
   50_Projects/
   90_Dataview/
   _system/
+    vault.json                 # engineering profile only
     metadata/
     prompts/
     reports/
     templates/
 ```
 
-`meeting` profile 可以增加会议笔记等专用目录；具体差异以 Bootstrap profile 为准。
+`meeting` profile 可以增加会议笔记等专用目录。`engineering` profile 还会在 `_system/metadata/`
+创建治理 schema、来源机构表和 JSON 文档注册表；具体差异以 Bootstrap profile 为准。
 
 ### 7.1 数据权威顺序
 
 1. 原始 PDF 或其他原始文件是事实与视觉内容的最终权威。
 2. 通过质量门禁的 Bundle 是内部提取和定位载体，不取代原件。
 3. 治理知识是长期维护的结论层，必须保留到来源的证据链。
-4. source map、ledger、query-index、retrieval manifest 和 query trace 是控制、导航或审计记录，不得单独支撑业务事实。
-5. Provider 候选、相似度分数和 viewer URL 只帮助导航，不构成回答证据。
+4. engineering 文档注册表是逻辑文档身份、版本状态、来源事件和存储引用的当前治理权威；它不替代原件的事实权威。
+5. source map、ledger、query-index、retrieval manifest 和 query trace 是控制、导航或审计记录，不得单独支撑业务事实。
+6. Provider 候选、相似度分数和 viewer URL 只帮助导航，不构成回答证据。
 
 ### 7.2 原始材料保护
 
@@ -190,6 +193,7 @@ flowchart LR
 | Retrieval index manifest | `1.0` | `_system/reports/retrieval-index-manifest.json` | 记录 Provider、配置/模型/语料/索引指纹与最近状态 |
 | Query trace | `1.5` | `_system/reports/query-traces/` | 记录候选、证据包、Claim、事件、耗时和结论 |
 | Vault Lint output | `1.0` | `lint_vault.py --json` 输出 | 为 CI、验收和修复计划提供稳定检查结果 |
+| Document governance | `1.0` / `hermes-governance/v1` | `_system/vault.json` 及其声明的 schema、机构表和 registry | 定义 Vault 隔离、文档/版本/资源身份、来源事件、状态和未来 SQL 映射 |
 | Coarse recall protocol | `hermes-coarse-recall/v1` | Provider 请求/响应 | 在 Skill 与 Provider 之间传递候选，不传递最终答案 |
 
 修改以下任一事项时，必须进行兼容性评审：必需字段、字段语义、状态含义、状态转换、协议版本、CLI 必需参数、退出码或目录约定。
@@ -277,6 +281,8 @@ resolve target and profile
 ```
 
 Bootstrap 只建立空的治理结构。目标已存在时必须遵守覆盖保护；普通材料导入必须切换到 Controlled Ingest。
+`engineering` profile 创建 JSON repository 并标记 `readiness: draft`；Bootstrap 不登记业务文档，
+也不创建空置 SQLite/PostgreSQL。已有治理 JSON 即使在 `--force-empty` 下也不得覆盖。
 
 ### 11.2 Controlled Ingest
 
@@ -307,6 +313,19 @@ Lint 始终只读。四个标准 profile 为：
 | `qa-review` | 汇总需要人工核验的内容并安排复核 |
 
 输出状态为 `pass`、`pass-with-warnings`、`fail` 或 `internal-error`。自动化消费者必须依赖 JSON 的 `status`、`summary` 和 `issues[].code`，不得解析控制台排版。
+
+若存在 `_system/vault.json`，Lint 还必须检查 `hermes-governance/v1` 控制面、来源机构别名、稳定
+身份、内容哈希、存储 URI、状态词表、来源引用、单 active 版本和无环 supersedes 关系。缺少该文件的
+旧 Vault 进入 `legacy` 模式，不因此失败；`readiness: draft` 在 strict profile 中为错误，其余为警告。
+
+### 11.4 治理持久化演进
+
+阶段 1 的权威后端为 JSON，但调用方应面向 `hermes-governance/v1` repository 合同，而不是把文件
+布局当业务 API。阶段 2 已由 Controlled Ingest 的治理管理器实现 revision 冲突检查、共享互斥锁、
+全状态校验、actor 审计事件和原子写入；普通 Ingest 不得直接修改 registry。阶段 3 再把 Bundle
+处理流程与这些命令自动联动。阶段 5.5 才实现 SQLite/PostgreSQL adapter，并通过 JSON export/import
+切换唯一权威后端。
+禁止长期双写。数据库文件、连接凭据和迁移运行环境保存在 Vault 外。
 
 ### 11.4 Controlled Query
 
@@ -452,6 +471,8 @@ Provider 的职责边界：
 - Bootstrap fixture 能创建预期结构且不复制禁止内容。
 - Bundle 2.0 能通过 validator；`warn`/`fail` 行为符合门禁。
 - ledger revision、状态转换、stale 对账和输出要求通过测试。
+- engineering 治理管理器必须证明 revision 冲突和非法变更不改写 registry；激活新版必须在一个
+  revision 中完成旧版 superseded 与新版 active，并保留 actor 审计事件。
 - `post-ingest` 与 `query-ready` Lint 满足目标环境门禁；交付前按需要使用 `strict`。
 
 ### 19.3 Query 与 Provider
@@ -499,6 +520,7 @@ cherry-pick 或并行 worktree 作为日常双分支同步方式。`intranet` �
 - [Vault Bootstrap](../hermes-obsidian-vault-bootstrap/SKILL.md)
 - [Vault Lint](../hermes-obsidian-vault-lint/SKILL.md)
 - [qmd-like-rag](../qmd-like-rag/README.md)
+- [ADR-0001：借鉴 WeKnora 的最小文档治理与版本模型](architecture/0001-weknora-inspired-document-governance.md)（已接受；阶段 1、2 已实现，阶段 3 至阶段 5.5 按 ADR 渐进实施）
 
 ## 22. 待项目负责人确认
 

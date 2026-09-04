@@ -6,9 +6,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 from datetime import date
 from pathlib import Path
+from uuid import uuid4
 
 
 BASE_DIRS = [
@@ -29,8 +31,16 @@ BASE_DIRS = [
 PROFILE_DIRS = {
     "general": [],
     "meeting": ["10_Raw/Meetings", "10_Raw/Materials", "20_Notes/Meetings"],
+    "engineering": [],
 }
 DEFAULT_DEPLOYMENT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "deployment.json"
+GOVERNANCE_FILE_PATHS = (
+    "_system/vault.json",
+    "_system/metadata/document-governance.schema.json",
+    "_system/metadata/source-organizations.json",
+    "_system/metadata/document-registry.json",
+)
+STABLE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,127}$")
 
 
 def configured_vault_path(explicit_config: Path | None = None) -> Path:
@@ -56,6 +66,10 @@ def write_text(path: Path, content: str) -> None:
     path.write_text(content.strip() + "\n", encoding="utf-8")
 
 
+def write_json(path: Path, value: object) -> None:
+    write_text(path, json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True))
+
+
 def copy_tree(src: Path, dst: Path) -> None:
     if not src.exists():
         return
@@ -66,6 +80,222 @@ def copy_tree(src: Path, dst: Path) -> None:
 
 def is_non_empty(path: Path) -> bool:
     return path.exists() and any(path.iterdir())
+
+
+def validate_stable_id(value: str, label: str) -> str:
+    normalized = value.strip()
+    if not STABLE_ID_PATTERN.fullmatch(normalized):
+        raise SystemExit(
+            f"{label} must match {STABLE_ID_PATTERN.pattern}: {value!r}"
+        )
+    return normalized
+
+
+def resolve_governance_identity(args: argparse.Namespace, vault: Path) -> tuple[str, str, str]:
+    vault_id = args.vault_id or f"vault-{uuid4()}"
+    vault_name = (args.vault_name or vault.name).strip()
+    security_domain = args.security_domain.strip()
+    validate_stable_id(vault_id, "--vault-id")
+    validate_stable_id(security_domain, "--security-domain")
+    if not vault_name:
+        raise SystemExit("--vault-name must not be empty")
+    return vault_id, vault_name, security_domain
+
+
+def governance_schema() -> dict[str, object]:
+    return {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "$id": "urn:hermes:document-governance:1.0",
+        "title": "Hermes document governance registry",
+        "type": "object",
+        "required": [
+            "schema_version",
+            "repository_contract",
+            "registry_revision",
+            "records",
+            "events",
+        ],
+        "properties": {
+            "schema_version": {"const": "1.0"},
+            "repository_contract": {"const": "hermes-governance/v1"},
+            "registry_revision": {"type": "integer", "minimum": 0},
+            "records": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/document_version"},
+            },
+            "events": {
+                "type": "array",
+                "items": {"$ref": "#/$defs/governance_event"},
+            },
+        },
+        "additionalProperties": False,
+        "$defs": {
+            "stable_id": {
+                "type": "string",
+                "pattern": "^[a-z0-9][a-z0-9._-]{2,127}$",
+            },
+            "source_organization": {
+                "type": "object",
+                "required": ["id", "name", "status", "aliases"],
+                "properties": {
+                    "id": {"$ref": "#/$defs/stable_id"},
+                    "name": {"type": "string", "minLength": 1},
+                    "status": {"enum": ["candidate", "approved", "retired"]},
+                    "aliases": {
+                        "type": "array",
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                },
+                "additionalProperties": False,
+            },
+            "source_occurrence": {
+                "type": "object",
+                "required": [
+                    "source_occurrence_id",
+                    "source_organization_id",
+                    "source_collection_id",
+                    "original_relative_path",
+                    "received_at",
+                ],
+                "properties": {
+                    "source_occurrence_id": {"$ref": "#/$defs/stable_id"},
+                    "source_organization_id": {"$ref": "#/$defs/stable_id"},
+                    "source_collection_id": {"$ref": "#/$defs/stable_id"},
+                    "batch_id": {"type": ["string", "null"]},
+                    "original_relative_path": {"type": "string", "minLength": 1},
+                    "received_at": {"type": "string", "format": "date-time"},
+                },
+                "additionalProperties": False,
+            },
+            "governance_event": {
+                "type": "object",
+                "required": ["event_id", "at", "action", "actor", "registry_revision"],
+                "properties": {
+                    "event_id": {"$ref": "#/$defs/stable_id"},
+                    "at": {"type": "string", "format": "date-time"},
+                    "action": {"type": "string", "minLength": 1},
+                    "actor": {"type": "string", "minLength": 1},
+                    "registry_revision": {"type": "integer", "minimum": 1},
+                    "organization_id": {"$ref": "#/$defs/stable_id"},
+                    "document_id": {"$ref": "#/$defs/stable_id"},
+                    "version_id": {"$ref": "#/$defs/stable_id"},
+                    "source_occurrence_id": {"$ref": "#/$defs/stable_id"},
+                    "superseded_version_id": {
+                        "anyOf": [{"$ref": "#/$defs/stable_id"}, {"type": "null"}]
+                    },
+                    "from": {},
+                    "to": {},
+                    "changes": {"type": "object"},
+                },
+                "additionalProperties": False,
+            },
+            "document_version": {
+                "type": "object",
+                "required": [
+                    "document_id",
+                    "version_id",
+                    "collection_id",
+                    "title",
+                    "resource_id",
+                    "storage_uri",
+                    "content_sha256",
+                    "processing_status",
+                    "governance_status",
+                    "authority_status",
+                    "source_occurrences",
+                    "created_at",
+                    "updated_at",
+                ],
+                "properties": {
+                    "document_id": {"$ref": "#/$defs/stable_id"},
+                    "version_id": {"$ref": "#/$defs/stable_id"},
+                    "collection_id": {"$ref": "#/$defs/stable_id"},
+                    "title": {"type": "string", "minLength": 1},
+                    "business_version": {"type": ["string", "null"]},
+                    "resource_id": {"$ref": "#/$defs/stable_id"},
+                    "storage_uri": {"type": "string", "minLength": 1},
+                    "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+                    "processing_status": {
+                        "enum": ["pending", "processing", "completed", "failed"]
+                    },
+                    "governance_status": {
+                        "enum": ["candidate", "active", "superseded", "withdrawn", "unknown"]
+                    },
+                    "authority_status": {
+                        "enum": ["official", "reference", "draft", "unofficial", "unknown"]
+                    },
+                    "supersedes_version_id": {
+                        "anyOf": [{"$ref": "#/$defs/stable_id"}, {"type": "null"}]
+                    },
+                    "source_occurrences": {
+                        "type": "array",
+                        "minItems": 1,
+                        "items": {"$ref": "#/$defs/source_occurrence"},
+                    },
+                    "created_at": {"type": "string", "format": "date-time"},
+                    "updated_at": {"type": "string", "format": "date-time"},
+                },
+                "additionalProperties": False,
+            },
+        },
+        "x-hermes-database-mapping": {
+            "planned_backends": ["sqlite", "postgresql"],
+            "tables": [
+                "vaults",
+                "collections",
+                "source_organizations",
+                "documents",
+                "document_versions",
+                "source_occurrences",
+                "resources",
+                "governance_events",
+            ],
+            "migration_policy": "json-export-import-before-backend-switch",
+        },
+    }
+
+
+def governance_files(args: argparse.Namespace, vault: Path) -> dict[str, object]:
+    vault_id, vault_name, security_domain = resolve_governance_identity(args, vault)
+    return {
+        "_system/vault.json": {
+            "schema_version": "1.0",
+            "vault": {
+                "id": vault_id,
+                "name": vault_name,
+                "profile": "engineering",
+                "security_domain": security_domain,
+            },
+            "governance": {
+                "enabled": True,
+                "readiness": "draft",
+                "repository": {
+                    "contract": "hermes-governance/v1",
+                    "backend": "json",
+                    "registry_path": "_system/metadata/document-registry.json",
+                },
+                "schema_path": "_system/metadata/document-governance.schema.json",
+                "organizations_path": "_system/metadata/source-organizations.json",
+            },
+            "storage": {"default_backend": "local"},
+            "retrieval": {"default_document_scope": "active"},
+        },
+        "_system/metadata/document-governance.schema.json": governance_schema(),
+        "_system/metadata/source-organizations.json": {
+            "schema_version": "1.0",
+            "registry_revision": 0,
+            "organizations": [],
+            "events": [],
+        },
+        "_system/metadata/document-registry.json": {
+            "schema_version": "1.0",
+            "repository_contract": "hermes-governance/v1",
+            "backend": "json",
+            "registry_revision": 0,
+            "records": [],
+            "events": [],
+        },
+    }
 
 
 def normalize_workspace(vault: Path, profile: str) -> None:
@@ -187,6 +417,14 @@ Vault path:
 {vault}
 ```
 """
+    governance = """
+
+## Engineering Governance
+
+This Vault uses the versioned governance control plane under `_system/`. Bootstrap owns its
+structure, controlled ingest will own document records, and Vault Lint remains read-only. Do not
+hand-edit `_system/metadata/document-registry.json`.
+""" if profile == "engineering" else ""
     return f"""
 # Hermes Obsidian Vault
 
@@ -210,6 +448,7 @@ Vault path:
 ```text
 {vault}
 ```
+{governance}
 """
 
 
@@ -239,6 +478,7 @@ This directory is an Obsidian vault for {purpose}.
 - Prefer Dataview-compatible frontmatter.
 - Do not create concept pages by default.
 - Keep links conservative.
+{"- Do not hand-edit `_system/metadata/document-registry.json`; use controlled governance tooling." if profile == "engineering" else ""}
 
 ## Metadata Model
 
@@ -275,6 +515,11 @@ Vault 路径：
 7. 每次写入后，在 _system/reports 写一份 ingest log。
 ```
 """
+    governance_rule = (
+        "8. 当前治理后端为 JSON；不得手工改写 document-registry.json，后续文档登记必须通过受控工具。"
+        if profile == "engineering"
+        else ""
+    )
     return f"""
 # Hermes Ingest Rules
 
@@ -292,6 +537,7 @@ Vault 路径：
 5. 稳定概念页写入 40_Concepts。
 6. 项目材料写入 50_Projects。
 7. 每次写入后，在 _system/reports 写 ingest log。
+{governance_rule}
 ```
 """
 
@@ -630,6 +876,16 @@ def setup(args: argparse.Namespace) -> None:
     if is_non_empty(vault) and not args.force_empty:
         raise SystemExit(f"Target vault is non-empty. Pass --force-empty to allow writing: {vault}")
 
+    generated_governance: dict[str, object] = {}
+    if args.profile == "engineering":
+        existing = [rel for rel in GOVERNANCE_FILE_PATHS if (vault / rel).exists()]
+        if existing:
+            raise SystemExit(
+                "Engineering governance files already exist; bootstrap does not overwrite or upgrade them: "
+                + ", ".join(existing)
+            )
+        generated_governance = governance_files(args, vault)
+
     created_dirs = []
     for rel in BASE_DIRS + PROFILE_DIRS[args.profile]:
         path = vault / rel
@@ -643,6 +899,8 @@ def setup(args: argparse.Namespace) -> None:
     copied_concepts = 0
     for rel, content in metadata_files(args.profile).items():
         write_text(vault / rel, content)
+    for rel, content in generated_governance.items():
+        write_json(vault / rel, content)
     if template and args.copy_base_concepts:
         copied_concepts = copy_base_concepts(template, vault)
 
@@ -684,6 +942,12 @@ source: {template or "none"}
 - copied obsidian config: {bool(template and args.copy_obsidian_config)}
 - copied base concepts: {copied_concepts}
 
+## Governance Control Plane
+
+- enabled: {args.profile == "engineering"}
+- repository backend: {"json" if args.profile == "engineering" else "legacy"}
+- governance files: {len(generated_governance)}
+
 ## Safety
 
 Raw source folders were initialized but no raw sources were copied.
@@ -691,10 +955,13 @@ Raw source folders were initialized but no raw sources were copied.
     write_text(vault / f"_system/reports/vault-setup-{date.today().isoformat()}.md", report)
 
     json.loads((vault / ".obsidian/workspace.json").read_text(encoding="utf-8"))
+    for rel in generated_governance:
+        json.loads((vault / rel).read_text(encoding="utf-8"))
     print(f"Vault initialized: {vault}")
     print(f"Profile: {args.profile}")
     print(f"Created directories: {len(created_dirs)}")
     print(f"Copied base concepts: {copied_concepts}")
+    print(f"Governance backend: {'json' if args.profile == 'engineering' else 'legacy'}")
     print("workspace.json ok")
 
 
@@ -709,7 +976,14 @@ def main() -> int:
         type=Path,
         help="Override HERMES_DEPLOYMENT_CONFIG and config/deployment.json.",
     )
-    parser.add_argument("--profile", choices=["general", "meeting"], default="general")
+    parser.add_argument("--profile", choices=sorted(PROFILE_DIRS), default="general")
+    parser.add_argument("--vault-id", help="Stable engineering Vault ID; generated when omitted")
+    parser.add_argument("--vault-name", help="Engineering Vault display name; defaults to the directory name")
+    parser.add_argument(
+        "--security-domain",
+        default="unclassified",
+        help="Stable engineering security-domain ID; defaults to the safe unclassified value",
+    )
     parser.add_argument("--template-vault", help="Optional template vault path")
     parser.add_argument("--copy-obsidian-config", action="store_true")
     parser.add_argument("--copy-base-concepts", action="store_true")

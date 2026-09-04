@@ -1,4 +1,4 @@
 interface:
   display_name: "Hermes Obsidian Controlled Ingest"
-  short_description: "受控摄取 PDF、图片、来源和查询回写"
-  default_prompt: "使用 $hermes-obsidian-controlled-ingest 判断 Vault、来源、Bundle 或候选状态，按质量门禁恢复、转换和摄取，并生成可追溯知识及保守双链。"
+  short_description: "受控登记、版本治理与多格式知识摄取"
+  default_prompt: "使用 $hermes-obsidian-controlled-ingest 登记来源和文档版本，按质量门禁完成受控摄取，并生成可追溯知识及保守双链。"

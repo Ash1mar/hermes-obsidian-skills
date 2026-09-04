@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-controlled-ingest
-description: 受控摄取 / Controlled Ingest：新增、导入、恢复、继续或批量处理受治理 Obsidian Vault 的 PDF、图片及其他来源时使用，包括保护 10_Raw、转换、质量门禁、source map、section ledger、证据定位、知识合成、双链和查询回写。On Hermes, MUST call skill_view for hermes-obsidian-controlled-ingest and load its complete scripts before ingesting; on other runtimes, load the full skill first.
+description: 受控摄取 / Controlled Ingest：新增、导入、登记、恢复、继续或批量处理受治理 Obsidian Vault 的 PDF、图片及其他来源时使用，包括文档身份与版本治理、保护 10_Raw、转换、质量门禁、source map、section ledger、证据定位、知识合成、双链和查询回写。On Hermes, MUST call skill_view for hermes-obsidian-controlled-ingest and load its complete scripts before ingesting; on other runtimes, load the full skill first.
 ---
 
 # Hermes Obsidian Controlled Ingest
@@ -48,11 +48,32 @@ Before writing:
 
 1. Read the vault `AGENTS.md` and `_system/prompts/hermes-ingest-rules.md` when present.
 2. Read `_system/metadata/concept-registry.md` before creating or linking concepts.
-3. Inspect `30_Cards/`, `40_Concepts/`, `50_Projects/`, and `_system/reports/`.
-4. Treat existing content in `10_Raw/` as read-only.
-5. Preserve the source path in every derived artifact.
+3. If `_system/vault.json` exists, read it and use `manage_document_governance.py`; never hand-edit its
+   declared organization or document registry.
+4. Inspect `30_Cards/`, `40_Concepts/`, `50_Projects/`, and `_system/reports/`.
+5. Treat existing content in `10_Raw/` as read-only.
+6. Preserve the source path in every derived artifact.
 
 See `references/vault-structure.md` for the validated vault layout and artifact templates.
+
+## Document Governance Manager
+
+For an engineering Vault with `_system/vault.json`, use:
+
+```bash
+python3 "<ingest-skill-root>/scripts/manage_document_governance.py" \
+  --vault "/path/to/Vault" validate --json
+```
+
+The stage-2 manager owns source-organization and document-registry mutations through the JSON adapter.
+Every mutation requires the current registry's `--expected-revision` and an auditable `--actor`; it
+validates the full next state under one mutation lock and atomically replaces only the selected registry.
+Use `activate` rather than `status` to enter `active`/`superseded` states. Repeated content hashes must
+reuse the existing version through `add-source`, not create a duplicate version.
+
+Read `references/document-governance.md` before registering, changing, or activating a governed document.
+Stage 2 does not automatically invoke these commands from conversion or Bundle processing; that wiring is
+stage 3.
 
 ## Runtime State Detection
 
@@ -356,3 +377,5 @@ Report every run with:
 17. Coarse-recall index sync status, Provider/version and fingerprints, or the reason sync was skipped/unavailable.
 18. Evidence-mode reconciliation: direct/index/relational classification, coverage declaration, source-report authority, and unresolved placeholders removed.
 19. Knowledge-graph relation pass: typed links added, targets verified, or explicit zero-link rejection rationale.
+20. Engineering governance action, actor, prior/new registry revision, document/version identity, and whether
+    the operation changed state, when the Vault has governance enabled.

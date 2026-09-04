@@ -14,6 +14,41 @@ Rule codes are stable identifiers for automation and reports.
 - `frontmatter.missing_field`
 - `frontmatter.unexpected_type`
 
+## Engineering Governance
+
+- `governance.missing_file`
+- `governance.invalid_json`
+- `governance.invalid_shape`
+- `governance.invalid_control_path`
+- `governance.schema_mismatch`
+- `governance.invalid_revision`
+- `governance.invalid_id`
+- `governance.duplicate_id`
+- `governance.duplicate_resource`
+- `governance.duplicate_content`
+- `governance.missing_field`
+- `governance.organization_alias_conflict`
+- `governance.organization_unapproved`
+- `governance.backend_unsupported`
+- `governance.invalid_hash`
+- `governance.invalid_timestamp`
+- `governance.invalid_storage_uri`
+- `governance.invalid_status`
+- `governance.unknown_organization`
+- `governance.missing_source_occurrence`
+- `governance.invalid_source_path`
+- `governance.multiple_active_versions`
+- `governance.active_not_completed`
+- `governance.active_source_unapproved`
+- `governance.unknown_superseded_version`
+- `governance.cross_document_supersedes`
+- `governance.version_cycle`
+- `governance.profile_mismatch`
+- `governance.readiness_draft`
+
+Governance rules activate only when `_system/vault.json` exists. They validate the stage-1/2 JSON adapter,
+audit events, and database-ready contract; they do not mutate registries or approve draft governance.
+
 ## Bundle Integrity
 
 - `bundle.validator_unavailable`

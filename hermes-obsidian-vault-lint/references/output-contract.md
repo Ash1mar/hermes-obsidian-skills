@@ -54,3 +54,9 @@ When applicable, `metrics` includes:
 - `multi_source_artifacts`
 - `structured_multi_source_artifacts`
 - `qa_affected_artifacts`
+- `governance_mode`: `legacy`, `enabled`, or `invalid`
+- `governance_organizations`
+- `governance_document_versions`
+- `governance_source_occurrences`
+- `governance_organization_revision`
+- `governance_registry_revision`

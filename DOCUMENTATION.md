@@ -6,10 +6,11 @@
 
 1. 先读 [`README.md`](README.md)，了解仓库能力、四个 Skill、短命令和 Provider 边界。
 2. 做设计、评审、交付或跨团队沟通时读 [`docs/OFFICIAL_TECHNICAL_SPECIFICATION.md`](docs/OFFICIAL_TECHNICAL_SPECIFICATION.md)。
-3. 需要理解端到端关系时读 [`charts.md`](charts.md)。
-4. 执行具体任务时只加载对应 Skill 的 `SKILL.md`，再按其中的路由读取必要 reference。
-5. 部署或排障检索 Provider 时读 [`RETRIEVAL_PROVIDER_OPERATIONS.md`](RETRIEVAL_PROVIDER_OPERATIONS.md)。
-6. 安装、迁移或排查 MinerU WSL 环境时读 [`MINERU_WSL_ENVIRONMENT_RUNBOOK.md`](MINERU_WSL_ENVIRONMENT_RUNBOOK.md)。
+3. 设计多机构材料、文档身份或业务版本时读 [`docs/architecture/0001-weknora-inspired-document-governance.md`](docs/architecture/0001-weknora-inspired-document-governance.md)。
+4. 需要理解端到端关系时读 [`charts.md`](charts.md)。
+5. 执行具体任务时只加载对应 Skill 的 `SKILL.md`，再按其中的路由读取必要 reference。
+6. 部署或排障检索 Provider 时读 [`RETRIEVAL_PROVIDER_OPERATIONS.md`](RETRIEVAL_PROVIDER_OPERATIONS.md)。
+7. 安装、迁移或排查 MinerU WSL 环境时读 [`MINERU_WSL_ENVIRONMENT_RUNBOOK.md`](MINERU_WSL_ENVIRONMENT_RUNBOOK.md)。
 
 `SKILL.md` 是运行入口和边界契约；`references/` 保存较长的操作细则；`scripts/` 是实际执行入口。流程说明与脚本行为冲突时，应先核对当前分支、部署配置和测试，再修正文档或实现，不能在运行时临时发明替代流程。
 
@@ -20,6 +21,7 @@
 | [`README.md`](README.md) | 仓库总览：四个 Skill、Hermes slash aliases、目录结构、qmd-like-rag、验证方法及 MinerU、图片 Bundle、MarkItDown 集成入口。 |
 | [`DOCUMENTATION.md`](DOCUMENTATION.md) | 当前文档索引，说明每份文档讲什么、应该何时阅读，以及哪些仓库外资料仅作关联参考。 |
 | [`docs/OFFICIAL_TECHNICAL_SPECIFICATION.md`](docs/OFFICIAL_TECHNICAL_SPECIFICATION.md) | 项目级官方技术规范：统一定义系统范围、架构、组件职责、数据权威、schema/协议、四条工作流、分支部署、QA、安全、故障降级、兼容性与验收标准。 |
+| [`docs/architecture/0001-weknora-inspired-document-governance.md`](docs/architecture/0001-weknora-inspired-document-governance.md) | 已接受且阶段 1、2 已实现的架构决策：借鉴 WeKnora 分层建立最小文档身份、来源、业务版本、隔离和存储引用合同，并以 JSON repository 为数据库迁移做准备。 |
 | [`charts.md`](charts.md) | Mermaid 端到端流程图：`main`/`intranet` 环境差异、建库、摄取、Lint、单遍 Query Session、Provider 与 Vault 的读写关系。 |
 | [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md) | 双分支维护合同：共享变更先进入 `main`，再 merge 到 `intranet`；定义受保护配置、冲突处理、验证和推送顺序。 |
 | [`RETRIEVAL_PROVIDER_OPERATIONS.md`](RETRIEVAL_PROVIDER_OPERATIONS.md) | 检索 Provider 运维说明：仓库默认、主机部署、Provider 主机三层配置，query/ingest 开关，启用门禁和验证命令。 |
@@ -39,6 +41,7 @@
 | [`references/image-bundle.md`](hermes-obsidian-controlled-ingest/references/image-bundle.md) | 扫描页、截图、图表和其他 image-only 来源的 Bundle v2/OCR 处理及 QA 限制。 |
 | [`references/bundle-source-map-ledger.md`](hermes-obsidian-controlled-ingest/references/bundle-source-map-ledger.md) | source map 与 section ledger 的初始化、领取、修订号、状态转换、断点续做和 stale 对账。 |
 | [`references/retrieval-indexing.md`](hermes-obsidian-controlled-ingest/references/retrieval-indexing.md) | 摄取完成后如何通过 adapter 增量同步 coarse-recall Provider，以及 Vault 控制面记录与主机索引数据的分离。 |
+| [`references/document-governance.md`](hermes-obsidian-controlled-ingest/references/document-governance.md) | 文档治理管理器的 revision、锁、审计、机构审批、登记、追加来源、状态和原子激活命令。 |
 
 ## Controlled Query 文档
 
@@ -58,8 +61,9 @@
 | 文档 | 内容与用途 |
 | --- | --- |
 | [`hermes-obsidian-vault-bootstrap/SKILL.md`](hermes-obsidian-vault-bootstrap/SKILL.md) | 初始化受治理 Vault 的入口，只负责建库，不负责摄取材料。 |
-| [`references/profiles.md`](hermes-obsidian-vault-bootstrap/references/profiles.md) | `general` 与 `meeting` profile 的目录、模板、注册表和索引差异。 |
+| [`references/profiles.md`](hermes-obsidian-vault-bootstrap/references/profiles.md) | `general`、`meeting` 与 `engineering` profile 的目录、模板、注册表和索引差异。 |
 | [`references/script-usage.md`](hermes-obsidian-vault-bootstrap/references/script-usage.md) | `init_obsidian_vault.py` 的参数、模板复制、覆盖保护、预览与验证方法。 |
+| [`references/governance-control-plane.md`](hermes-obsidian-vault-bootstrap/references/governance-control-plane.md) | engineering Vault 的身份、JSON 权威文件、维护边界、repository 合同和 SQLite/PostgreSQL 迁移准备。 |
 
 ## Vault Lint 文档
 

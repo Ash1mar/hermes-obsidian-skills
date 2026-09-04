@@ -10,6 +10,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "hermes-obsidian-vault-lint" / "scripts" / "lint_vault.py"
+BOOTSTRAP = ROOT / "hermes-obsidian-vault-bootstrap" / "scripts" / "init_obsidian_vault.py"
 INGEST = ROOT / "hermes-obsidian-controlled-ingest"
 
 
@@ -207,6 +208,56 @@ class VaultLintTest(unittest.TestCase):
         )
         return bundle_id
 
+    def add_governance(self, vault: Path) -> None:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(BOOTSTRAP),
+                "--vault-path",
+                str(vault),
+                "--profile",
+                "engineering",
+                "--vault-id",
+                "vault-test-engineering",
+                "--vault-name",
+                "Test Engineering Vault",
+                "--security-domain",
+                "internal-test",
+                "--force-empty",
+            ],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        self.assertEqual(0, result.returncode, msg=result.stderr)
+
+    def governance_record(self, suffix: str, status: str = "active") -> dict:
+        return {
+            "document_id": "doc-shared-specification",
+            "version_id": f"version-shared-{suffix}",
+            "collection_id": "collection-engineering",
+            "title": "Shared specification",
+            "business_version": suffix,
+            "resource_id": f"resource-shared-{suffix}",
+            "storage_uri": f"local://10_Raw/source-{suffix}.pdf",
+            "content_sha256": suffix[0] * 64,
+            "processing_status": "completed",
+            "governance_status": status,
+            "authority_status": "official",
+            "supersedes_version_id": None,
+            "source_occurrences": [
+                {
+                    "source_occurrence_id": f"occurrence-shared-{suffix}",
+                    "source_organization_id": "organization-owner",
+                    "source_collection_id": "collection-owner-source",
+                    "original_relative_path": f"incoming/source-{suffix}.pdf",
+                    "received_at": "2026-09-04T08:00:00Z",
+                }
+            ],
+            "created_at": "2026-09-04T08:00:00Z",
+            "updated_at": "2026-09-04T08:00:00Z",
+        }
+
     def test_post_ingest_allows_controlled_qa(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             data = self.run_lint(self.create_vault(Path(temporary)))
@@ -214,6 +265,65 @@ class VaultLintTest(unittest.TestCase):
             self.assertEqual(0, data["summary"]["errors"])
             self.assertIn("ledger.qa_open", {issue["code"] for issue in data["issues"]})
             self.assertIn("qa.boundary_weak", {issue["code"] for issue in data["issues"]})
+
+    def test_generated_governance_is_linted_without_breaking_legacy_vaults(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            legacy_vault = self.create_vault(Path(temporary))
+            legacy = self.run_lint(legacy_vault)
+            self.assertEqual("legacy", legacy["metrics"]["governance_mode"])
+
+            self.add_governance(legacy_vault)
+            governed = self.run_lint(legacy_vault)
+            self.assertEqual("enabled", governed["metrics"]["governance_mode"])
+            self.assertEqual(0, governed["metrics"]["governance_document_versions"])
+            self.assertIn("governance.readiness_draft", {issue["code"] for issue in governed["issues"]})
+
+    def test_governance_detects_organization_and_version_conflicts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            vault = self.create_vault(Path(temporary))
+            self.add_governance(vault)
+            metadata = vault / "_system" / "metadata"
+            organizations_path = metadata / "source-organizations.json"
+            organizations_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "registry_revision": 1,
+                        "organizations": [
+                            {"id": "organization-owner", "name": "Owner", "status": "approved", "aliases": ["Common"]},
+                            {"id": "organization-supplier", "name": "Supplier", "status": "candidate", "aliases": ["common"]},
+                        ],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            first = self.governance_record("a")
+            second = self.governance_record("b")
+            second["source_occurrences"][0]["source_organization_id"] = "organization-unknown"
+            third = self.governance_record("c", status="candidate")
+            third["document_id"] = "doc-without-source"
+            third["source_occurrences"] = []
+            registry_path = metadata / "document-registry.json"
+            registry_path.write_text(
+                json.dumps(
+                    {
+                        "schema_version": "1.0",
+                        "repository_contract": "hermes-governance/v1",
+                        "backend": "json",
+                        "registry_revision": 1,
+                        "records": [first, second, third],
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            data = self.run_lint(vault, expect=2)
+            codes = {issue["code"] for issue in data["issues"]}
+            self.assertIn("governance.organization_alias_conflict", codes)
+            self.assertIn("governance.organization_unapproved", codes)
+            self.assertIn("governance.unknown_organization", codes)
+            self.assertIn("governance.missing_source_occurrence", codes)
+            self.assertIn("governance.multiple_active_versions", codes)
 
     def test_strict_escalates_controlled_qa(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

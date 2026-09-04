@@ -67,3 +67,21 @@ projects:
 domains:
 ---
 ```
+
+## Engineering
+
+Use for multi-organization engineering or regulated-document Vaults that need stable document identity,
+business-version governance, authority state, and future storage/database portability.
+
+It uses the standard folders and additionally creates:
+
+```text
+_system/vault.json
+_system/metadata/document-governance.schema.json
+_system/metadata/source-organizations.json
+_system/metadata/document-registry.json
+```
+
+The registries start empty at revision 0 and the Vault starts with `governance.readiness: draft`.
+`repository.backend: json` is the current authority; SQLite and PostgreSQL are planned adapters, not
+active stores. See `governance-control-plane.md` for identity and maintenance rules.
