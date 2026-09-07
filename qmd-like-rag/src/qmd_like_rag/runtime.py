@@ -66,6 +66,11 @@ def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict
     limit = max(1, top_k or config.rerank_top_k)
     raw = HybridRetriever(config, indexer.chroma, indexer.bm25).search(query, top_k=max(limit, config.top_k))
     warnings: list[str] = []
+    from .governance import eligible_corpus_paths
+
+    eligible = eligible_corpus_paths(config.vault_root, include_historical=False)
+    if eligible is not None:
+        raw = [item for item in raw if item.get("source") in eligible]
     if config.use_reranker and raw:
         try:
             raw = configured_reranker(config).rerank(query, raw, limit)

@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 from urllib import request
 
+from locate_source_sections import GovernanceQueryPolicy
+
 
 PROTOCOL_VERSION = "hermes-coarse-recall/v1"
 
@@ -80,13 +82,19 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def validate_response(payload: dict[str, Any], vault_root: Path) -> dict[str, Any]:
+def validate_response(
+    payload: dict[str, Any],
+    vault_root: Path,
+    include_historical: bool = False,
+) -> dict[str, Any]:
     if payload.get("protocol_version") != PROTOCOL_VERSION:
         raise ValueError(f"Unsupported Provider protocol: {payload.get('protocol_version')!r}")
     if payload.get("authority") != "candidate-navigation-only":
         raise ValueError("Provider results must be navigation-only")
     normalized: list[dict[str, Any]] = []
     warnings = [str(item) for item in payload.get("warnings", [])]
+    governance_policy = GovernanceQueryPolicy(vault_root, include_historical)
+    governance_rejected = 0
     for candidate in payload.get("candidates", []):
         if not isinstance(candidate, dict):
             continue
@@ -117,7 +125,12 @@ def validate_response(payload: dict[str, Any], vault_root: Path) -> dict[str, An
         item["source_hash_matches"] = not expected_hash or sha256(source) == expected_hash
         if not item["source_hash_matches"]:
             warnings.append(f"candidate-source-changed:{relative.as_posix()}")
+        if not governance_policy.allows(item["vault_path"]):
+            governance_rejected += 1
+            continue
         normalized.append(item)
+    if governance_rejected:
+        warnings.append(f"governance-candidates-rejected:{governance_rejected}")
     return {
         "status": "warn" if warnings or payload.get("status") == "warn" else "ok",
         "authority": "candidate-navigation-only",
@@ -125,6 +138,7 @@ def validate_response(payload: dict[str, Any], vault_root: Path) -> dict[str, An
         "provider_version": payload.get("provider_version"),
         "index_fingerprint": payload.get("index_fingerprint"),
         "candidates": normalized,
+        "governance": governance_policy.summary(),
         "warnings": sorted(set(warnings)),
         "next_step": "Fuse with hierarchical candidates, inspect governed candidates first, then run supplemental scoped exact/lexical search and verify current source/PDF evidence.",
     }
@@ -159,6 +173,11 @@ def main() -> int:
     parser.add_argument("--top-k", type=int, default=30)
     parser.add_argument("--provider-config", type=Path)
     parser.add_argument("--trace-id")
+    parser.add_argument(
+        "--include-historical",
+        action="store_true",
+        help="Allow completed superseded/withdrawn versions for an explicitly historical query",
+    )
     args = parser.parse_args()
     vault_root = args.vault_root.resolve()
     started = time.monotonic_ns()
@@ -182,7 +201,7 @@ def main() -> int:
                 payload = call_http(config, args.query, args.top_k)
             else:
                 raise ValueError(f"Unsupported Provider transport: {transport}")
-            result = validate_response(payload, vault_root)
+            result = validate_response(payload, vault_root, args.include_historical)
             result["transport"] = transport
             result["provider_config"] = config_path.as_posix()
     except Exception as exc:

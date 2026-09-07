@@ -41,7 +41,7 @@
 | [`references/image-bundle.md`](hermes-obsidian-controlled-ingest/references/image-bundle.md) | 扫描页、截图、图表和其他 image-only 来源的 Bundle v2/OCR 处理及 QA 限制。 |
 | [`references/bundle-source-map-ledger.md`](hermes-obsidian-controlled-ingest/references/bundle-source-map-ledger.md) | source map 与 section ledger 的初始化、领取、修订号、状态转换、断点续做和 stale 对账。 |
 | [`references/retrieval-indexing.md`](hermes-obsidian-controlled-ingest/references/retrieval-indexing.md) | 摄取完成后如何通过 adapter 增量同步 coarse-recall Provider，以及 Vault 控制面记录与主机索引数据的分离。 |
-| [`references/document-governance.md`](hermes-obsidian-controlled-ingest/references/document-governance.md) | 文档治理管理器的 revision、锁、审计、机构审批、登记、追加来源、状态和原子激活命令。 |
+| [`references/document-governance.md`](hermes-obsidian-controlled-ingest/references/document-governance.md) | 文档治理管理器的 revision、锁、审计、机构审批、登记、原子激活，以及 `ingest-start`/`ingest-finish` 与 Bundle 投影、ledger 准入链路。 |
 
 ## Controlled Query 文档
 

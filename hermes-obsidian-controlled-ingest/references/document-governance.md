@@ -1,6 +1,6 @@
 # Document Governance Manager
 
-Use this stage-2 command only when `_system/vault.json` enables the `hermes-governance/v1` JSON
+Use this command when `_system/vault.json` enables the `hermes-governance/v1` JSON
 repository. It is the sole supported mutation path for the source-organization and document registries.
 Vault Lint remains an independent read-only audit.
 
@@ -23,6 +23,52 @@ python3 "<ingest-skill-root>/scripts/manage_document_governance.py" --vault "/pa
 ```
 
 Append the command and its arguments to that prefix.
+
+## Governed ingest lifecycle
+
+After an unchanged source has been copied into `10_Raw/`, register it as processing. IDs are explicit;
+the command derives only the Vault-relative storage URI and SHA-256 from the actual raw file.
+
+```bash
+ingest-start \
+  --raw-source "/path/to/Vault/10_Raw/shared-specification.pdf" \
+  --document-id doc-shared-specification \
+  --version-id version-shared-2026-01 \
+  --collection-id collection-engineering \
+  --title "Shared specification" \
+  --business-version "2026-01" \
+  --resource-id resource-shared-2026-01 \
+  --authority-status official \
+  --source-occurrence-id occurrence-owner-2026-01 \
+  --source-organization-id organization-owner \
+  --source-collection-id collection-owner-delivery \
+  --original-relative-path "incoming/shared-specification.pdf" \
+  --expected-revision 0 \
+  --actor ingest-run-id \
+  --json
+```
+
+After producing Bundle v2, finish processing with the revision returned above:
+
+```bash
+ingest-finish \
+  --bundle "/path/to/Vault/10_Raw/converted/shared_document_bundle" \
+  --version-id version-shared-2026-01 \
+  --expected-revision 1 \
+  --actor ingest-run-id \
+  --json
+```
+
+The finish command validates the Bundle and compares `manifest.source.sha256` with the immutable version
+hash. A pass or warn result sets `processing_status: completed`; a fail result sets it to `failed`.
+Hash mismatch changes neither registry nor manifest. It then writes `manifest.governance` containing only
+the contract, Vault/document/version/resource IDs, registry path, and observed revision. This is a
+rebuildable projection, not another source of truth. A retry at the current revision repairs a missing
+projection without adding an event when processing state is already correct.
+
+For a governed Vault, `manage_bundle_ingest.py init` refuses to create or reconcile the source map and
+section ledger until that projection resolves to the same registry record, source hash, and required
+processing status. Legacy Vaults without `_system/vault.json` retain the old behavior.
 
 ## Inspect and validate
 
@@ -88,7 +134,7 @@ register \
 ```
 
 `storage_uri` currently accepts credential-free `local://`, `oss://`, or `s3://` references. This records
-identity only; stage 2 does not implement remote storage access.
+identity only; remote storage access is not implemented.
 
 If the same SHA-256 is already registered, use `add-source` on that existing version. Do not create a
 second searchable version merely because another organization delivered the same bytes.

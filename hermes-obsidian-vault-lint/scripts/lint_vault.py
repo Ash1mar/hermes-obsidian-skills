@@ -753,6 +753,43 @@ def lint_governance_control_plane(
         lint_document_registry(registry, registry_path, vault, organization_statuses, issues, metrics)
 
 
+def lint_governance_projections(vault: Path, issues: list[Issue], metrics: dict[str, Any]) -> None:
+    if not (vault / "_system" / "vault.json").is_file():
+        return
+    try:
+        manifest = json.loads(read_text(vault / "_system" / "vault.json"))
+        repository = manifest["governance"]["repository"]
+        registry_path = governance_control_path(vault, repository["registry_path"], "registry", issues)
+        if registry_path is None:
+            return
+        registry = json.loads(read_text(registry_path))
+        records = {record["version_id"]: record for record in registry["records"]}
+        paths = list((vault / "10_Raw" / "converted").rglob("manifest.json"))
+        paths += list((vault / "_system" / "reports").glob("*.section-ledger.json"))
+        metrics["governance_projections_checked"] = len(paths)
+        for path in paths:
+            value = json.loads(read_text(path))
+            projection = value.get("governance")
+            record = records.get(projection.get("version_id")) if isinstance(projection, dict) else None
+            expected = {
+                "contract": GOVERNANCE_CONTRACT,
+                "vault_id": manifest["vault"]["id"],
+                "registry_path": repository["registry_path"],
+                "document_id": record.get("document_id") if record else None,
+                "resource_id": record.get("resource_id") if record else None,
+            }
+            revision = projection.get("registry_revision") if isinstance(projection, dict) else None
+            if not record or any(projection.get(key) != item for key, item in expected.items()) or (
+                type(revision) is not int or not 0 <= revision <= registry["registry_revision"]
+            ) or (value.get("source") or {}).get("sha256") != record.get("content_sha256"):
+                add_issue(issues, "governance.projection_mismatch", "error", rel(path, vault),
+                          "Bundle or ledger governance projection does not match the authoritative registry.",
+                          "Reconcile through controlled ingest; do not edit the registry to match derived data.")
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        add_issue(issues, "governance.projection_unreadable", "error", "_system",
+                  f"Cannot audit governance projections: {exc}")
+
+
 def find_bundles(vault: Path) -> list[Path]:
     converted = vault / "10_Raw" / "converted"
     if not converted.is_dir():
@@ -1328,6 +1365,7 @@ def lint(args: argparse.Namespace) -> dict[str, Any]:
 
     stage("structure", lambda: lint_structure(vault, issues, metrics))
     stage("governance", lambda: lint_governance_control_plane(vault, profile, issues, metrics))
+    stage("governance.projections", lambda: lint_governance_projections(vault, issues, metrics))
     ingest_skill = discover_ingest_skill(Path(__file__), args.ingest_skill_path)
     validator = load_bundle_validator(ingest_skill)
     stage("bundles", lambda: lint_bundles(vault, validator, issues, metrics))

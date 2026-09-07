@@ -27,7 +27,12 @@ from manage_query_trace import (
     start_trace,
     write_state,
 )
-from locate_source_sections import match_score, query_terms, section_specific_query_terms
+from locate_source_sections import (
+    GovernanceQueryPolicy,
+    match_score,
+    query_terms,
+    section_specific_query_terms,
+)
 from retrieve_query_scope import compact_result, load_projections, retrieve_scope
 
 
@@ -302,6 +307,7 @@ def begin(args: argparse.Namespace) -> dict[str, Any]:
         top_sections=args.top_sections,
         provider_config=args.provider_config,
         trace_id=started["trace_id"],
+        include_historical=bool(args.include_historical),
     )
     state, _, _ = load_state(vault_root, started["trace_id"])
     state["session_message_id"] = os.environ.get("HERMES_SESSION_MESSAGE_ID")
@@ -357,6 +363,7 @@ def begin(args: argparse.Namespace) -> dict[str, Any]:
         "verification_required": requires_verification,
         "verification_requirement_reason": "explicit CLI selection" if requires_verification else "not requested",
         "verification_catalog": {},
+        "governance_scope": "historical" if args.include_historical else "current",
         "initial_candidate_window": [
             {
                 "document_path": candidate.get("document_path"),
@@ -384,7 +391,7 @@ def fused_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
 def initial_window_candidates(state: dict[str, Any]) -> list[dict[str, Any]]:
     """Resolve only the candidates actually returned by begin."""
     window = state.get("workflow_state", {}).get("initial_candidate_window")
-    if not isinstance(window, list) or not window:
+    if not isinstance(window, list):
         raise ValueError("trace predates the single-pass candidate window; start a new query trace")
     candidates = fused_candidates(state)
     by_key = {
@@ -623,6 +630,7 @@ def build_evidence_packet(
     candidate: dict[str, Any],
     projection: dict[str, Any],
     max_chars: int,
+    governance_policy: Any = None,
 ) -> tuple[dict[str, Any], dict[str, float], list[str]]:
     timings = {"document_reading": 0.0, "table_figure_resolution": 0.0, "provenance_resolution": 0.0}
     inspected: list[str] = []
@@ -670,6 +678,8 @@ def build_evidence_packet(
 
     governed: list[dict[str, Any]] = []
     for output in ledger_outputs(ledger, str(candidate.get("section_id") or "")):
+        if governance_policy is not None and not governance_policy.allows(output):
+            continue
         if not output.startswith(("30_Cards/", "40_Concepts/", "50_Projects/")):
             continue
         output_path = vault_root / output
@@ -1179,6 +1189,20 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
     )
     projections = load_projections(vault_root)
     selected = select_candidates(initial_window_candidates(state), args.candidate)
+    governance_policy = GovernanceQueryPolicy(
+        vault_root,
+        include_historical=workflow.get("governance_scope") == "historical",
+    )
+    rejected = [
+        str(candidate.get("document_path") or "")
+        for candidate in selected
+        if not governance_policy.allows(candidate.get("document_path"))
+    ]
+    if rejected:
+        raise ValueError(
+            "candidate is no longer query-eligible under the current governance registry: "
+            + ", ".join(rejected)
+        )
     packets: list[dict[str, Any]] = []
     timings = {"document_reading": 0.0, "table_figure_resolution": 0.0, "provenance_resolution": 0.0}
     inspected_paths: list[str] = []
@@ -1187,7 +1211,7 @@ def inspect(args: argparse.Namespace) -> dict[str, Any]:
         if not projection:
             raise ValueError(f"query projection missing for {candidate.get('document_path')}")
         packet, packet_timings, packet_paths = build_evidence_packet(
-            vault_root, candidate, projection, args.max_chars_per_section
+            vault_root, candidate, projection, args.max_chars_per_section, governance_policy
         )
         packets.append(packet)
         for key, value in packet_timings.items():
@@ -2038,6 +2062,10 @@ def finalize(args: argparse.Namespace) -> dict[str, Any]:
         manifest = payload
         validate_manifest_catalog(state, manifest)
     workflow = state.get("workflow_state", {})
+    policy = GovernanceQueryPolicy(vault_root, workflow.get("governance_scope") == "historical")
+    for evidence in manifest.get("evidence", []):
+        if not policy.allows(evidence.get("path")):
+            raise ValueError("Evidence is no longer eligible under the current governance registry")
     manifest.setdefault("events", [])
     manifest["events"].append(
         timed_event(
@@ -2143,6 +2171,11 @@ def build_parser() -> argparse.ArgumentParser:
     query_parser.add_argument("--coupled", action="store_true", help="Allow multiple subparts that require one evidence set")
     query_parser.add_argument("--coupled-reason", help="Auditable reason that multiple subparts share one evidence set")
     query_parser.add_argument("--provider-config", type=Path)
+    query_parser.add_argument(
+        "--include-historical",
+        action="store_true",
+        help="Allow completed superseded/withdrawn versions only for an explicitly historical request",
+    )
     query_parser.add_argument("--top-k", type=int, default=20)
     query_parser.add_argument("--top-documents", type=int, default=6)
     query_parser.add_argument("--top-sections", type=int, default=12)
@@ -2175,6 +2208,11 @@ def build_parser() -> argparse.ArgumentParser:
     begin_parser.add_argument("--coupled", action="store_true", help="Allow multiple subparts that require one evidence set")
     begin_parser.add_argument("--coupled-reason", help="Auditable reason that multiple subparts share one evidence set")
     begin_parser.add_argument("--provider-config", type=Path)
+    begin_parser.add_argument(
+        "--include-historical",
+        action="store_true",
+        help="Allow completed superseded/withdrawn versions only for an explicitly historical request",
+    )
     begin_parser.add_argument("--top-k", type=int, default=20)
     begin_parser.add_argument("--top-documents", type=int, default=6)
     begin_parser.add_argument("--top-sections", type=int, default=12)
