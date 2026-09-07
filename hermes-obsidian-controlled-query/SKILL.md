@@ -114,6 +114,17 @@ Read `references/query-workflow.md` for selectors and the finalization decision.
 
 If a query-session command fails internally, do not patch the installed Skill, relax Vault path validation, probe implementation alternatives, or continue retrying. Preserve the recorded failure and finalize the trace as `incomplete` with a concrete unresolved item when the failure prevents a supported answer. Skill maintenance belongs in the source repository and a separately tested deployment workflow.
 
+## Version governance and legacy compatibility
+
+Keep the existing deployment Vault as the default. Do not bootstrap or migrate it during query.
+Without `_system/vault.json`, all existing retrieval behavior remains in legacy mode.
+When that file exists, candidates and evidence must resolve to completed active versions with approved
+source organizations. Invalid governance must fail closed, never fall back to legacy.
+Use `query --include-historical` only for an explicit historical/version-comparison request;
+completed superseded/withdrawn versions are then available through hierarchical retrieval.
+Provider recall currently remains current-only. Historical evidence must be described as historical.
+The registry is checked again before inspection and finalization.
+
 ## Query rules
 
 ### Non-writing contract

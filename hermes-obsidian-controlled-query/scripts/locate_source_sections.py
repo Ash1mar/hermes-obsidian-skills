@@ -13,7 +13,7 @@ import os
 import re
 import sys
 import time
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlencode
 
@@ -22,6 +22,8 @@ DEFAULT_DEPLOYMENT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "de
 MIN_COMPLEMENT_SCORE_RATIO = 1 / 3
 STRUCTURED_COVERAGE_WEIGHT = 6
 TOTAL_COVERAGE_WEIGHT = 2
+CURRENT_QUERY_STATUSES = {"active"}
+HISTORICAL_QUERY_STATUSES = {"active", "superseded", "withdrawn"}
 
 
 def load_json(path: Path) -> dict[str, Any]:
@@ -29,6 +31,132 @@ def load_json(path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ValueError(f"Expected a JSON object: {path}")
     return data
+
+
+def safe_vault_path(vault_root: Path, value: Any) -> Path:
+    pure = PurePosixPath(str(value or "").replace("\\", "/"))
+    if not pure.parts or pure.is_absolute() or ".." in pure.parts or ":" in pure.parts[0]:
+        raise ValueError("Invalid governance control path")
+    resolved = vault_root.joinpath(*pure.parts).resolve()
+    resolved.relative_to(vault_root.resolve())
+    return resolved
+
+
+class GovernanceQueryPolicy:
+    """Resolve Vault paths to current or explicitly historical governed versions."""
+
+    def __init__(self, vault_root: Path, include_historical: bool = False):
+        self.vault_root = vault_root.resolve()
+        self.include_historical = include_historical
+        self.mode = "legacy"
+        self.registry_revision: int | None = None
+        self.paths: dict[str, set[str]] = {}
+        manifest_path = self.vault_root / "_system" / "vault.json"
+        if not manifest_path.is_file():
+            return
+        self.mode = "enabled"
+        manifest = load_json(manifest_path)
+        governance = manifest.get("governance")
+        repository = governance.get("repository") if isinstance(governance, dict) else None
+        if (
+            not isinstance(governance, dict)
+            or governance.get("enabled") is not True
+            or not isinstance(repository, dict)
+            or repository.get("contract") != "hermes-governance/v1"
+        ):
+            raise ValueError("Invalid or unsupported governance control plane")
+        registry = load_json(safe_vault_path(self.vault_root, repository.get("registry_path")))
+        revision = registry.get("registry_revision")
+        if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+            raise ValueError("Invalid governance registry revision")
+        self.registry_revision = revision
+        if repository.get("backend") != "json" or registry.get("repository_contract") != "hermes-governance/v1":
+            raise ValueError("Unsupported governance backend or registry")
+        records = {item["version_id"]: item for item in registry["records"]}
+        organizations = load_json(safe_vault_path(self.vault_root, governance.get("organizations_path")))
+        approved = {item["id"] for item in organizations["organizations"] if item.get("status") == "approved"}
+        def consistent(projection: Any, source: Any) -> bool:
+            if not isinstance(projection, dict) or not isinstance(source, dict):
+                return False
+            record = records.get(projection.get("version_id"), {})
+            return bool(record) and all(
+                projection.get(key) == value for key, value in {
+                    "contract": "hermes-governance/v1", "vault_id": manifest["vault"]["id"],
+                    "document_id": record.get("document_id"), "resource_id": record.get("resource_id"),
+                    "registry_path": repository["registry_path"],
+                }.items()
+            ) and source.get("sha256") == record.get("content_sha256") and type(
+                projection.get("registry_revision")
+            ) is int and 0 <= projection["registry_revision"] <= revision
+        statuses = HISTORICAL_QUERY_STATUSES if include_historical else CURRENT_QUERY_STATUSES
+        eligible_versions = {
+            str(record.get("version_id"))
+            for record in registry.get("records", [])
+            if isinstance(record, dict)
+            and record.get("processing_status") == "completed"
+            and record.get("governance_status") in statuses
+            and record.get("source_occurrences")
+            and all(item.get("source_organization_id") in approved for item in record["source_occurrences"])
+        }
+        converted = self.vault_root / "10_Raw" / "converted"
+        if converted.is_dir():
+            for bundle_manifest_path in converted.rglob("manifest.json"):
+                bundle_manifest = load_json(bundle_manifest_path)
+                projection = bundle_manifest.get("governance")
+                version_id = projection.get("version_id") if isinstance(projection, dict) else None
+                if version_id not in eligible_versions or not consistent(projection, bundle_manifest.get("source")):
+                    continue
+                document = bundle_manifest.get("document")
+                document_path = bundle_manifest_path.parent / (
+                    str(document.get("path") or "document.md") if isinstance(document, dict) else "document.md"
+                )
+                self._add(document_path, str(version_id))
+        reports = self.vault_root / "_system" / "reports"
+        excluded_outputs: set[str] = set()
+        if reports.is_dir():
+            for ledger_path in reports.glob("*.section-ledger.json"):
+                ledger = load_json(ledger_path)
+                projection = ledger.get("governance")
+                version_id = projection.get("version_id") if isinstance(projection, dict) else None
+                if version_id not in eligible_versions or not consistent(projection, ledger.get("source")):
+                    for section in ledger.get("sections", []):
+                        for output in section.get("outputs", []):
+                            excluded_outputs.add(safe_vault_path(self.vault_root, output).relative_to(self.vault_root).as_posix())
+                    continue
+                self._add(
+                    ledger_path.with_name(
+                        ledger_path.name.replace(".section-ledger.json", ".source-map.md")
+                    ),
+                    str(version_id),
+                )
+                for section in ledger.get("sections", []):
+                    if not isinstance(section, dict):
+                        continue
+                    for output in section.get("outputs", []):
+                        self._add(safe_vault_path(self.vault_root, output), str(version_id))
+        for output in excluded_outputs:
+            self.paths.pop(output, None)
+
+    def _add(self, path: Path, version_id: str) -> None:
+        try:
+            relative = path.resolve().relative_to(self.vault_root).as_posix()
+        except ValueError:
+            return
+        self.paths.setdefault(relative, set()).add(version_id)
+
+    def allows(self, value: Any) -> bool:
+        if self.mode == "legacy":
+            return True
+        normalized = str(value or "").replace("\\", "/").strip("/")
+        return normalized in self.paths
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "mode": self.mode,
+            "scope": "historical" if self.include_historical else "current",
+            "registry_revision": self.registry_revision,
+            "eligible_paths": len(self.paths) if self.mode == "enabled" else None,
+        }
 
 
 def load_deployment_config(explicit_path: Path | None = None) -> dict[str, Any]:
@@ -327,6 +455,11 @@ def main() -> int:
     parser.add_argument("--index-dir", type=Path, help="Defaults to <vault>/_system/reports/query-index")
     parser.add_argument("--no-content-scan", action="store_true", help="Score only document routing and section paths")
     parser.add_argument("--trace-id", help="Append actual candidates to an active query trace")
+    parser.add_argument(
+        "--include-historical",
+        action="store_true",
+        help="Allow completed superseded/withdrawn versions for an explicitly historical query",
+    )
     parser.add_argument("--viewer-base-url", help="Override the optional deployment-local source viewer URL")
     parser.add_argument(
         "--deployment-config",
@@ -347,6 +480,7 @@ def main() -> int:
         print(str(exc), file=sys.stderr)
         return 2
     viewer_base_url = load_viewer_base_url(args.viewer_base_url, deployment_config)
+    governance_policy = GovernanceQueryPolicy(vault_root, args.include_historical)
     terms = query_terms(args.query)
     documents: list[tuple[int, Path, dict[str, Any], list[str]]] = []
     errors: list[str] = []
@@ -354,6 +488,8 @@ def main() -> int:
         try:
             projection = load_json(path)
             document = projection.get("document", {})
+            if not governance_policy.allows(document.get("document_path")):
+                continue
             routing = " ".join(
                 [str(document.get("source_filename", "")), str(document.get("bundle_path", ""))]
                 + [str(item) for item in document.get("routing_terms", [])]
@@ -446,6 +582,7 @@ def main() -> int:
         "query": args.query,
         "terms": compact_terms(terms, limit=12),
         "candidates": selected_candidates,
+        "governance": governance_policy.summary(),
         "ranking": {
             "strategy": "section-specific-score-with-document-and-query-coverage",
             "document_count": len({str(item.get("document_path") or "") for item in selected_candidates}),

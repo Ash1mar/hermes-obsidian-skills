@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Storage-neutral governance operations with a stage-2 JSON repository."""
+"""Storage-neutral governance operations with a JSON repository."""
 
 from __future__ import annotations
 
@@ -155,6 +155,18 @@ class JsonGovernanceRepository:
 
     def load_state(self) -> tuple[dict[str, Any], dict[str, Any]]:
         return load_json(self.organizations_path), load_json(self.registry_path)
+
+    def get_version(self, version_id: str) -> tuple[dict[str, Any], int]:
+        """Return a validated version record and the registry revision."""
+        organizations, registry = self.load_state()
+        self._validate_or_raise(organizations, registry)
+        record = next(
+            (item for item in registry.get("records", []) if item.get("version_id") == version_id),
+            None,
+        )
+        if record is None:
+            raise GovernanceError(f"Unknown version: {version_id}")
+        return copy.deepcopy(record), int(registry["registry_revision"])
 
     def validate(self) -> list[dict[str, Any]]:
         organizations, registry = self.load_state()
@@ -620,6 +632,53 @@ class JsonGovernanceRepository:
             }
 
         return self._mutate("registry", expected_revision, actor, "document_status_changed", operation)
+
+    def finish_ingest(
+        self,
+        *,
+        version_id: str,
+        content_sha256: str,
+        processing_status: str,
+        expected_revision: int,
+        actor: str,
+    ) -> dict[str, Any]:
+        """Finish Bundle processing after verifying its immutable source identity."""
+        if processing_status not in {"completed", "failed"}:
+            raise GovernanceError("Ingest completion status must be completed or failed")
+
+        def operation(organizations: dict[str, Any], registry: dict[str, Any]) -> tuple[bool, dict[str, Any]]:
+            record = next(
+                (item for item in registry.get("records", []) if item.get("version_id") == version_id),
+                None,
+            )
+            if record is None:
+                raise GovernanceError(f"Unknown version: {version_id}")
+            if record.get("content_sha256") != content_sha256:
+                raise GovernanceError(
+                    "Bundle source hash does not match the registered immutable document version"
+                )
+            result = {
+                "document_id": record["document_id"],
+                "version_id": version_id,
+                "resource_id": record["resource_id"],
+                "content_sha256": content_sha256,
+            }
+            old_status = record.get("processing_status")
+            if old_status == processing_status:
+                return False, result
+            record["processing_status"] = processing_status
+            record["updated_at"] = utc_now()
+            return True, {
+                **result,
+                "event_context": {
+                    "document_id": record["document_id"],
+                    "version_id": version_id,
+                    "from": old_status,
+                    "to": processing_status,
+                },
+            }
+
+        return self._mutate("registry", expected_revision, actor, "ingest_finished", operation)
 
     def activate(self, *, version_id: str, expected_revision: int, actor: str) -> dict[str, Any]:
         def operation(organizations: dict[str, Any], registry: dict[str, Any]) -> tuple[bool, dict[str, Any]]:

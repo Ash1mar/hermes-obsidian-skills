@@ -322,9 +322,10 @@ Lint 始终只读。四个标准 profile 为：
 
 阶段 1 的权威后端为 JSON，但调用方应面向 `hermes-governance/v1` repository 合同，而不是把文件
 布局当业务 API。阶段 2 已由 Controlled Ingest 的治理管理器实现 revision 冲突检查、共享互斥锁、
-全状态校验、actor 审计事件和原子写入；普通 Ingest 不得直接修改 registry。阶段 3 再把 Bundle
-处理流程与这些命令自动联动。阶段 5.5 才实现 SQLite/PostgreSQL adapter，并通过 JSON export/import
-切换唯一权威后端。
+全状态校验、actor 审计事件和原子写入；普通 Ingest 不得直接修改 registry。阶段 3 已通过
+`ingest-start`/`ingest-finish` 把 Vault 原件登记、Bundle 验收、处理状态与 Bundle v2 稳定身份投影
+串联，并在 section ledger 初始化前校验注册记录、来源哈希和状态。阶段 5.5 才实现
+SQLite/PostgreSQL adapter，并通过 JSON export/import 切换唯一权威后端。
 禁止长期双写。数据库文件、连接凭据和迁移运行环境保存在 Vault 外。
 
 ### 11.4 Controlled Query
@@ -520,7 +521,7 @@ cherry-pick 或并行 worktree 作为日常双分支同步方式。`intranet` �
 - [Vault Bootstrap](../hermes-obsidian-vault-bootstrap/SKILL.md)
 - [Vault Lint](../hermes-obsidian-vault-lint/SKILL.md)
 - [qmd-like-rag](../qmd-like-rag/README.md)
-- [ADR-0001：借鉴 WeKnora 的最小文档治理与版本模型](architecture/0001-weknora-inspired-document-governance.md)（已接受；阶段 1、2 已实现，阶段 3 至阶段 5.5 按 ADR 渐进实施）
+- [ADR-0001：借鉴 WeKnora 的最小文档治理与版本模型](architecture/0001-weknora-inspired-document-governance.md)（已接受；阶段 1 至 3 已实现，阶段 4 至阶段 5.5 按 ADR 渐进实施）
 
 ## 22. 待项目负责人确认
 

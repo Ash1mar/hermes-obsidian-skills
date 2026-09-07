@@ -49,6 +49,11 @@ Rule codes are stable identifiers for automation and reports.
 Governance rules activate only when `_system/vault.json` exists. They validate the stage-1/2 JSON adapter,
 audit events, and database-ready contract; they do not mutate registries or approve draft governance.
 
+- `governance.projection_mismatch`: Bundle/ledger identity, raw hash, or revision disagrees with registry.
+- `governance.projection_unreadable`: the declared projection/control data cannot be audited.
+
+These checks apply only to Vaults with `_system/vault.json`. Existing legacy Vaults remain unchanged.
+
 ## Bundle Integrity
 
 - `bundle.validator_unavailable`

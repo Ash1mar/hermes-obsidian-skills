@@ -389,6 +389,7 @@ def compact_result(result: dict[str, Any], limit: int = DEFAULT_COMPACT_LIMIT) -
         compact = {
             "status": result.get("status"),
             "authority": result.get("authority"),
+            "governance": result.get("governance"),
             "duration_ms": result.get("duration_ms"),
             "routes": compact_routes,
             "fusion": compact_fusion,
@@ -494,6 +495,7 @@ def retrieve_scope(
     top_sections: int = 20,
     provider_config: Path | None = None,
     trace_id: str | None = None,
+    include_historical: bool = False,
 ) -> dict[str, Any]:
     vault_root = vault_root.resolve()
     script_root = Path(__file__).resolve().parent
@@ -507,6 +509,8 @@ def retrieve_scope(
     ]
     if provider_config:
         coarse_command.extend(["--provider-config", str(provider_config)])
+    if include_historical:
+        coarse_command.append("--include-historical")
     hierarchical_command = [
         sys.executable,
         str(script_root / "locate_source_sections.py"),
@@ -517,6 +521,8 @@ def retrieve_scope(
         "--top-sections",
         str(top_sections),
     ]
+    if include_historical:
+        hierarchical_command.append("--include-historical")
     started = time.monotonic_ns()
     with ThreadPoolExecutor(max_workers=2) as executor:
         coarse_future = executor.submit(run_json, coarse_command)
@@ -556,6 +562,11 @@ def retrieve_scope(
                 "hit_count": len(hierarchical.get("candidates", [])),
             },
         },
+        "governance": {
+            "scope": "historical" if include_historical else "current",
+            "coarse": coarse.get("governance"),
+            "hierarchical": hierarchical.get("governance"),
+        },
         "fusion": {
             "duration_ms": fusion_duration_ms,
             "retained_count": len(fused),
@@ -590,6 +601,7 @@ def main() -> int:
     parser.add_argument("--top-sections", type=int, default=20)
     parser.add_argument("--provider-config", type=Path)
     parser.add_argument("--trace-id")
+    parser.add_argument("--include-historical", action="store_true")
     parser.add_argument("--compact", action="store_true", help="Print a bounded agent-facing result")
     parser.add_argument("--compact-limit", type=int, default=DEFAULT_COMPACT_LIMIT)
     parser.add_argument("--full-result-path", type=Path, help="Also save the complete JSON result")
@@ -602,6 +614,7 @@ def main() -> int:
         top_sections=args.top_sections,
         provider_config=args.provider_config,
         trace_id=args.trace_id,
+        include_historical=args.include_historical,
     )
     if args.full_result_path:
         args.full_result_path.parent.mkdir(parents=True, exist_ok=True)

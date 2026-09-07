@@ -26,7 +26,9 @@ Resolve bundled `scripts/`, `references/`, and `config/` against `<ingest-skill-
 external or vault source
 -> runtime state detection
 -> 10_Raw preservation
+-> governance ingest-start (processing)
 -> recovery/resume or layered PDF/image bundle
+-> governance ingest-finish (completed/failed + Bundle projection)
 -> material classification
 -> source map or bounded ingestion
 -> governed artifact
@@ -65,15 +67,17 @@ python3 "<ingest-skill-root>/scripts/manage_document_governance.py" \
   --vault "/path/to/Vault" validate --json
 ```
 
-The stage-2 manager owns source-organization and document-registry mutations through the JSON adapter.
+The governance manager owns source-organization and document-registry mutations through the JSON adapter.
 Every mutation requires the current registry's `--expected-revision` and an auditable `--actor`; it
 validates the full next state under one mutation lock and atomically replaces only the selected registry.
 Use `activate` rather than `status` to enter `active`/`superseded` states. Repeated content hashes must
 reuse the existing version through `add-source`, not create a duplicate version.
 
 Read `references/document-governance.md` before registering, changing, or activating a governed document.
-Stage 2 does not automatically invoke these commands from conversion or Bundle processing; that wiring is
-stage 3.
+For a new governed source, use `ingest-start` after the immutable Vault raw copy exists and `ingest-finish`
+after Bundle v2 conversion. `ingest-finish` runs Bundle validation, verifies the registered raw SHA-256,
+sets processing to `completed` or `failed`, and writes the rebuildable stable-identity projection used by
+the section-ledger gate. The registry remains authoritative; do not edit the projection by hand.
 
 ## Runtime State Detection
 
@@ -99,9 +103,15 @@ When the source is outside the vault:
 1. Require an initialized governed vault. If it does not exist, use `hermes-obsidian-vault-bootstrap` first.
 2. Copy the source unchanged into `10_Raw/`; never overwrite a conflicting file.
 3. Verify the copied source against the original by SHA-256, then treat it as read-only.
-4. Run all conversion from the vault copy and write derived output under `10_Raw/converted/`.
-5. For a new engineering PDF, complex manual, or standalone image source that carries source content, create a fresh Bundle v2 from the vault raw copy. Do not reuse prior conversion output or a prior bundle unless the user explicitly requests reuse or resumption.
-6. Stop and report instead of substituting a weaker conversion when the required MinerU path is unavailable or Bundle validation fails.
+4. In a governed engineering Vault, run `ingest-start` with explicit document/version/source identities;
+   this computes the raw hash and registers processing state. If the hash already exists, use `add-source`.
+5. Run all conversion from the vault copy and write derived output under `10_Raw/converted/`.
+6. For a new engineering PDF, complex manual, or standalone image source that carries source content, create a fresh Bundle v2 from the vault raw copy. Do not reuse prior conversion output or a prior bundle unless the user explicitly requests reuse or resumption.
+7. Run `ingest-finish`. A pass/warn Bundle becomes `completed`; a failed Bundle becomes `failed`. Hash
+   mismatch aborts without changing the registry or manifest.
+8. Initialize the source map and section ledger only after the governed Bundle projection passes the
+   registry consistency gate.
+9. Stop and report instead of substituting a weaker conversion when the required MinerU path is unavailable or Bundle validation fails.
 
 ## Recovery and Resume Rules
 

@@ -273,7 +273,8 @@ class VaultLintTest(unittest.TestCase):
             self.assertEqual("legacy", legacy["metrics"]["governance_mode"])
 
             self.add_governance(legacy_vault)
-            governed = self.run_lint(legacy_vault)
+            governed = self.run_lint(legacy_vault, expect=2)
+            self.assertIn("governance.projection_mismatch", {issue["code"] for issue in governed["issues"]})
             self.assertEqual("enabled", governed["metrics"]["governance_mode"])
             self.assertEqual(0, governed["metrics"]["governance_document_versions"])
             self.assertIn("governance.readiness_draft", {issue["code"] for issue in governed["issues"]})

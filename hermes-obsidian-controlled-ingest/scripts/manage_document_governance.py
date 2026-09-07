@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import importlib.util
 import json
 import sys
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 from governance_repository import (
@@ -16,8 +18,42 @@ from governance_repository import (
     PROCESSING_STATUSES,
     GovernanceError,
     JsonGovernanceRepository,
+    atomic_write_json,
     utc_now,
 )
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def load_bundle_validator() -> Any:
+    path = Path(__file__).with_name("validate_document_bundle.py")
+    spec = importlib.util.spec_from_file_location("bundle_validator", path)
+    if spec is None or spec.loader is None:
+        raise GovernanceError(f"Cannot load bundle validator: {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def vault_relative_raw_path(repository: JsonGovernanceRepository, source: Path) -> str:
+    resolved = source.expanduser().resolve()
+    if not resolved.is_file():
+        raise GovernanceError(f"Raw source does not exist: {resolved}")
+    try:
+        relative = resolved.relative_to(repository.vault)
+    except ValueError as exc:
+        raise GovernanceError("Raw source must be inside the governed Vault") from exc
+    if not relative.parts or relative.parts[0].casefold() != "10_raw":
+        raise GovernanceError("Raw source must be stored under 10_Raw")
+    if len(relative.parts) > 1 and relative.parts[1].casefold() == "converted":
+        raise GovernanceError("Derived content under 10_Raw/converted is not an immutable raw source")
+    return PurePosixPath(*relative.parts).as_posix()
 
 
 def source_from_args(args: argparse.Namespace) -> dict[str, Any]:
@@ -89,6 +125,73 @@ def command_register(repository: JsonGovernanceRepository, args: argparse.Namesp
         "updated_at": now,
     }
     return {"operation": "register", **repository.register(record, args.expected_revision, args.actor)}
+
+
+def command_ingest_start(repository: JsonGovernanceRepository, args: argparse.Namespace) -> dict[str, Any]:
+    relative = vault_relative_raw_path(repository, args.raw_source)
+    digest = sha256_file(args.raw_source.expanduser().resolve())
+    now = args.created_at or utc_now()
+    record = {
+        "document_id": args.document_id,
+        "version_id": args.version_id,
+        "collection_id": args.collection_id,
+        "title": args.title,
+        "business_version": args.business_version,
+        "resource_id": args.resource_id,
+        "storage_uri": f"local://{relative}",
+        "content_sha256": digest,
+        "processing_status": "processing",
+        "governance_status": "candidate",
+        "authority_status": args.authority_status,
+        "supersedes_version_id": args.supersedes_version_id,
+        "source_occurrences": [source_from_args(args)],
+        "created_at": now,
+        "updated_at": now,
+    }
+    result = repository.register(record, args.expected_revision, args.actor)
+    return {"operation": "ingest-start", "raw_relative_path": relative, "content_sha256": digest, **result}
+
+
+def command_ingest_finish(repository: JsonGovernanceRepository, args: argparse.Namespace) -> dict[str, Any]:
+    bundle = args.bundle.expanduser().resolve()
+    validation = load_bundle_validator().validate_bundle(bundle)
+    manifest_path = bundle / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise GovernanceError(f"Cannot read Bundle manifest: {exc}") from exc
+    source = manifest.get("source") if isinstance(manifest, dict) else None
+    source_hash = source.get("sha256") if isinstance(source, dict) else None
+    if not isinstance(source_hash, str):
+        raise GovernanceError("Bundle manifest.source.sha256 is required")
+    processing_status = "failed" if validation.get("status") == "fail" else "completed"
+    result = repository.finish_ingest(
+        version_id=args.version_id,
+        content_sha256=source_hash,
+        processing_status=processing_status,
+        expected_revision=args.expected_revision,
+        actor=args.actor,
+    )
+    record, current_revision = repository.get_version(args.version_id)
+    manifest["governance"] = {
+        "contract": "hermes-governance/v1",
+        "vault_id": repository.manifest["vault"]["id"],
+        "document_id": record["document_id"],
+        "version_id": record["version_id"],
+        "resource_id": record["resource_id"],
+        "registry_path": repository.registry_path.relative_to(repository.vault).as_posix(),
+        "registry_revision": current_revision,
+    }
+    atomic_write_json(manifest_path, manifest)
+    return {
+        "operation": "ingest-finish",
+        "bundle": str(bundle),
+        "validation_status": validation.get("status"),
+        "processing_status": processing_status,
+        "projection_written": True,
+        **result,
+        "registry_revision": current_revision,
+    }
 
 
 def command_add_source(repository: JsonGovernanceRepository, args: argparse.Namespace) -> dict[str, Any]:
@@ -189,6 +292,29 @@ def build_parser() -> argparse.ArgumentParser:
     add_mutation_arguments(register_parser)
     add_output_arguments(register_parser)
     register_parser.set_defaults(handler=command_register)
+
+    ingest_start = subparsers.add_parser("ingest-start", help="Register a Vault raw source as processing")
+    ingest_start.add_argument("--raw-source", type=Path, required=True)
+    ingest_start.add_argument("--document-id", required=True)
+    ingest_start.add_argument("--version-id", required=True)
+    ingest_start.add_argument("--collection-id", required=True)
+    ingest_start.add_argument("--title", required=True)
+    ingest_start.add_argument("--business-version")
+    ingest_start.add_argument("--resource-id", required=True)
+    ingest_start.add_argument("--authority-status", choices=sorted(AUTHORITY_STATUSES), default="unknown")
+    ingest_start.add_argument("--supersedes-version-id")
+    ingest_start.add_argument("--created-at", help="ISO timestamp; defaults to current UTC time")
+    add_source_arguments(ingest_start)
+    add_mutation_arguments(ingest_start)
+    add_output_arguments(ingest_start)
+    ingest_start.set_defaults(handler=command_ingest_start)
+
+    ingest_finish = subparsers.add_parser("ingest-finish", help="Validate a Bundle and finish processing")
+    ingest_finish.add_argument("--bundle", type=Path, required=True)
+    ingest_finish.add_argument("--version-id", required=True)
+    add_mutation_arguments(ingest_finish)
+    add_output_arguments(ingest_finish)
+    ingest_finish.set_defaults(handler=command_ingest_finish)
 
     add_source_parser = subparsers.add_parser("add-source", help="Append a source occurrence to a version")
     add_source_parser.add_argument("--version-id", required=True)

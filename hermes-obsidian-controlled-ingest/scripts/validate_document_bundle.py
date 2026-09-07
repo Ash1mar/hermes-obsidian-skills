@@ -5,8 +5,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from pathlib import Path
+from pathlib import PurePosixPath
 from typing import Any
+
+
+STABLE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,127}$")
 
 
 def add_issue(issues: list[dict[str, Any]], code: str, severity: str, message: str) -> None:
@@ -116,6 +121,54 @@ def validate_outline(
     return len(sections)
 
 
+def validate_governance_projection(manifest: dict[str, Any], issues: list[dict[str, Any]]) -> None:
+    projection = manifest.get("governance")
+    if projection is None:
+        return
+    if not isinstance(projection, dict):
+        add_issue(issues, "invalid-governance-projection", "fail", "manifest.governance must be an object")
+        return
+    required = {
+        "contract",
+        "vault_id",
+        "document_id",
+        "version_id",
+        "resource_id",
+        "registry_path",
+        "registry_revision",
+    }
+    missing = sorted(required - set(projection))
+    if missing:
+        add_issue(
+            issues,
+            "incomplete-governance-projection",
+            "fail",
+            f"manifest.governance is missing: {', '.join(missing)}",
+        )
+    if projection.get("contract") != "hermes-governance/v1":
+        add_issue(issues, "invalid-governance-contract", "fail", "Unsupported governance contract")
+    for field in ("vault_id", "document_id", "version_id", "resource_id"):
+        if STABLE_ID_PATTERN.fullmatch(str(projection.get(field, ""))) is None:
+            add_issue(issues, "invalid-governance-id", "fail", f"manifest.governance.{field} is invalid")
+    registry_path = projection.get("registry_path")
+    pure = PurePosixPath(str(registry_path or "").replace("\\", "/"))
+    if not registry_path or pure.is_absolute() or ".." in pure.parts or ":" in (pure.parts[0] if pure.parts else ""):
+        add_issue(
+            issues,
+            "invalid-governance-registry-path",
+            "fail",
+            "manifest.governance.registry_path must remain inside the Vault",
+        )
+    revision = projection.get("registry_revision")
+    if not isinstance(revision, int) or isinstance(revision, bool) or revision < 0:
+        add_issue(
+            issues,
+            "invalid-governance-revision",
+            "fail",
+            "manifest.governance.registry_revision must be a non-negative integer",
+        )
+
+
 def validate_bundle(bundle: Path) -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
     if not bundle.is_dir():
@@ -142,6 +195,7 @@ def validate_bundle(bundle: Path) -> dict[str, Any]:
 
     validate_asset_paths(bundle, manifest.get("images"), "images", issues)
     validate_asset_paths(bundle, manifest.get("tables"), "tables", issues)
+    validate_governance_projection(manifest, issues)
 
     if schema.startswith("2"):
         if manifest.get("profile") not in {"basic", "engineering"}:

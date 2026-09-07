@@ -2,12 +2,12 @@
 
 ## 状态
 
-已接受，阶段 1 和阶段 2 已实现。
+已接受，阶段 1 至阶段 4 已实现并通过临时 Vault 回归测试；生产仍使用旧 Vault。
 
 本 ADR 于 2026-09-04 确认阶段 1 至阶段 5.5 的目标架构。阶段 1 已为新建 engineering Vault
-加入 JSON 治理控制面及只读 Lint；阶段 2 已实现统一文档治理管理器及 JSON repository。旧 Vault、
-Bundle、Query 和 Provider 行为保持兼容。后续字段只有在相应脚本、测试和兼容读取完成后才成为
-运行时合同。
+加入 JSON 治理控制面及只读 Lint；阶段 2 已实现统一文档治理管理器及 JSON repository；阶段 3
+已把原件登记、Bundle 验收、处理状态、治理投影和 ledger 准入串联。旧 Vault、Query 和 Provider
+行为保持兼容。后续字段只有在相应脚本、测试和兼容读取完成后才成为运行时合同。
 
 ## 背景
 
@@ -225,8 +225,14 @@ Bootstrap / Ingest / Query / Lint
    来源机构表和 JSON 文档注册表；Lint 校验身份、来源、状态和版本关系，旧 Vault 保持兼容。
 2. 阶段 2（已实现）：Controlled Ingest 内的治理管理器支持 `validate/register/activate/status/add-source`
    以及来源机构登记/审批；所有写入执行 revision 检查、互斥锁、全状态校验、审计事件和原子替换。
-3. 阶段 3：Controlled Ingest 登记、处理状态更新和 Bundle v2 可选治理投影。
-4. 阶段 4：Provider 语料过滤、Query 二次门禁和 Vault Lint 检查。
+3. 阶段 3（已实现）：Controlled Ingest 通过 `ingest-start` 从 Vault 原件计算哈希并登记为
+   `processing`；`ingest-finish` 校验 Bundle、核对不可变来源哈希、更新为 `completed/failed`，并写入
+   仅含稳定身份和注册表 revision 的 Bundle v2 可重建治理投影。受治理 Vault 的 section ledger
+   初始化会校验投影、注册记录、来源哈希与处理状态的一致性；旧 Vault 保持兼容。
+4. 阶段 4（已实现）：Provider 纳入已完成的 active/superseded/withdrawn 材料以保留历史，
+   默认 recall 仅返回 active；Query 根据当前注册表在检索、inspect、finalize 处检查。
+   显式 `--include-historical` 经层级检索查历史版本。Lint 检查 Bundle/ledger 投影。
+   旧 Vault 继续作为当前部署默认；无 vault.json 时走 legacy，不自动建库或迁移。
 5. 阶段 5：20 至 30 份多机构、多版本材料的独立试点。
 6. 阶段 5.5：实现 SQLite repository 与迁移工具；仅在出现并发或服务化需求时增加 PostgreSQL，
    并用同一合同测试验证两个后端。
@@ -298,8 +304,9 @@ JSON/SQL 双写和过早运维负担，同时避免未来重新设计身份与�
 - 旧 Vault 在未启用治理模式时无行为回归。
 
 阶段 1 验收范围覆盖治理文件生成、覆盖保护、schema/数据库映射以及 Lint 对关键不变量的只读检查。
-阶段 2 覆盖人工或受控调用的登记与状态事务，但尚未由 Bundle 转换流程自动调用；Ingest 自动联动、
-Query 门禁和 Provider 过滤分别属于阶段 3 至阶段 4，不能因管理命令已存在而宣称已经完成。
+阶段 2 覆盖人工或受控调用的登记与状态事务。阶段 3 已将原件登记、Bundle 验收、处理状态、稳定身份
+投影和 ledger 准入串联起来，但不自动判断业务身份、版次或权威性。阶段 4 已加入 Query 门禁、
+Provider 过滤和投影 Lint；新治理 Vault 的真实材料验证仍在阶段 5 完成。
 
 ## 结果
 

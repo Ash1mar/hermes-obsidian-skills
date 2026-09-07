@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from governance_repository import GovernanceError, JsonGovernanceRepository
+
 
 LEDGER_SCHEMA = "1.0"
 SECTION_STATUSES = {"pending", "in_progress", "ingested", "qa_required", "skipped", "stale"}
@@ -527,13 +529,77 @@ def resolve_control_paths(args: argparse.Namespace, snapshot: dict[str, Any]) ->
     return ledger_path, source_map_path
 
 
+def governed_vault_from_reports(reports_dir: Path) -> Path | None:
+    reports_dir = reports_dir.expanduser().resolve()
+    if reports_dir.name != "reports" or reports_dir.parent.name != "_system":
+        return None
+    vault = reports_dir.parent.parent
+    return vault if (vault / "_system" / "vault.json").is_file() else None
+
+
+def enforce_governance_gate(reports_dir: Path, snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    """Require a Bundle projection that resolves to the authoritative governed version."""
+    vault = governed_vault_from_reports(reports_dir)
+    if vault is None:
+        return None
+    try:
+        repository = JsonGovernanceRepository(vault)
+        projection = snapshot["manifest"].get("governance")
+        if not isinstance(projection, dict):
+            raise LedgerError(
+                "Governed Vault requires manifest.governance; run governance ingest-finish first"
+            )
+        version_id = projection.get("version_id")
+        if not isinstance(version_id, str):
+            raise LedgerError("manifest.governance.version_id is required")
+        record, current_revision = repository.get_version(version_id)
+        expected = {
+            "contract": "hermes-governance/v1",
+            "vault_id": repository.manifest["vault"]["id"],
+            "document_id": record["document_id"],
+            "version_id": record["version_id"],
+            "resource_id": record["resource_id"],
+            "registry_path": repository.registry_path.relative_to(repository.vault).as_posix(),
+        }
+        for field, value in expected.items():
+            if projection.get(field) != value:
+                raise LedgerError(f"Bundle governance mismatch for {field}")
+        projected_revision = projection.get("registry_revision")
+        if (
+            not isinstance(projected_revision, int)
+            or isinstance(projected_revision, bool)
+            or projected_revision < 0
+            or projected_revision > current_revision
+        ):
+            raise LedgerError("Bundle governance registry_revision is invalid or ahead of the registry")
+        if record.get("content_sha256") != snapshot["source_sha256"]:
+            raise LedgerError("Bundle source hash does not match its governed document version")
+        validation_status = snapshot["validation"].get("status")
+        required_processing = "failed" if validation_status == "fail" else "completed"
+        if record.get("processing_status") != required_processing:
+            raise LedgerError(
+                f"Governed version must be {required_processing} before ledger initialization"
+            )
+        return {
+            **expected,
+            "registry_revision": projected_revision,
+            "current_registry_revision": current_revision,
+            "processing_status": record.get("processing_status"),
+        }
+    except GovernanceError as exc:
+        raise LedgerError(f"Governance validation failed: {exc}") from exc
+
+
 def command_init(args: argparse.Namespace) -> dict[str, Any]:
     snapshot = snapshot_bundle(args.bundle)
+    governance = enforce_governance_gate(args.reports_dir, snapshot)
     ledger_path, source_map_path = resolve_control_paths(args, snapshot)
     existing = None
     if ledger_path.exists() and not args.replace:
         existing = load_json(ledger_path)
     ledger = build_ledger(snapshot, ledger_path, source_map_path, existing)
+    if governance is not None:
+        ledger["governance"] = governance
     atomic_write_json(ledger_path, ledger)
     atomic_write_text(source_map_path, render_source_map(ledger))
     return {

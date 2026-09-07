@@ -113,6 +113,10 @@ Rules cover:
 
 Read `references/rule-catalog.md` before adding or changing rule codes.
 
+Bundle and ledger governance projections are also checked against the registry for identity, source hash,
+and revision consistency. Adding an empty control plane to an existing Vault does not migrate its Bundles.
+Keep the existing deployment Vault until a separately verified migration is requested.
+
 ## Reporting
 
 When responding to the user:

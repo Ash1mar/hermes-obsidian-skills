@@ -25,6 +25,14 @@ There is deliberately no separate `hermes-retrieval` facade in the current desig
 
 ## Indexed corpus
 
+Legacy Vaults without `_system/vault.json` keep their existing corpus and model/config fingerprints.
+For an explicitly governed Vault, sync includes completed active, superseded, and withdrawn versions
+with matching Bundle/ledger identity and approved source organizations. Ordinary recall filters against
+the current registry and returns active versions only. Historical Query uses the hierarchical route.
+Candidate/unknown/unfinished and unregistered artifacts are excluded. Shared ledger outputs are
+excluded when any recorded contributing version is ineligible. Updating the package does not migrate
+or select another Vault.
+
 Default patterns select governed Markdown and converted source text while excluding query traces, page evidence, binaries, and runtime state:
 
 ```text
