@@ -40,6 +40,11 @@ prompt scope
 
 ## Quick Start
 
+Existing `_system/reports/*.knowledge-build.json` records are validated for evidence fingerprints,
+ranges and decision/output consistency. Missing records are legacy-compatible, not errors.
+These checks do not establish factual correctness or approve entities/concepts. A stale fingerprint
+requires controlled review, not automatic replacement with the current hash.
+
 Run:
 
 ```bash

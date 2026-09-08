@@ -309,6 +309,24 @@ def add_issue(issues: list[Issue], code: str, severity: str, path: str, message:
     issues.append(Issue(code, severity, path, message, hint, {k: v for k, v in details.items() if v is not None}))
 
 
+def lint_knowledge_builds(vault: Path, ingest_skill: Path | None, issues: list[Issue], metrics: dict[str, Any]) -> None:
+    records = sorted((vault / "_system/reports").glob("*.knowledge-build.json"))
+    metrics["knowledge_build_records"] = len(records)
+    if not records:
+        return  # Existing Vaults have no new record requirement.
+    script = ingest_skill / "scripts/validate_knowledge_build.py" if ingest_skill else None
+    if script is None or not script.is_file():
+        add_issue(issues, "knowledge_build.validator_missing", "error", str(vault),
+                  "Build records exist but their validator is unavailable; supply --ingest-skill-path.")
+        return
+    spec = importlib.util.spec_from_file_location("knowledge_build_validator", script)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    for record in records:
+        for message in module.validate_file(record, vault):
+            add_issue(issues, "knowledge_build.invalid", "error", str(record), message)
+
+
 def lint_structure(vault: Path, issues: list[Issue], metrics: dict[str, Any]) -> None:
     if not vault.exists():
         add_issue(issues, "vault.missing_path", "error", str(vault), "Vault path does not exist.")
@@ -1367,6 +1385,7 @@ def lint(args: argparse.Namespace) -> dict[str, Any]:
     stage("governance", lambda: lint_governance_control_plane(vault, profile, issues, metrics))
     stage("governance.projections", lambda: lint_governance_projections(vault, issues, metrics))
     ingest_skill = discover_ingest_skill(Path(__file__), args.ingest_skill_path)
+    stage("knowledge_builds", lambda: lint_knowledge_builds(vault, ingest_skill, issues, metrics))
     validator = load_bundle_validator(ingest_skill)
     stage("bundles", lambda: lint_bundles(vault, validator, issues, metrics))
     ledgers = stage("ledgers.load", lambda: load_ledgers(vault, issues, metrics))
