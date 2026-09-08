@@ -35,6 +35,10 @@ Vault/
 
 ## Knowledge Card Template
 
+Templates below are reader-facing starting points, not required section checklists. Omit irrelevant
+headings. Put classification, identity/duplicate decisions and rejected alternatives in the ingest
+log and knowledge-build record. Read `knowledge-construction.md` for the default construction flow.
+
 ```markdown
 ---
 type: knowledge-card
@@ -48,16 +52,13 @@ domains:
 
 ## 来源范围
 ## 一句话摘要
-## 材料性质判断
 ## 核心观点
 ## 可复用方法
 ## 与已有知识库的关系
-## 与已有卡片的重复性检查
 ## 适用场景
 ## 限制与风险
 ## 场景 / 对象 / 行为 / 方法 / 规则
 ## 关联概念
-## 候选概念但不建页
 ## 来源
 ```
 
@@ -97,16 +98,13 @@ domains:
 
 # Project Title
 
-## 项目性质判断
 ## 源文件分工
 ## 核心目标
 ## 系统对象
 ## 关键流程
-## AI 介入点
 ## 与现有知识库的关系
 ## 可复用方法
 ## 项目风险与不确定性
-## 后续可拆分产物
 ## 来源
 ```
 
@@ -123,16 +121,12 @@ domains:
 
 # Spec Index Title
 
-## 材料性质判断
 ## 核心用途
 ## 结构摘要
 ## 关键字段或对象
 ## 使用规则
 ## 与现有知识库的关系
 ## 可复用部分
-## 不应过度沉淀的部分
-## 是否需要概念页
-## 后续处理建议
 ## 来源
 ```
 
@@ -150,6 +144,9 @@ domains:
 # Ingest Log
 
 ## 本次任务
+## 候选知识、身份核对与证据映射
+## 构建决策记录及 plan/complete 校验
+## 冲突与受影响产物
 ## 输入源
 ## 前置读取
 ## 材料性质判断

@@ -539,7 +539,7 @@ Vault 路径：
 ```
 """
     governance_rule = (
-        "8. 当前治理后端为 JSON；不得手工改写 document-registry.json，后续文档登记必须通过受控工具。"
+        "10. 当前治理后端为 JSON；不得手工改写 document-registry.json，后续文档登记必须通过受控工具。"
         if profile == "engineering"
         else ""
     )
@@ -560,6 +560,8 @@ Vault 路径：
 5. 稳定概念页写入 40_Concepts。
 6. 项目材料写入 50_Projects。
 7. 每次写入后，在 _system/reports 写 ingest log。
+8. 知识构建由当前 controlled-ingest Skill 执行：识别候选、核对身份、映射证据，再决定产物；不需要预填业务系统清单。
+9. 知识正文与处理日志分离；未知对象或冲突可暂缓，不按文件名猜测事实，不按接收先后判定业务版本。
 {governance_rule}
 ```
 """
@@ -821,6 +823,23 @@ sort meeting_date desc
 
 def template_files(profile: str) -> dict[str, str]:
     files = {
+        "_system/templates/knowledge-page-template.md": """
+---
+type: knowledge-card
+status: draft
+source:
+---
+
+# Knowledge Title
+
+<!-- Select useful headings only. Evidence metadata follows the active ingest Skill.
+Classification, deduplication and rejected alternatives belong in the ingest log. -->
+
+## Facts Or Clearly Labelled Analysis
+## Applicability And Limits
+## Differences And Open Questions
+## Sources
+""",
         "_system/templates/ingest-log-template.md": """
 ---
 type: report
@@ -838,6 +857,9 @@ source:
 ## Created Files
 ## Files Not Created And Why
 ## Concept Reuse
+## Candidate Identity And Evidence Decisions
+## Knowledge Build Record And Validation
+## Conflicts And Affected Artifacts
 ## Raw Source Rule
 ## Next Step
 """,

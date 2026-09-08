@@ -31,6 +31,7 @@ external or vault source
 -> governance ingest-finish (completed/failed + Bundle projection)
 -> material classification
 -> source map or bounded ingestion
+-> candidate knowledge / identity check / evidence mapping / output decision
 -> governed artifact
 -> incremental reconciliation
 -> batch synthesis when applicable
@@ -191,6 +192,13 @@ Honor `manifest.quality.review_required`. Verify engineering formulas, table str
 
 ## Material Classification
 
+Before creating or updating durable knowledge, read `references/knowledge-construction.md`.
+Use its default candidate -> identity -> evidence -> decision -> writing -> review workflow,
+including for batch synthesis and query-derived writeback. No business configuration is required.
+Record new knowledge decisions in one bounded `*.knowledge-build.json` beside the ingest log;
+run `validate_knowledge_build.py` in plan and complete phases as documented there. Existing
+Vaults do not require backfilling these records. Source conversion alone is not knowledge construction.
+
 Classify from content evidence before choosing outputs. Common classifications include:
 
 - short knowledge note
@@ -262,6 +270,10 @@ Never promote the query answer summary itself into a card, concept, or spec inde
 
 ## Concept Governance
 
+Entity recognition is separate from Concept approval. A specific system, device or project
+object can be described in an existing Card/index without becoming an abstract Concept page.
+Do not merge by name similarity alone; inspect object kind, project, applicability and version.
+
 Do not create concept pages by default. Before creating one, answer:
 
 - Does `concept-registry.md` already cover it?
@@ -283,6 +295,10 @@ If unsure, write a candidate concept review instead. Use relationship types:
 See `references/concept-governance.md`.
 
 ## Incremental Reconciliation
+
+Use the build record's evidence fingerprints and existing Bundle/ledger references to identify
+affected outputs when sources change. Record review/staleness decisions; do not automatically
+delete outputs or let arrival order override business-version or authority checks.
 
 After each bounded ingest unit, and after each source in a batch:
 
@@ -365,6 +381,9 @@ Do not batch ingest mixed material blindly.
 6. Avoid mixing long theory, engineering specifications, project documents, and tool observations in one write run.
 
 ## Required Run Summary
+
+Keep processing rationale in this summary/build record, not in every reader-facing knowledge page.
+Report the knowledge-build record path and plan/complete validation result when construction ran.
 
 Report every run with:
 
