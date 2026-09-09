@@ -26,7 +26,7 @@ def sample(tmp_path):
     output.parent.mkdir()
     output.write_text("# Object A\n", encoding="utf-8")
     data = {
-        "contract": validator.CONTRACT, "scope": "source.md lines 1-2",
+        "contract": validator.PREVIOUS_CONTRACT, "scope": "source.md lines 1-2",
         "execution_status": "completed",
         "candidates": [{"id": "candidate-001", "name": "Object A", "kind": "entity",
                         "identity_rationale": "Project X; no equivalent target found",
@@ -179,3 +179,78 @@ def test_bundle_inspection_and_all_supporting_output_registration(sample):
     item["lines"] = [1, 2]
     ledger["sections"][0]["content_ranges"] = [{"start_line": 1, "end_line": 1}]
     assert any("outside section content_ranges" in e for e in check())
+
+
+def run_sync(vault, data, apply=False):
+    record = vault / "build.knowledge-build.json"
+    record.write_text(json.dumps(data), encoding="utf-8")
+    command = [sys.executable, str(SCRIPT.with_name("sync_knowledge_provenance.py")), str(record), "--vault", str(vault)]
+    result = subprocess.run(command + (["--apply"] if apply else []), capture_output=True, text=True, encoding="utf-8")
+    return result, json.loads(result.stdout)
+
+
+def prepare_current(sample, qa=False):
+    vault, data = sample
+    data["contract"] = validator.CONTRACT
+    (vault / "30_Cards/object.md").write_text("---\nstatus: draft\n---\n# Object A\nSource says A applies to X.\n", encoding="utf-8")
+    if qa:
+        data["candidates"][0]["evidence"][0].update(qa="needs-qa", qa_note="Unit symbol uncertain; retain as source transcription")
+        data["inspected_ranges"][0].update(qa="needs-qa", qa_note="Unit symbol uncertain; retain as source transcription")
+    result, preview = run_sync(vault, data)
+    assert result.returncode == 0, preview
+    data["output_reviews"] = [dict(row, finding="Compared attribution, scope, QA qualifiers and citations to the source")
+                              for row in preview["review_inputs"]]
+    return vault, data
+
+
+@pytest.mark.parametrize("qa", [False, True])
+def test_current_provenance_sync_is_idempotent_and_binds_final_review(sample, qa):
+    vault, data = prepare_current(sample, qa)
+    result, payload = run_sync(vault, data, True)
+    assert result.returncode == 0, payload
+    assert validator.validate_record(data, vault) == []
+    page = vault / "30_Cards/object.md"
+    before = page.read_bytes()
+    assert run_sync(vault, data, True)[0].returncode == 0
+    assert page.read_bytes() == before
+    if qa:
+        assert "待核验草稿" in page.read_text(encoding="utf-8")
+    page.write_text(page.read_text(encoding="utf-8").replace("Source says", "Universal rule says"), encoding="utf-8")
+    assert any("page changed after review" in e for e in validator.validate_record(data, vault))
+    assert run_sync(vault, data, True)[0].returncode == 2
+
+
+def test_shared_output_unions_all_candidates_and_detects_drift(sample):
+    vault, data = prepare_current(sample)
+    candidate = copy.deepcopy(data["candidates"][0])
+    candidate.update(id="candidate-002", name="Second claim")
+    candidate["evidence"][0]["lines"] = [2, 2]
+    data["candidates"].append(candidate)
+    assert run_sync(vault, data, True)[0].returncode == 0
+    assert len(validator.output_provenance(data)["30_Cards/object.md"]) == 2
+    assert validator.validate_record(data, vault) == []
+    data["candidates"].pop()
+    assert any("provenance differs" in e for e in validator.validate_record(data, vault))
+
+
+def test_qa_cannot_be_laundered_as_verified_or_modify_nondraft(sample):
+    vault, data = prepare_current(sample, True)
+    page = vault / "30_Cards/object.md"
+    page.write_text(page.read_text(encoding="utf-8").replace("status: draft", "status: approved"), encoding="utf-8")
+    assert any("status: draft" in e for e in validator.validate_record(data, vault))
+    assert run_sync(vault, data, True)[0].returncode == 2
+    data["candidates"][0]["evidence"][0]["qa"] = "usable"
+    assert any("unresolved QA" in e for e in validator.validate_record(data, vault))
+
+
+def test_project_basis_is_required_without_asking_a_human(sample):
+    vault, data = prepare_current(sample)
+    target = vault / "50_Projects/object.md"
+    target.parent.mkdir()
+    target.write_bytes((vault / "30_Cards/object.md").read_bytes())
+    data["candidates"][0]["outputs"] = ["50_Projects/object.md"]
+    data["output_reviews"][0]["path"] = "50_Projects/object.md"
+    assert any("project basis required" in e for e in validator.validate_record(data, vault))
+    data["output_reviews"][0]["project_basis"] = "Source explicitly identifies project X"
+    assert run_sync(vault, data, True)[0].returncode == 0
+    assert validator.validate_record(data, vault) == []

@@ -6,6 +6,7 @@ import importlib.util
 import subprocess
 import sys
 from pathlib import Path
+import pytest
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -627,7 +628,8 @@ def test_failed_bundle_records_failed_processing_and_creates_only_blocked_ledger
     assert json.loads(ledger_result.stdout)["state"] == "blocked"
 
 
-def test_candidate_source_can_build_draft_without_becoming_query_visible(tmp_path: Path) -> None:
+@pytest.mark.parametrize("needs_qa", [False, True])
+def test_candidate_source_can_build_draft_without_becoming_query_visible(tmp_path: Path, needs_qa: bool) -> None:
     vault = create_engineering_vault(tmp_path)
     organization_add(vault)  # Candidate, not approved.
     raw = vault / "10_Raw/stage-three.pdf"
@@ -655,8 +657,10 @@ def test_candidate_source_can_build_draft_without_becoming_query_visible(tmp_pat
                 "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                 "lines": [section["content_ranges"][0]["start_line"], section["content_ranges"][0]["end_line"]],
                 "qa": "usable"}
+    if needs_qa:
+        evidence.update(qa="needs-qa", qa_note="Source wording is readable; a symbol remains uncertain")
     output = "30_Cards/attributed-draft.md"
-    data = {"contract": "hermes-knowledge-build/v2", "scope": "Fixture source section",
+    data = {"contract": "hermes-knowledge-build/v3", "scope": "Fixture source section",
             "execution_status": "in_progress", "inspected_ranges": [dict(
                 evidence, reason="Inspected source statement", ledger_path=ledger_path.relative_to(vault).as_posix(),
                 ledger_revision=ledger["revision"], bundle_id=ledger["bundle_id"], section_id=section["id"])],
@@ -675,10 +679,25 @@ def test_candidate_source_can_build_draft_without_becoming_query_visible(tmp_pat
 
     validate("plan")
     (vault / output).write_text("---\nstatus: draft\n---\nAttributed to the fixture source.\n", encoding="utf-8")
-    ledger_command("update", str(ledger_path), "--section", section["id"], "--status", "ingested",
+    sync_script = INGEST / "scripts/sync_knowledge_provenance.py"
+    record.write_text(json.dumps(data), encoding="utf-8")
+    preview = subprocess.run([sys.executable, str(sync_script), str(record), "--vault", str(vault)],
+                             capture_output=True, text=True)
+    assert preview.returncode == 0, preview.stdout
+    data["output_reviews"] = [dict(row, finding="Checked statement attribution and scope against source")
+                              for row in json.loads(preview.stdout)["review_inputs"]]
+    record.write_text(json.dumps(data), encoding="utf-8")
+    applied = subprocess.run([sys.executable, str(sync_script), str(record), "--vault", str(vault), "--apply"],
+                             capture_output=True, text=True)
+    assert applied.returncode == 0, applied.stdout
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    ledger_command("update", str(ledger_path), "--section", section["id"], "--status", "qa_required" if needs_qa else "ingested",
                    "--output", output, "--expected-revision", str(ledger["revision"]))
     data["execution_status"] = "completed"
     validate("complete")
+    if needs_qa:
+        final_ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+        assert evidence["qa_note"] in next(s for s in final_ledger["sections"] if s["id"] == section["id"])["qa_items"]
 
     spec = importlib.util.spec_from_file_location("draft_query_policy", ROOT / "hermes-obsidian-controlled-query/scripts/locate_source_sections.py")
     query = importlib.util.module_from_spec(spec)

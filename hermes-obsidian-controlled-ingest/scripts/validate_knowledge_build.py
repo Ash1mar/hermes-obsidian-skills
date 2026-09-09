@@ -8,11 +8,67 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 
-CONTRACT = "hermes-knowledge-build/v2"
+CONTRACT = "hermes-knowledge-build/v3"
+PREVIOUS_CONTRACT = "hermes-knowledge-build/v2"
 LEGACY_CONTRACT = "hermes-knowledge-build/v1"
 KINDS = {"entity", "concept", "requirement", "fact", "analysis"}
 DECISIONS = {"create", "update", "reuse", "relate", "defer", "skip"}
 OUTPUT_ROOTS = {"20_Notes", "30_Cards", "40_Concepts", "50_Projects", "_system"}
+PROVENANCE_START = "<!-- knowledge-provenance:start -->"
+PROVENANCE_END = "<!-- knowledge-provenance:end -->"
+
+
+def authored_text(text: str) -> str:
+    """Hash the reviewed page, excluding only the tool-owned provenance block."""
+    if text.count(PROVENANCE_START) != text.count(PROVENANCE_END) or text.count(PROVENANCE_START) > 1:
+        raise ValueError("malformed knowledge provenance block")
+    if PROVENANCE_START in text:
+        start, end = text.index(PROVENANCE_START), text.index(PROVENANCE_END)
+        if end < start:
+            raise ValueError("reversed knowledge provenance markers")
+        text = text[:start] + text[end + len(PROVENANCE_END):]
+    return text.replace("\r\n", "\n").strip() + "\n"
+
+
+def authored_sha256(text: str) -> str:
+    return hashlib.sha256(authored_text(text).encode("utf-8")).hexdigest()
+
+
+def frontmatter_scalar(text: str, key: str) -> str:
+    """Read a simple scalar; unsupported YAML shapes are rejected, never guessed."""
+    match = re.match(r"\A---\s*\n(.*?)\n---(?:\n|$)", text, re.S)
+    if not match:
+        return ""
+    values = re.findall(r"^" + re.escape(key) + r":\s*([^\n]+)", match[1], re.M)
+    return values[0].strip().strip("\"'") if len(values) == 1 else ""
+
+
+def output_provenance(data: dict) -> dict[str, list[dict]]:
+    """Union all candidates supporting each output; navigation links are not evidence."""
+    result: dict[str, list[dict]] = {}
+    for candidate in data.get("candidates", []):
+        if candidate.get("decision") in {"skip", "defer"}:
+            continue
+        for output in candidate.get("outputs", []):
+            rows = result.setdefault(output, [])
+            for evidence in candidate.get("evidence", []):
+                row = {key: evidence[key] for key in ("path", "sha256", "lines", "qa", "qa_note") if key in evidence}
+                supports = []
+                for inspected in data.get("inspected_ranges", []):
+                    if (inspected["path"] == evidence["path"] and inspected["sha256"] == evidence["sha256"]
+                            and inspected["lines"][0] <= evidence["lines"][0] <= evidence["lines"][1] <= inspected["lines"][1]):
+                        support = {k: inspected[k] for k in ("ledger_path", "bundle_id", "section_id") if k in inspected}
+                        if support and support not in supports:
+                            supports.append(support)
+                row["sections"] = supports
+                if row not in rows:
+                    rows.append(row)
+    return result
+
+
+def render_provenance(rows: list[dict]) -> str:
+    qa = "待核验草稿：以下疑点不阻断来源提取，也不代表已验证的工程结论。" if any(r["qa"] == "needs-qa" for r in rows) else "来源提取记录；不表示来源已获批准或工程结论已获专业验证。"
+    return PROVENANCE_START + "\n## 来源与核验状态\n\n" + qa + "\n\n```json\n" + json.dumps(rows, ensure_ascii=False, indent=2) + "\n```\n" + PROVENANCE_END
 
 
 def validate_record(data: object, vault: Path, phase: str = "complete") -> list[str]:
@@ -39,7 +95,7 @@ def validate_record(data: object, vault: Path, phase: str = "complete") -> list[
             return None
         return resolved
 
-    if not isinstance(data, dict) or data.get("contract") not in {CONTRACT, LEGACY_CONTRACT}:
+    if not isinstance(data, dict) or data.get("contract") not in {CONTRACT, PREVIOUS_CONTRACT, LEGACY_CONTRACT}:
         return ["invalid knowledge-build contract"]
     if not isinstance(data.get("scope"), str) or not data["scope"].strip():
         errors.append("scope: describe the inspected source scope")
@@ -50,7 +106,8 @@ def validate_record(data: object, vault: Path, phase: str = "complete") -> list[
         errors.append("empty_reason: required when no candidates were found")
     inspections = []
     inspected_sections = {}
-    if data.get("contract") == CONTRACT:
+    current = data.get("contract") == CONTRACT
+    if data.get("contract") in {CONTRACT, PREVIOUS_CONTRACT}:
         status = data.get("execution_status")
         if status not in {"in_progress", "completed", "blocked", "not_started"}:
             errors.append("execution_status: invalid or missing")
@@ -69,6 +126,8 @@ def validate_record(data: object, vault: Path, phase: str = "complete") -> list[
                 errors.append(f"{label}: inspection finding/reason required")
             if item.get("qa") not in {"usable", "needs-qa"}:
                 errors.append(f"{label}: invalid QA classification")
+            if current and item.get("qa") == "needs-qa" and not str(item.get("qa_note") or "").strip():
+                errors.append(f"{label}: needs-qa requires a specific qa_note")
             # Reuse the source/path/hash/range checks even for zero candidates.
             probe = {"contract": LEGACY_CONTRACT, "scope": label, "candidates": [{
                 "id": "inspection", "name": label, "kind": "fact",
@@ -100,7 +159,7 @@ def validate_record(data: object, vault: Path, phase: str = "complete") -> list[
                         raise ValueError("inspection is outside section content_ranges")
                     if phase == "complete" and section["status"] not in {"ingested", "skipped", "qa_required"}:
                         raise ValueError("inspected section is not terminal")
-                    if phase == "plan" and section["status"] not in {"in_progress", "ingested", "skipped", "qa_required"}:
+                    if phase != "complete" and section["status"] not in {"in_progress", "ingested", "skipped", "qa_required"}:
                         raise ValueError("section must be claimed before planning knowledge writes")
                     inspected_sections[i] = section
                 except (OSError, ValueError, KeyError, TypeError, StopIteration) as exc:
@@ -136,7 +195,7 @@ def validate_record(data: object, vault: Path, phase: str = "complete") -> list[
             target = path(output, label + ".outputs", output=True)
             if target and phase == "plan" and decision == "create" and target.exists():
                 errors.append(f"{label}: create target already exists; inspect and choose update/reuse")
-            if target and (phase == "complete" or decision in {"update", "reuse", "relate"}) and not target.is_file():
+            if target and (phase != "plan" or decision in {"update", "reuse", "relate"}) and not target.is_file():
                 errors.append(f"{label}: missing output {output}")
         inspected = candidate.get("existing_targets", [])
         if not isinstance(inspected, list):
@@ -163,7 +222,7 @@ def validate_record(data: object, vault: Path, phase: str = "complete") -> list[
             if not isinstance(item, dict):
                 errors.append(f"{el}: expected object")
                 continue
-            if data.get("contract") == CONTRACT:
+            if data.get("contract") in {CONTRACT, PREVIOUS_CONTRACT}:
                 matches = []
                 for k, inspected in enumerate(inspections):
                     try:
@@ -175,13 +234,15 @@ def validate_record(data: object, vault: Path, phase: str = "complete") -> list[
                 if not matches:
                     errors.append(f"{el}: evidence is outside inspected_ranges")
                 if decision not in {"skip", "defer"}:
-                    if any(inspections[k].get("qa") != "usable" for k in matches):
+                    if any(inspections[k].get("qa") != "usable" for k in matches) and not (current and item.get("qa") == "needs-qa"):
                         errors.append(f"{el}: inspection has unresolved QA")
                     for k in matches:
                         section = inspected_sections.get(k)
                         if section is not None and phase == "complete":
-                            if section["status"] != "ingested":
+                            if section["status"] not in ({"ingested", "qa_required"} if current else {"ingested"}):
                                 errors.append(f"{el}: productive evidence section must be ingested")
+                            if current and item.get("qa") == "needs-qa" and item.get("qa_note") not in section.get("qa_items", []):
+                                errors.append(f"{el}: qa_note missing from supporting section ledger")
                             if any(o not in section.get("outputs", []) for o in outputs):
                                 errors.append(f"{el}: output missing from supporting section ledger")
             source = path(item.get("path"), el)
@@ -201,8 +262,37 @@ def validate_record(data: object, vault: Path, phase: str = "complete") -> list[
                         errors.append(f"{el}: range exceeds source")
                 except (UnicodeError, OSError):
                     errors.append(f"{el}: use normalized UTF-8 text, not a binary original")
-            if decision not in {"skip", "defer"} and item.get("qa") != "usable":
+            draft_qa = current and item.get("qa") == "needs-qa" and isinstance(item.get("qa_note"), str) and bool(item["qa_note"].strip())
+            if decision not in {"skip", "defer"} and item.get("qa") != "usable" and not draft_qa:
                 errors.append(f"{el}: QA-restricted evidence cannot support a knowledge output")
+    if current and not errors:
+        reviews = data.get("output_reviews", [])
+        if not isinstance(reviews, list) or any(not isinstance(r, dict) for r in reviews):
+            return errors + ["output_reviews: expected array of page reviews"]
+        reviewed = {r.get("path"): r for r in reviews if isinstance(r.get("path"), str)}
+        if len(reviewed) != len(reviews):
+            errors.append("output_reviews: invalid or duplicate output path")
+        for output, rows in output_provenance(data).items():
+            target = path(output, "output", output=True)
+            if not target or not target.is_file():
+                continue  # Missing outputs were handled above (plan permits create).
+            text = target.read_text(encoding="utf-8")
+            if any(r["qa"] == "needs-qa" for r in rows) and frontmatter_scalar(text, "status") != "draft":
+                errors.append(f"{output}: QA knowledge output must have status: draft")
+            if phase in {"written", "complete"}:
+                review = reviewed.get(output, {})
+                if review.get("authored_sha256") != authored_sha256(text) or not str(review.get("finding") or "").strip():
+                    errors.append(f"{output}: final model review missing or page changed after review")
+                if output.startswith("50_Projects/") and not str(review.get("project_basis") or "").strip():
+                    errors.append(f"{output}: specific project basis required; use a theme index otherwise")
+                if frontmatter_scalar(text, "evidence_mode") == "index":
+                    scope = "multi-source" if len({r["path"] for r in rows}) > 1 else "single-source"
+                    if (frontmatter_scalar(text, "evidence_scope") != scope
+                            or frontmatter_scalar(text, "evidence_coverage") not in {"complete", "representative"}
+                            or frontmatter_scalar(text, "evidence_authority") != "navigation"):
+                        errors.append(f"{output}: index requires matching scope, coverage and navigation authority")
+                if phase == "complete" and render_provenance(rows) not in text:
+                    errors.append(f"{output}: generated provenance differs from all supporting candidates")
     return errors
 
 
