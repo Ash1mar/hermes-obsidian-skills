@@ -150,7 +150,9 @@ When the source is outside the vault:
 - Never treat an empty bundle directory as completed work.
 - Never skip conversion only because a bundle folder exists.
 - A usable Bundle must pass `python3 "<ingest-skill-root>/scripts/validate_document_bundle.py"` as `pass` or `warn`; `fail` is not usable.
-- If a Bundle validates as `warn`, continue with QA restrictions and do not promote affected formulas, tables, figures, or parameters as authoritative facts.
+- If a Bundle validates as `warn`, continue extracting readable evidence. Mark affected claims and
+  ranges `needs-qa` with a specific `qa_note`, write them as attributed `status: draft` knowledge,
+  and do not promote them as authoritative facts. A QA flag limits confidence, not extraction.
 - If a Bundle is empty, missing required files, or fails validation, remove or replace only the derived bundle output, never the raw source, and retry once with a skill-supported MinerU parameter change such as `pipeline` backend or `txt` method when available.
 - If retry still fails, record the failed source, raw SHA, bundle path, command, validator output, and recommended manual check.
 - If a valid Bundle and ledger already exist, reconcile and resume; do not rebuild unless the user explicitly asks for fresh conversion.
@@ -218,7 +220,9 @@ After a completed source ingest or at the end of a related batch, run `python3 "
 
 Treat `document.md` as the single normalized text source. Do not duplicate every section into separate Markdown files. Use the ledger's non-overlapping `content_ranges` for staged ingestion and the JSON ledger as the section-state authority.
 
-Honor `manifest.quality.review_required`. Verify engineering formulas, table structure, and figure internals against page evidence before turning them into reusable rules or parameters.
+Honor `manifest.quality.review_required`. Extract readable formulas, table rows and figure observations
+with explicit QA notes when deterministic/page verification is unavailable; write them as attributed
+draft knowledge. Only claim verified or authoritative rules after the required evidence check.
 
 ## Material Classification
 
