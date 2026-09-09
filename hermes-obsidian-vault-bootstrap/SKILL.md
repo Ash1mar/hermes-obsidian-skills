@@ -9,6 +9,11 @@ description: Vault 初始化 / Vault Bootstrap：创建、配置、准备、克�
 
 Use this skill for vault setup only. Use `hermes-obsidian-controlled-ingest` for processing source files after the vault exists.
 
+A user-facing "bootstrap/source preparation" workflow may request setup, registration and conversion
+together. This Skill creates the structure only; hand source registration, conversion and ledger
+initialization to controlled-ingest's **source preparation** scope. An existing valid Vault needs no
+setup rerun. Neither setup nor prepared Bundles imply chapter processing or knowledge construction.
+
 ## Deployment Profile
 
 Resolve the target from an explicit `--vault-path` or optional `config/deployment.json`. A packaged

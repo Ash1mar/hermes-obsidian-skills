@@ -8,7 +8,8 @@ import json
 from pathlib import Path, PurePosixPath
 import re
 
-CONTRACT = "hermes-knowledge-build/v1"
+CONTRACT = "hermes-knowledge-build/v2"
+LEGACY_CONTRACT = "hermes-knowledge-build/v1"
 KINDS = {"entity", "concept", "requirement", "fact", "analysis"}
 DECISIONS = {"create", "update", "reuse", "relate", "defer", "skip"}
 OUTPUT_ROOTS = {"20_Notes", "30_Cards", "40_Concepts", "50_Projects", "_system"}
@@ -38,7 +39,7 @@ def validate_record(data: object, vault: Path, phase: str = "complete") -> list[
             return None
         return resolved
 
-    if not isinstance(data, dict) or data.get("contract") != CONTRACT:
+    if not isinstance(data, dict) or data.get("contract") not in {CONTRACT, LEGACY_CONTRACT}:
         return ["invalid knowledge-build contract"]
     if not isinstance(data.get("scope"), str) or not data["scope"].strip():
         errors.append("scope: describe the inspected source scope")
@@ -47,6 +48,63 @@ def validate_record(data: object, vault: Path, phase: str = "complete") -> list[
         return errors + ["candidates: expected array"]
     if not candidates and not data.get("empty_reason"):
         errors.append("empty_reason: required when no candidates were found")
+    inspections = []
+    inspected_sections = {}
+    if data.get("contract") == CONTRACT:
+        status = data.get("execution_status")
+        if status not in {"in_progress", "completed", "blocked", "not_started"}:
+            errors.append("execution_status: invalid or missing")
+        if phase == "complete" and status != "completed":
+            errors.append("execution_status: knowledge unit is not completed")
+        inspections = data.get("inspected_ranges")
+        if not isinstance(inspections, list) or not inspections:
+            errors.append("inspected_ranges: actual source inspection is required")
+            inspections = []
+        for i, item in enumerate(inspections):
+            label = f"inspected_ranges[{i}]"
+            if not isinstance(item, dict):
+                errors.append(f"{label}: expected object")
+                continue
+            if not isinstance(item.get("reason"), str) or not item["reason"].strip():
+                errors.append(f"{label}: inspection finding/reason required")
+            if item.get("qa") not in {"usable", "needs-qa"}:
+                errors.append(f"{label}: invalid QA classification")
+            # Reuse the source/path/hash/range checks even for zero candidates.
+            probe = {"contract": LEGACY_CONTRACT, "scope": label, "candidates": [{
+                "id": "inspection", "name": label, "kind": "fact",
+                "identity_rationale": "Inspection only", "reason": "Inspection only",
+                "decision": "skip", "outputs": [], "evidence": [item],
+            }]}
+            errors.extend(f"{label}: {error}" for error in validate_record(probe, vault, phase))
+            source = path(item.get("path"), label)
+            if source and (source.parent / "manifest.json").is_file():
+                ledger_path = path(item.get("ledger_path"), label + ".ledger_path")
+                try:
+                    if ledger_path is None:
+                        continue
+                    if not ledger_path.relative_to(vault).as_posix().startswith("_system/reports/"):
+                        raise ValueError("ledger must be under _system/reports")
+                    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+                    manifest = json.loads((source.parent / "manifest.json").read_text(encoding="utf-8"))
+                    bundle_id = "bundle-v2-" + manifest["source"]["sha256"][:16]
+                    if item.get("bundle_id") != ledger["bundle_id"] or ledger["bundle_id"] != bundle_id:
+                        raise ValueError("Bundle identity mismatch")
+                    if ledger["bundle"]["document_sha256"] != item.get("sha256"):
+                        raise ValueError("ledger document fingerprint mismatch")
+                    revision = item.get("ledger_revision")
+                    if type(revision) is not int or not 1 <= revision <= ledger["revision"]:
+                        raise ValueError("invalid observed ledger revision")
+                    section = next(s for s in ledger["sections"] if s["id"] == item.get("section_id"))
+                    lo, hi = item["lines"]
+                    if not any(r["start_line"] <= lo <= hi <= r["end_line"] for r in section["content_ranges"]):
+                        raise ValueError("inspection is outside section content_ranges")
+                    if phase == "complete" and section["status"] not in {"ingested", "skipped", "qa_required"}:
+                        raise ValueError("inspected section is not terminal")
+                    if phase == "plan" and section["status"] not in {"in_progress", "ingested", "skipped", "qa_required"}:
+                        raise ValueError("section must be claimed before planning knowledge writes")
+                    inspected_sections[i] = section
+                except (OSError, ValueError, KeyError, TypeError, StopIteration) as exc:
+                    errors.append(f"{label}: invalid ledger inspection ({exc})")
     seen = set()
     for i, candidate in enumerate(candidates):
         label = f"candidates[{i}]"
@@ -105,6 +163,27 @@ def validate_record(data: object, vault: Path, phase: str = "complete") -> list[
             if not isinstance(item, dict):
                 errors.append(f"{el}: expected object")
                 continue
+            if data.get("contract") == CONTRACT:
+                matches = []
+                for k, inspected in enumerate(inspections):
+                    try:
+                        if (inspected["path"] == item["path"] and inspected["sha256"] == item["sha256"]
+                                and inspected["lines"][0] <= item["lines"][0] <= item["lines"][1] <= inspected["lines"][1]):
+                            matches.append(k)
+                    except (KeyError, TypeError, IndexError):
+                        continue
+                if not matches:
+                    errors.append(f"{el}: evidence is outside inspected_ranges")
+                if decision not in {"skip", "defer"}:
+                    if any(inspections[k].get("qa") != "usable" for k in matches):
+                        errors.append(f"{el}: inspection has unresolved QA")
+                    for k in matches:
+                        section = inspected_sections.get(k)
+                        if section is not None and phase == "complete":
+                            if section["status"] != "ingested":
+                                errors.append(f"{el}: productive evidence section must be ingested")
+                            if any(o not in section.get("outputs", []) for o in outputs):
+                                errors.append(f"{el}: output missing from supporting section ledger")
             source = path(item.get("path"), el)
             if not source or not source.is_file():
                 errors.append(f"{el}: source missing")
@@ -139,8 +218,12 @@ def main() -> int:
     parser.add_argument("record", type=Path)
     parser.add_argument("--vault", type=Path, required=True)
     parser.add_argument("--phase", choices=["plan", "complete"], default="complete")
+    parser.add_argument("--require-current", action="store_true", help="Reject legacy records for newly performed work")
     args = parser.parse_args()
     errors = validate_file(args.record, args.vault, args.phase)
+    if args.require_current and not errors:
+        if json.loads(args.record.read_text(encoding="utf-8")).get("contract") != CONTRACT:
+            errors.append("new knowledge construction requires the current contract")
     print(json.dumps({"ok": not errors, "issues": errors, "phase": args.phase}, ensure_ascii=False, indent=2))
     return 2 if errors else 0
 
