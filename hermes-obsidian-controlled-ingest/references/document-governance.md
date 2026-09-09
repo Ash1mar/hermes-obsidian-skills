@@ -26,6 +26,33 @@ Append the command and its arguments to that prefix.
 
 ## Governed ingest lifecycle
 
+### Construction and visibility
+
+When the user authorizes knowledge construction, candidate organizations and inactive document
+versions do not by themselves block reading consistent, successfully processed Bundle evidence or
+writing attributed draft knowledge. Keep organization approval and version activation unchanged
+unless separately authorized. Identity/hash inconsistencies, failed extraction and actual access
+restrictions still block affected evidence. Bundle warnings restrict affected ranges, not the batch.
+
+For knowledge using unapproved/inactive sources:
+
+- Use `status: draft`; describe claims as statements of the identified source, preserve project,
+  applicability, document/version identity and QA limits. Draft status is not a visibility control.
+- Record each output in **every** supporting Bundle section ledger, including cross-source synthesis.
+  Retain source reports/citations in the artifact. Do not register it only under an active source
+  when it also depends on an inactive source. Complete these links before Provider sync or querying.
+- The existing Provider and controlled-query policies derive visibility from registry-consistent
+  source ledgers: outputs linked to an ineligible source are excluded, even if another supporting
+  source is eligible. Do not bypass these policies by copying drafts into untracked searchable pages.
+- Do not replace established approved conclusions with unapproved evidence. Record attributed
+  alternatives in a separate draft/review artifact when updating would weaken existing provenance.
+- If a source format lacks the governance/ledger linkage needed to preserve visibility, report that
+  source as unsupported for governed knowledge writing; process independent supported sources.
+
+Construction completion does not authorize activation. `active` does not imply expert approval of
+each claim. A zero-document index caused by governance visibility is a retrieval limitation, not a
+reason to leave otherwise eligible construction unstarted.
+
 After an unchanged source has been copied into `10_Raw/`, register it as processing. IDs are explicit;
 the command derives only the Vault-relative storage URI and SHA-256 from the actual raw file.
 

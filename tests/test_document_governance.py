@@ -625,3 +625,78 @@ def test_failed_bundle_records_failed_processing_and_creates_only_blocked_ledger
     )
     assert ledger_result.returncode == 0, ledger_result.stderr
     assert json.loads(ledger_result.stdout)["state"] == "blocked"
+
+
+def test_candidate_source_can_build_draft_without_becoming_query_visible(tmp_path: Path) -> None:
+    vault = create_engineering_vault(tmp_path)
+    organization_add(vault)  # Candidate, not approved.
+    raw = vault / "10_Raw/stage-three.pdf"
+    raw.write_bytes(b"source for attributed draft")
+    ingest_start(vault, raw)
+    bundle = create_bundle(vault, raw)
+    run_manager(vault, "ingest-finish", "--bundle", str(bundle), "--version-id", "version-stage-three-1",
+                "--expected-revision", "1", "--actor", "test")
+
+    def ledger_command(*args):
+        result = subprocess.run([sys.executable, str(BUNDLE_MANAGER), *args, "--json"],
+                                text=True, capture_output=True)
+        assert result.returncode == 0, result.stderr
+        return json.loads(result.stdout)
+
+    prepared = ledger_command("init", str(bundle), "--reports-dir", str(vault / "_system/reports"))
+    ledger_path = Path(prepared["ledger"])
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    section = next(s for s in ledger["sections"] if s["content_ranges"])
+    ledger_command("update", str(ledger_path), "--section", section["id"], "--status", "in_progress",
+                   "--expected-revision", str(ledger["revision"]))
+    ledger = json.loads(ledger_path.read_text(encoding="utf-8"))
+    source = bundle / "document.md"
+    evidence = {"path": source.relative_to(vault).as_posix(),
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+                "lines": [section["content_ranges"][0]["start_line"], section["content_ranges"][0]["end_line"]],
+                "qa": "usable"}
+    output = "30_Cards/attributed-draft.md"
+    data = {"contract": "hermes-knowledge-build/v2", "scope": "Fixture source section",
+            "execution_status": "in_progress", "inspected_ranges": [dict(
+                evidence, reason="Inspected source statement", ledger_path=ledger_path.relative_to(vault).as_posix(),
+                ledger_revision=ledger["revision"], bundle_id=ledger["bundle_id"], section_id=section["id"])],
+            "candidates": [{"id": "draft-001", "name": "Attributed draft", "kind": "fact",
+                            "identity_rationale": "No existing page", "existing_targets": [],
+                            "decision": "create", "reason": "Source statement supports a draft",
+                            "outputs": [output], "evidence": [evidence]}]}
+    record = vault / "_system/reports/draft.knowledge-build.json"
+
+    def validate(phase):
+        record.write_text(json.dumps(data), encoding="utf-8")
+        result = subprocess.run([sys.executable, str(INGEST / "scripts/validate_knowledge_build.py"), str(record),
+                                 "--vault", str(vault), "--phase", phase, "--require-current"],
+                                capture_output=True, text=True)
+        assert result.returncode == 0, result.stdout + result.stderr
+
+    validate("plan")
+    (vault / output).write_text("---\nstatus: draft\n---\nAttributed to the fixture source.\n", encoding="utf-8")
+    ledger_command("update", str(ledger_path), "--section", section["id"], "--status", "ingested",
+                   "--output", output, "--expected-revision", str(ledger["revision"]))
+    data["execution_status"] = "completed"
+    validate("complete")
+
+    spec = importlib.util.spec_from_file_location("draft_query_policy", ROOT / "hermes-obsidian-controlled-query/scripts/locate_source_sections.py")
+    query = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(query)
+    sys.path.insert(0, str(ROOT / "qmd-like-rag/src"))
+    from qmd_like_rag.governance import eligible_corpus_paths
+    assert not query.GovernanceQueryPolicy(vault).allows(output)
+    assert output not in eligible_corpus_paths(vault)
+    # Approval alone still does not activate the source.
+    run_manager(vault, "organization-status", "--organization-id", "organization-owner", "--status", "approved",
+                "--expected-revision", "1", "--actor", "reviewer")
+    assert not query.GovernanceQueryPolicy(vault).allows(output)
+    run_manager(vault, "activate", "--version-id", "version-stage-three-1", "--expected-revision", "2", "--actor", "reviewer")
+    assert query.GovernanceQueryPolicy(vault).allows(output)
+    assert output in eligible_corpus_paths(vault)
+    # A shared output also registered under an ineligible source must be excluded.
+    excluded = json.loads(ledger_path.read_text(encoding="utf-8"))
+    excluded["governance"]["version_id"] = "unresolved-supporting-version"
+    (vault / "_system/reports/other.section-ledger.json").write_text(json.dumps(excluded), encoding="utf-8")
+    assert not query.GovernanceQueryPolicy(vault).allows(output)
+    assert output not in eligible_corpus_paths(vault)

@@ -49,6 +49,18 @@ WeKnora 的通用 Wiki 链接不是本项目的领域关系本体；本 ADR 也�
 
 ### 执行合同
 
+2026-09-09 补充：区分来源准备与知识构建。前者覆盖建库后的保全、登记、转换与 ledger
+初始化；后者必须实际检查正文并记录知识决策。用户同时请求两者时，不能自行在准备阶段结束。
+新构建采用 `hermes-knowledge-build/v2` 和 `--require-current`，增加 `execution_status`
+与可核验的 `inspected_ranges`；零候选也需要检查范围与理由。Bundle 检查关联真实 ledger
+身份、revision、content_ranges、终态及支撑产物登记。旧 v1 记录按原合同只读兼容，不能证明
+新合同的完成条件，不自动迁移。结构检查不能证明实际阅读或语义正确。
+
+治理未启用不单独阻断已授权的证据阅读与归属明确的草稿构建；每个产物必须登记到每个
+支撑来源章节，现有查询/Provider 可见性门禁保持有效。草稿标签本身不是检索门禁。
+分别报告转换、章节、知识单元、治理激活与检索完成度，不将 processing completed 称作
+含义模糊的 source-ingest-completed。
+
 - 规则入口为 controlled-ingest SKILL.md，详细方法在 references/knowledge-construction.md。
 - 新执行的知识构建单元在现有 ingest log 旁保存 `<run>.knowledge-build.json`。
   记录候选、检查过的目标、身份理由、决策、输出路径和支持证据，不替代任何 registry。

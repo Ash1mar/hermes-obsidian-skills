@@ -25,8 +25,9 @@ def sample(tmp_path):
     output = tmp_path / "30_Cards/object.md"
     output.parent.mkdir()
     output.write_text("# Object A\n", encoding="utf-8")
-    return tmp_path, {
+    data = {
         "contract": validator.CONTRACT, "scope": "source.md lines 1-2",
+        "execution_status": "completed",
         "candidates": [{"id": "candidate-001", "name": "Object A", "kind": "entity",
                         "identity_rationale": "Project X; no equivalent target found",
                         "decision": "create", "reason": "Reusable object description",
@@ -34,6 +35,8 @@ def sample(tmp_path):
                         "evidence": [{"path": "10_Raw/source.md", "lines": [1, 2],
                                       "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
                                       "qa": "usable"}]}]}
+    data["inspected_ranges"] = [dict(data["candidates"][0]["evidence"][0], reason="Read object function and applicability")]
+    return tmp_path, data
 
 
 def test_complete_and_plan(sample):
@@ -111,3 +114,68 @@ def test_malformed_record(sample):
     record = vault / "broken.json"
     record.write_text("{", encoding="utf-8")
     assert validator.validate_file(record, vault)
+
+
+def test_empty_requires_verifiable_inspection(sample):
+    vault, data = sample
+    data.update(candidates=[], empty_reason="No independent knowledge value")
+    assert validator.validate_record(data, vault) == []
+    data["inspected_ranges"][0]["sha256"] = "0" * 64
+    assert any("fingerprint" in e for e in validator.validate_record(data, vault))
+    data["inspected_ranges"] = []
+    assert any("actual source inspection" in e for e in validator.validate_record(data, vault))
+
+
+@pytest.mark.parametrize("status", ["not_started", "blocked", "in_progress"])
+def test_unfinished_cannot_complete(sample, status):
+    vault, data = sample
+    data.update(execution_status=status, candidates=[], empty_reason="Unfinished")
+    assert any("not completed" in e for e in validator.validate_record(data, vault))
+
+
+def test_legacy_compatible_but_not_current_work(sample):
+    vault, data = sample
+    data = {"contract": validator.LEGACY_CONTRACT, "scope": "Historical run",
+            "candidates": [], "empty_reason": "Old source-only report"}
+    assert validator.validate_record(data, vault) == []
+    record = vault / "old.knowledge-build.json"
+    record.write_text(json.dumps(data), encoding="utf-8")
+    result = subprocess.run([sys.executable, str(SCRIPT), str(record), "--vault", str(vault),
+                             "--require-current"], capture_output=True, text=True)
+    assert result.returncode == 2
+    assert "current contract" in result.stdout
+
+
+def test_bundle_inspection_and_all_supporting_output_registration(sample):
+    vault, data = sample
+    bundle = vault / "10_Raw/converted/example_document_bundle"
+    bundle.mkdir(parents=True)
+    source = bundle / "document.md"
+    source.write_bytes((vault / "10_Raw/source.md").read_bytes())
+    bundle_id = "bundle-v2-" + "a" * 16
+    (bundle / "manifest.json").write_text(json.dumps({"source": {"sha256": "a" * 64}}), encoding="utf-8")
+    item = data["inspected_ranges"][0]
+    item.update(path=source.relative_to(vault).as_posix(), ledger_path="_system/reports/test.section-ledger.json",
+                ledger_revision=2, bundle_id=bundle_id, section_id="section-1")
+    data["candidates"][0]["evidence"][0]["path"] = item["path"]
+    ledger = {"bundle_id": bundle_id, "revision": 3,
+              "bundle": {"document_sha256": item["sha256"]},
+              "sections": [{"id": "section-1", "status": "pending", "outputs": [],
+                            "content_ranges": [{"start_line": 1, "end_line": 2}]}]}
+    ledger_path = vault / item["ledger_path"]
+    ledger_path.parent.mkdir(parents=True)
+
+    def check():
+        ledger_path.write_text(json.dumps(ledger), encoding="utf-8")
+        return validator.validate_record(data, vault)
+
+    assert any("not terminal" in e for e in check())
+    ledger["sections"][0]["status"] = "ingested"
+    assert any("output missing" in e for e in check())
+    ledger["sections"][0]["outputs"] = data["candidates"][0]["outputs"]
+    assert check() == []
+    item["lines"] = [2, 2]
+    assert any("outside inspected_ranges" in e for e in check())
+    item["lines"] = [1, 2]
+    ledger["sections"][0]["content_ranges"] = [{"start_line": 1, "end_line": 1}]
+    assert any("outside section content_ranges" in e for e in check())

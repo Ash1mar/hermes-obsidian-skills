@@ -7,6 +7,34 @@ description: 受控摄取 / Controlled Ingest：新增、导入、登记、恢�
 
 Turn source files into governed Obsidian artifacts without rewriting raw material or overcreating concepts.
 
+## Task Scope and Completion
+
+Select scope from the user's requested outcome, not from the amount of conversion work:
+
+- **Source preparation**: preserve/register sources, convert supported files, validate Bundles,
+  and initialize/reconcile source maps and ledgers. Stop here only when source preparation alone
+  was requested. A workflow called "bootstrap" may combine vault-bootstrap setup with this mode.
+- **Knowledge construction**: inspect prepared evidence, make candidate decisions, write/reconcile
+  useful knowledge and record section outcomes. Reuse valid preparation. Report missing preparation
+  per source and process independent ready sources; do not silently turn this into full conversion.
+- **Both**: finish preparation and knowledge construction in bounded units. Do not prepare every
+  file and then omit the requested knowledge stage. Continue independent units until the requested
+  scope is handled or a concrete blocker/resource limit requires a recorded recovery point.
+
+`pending` is work to select, not a blocker. No page quota is required, but knowledge construction
+requires actual range inspection and decisions, including evidence-backed skip/defer decisions.
+An empty build record, query-index generation, Provider sync or gap query cannot replace this work.
+Use the v2 build record and `--require-current` validation described in
+`references/knowledge-construction.md` for newly performed knowledge work.
+
+Report separate completion dimensions: source preservation; registration; conversion/processing;
+section processing (status counts); knowledge construction (inspected scope, decisions and outputs);
+governance activation; retrieval validation. Registry `processing_status: completed` means conversion
+processing only. Avoid the ambiguous label `source-ingest-completed`. Terminal `qa_required` means
+review is outstanding; `skipped` means a recorded exclusion, not constructed knowledge. A completed
+bounded knowledge unit does not mean the entire batch is complete. Unstarted/blocked knowledge work
+belongs in the ingest report with its reason and recovery point, never an empty successful build.
+
 ## Deployment Profile
 
 Read optional `config/deployment.json` before selecting runtime paths or MinerU transport. When
@@ -75,6 +103,8 @@ Use `activate` rather than `status` to enter `active`/`superseded` states. Repea
 reuse the existing version through `add-source`, not create a duplicate version.
 
 Read `references/document-governance.md` before registering, changing, or activating a governed document.
+For knowledge construction from governed sources, read its "Construction and visibility" section.
+Source approval/activation is a separate boundary from authorized evidence inspection and draft writing.
 For a new governed source, use `ingest-start` after the immutable Vault raw copy exists and `ingest-finish`
 after Bundle v2 conversion. `ingest-finish` runs Bundle validation, verifies the registered raw SHA-256,
 sets processing to `completed` or `failed`, and writes the rebuildable stable-identity projection used by
@@ -360,10 +390,11 @@ After source ingestion for a batch, automatically synthesize when two or more re
 For a long, composite, or engineering-dense source:
 
 1. Initialize or reconcile the generated source map and section ledger first.
-2. During first source ingestion, prefer source map, ledger, and spec index before cards or concepts.
-3. Select later work by ledger section and its non-overlapping `document.md` `content_ranges`.
+2. Prepare source map and ledger first; in knowledge-construction scope, then inspect sections and
+   choose useful spec indexes, cards or other outputs. Preparation is not the stopping condition.
+3. Select work by ledger section and its non-overlapping `document.md` `content_ranges`.
 4. Load tables and figures only for the selected range.
-5. Limit cards per run.
+5. Keep each writing unit bounded; continue eligible units without imposing a page quota.
 6. Put candidate concepts through review before creation.
 7. Keep unverified formulas and parameters in the source map as QA items, not facts.
 8. Resume from ledger status and revision; do not infer completion from existing filenames alone.
@@ -383,7 +414,9 @@ Do not batch ingest mixed material blindly.
 ## Required Run Summary
 
 Keep processing rationale in this summary/build record, not in every reader-facing knowledge page.
-Report the knowledge-build record path and plan/complete validation result when construction ran.
+Report the requested scope, its completion dimensions, and the knowledge-build record path and
+plan/complete validation result when construction ran. If requested construction did not run,
+explicitly report it as not_started or blocked with the concrete cause; do not declare success.
 
 Report every run with:
 
