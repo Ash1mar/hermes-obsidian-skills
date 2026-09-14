@@ -1,0 +1,19 @@
+{
+  "contract": "hermes-source-unit-capability/v1",
+  "protocol_version": "hermes-coarse-recall/v1",
+  "authority": "candidate-navigation-only",
+  "source_unit_refs": [
+    {
+      "unit_ref": {
+        "vault_id": "vault-p0-example",
+        "resource_id": "resource-example-1",
+        "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+        "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+        "unit_id": "ce63b1ca548665dafba8c757aff632f652c24dec5b36a7fa9ed3e2714b21f87c"
+      },
+      "span": null
+    }
+  ],
+  "projection_fingerprint": "0b6d1dcbc1c5878febbe0058b013fa41f0a21b143b33ad61aeb8ba0e1d7d869f",
+  "locator_precision": "source-unit"
+}

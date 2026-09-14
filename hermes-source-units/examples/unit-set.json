@@ -1,0 +1,20 @@
+{
+  "contract": "hermes-source-unit-set/v1",
+  "identity": {
+    "vault_id": "vault-p0-example",
+    "document_id": "doc-pump",
+    "version_id": "version-example-1",
+    "resource_id": "resource-example-1"
+  },
+  "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+  "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+  "splitter_version": "p0-hand-authored/1",
+  "config_fingerprint": "160190c0d0abe1d59f9e529a1740dde1051627d8bbf2b13f5388ab1b1940c02e",
+  "unit_ids": [
+    "ce63b1ca548665dafba8c757aff632f652c24dec5b36a7fa9ed3e2714b21f87c",
+    "46fadf71929c653b4b63b99cbbf6cf744e84d9451afd67eaab55149c5c2d1828",
+    "bba3695fd4f28abc238e5489868839d299afc4547b617c56e4b5a42e65c57a57"
+  ],
+  "state": "complete",
+  "revision": 1
+}

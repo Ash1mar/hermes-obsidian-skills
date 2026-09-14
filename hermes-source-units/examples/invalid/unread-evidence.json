@@ -1,0 +1,111 @@
+{
+  "contract": "hermes-knowledge-build/v4",
+  "run_id": "run-example",
+  "execution_status": "completed",
+  "inspections": [
+    {
+      "source_ref": {
+        "unit_ref": {
+          "vault_id": "vault-p0-example",
+          "resource_id": "resource-example-1",
+          "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+          "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+          "unit_id": "ce63b1ca548665dafba8c757aff632f652c24dec5b36a7fa9ed3e2714b21f87c"
+        },
+        "span": null
+      },
+      "finding": "已读取演示材料，用于契约样例。",
+      "qa": "usable",
+      "qa_note": ""
+    }
+  ],
+  "candidates": [
+    {
+      "id": "candidate-pump",
+      "name": "演示泵",
+      "kind": "entity",
+      "decision": "create",
+      "identity_rationale": "仅指本样例中的对象。",
+      "reason": "展示原文和表格共同支持页面的记录。",
+      "support_refs": [
+        {
+          "unit_ref": {
+            "vault_id": "vault-p0-example",
+            "resource_id": "resource-example-1",
+            "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+            "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+            "unit_id": "ce63b1ca548665dafba8c757aff632f652c24dec5b36a7fa9ed3e2714b21f87c"
+          },
+          "span": null
+        },
+        {
+          "unit_ref": {
+            "vault_id": "vault-p0-example",
+            "resource_id": "resource-example-1",
+            "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+            "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+            "unit_id": "46fadf71929c653b4b63b99cbbf6cf744e84d9451afd67eaab55149c5c2d1828"
+          },
+          "span": null
+        },
+        {
+          "unit_ref": {
+            "vault_id": "vault-p0-example",
+            "resource_id": "resource-example-1",
+            "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+            "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+            "unit_id": "bba3695fd4f28abc238e5489868839d299afc4547b617c56e4b5a42e65c57a57"
+          },
+          "span": null
+        }
+      ],
+      "outputs": [
+        "30_Cards/example.md"
+      ]
+    }
+  ],
+  "outputs": [
+    {
+      "path": "30_Cards/example.md",
+      "authored_sha256": "e062bce7c13581adf9581e6878bca63ff10e1b727bf9be0b26e66c906470a3ac",
+      "status": "draft",
+      "support_refs": [
+        {
+          "unit_ref": {
+            "vault_id": "vault-p0-example",
+            "resource_id": "resource-example-1",
+            "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+            "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+            "unit_id": "ce63b1ca548665dafba8c757aff632f652c24dec5b36a7fa9ed3e2714b21f87c"
+          },
+          "span": null
+        },
+        {
+          "unit_ref": {
+            "vault_id": "vault-p0-example",
+            "resource_id": "resource-example-1",
+            "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+            "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+            "unit_id": "46fadf71929c653b4b63b99cbbf6cf744e84d9451afd67eaab55149c5c2d1828"
+          },
+          "span": null
+        },
+        {
+          "unit_ref": {
+            "vault_id": "vault-p0-example",
+            "resource_id": "resource-example-1",
+            "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+            "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+            "unit_id": "bba3695fd4f28abc238e5489868839d299afc4547b617c56e4b5a42e65c57a57"
+          },
+          "span": null
+        }
+      ],
+      "review": {
+        "actor": "p0-example-author",
+        "note": "手工编写的契约样例，尚未执行真实构建。"
+      }
+    }
+  ],
+  "reason": ""
+}

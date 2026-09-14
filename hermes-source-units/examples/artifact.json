@@ -1,0 +1,24 @@
+{
+  "contract": "hermes-normalized-artifact/v1",
+  "identity": {
+    "vault_id": "vault-p0-example",
+    "document_id": "doc-pump",
+    "version_id": "version-example-1",
+    "resource_id": "resource-example-1"
+  },
+  "source_sha256": "14d3026a06a5ae5584f58279f7b6721db0f301976d319fa00494777c3ea15028",
+  "normalization": "lf-codepoint/v1",
+  "document_path": "document.md",
+  "document_sha256": "14d3026a06a5ae5584f58279f7b6721db0f301976d319fa00494777c3ea15028",
+  "outline_sha256": "4b88671b8fb69042245defba9502f92d81a2699760b3603807a72c66fca2d4b3",
+  "assets": [
+    {
+      "asset_id": "table-1",
+      "path": "tables/parameters.md",
+      "sha256": "79f481533714ea40c474ee3f9611910379372ddc3b8ccfc59fe10e87403d14ea",
+      "media_type": "text/markdown",
+      "pages": []
+    }
+  ],
+  "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167"
+}

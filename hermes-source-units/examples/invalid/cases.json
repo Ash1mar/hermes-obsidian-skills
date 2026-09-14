@@ -1,0 +1,74 @@
+[
+  {
+    "file": "invalid/missing-unit-id.json",
+    "kind": "unit",
+    "expected_code": "INVALID_SCHEMA",
+    "resolve": false
+  },
+  {
+    "file": "invalid/reversed-span.json",
+    "kind": "unit",
+    "expected_code": "INVALID_RANGE",
+    "resolve": false
+  },
+  {
+    "file": "invalid/unsafe-path.json",
+    "kind": "unit",
+    "expected_code": "INVALID_SCHEMA",
+    "resolve": false
+  },
+  {
+    "file": "invalid/unsupported-contract.json",
+    "kind": "work",
+    "expected_code": "INVALID_SCHEMA",
+    "resolve": false
+  },
+  {
+    "file": "invalid/mixed-version-reference.json",
+    "kind": "reading_window",
+    "expected_code": "UNRESOLVED_REFERENCE",
+    "resolve": true
+  },
+  {
+    "file": "invalid/out-of-unit.json",
+    "kind": "provider_extension",
+    "expected_code": "OUTSIDE_UNIT",
+    "resolve": true
+  },
+  {
+    "file": "invalid/missing-support.json",
+    "kind": "knowledge_build",
+    "expected_code": "PROVENANCE_MISMATCH",
+    "resolve": true
+  },
+  {
+    "file": "invalid/unread-evidence.json",
+    "kind": "knowledge_build",
+    "expected_code": "UNINSPECTED_SUPPORT",
+    "resolve": true
+  },
+  {
+    "file": "invalid/partial-reading-completed.json",
+    "kind": "work",
+    "expected_code": "INCOMPLETE_COVERAGE",
+    "resolve": true
+  },
+  {
+    "file": "invalid/over-budget.json",
+    "kind": "retrieval_window",
+    "expected_code": "INVALID_BUDGET",
+    "resolve": false
+  },
+  {
+    "file": "invalid/needs-qa-without-note.json",
+    "kind": "work",
+    "expected_code": "QA_NOTE_REQUIRED",
+    "resolve": false
+  },
+  {
+    "file": "invalid/overlap-equals-target.json",
+    "kind": "config",
+    "expected_code": "INVALID_BUDGET",
+    "resolve": false
+  }
+]

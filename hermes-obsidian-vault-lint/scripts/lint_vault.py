@@ -18,6 +18,9 @@ from typing import Any
 from urllib.parse import urlsplit
 
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from hermes_source_units.vault_config import validate_vault as validate_source_unit_vault
+
 SCHEMA_VERSION = "1.0"
 TOOL_NAME = "hermes-obsidian-vault-lint"
 ALLOWED_PROFILES = {"post-ingest", "query-ready", "strict", "qa-review"}
@@ -1380,6 +1383,17 @@ def lint(args: argparse.Namespace) -> dict[str, Any]:
         value = fn()
         trace.append({"stage": name, "elapsed_ms": round((time.perf_counter() - before) * 1000, 2)})
         return value
+
+    manifest_path = vault / "_system/vault.json"
+    if manifest_path.is_file():
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            if "source_units" in manifest:
+                metrics["source_units"] = validate_source_unit_vault(vault)
+                add_issue(issues, "source_units.pipeline_pending", "error", "_system/vault.json",
+                          "P1 scaffold is valid, but ingest/query pipelines are not implemented.")
+        except (OSError, ValueError, TypeError) as exc:
+            add_issue(issues, "source_units.invalid_config", "error", "_system/vault.json", str(exc))
 
     stage("structure", lambda: lint_structure(vault, issues, metrics))
     stage("governance", lambda: lint_governance_control_plane(vault, profile, issues, metrics))

@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Initialize a governed Obsidian vault for Hermes workflows."""
 
 from __future__ import annotations
@@ -8,10 +8,15 @@ import json
 import os
 import re
 import shutil
+import sys
 from datetime import date
 from pathlib import Path
 from uuid import uuid4
 
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from hermes_source_units.vault_config import (CONFIG_PATH, DIRECTORIES, NOTICE,
+    configuration, declaration, validate_vault)
 
 BASE_DIRS = [
     "00_Inbox",
@@ -286,7 +291,7 @@ def governance_files(args: argparse.Namespace, vault: Path) -> dict[str, object]
             "vault": {
                 "id": vault_id,
                 "name": vault_name,
-                "profile": "engineering",
+                "profile": args.profile,
                 "security_domain": security_domain,
             },
             "governance": {
@@ -921,18 +926,24 @@ def setup(args: argparse.Namespace) -> None:
     if is_non_empty(vault) and not args.force_empty:
         raise SystemExit(f"Target vault is non-empty. Pass --force-empty to allow writing: {vault}")
 
-    generated_governance: dict[str, object] = {}
-    if args.profile == "engineering":
-        existing = [rel for rel in GOVERNANCE_FILE_PATHS if (vault / rel).exists()]
-        if existing:
-            raise SystemExit(
-                "Engineering governance files already exist; bootstrap does not overwrite or upgrade them: "
-                + ", ".join(existing)
-            )
-        generated_governance = governance_files(args, vault)
+    try:
+        effective_config = configuration(args.source_unit_config)
+    except (OSError, ValueError, TypeError) as exc:
+        raise SystemExit(f"Invalid source-unit config: {exc}") from exc
+    existing = [rel for rel in (*GOVERNANCE_FILE_PATHS, CONFIG_PATH)
+                if (vault / rel).exists()]
+    if existing:
+        raise SystemExit("Governance files already exist; bootstrap does not overwrite or upgrade them: "
+                         + ", ".join(existing))
+    for relative in BASE_DIRS + PROFILE_DIRS[args.profile] + DIRECTORIES:
+        if not (vault / relative).resolve().is_relative_to(vault):
+            raise SystemExit(f"Bootstrap directory escapes Vault: {relative}")
+    generated_governance = governance_files(args, vault)
+    generated_governance["_system/vault.json"]["source_units"] = declaration(effective_config)
+    generated_governance[CONFIG_PATH] = effective_config
 
     created_dirs = []
-    for rel in BASE_DIRS + PROFILE_DIRS[args.profile]:
+    for rel in BASE_DIRS + PROFILE_DIRS[args.profile] + DIRECTORIES:
         path = vault / rel
         path.mkdir(parents=True, exist_ok=True)
         created_dirs.append(rel)
@@ -950,8 +961,8 @@ def setup(args: argparse.Namespace) -> None:
         copied_concepts = copy_base_concepts(template, vault)
 
     write_text(vault / "README.md", readme(args.profile, vault))
-    write_text(vault / "AGENTS.md", agents(args.profile))
-    write_text(vault / "_system/prompts/hermes-ingest-rules.md", ingest_rules(args.profile, vault))
+    write_text(vault / "AGENTS.md", agents(args.profile) + NOTICE)
+    write_text(vault / "_system/prompts/hermes-ingest-rules.md", ingest_rules(args.profile, vault) + NOTICE)
     if args.profile == "meeting":
         write_text(vault / "_system/prompts/hermes-meeting-ingest-prompt.md", meeting_prompt(vault))
 
@@ -959,6 +970,11 @@ def setup(args: argparse.Namespace) -> None:
         write_text(vault / rel, content)
     for rel, content in template_files(args.profile).items():
         write_text(vault / rel, content)
+
+    write_text(vault / "_system/templates/source-unit-knowledge-page.md",
+               "---\ntype: knowledge-card\nstatus: draft\nsource_unit_refs: []\n---\n\n# Knowledge page\n\n"
+               "Record validated unit references and reviewed claims here. Empty references do not constitute evidence.\n" + NOTICE)
+    validate_vault(vault)
 
     report = f"""
 ---
@@ -989,12 +1005,13 @@ source: {template or "none"}
 
 ## Governance Control Plane
 
-- enabled: {args.profile == "engineering"}
-- repository backend: {"json" if args.profile == "engineering" else "legacy"}
+- enabled: True
+- repository backend: json
 - governance files: {len(generated_governance)}
 
 ## Safety
 
+P1 scaffold only; source reader, knowledge build and retrieval are not ready.
 Raw source folders were initialized but no raw sources were copied.
 """
     write_text(vault / f"_system/reports/vault-setup-{date.today().isoformat()}.md", report)
@@ -1006,7 +1023,7 @@ Raw source folders were initialized but no raw sources were copied.
     print(f"Profile: {args.profile}")
     print(f"Created directories: {len(created_dirs)}")
     print(f"Copied base concepts: {copied_concepts}")
-    print(f"Governance backend: {'json' if args.profile == 'engineering' else 'legacy'}")
+    print("Governance backend: json")
     print("workspace.json ok")
 
 
@@ -1021,6 +1038,7 @@ def main() -> int:
         type=Path,
         help="Override HERMES_DEPLOYMENT_CONFIG and config/deployment.json.",
     )
+    parser.add_argument("--source-unit-config", type=Path, help="Complete source-unit JSON configuration; overrides bundled defaults")
     parser.add_argument("--profile", choices=sorted(PROFILE_DIRS), default="general")
     parser.add_argument("--vault-id", help="Stable engineering Vault ID; generated when omitted")
     parser.add_argument("--vault-name", help="Engineering Vault display name; defaults to the directory name")

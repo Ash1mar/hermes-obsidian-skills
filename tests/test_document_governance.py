@@ -335,8 +335,11 @@ def test_manager_registers_and_atomically_activates_versions(tmp_path: Path) -> 
         text=True,
         capture_output=True,
     )
-    assert linted.returncode == 0, linted.stderr
-    assert json.loads(linted.stdout)["summary"]["errors"] == 0
+    # Newly bootstrapped Vaults now advertise P1; governance can be valid while
+    # the full content pipeline is explicitly not ready.
+    assert linted.returncode == 2, linted.stderr
+    errors = [issue for issue in json.loads(linted.stdout)["issues"] if issue["severity"] == "error"]
+    assert [issue["code"] for issue in errors] == ["source_units.pipeline_pending"]
 
 
 def test_manager_deduplicates_content_and_appends_source_occurrence(tmp_path: Path) -> None:

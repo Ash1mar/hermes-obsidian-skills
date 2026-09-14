@@ -112,3 +112,8 @@ These checks apply only to Vaults with `_system/vault.json`. Existing legacy Vau
 `relationship.missing` asks controlled ingest to run a typed relationship pass when a Vault has multiple governed cards but a card has no resolved `[[wikilink]]`.
 
 `relationship.unresolved` identifies a wikilink target that does not resolve to an existing governed Markdown artifact.
+
+## Source-unit rollout
+
+- `source_units.invalid_config`: malformed configuration, missing directories, declaration/fingerprint mismatch.
+- `source_units.pipeline_pending`: P1 scaffold exists but content and retrieval pipelines are unavailable; error for full lint profiles.
