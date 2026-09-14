@@ -16,6 +16,8 @@
 
 ## 仓库级文档
 
+来源单元新体系的实现入口：[ADR-0003](docs/architecture/0003-source-unit-contracts.md)、[共享包规范](hermes-source-units/README.md)、[P0 验收](docs/SOURCE_UNITS_P0_ACCEPTANCE.md)和 [P1 验收](docs/SOURCE_UNITS_P1_ACCEPTANCE.md)。P1 已接入 bootstrap 与 lint；ingest、知识构建和 Provider 仍待 P2–P4 实现。
+
 | 文档 | 内容与用途 |
 | --- | --- |
 | [`README.md`](README.md) | 仓库总览：四个 Skill、Hermes slash aliases、目录结构、qmd-like-rag、验证方法及 MinerU、图片 Bundle、MarkItDown 集成入口。 |

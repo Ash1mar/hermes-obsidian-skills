@@ -133,3 +133,15 @@ When responding to the user:
 5. Suggest the next controlled workflow only when it follows directly from an issue.
 
 If no errors are found but warnings remain, call the result `pass-with-warnings`, not failure.
+
+## P1 Source-unit Vaults
+
+Copy this entire Skill directory, including `lib/`. The embedded shared runtime
+uses Python 3.11+ standard library only; no pip installation or service is needed.
+The maintained source is distributed into this directory during development.
+New bootstrap Vaults contain `_system/metadata/source-unit-config.json` and a
+`source_units` declaration in `_system/vault.json`. Configuration uses Unicode
+codepoints for source/reading sizes and separate token budgets for retrieval;
+`tokenizer: null` does not promise exact tokenization or an available Provider.
+P1 validates the scaffold only. Do not execute legacy ingest/query on these Vaults.
+Full lint reports `source_units.pipeline_pending` until the new pipelines exist.

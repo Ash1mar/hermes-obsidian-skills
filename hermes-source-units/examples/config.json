@@ -1,0 +1,26 @@
+{
+  "contract": "hermes-source-unit-config/v1",
+  "source": {
+    "strategy": "auto",
+    "target_codepoints": 1600,
+    "max_codepoints": 3200,
+    "separators": [
+      "\n\n",
+      "\n",
+      "。",
+      "；",
+      ". "
+    ],
+    "oversized_policy": "preserve-and-report"
+  },
+  "reading": {
+    "max_codepoints": 12000
+  },
+  "retrieval": {
+    "target_tokens": 800,
+    "max_tokens": 1024,
+    "overlap_tokens": 120,
+    "context_max_tokens": 2400,
+    "tokenizer": null
+  }
+}

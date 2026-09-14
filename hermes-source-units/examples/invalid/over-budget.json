@@ -1,0 +1,49 @@
+{
+  "contract": "hermes-retrieval-window/v1",
+  "window_id": "4ac7e4bfdd2c52a7819f7e9bac93154fdbbeb98612af55a217d765ee1b55864d",
+  "core_refs": [
+    {
+      "unit_ref": {
+        "vault_id": "vault-p0-example",
+        "resource_id": "resource-example-1",
+        "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+        "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+        "unit_id": "ce63b1ca548665dafba8c757aff632f652c24dec5b36a7fa9ed3e2714b21f87c"
+      },
+      "span": null
+    }
+  ],
+  "context_refs": [
+    {
+      "unit_ref": {
+        "vault_id": "vault-p0-example",
+        "resource_id": "resource-example-1",
+        "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+        "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+        "unit_id": "46fadf71929c653b4b63b99cbbf6cf744e84d9451afd67eaab55149c5c2d1828"
+      },
+      "span": null
+    },
+    {
+      "unit_ref": {
+        "vault_id": "vault-p0-example",
+        "resource_id": "resource-example-1",
+        "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+        "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+        "unit_id": "bba3695fd4f28abc238e5489868839d299afc4547b617c56e4b5a42e65c57a57"
+      },
+      "span": null
+    }
+  ],
+  "context_header": "# 演示泵",
+  "omitted_refs": [],
+  "truncated": false,
+  "reason": "",
+  "config_fingerprint": "bf360c6ba8824393a76da2a51bf8b5a37bb8129a6db372e7f9c0b6f8c054a0f1",
+  "tokenizer": {
+    "id": "fixture-tokenizer",
+    "revision": "hand-authored-not-production"
+  },
+  "input_tokens": 1025,
+  "max_tokens": 1024
+}

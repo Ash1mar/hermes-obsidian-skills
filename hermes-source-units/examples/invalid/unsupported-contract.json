@@ -1,0 +1,94 @@
+{
+  "contract": "hermes-unit-work-ledger/v0",
+  "task_id": "task-example",
+  "task_type": "knowledge_build",
+  "task_contract": "hermes-knowledge-build/v4",
+  "revision": 1,
+  "attempt": 1,
+  "actor": "p0-example-author",
+  "status": "completed",
+  "target_refs": [
+    {
+      "unit_ref": {
+        "vault_id": "vault-p0-example",
+        "resource_id": "resource-example-1",
+        "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+        "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+        "unit_id": "ce63b1ca548665dafba8c757aff632f652c24dec5b36a7fa9ed3e2714b21f87c"
+      },
+      "span": null
+    },
+    {
+      "unit_ref": {
+        "vault_id": "vault-p0-example",
+        "resource_id": "resource-example-1",
+        "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+        "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+        "unit_id": "46fadf71929c653b4b63b99cbbf6cf744e84d9451afd67eaab55149c5c2d1828"
+      },
+      "span": null
+    },
+    {
+      "unit_ref": {
+        "vault_id": "vault-p0-example",
+        "resource_id": "resource-example-1",
+        "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+        "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+        "unit_id": "bba3695fd4f28abc238e5489868839d299afc4547b617c56e4b5a42e65c57a57"
+      },
+      "span": null
+    }
+  ],
+  "inspections": [
+    {
+      "source_ref": {
+        "unit_ref": {
+          "vault_id": "vault-p0-example",
+          "resource_id": "resource-example-1",
+          "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+          "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+          "unit_id": "ce63b1ca548665dafba8c757aff632f652c24dec5b36a7fa9ed3e2714b21f87c"
+        },
+        "span": null
+      },
+      "finding": "已读取演示材料，用于契约样例。",
+      "qa": "usable",
+      "qa_note": ""
+    },
+    {
+      "source_ref": {
+        "unit_ref": {
+          "vault_id": "vault-p0-example",
+          "resource_id": "resource-example-1",
+          "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+          "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+          "unit_id": "46fadf71929c653b4b63b99cbbf6cf744e84d9451afd67eaab55149c5c2d1828"
+        },
+        "span": null
+      },
+      "finding": "已读取演示材料，用于契约样例。",
+      "qa": "usable",
+      "qa_note": ""
+    },
+    {
+      "source_ref": {
+        "unit_ref": {
+          "vault_id": "vault-p0-example",
+          "resource_id": "resource-example-1",
+          "artifact_revision": "131023bd2bb039efe54f84beae0876c19b6246e86f83f3b787abd64db0b8b167",
+          "unit_set_id": "88a927a4bcb64fb828fd3b75232e2505d7a62b81a7ae28e9031ba14ab5e8f6cb",
+          "unit_id": "bba3695fd4f28abc238e5489868839d299afc4547b617c56e4b5a42e65c57a57"
+        },
+        "span": null
+      },
+      "finding": "已读取演示材料，用于契约样例。",
+      "qa": "usable",
+      "qa_note": ""
+    }
+  ],
+  "deferred": [],
+  "outputs": [
+    "30_Cards/example.md"
+  ],
+  "reason": "演示样例完成，不代表运行过知识生成。"
+}

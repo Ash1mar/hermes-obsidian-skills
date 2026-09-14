@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-source-units"
+version = "0.1.1"
+description = "Provider-independent source-unit contracts for Hermes (P0)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+hermes_source_units = ["schemas/*.json", "defaults/*.json", "py.typed"]
