@@ -1,7 +1,7 @@
 # 通用来源单元：全新建库设计与实施计划
 
-日期：2026-09-11。修订：R3，保留全新建库前提，细分实施任务并说明 P0 的已有基础、实际交付及 WeKnora 对应机制。
-状态：P0 契约与 P1 bootstrap 实践已实现，P2–P6 待实施；未执行正式库重建或 ingest。P1 验收见 [P1 记录](SOURCE_UNITS_P1_ACCEPTANCE.md)。实现入口见 [ADR-0003](architecture/0003-source-unit-contracts.md)、[共享包规范](../hermes-source-units/README.md) 和 [P0 验收记录](SOURCE_UNITS_P0_ACCEPTANCE.md)。
+日期：2026-09-11，2026-09-15 校正。修订：R4，保留全新建库前提，明确 SourceUnit 是知识构建与 RAG 共用的 canonical chunk，并细分后续实施任务。
+状态：P0/P1 已完成，P2 来源内容层已实现；P3–P7 待实施，未执行正式库重建或 ingest。阶段重排见 [ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)，实现入口见 [ADR-0003](architecture/0003-source-unit-contracts.md)、[共享包规范](../hermes-source-units/README.md)、[P0](SOURCE_UNITS_P0_ACCEPTANCE.md)和[P1](SOURCE_UNITS_P1_ACCEPTANCE.md)验收。
 
 ## 1. 本轮确定的前提
 
@@ -44,7 +44,7 @@ ingest：原件登记 → 解析与规范化产物
               ├─ 工作账本 ledger：任务、领取、进度、QA、覆盖、输出
               │          ↓
               │     reading windows → 候选 → 知识页 → 复核与依赖
-              └─ retrieval windows → Provider 索引 → 查询导航
+              └─ canonical units → Provider 直接索引投影 → 查询导航
                                                       ↓
                                       读取实际单元并校验来源
 ```
@@ -68,7 +68,7 @@ ingest：原件登记 → 解析与规范化产物
 | WorkLedger | 工作类型、目标单元、执行状态、覆盖、QA与输出 | 引用 source units，不定义切片 |
 | KnowledgeArtifact | 摘要、卡片、概念页、综合页等 | 记录实际支持它的 unit_ref 与页面修订 |
 
-基础来源单元无重叠；阅读和检索窗口允许重叠，按实际核心范围并集计算覆盖。来源单元不等于 Claim，一个事实可以依赖多个单元。
+章节 owned ranges 无重叠；canonical SourceUnit 可按统一 source 配置保留有限 overlap，知识阅读按实际核心范围并集计算覆盖。来源单元不等于 Claim，一个事实可以依赖多个单元。
 
 父子关系分开表达：section_parent 管文档结构，context_refs 管阅读上下文，retrieval source_refs 管索引输入映射。不能用一个 parent_id 混合这三种含义。
 
@@ -88,7 +88,7 @@ ingest：原件登记 → 解析与规范化产物
 
 P0 补齐来源单元、工作账本、知识构建、Vault 配置和 Provider 单元能力的最小接口与版本规则。坐标含义、核心/上下文边界、身份归属等先确定；大小和预算是版本化可调参数，不要求在 P0 找到最佳数值。新读取器对不支持的契约明确报错，不静默走旧库路径。
 
-以下为职责概览；P0 已落实的准确契约名、字段和接口原型见共享包规范。生成/读取服务仍待 P2 实现：
+以下为职责概览；P0 已落实的准确契约名、字段和接口原型见共享包规范，生成/读取服务已在 P2 实现：
 
 - source-units：来源、结构、范围、指纹与资产引用。
 - unit-work-ledger：以任务和单元为依据的进度账本。
@@ -138,7 +138,7 @@ embedding_key = H(实际索引输入、embedding 模型与预处理指纹)
 2. 内容模块从 outline 计算 section scope 与 owned ranges；普通 Markdown 经结构解析产生相同接口。
 3. 按每个连续 owned range 识别段落、条款、列表、代码、公式与表格关系。
 4. 结构内长文本按句子/分隔符递归切分；明确记录无法安全细分的超大结构。
-5. 输出无重叠核心单元、精确范围和邻接关系，验证覆盖和资产引用。
+5. 输出带配置化有限 overlap 的共享 canonical chunk、精确范围和邻接关系，按范围并集验证完整覆盖和资产引用。
 6. 发布完整单元集，ledger 和窗口构造器随后消费。
 
 内部文本坐标采用 LF 规范文本上的 Unicode code point、0-based 半开区间；行号展示为 1-based。规范化规则固定版本，不在回读时临时 trim 或重写 Unicode。字符、字节、JS UTF-16 与 PDF 坐标显式转换。
@@ -221,7 +221,7 @@ source preparation 和 knowledge construction 的分阶段能力可以保留，�
 
 Wiki 阅读材料是任务材料包：核心单元、补充上下文、图表、来源身份、适用范围、质量限制及未读清单。它由构建任务组织，不以向量召回 Top K 为唯一范围。
 
-Provider 只负责生成检索窗口及索引，窗口保存 unit_refs/subspans。新查询收到命中后核对投影与来源版本、当前治理资格、核心原文和证据，不能将 snippet 当最终来源。
+Provider 默认直接渲染并索引 canonical SourceUnit，索引记录保存完整 unit_ref；标题面包屑只加入索引输入，不改变 Unit 核心。只有模型硬上限或 oversized 特例才允许带明确 subspan 的例外投影。新查询收到命中后核对投影与来源版本、当前治理资格、核心原文和证据，不能将 snippet 当最终来源。
 
 派生知识页可进入检索，但必须标记派生类型、页面修订与支持来源。来源层查询默认不混入自己的派生摘要反复充当原始证据；需要通过知识页扩展线索时仍回到原始 unit_refs，避免循环自证。
 
@@ -244,12 +244,13 @@ Word/其他 Office、独立图片先以统一 adapter 接口设计。若它们�
 | P0 最小接口与规则 | 沿用已确定决策，补齐共享类型、必填规则、接口、配置及正反样例 | 可供后续模块共同实现的最小契约，不重复写宏观方案 | 2–3 日 |
 | P1 新 bootstrap | 更新脚本、模板、规则、配置与 lint；建立共享模块打包入口 | 从空目录创建目标库，结构与契约校验通过 | 2–3 日 |
 | P2 来源内容层 | 规范产物 adapter、section ownership、结构切片、资产关联、get/context/validate | 一份原件到 source units 全流程；精确回读、覆盖与确定性通过 | 4–6 日 |
-| P3 账本与知识构建 | 新任务状态机、阅读窗口、候选/页面 unit_ref、复核和依赖提交 | 多来源真实页面可回查，零候选与中断恢复可用 | 3–4 日 |
-| P4 Provider/query | 单元投影、窗口预算、索引 manifest、传输能力、来源回读、派生页资格 | 端到端查询与 QA/治理校验通过；Provider 可重建 | 3–5 日 |
-| P5 完整实践 | 每轮新建测试库，从原件重新 ingest；质量评测、格式补齐与流程修正 | 无手工补账本/补引用的完整演练报告 | 2–4 日 |
-| P6 发布与正式重建 | 完成 main/intranet 验证发布；部署一致代码；新正式库 bootstrap + ingest + query 验收 | 新库完整构建报告、索引状态、引用与问题清单 | 2–3 日 |
+| P3 Pass/Reduce 与 Build Finalize | 新任务状态机、阅读窗口、候选/引用、稳定 subject/page identity、页面修订和构建提交 | 多来源真实页面可回查，零候选、中断恢复和 Build Finalize 可用 | 4–6 日 |
+| P4 Vault Finalize | 增量受影响集合、失效贡献、别名/链接/目录投影、knowledge release manifest、新 Finalize Skill | 多次构建可幂等收尾；失败与索引资格清楚可查 | 3–5 日 |
+| P5 Provider/query | 单元投影、窗口预算、索引 manifest、传输能力、来源回读、已提交派生页资格 | 端到端查询与 QA/治理校验通过；Provider 可重建 | 3–5 日 |
+| P6 完整文件式实践 | 每轮新建测试库，从原件重新 ingest；质量评测、故障/更新演练与流程修正 | 无手工补账本/补引用的完整演练报告 | 3–5 日 |
+| P7 发布与正式重建 | 完成 main/intranet 验证发布；部署一致代码；新正式库 bootstrap + ingest + finalize + query 验收 | 新库完整构建报告、release/index 状态、引用与问题清单 | 2–3 日 |
 
-bootstrap 在 P1 是可运行基础，后续阶段同步补齐实际配置和验证器；到 P5 必须从空目录重跑以证明早期试验文件没有掩盖初始化缺口。P6 的正式 bootstrap 是最终重建，不依赖开发试验库的状态。
+bootstrap 在 P1 是可运行基础，后续阶段同步补齐实际配置和验证器；到 P6 必须从空目录重跑以证明早期试验文件没有掩盖初始化缺口。P7 的正式 bootstrap 是最终重建，不依赖开发试验库的状态。
 
 共享切片/读取逻辑只维护一份源码。按实际部署方式，必需模块和资源随 Skill 目录交付，脚本按自身位置加载；Provider 所需部分随 Provider 发行。允许由源码生成内置副本并核对指纹，禁止人工分别维护。用户不需要额外安装共享 wheel、设置 PYTHONPATH 或保留仓库根目录。
 
@@ -270,9 +271,9 @@ P0 不要求重新发明文档身份、QA、治理或知识构建方法，也不
 
 依据：[Bundle 契约](../hermes-obsidian-controlled-ingest/references/mineru-pdf-bundle.md)、[Bundle 校验器](../hermes-obsidian-controlled-ingest/scripts/validate_document_bundle.py)、[当前 ledger](../hermes-obsidian-controlled-ingest/scripts/manage_bundle_ingest.py)、[构建校验器](../hermes-obsidian-controlled-ingest/scripts/validate_knowledge_build.py)、[Provider 契约](../qmd-like-rag/src/qmd_like_rag/contract.py)。文档与源码的版本差异需以当前代码核对，不能因为某份 ADR 仍写 v2 就把实际 v3 当不存在。
 
-本轮 P0 已交付新的 source-unit schema、共享读取接口原型、离线精确引用校验和正反样例；实际生成器与原文读取器仍待 P2。列出字段名称不等于已经实现运行服务，验收记录明确区分这两者。
+P0 先交付 source-unit schema、共享读取接口原型、离线精确引用校验和正反样例；P2 现已交付实际生成器与原文读取器。两个阶段的验收记录分别说明定义和运行能力。
 
-例如“start/end 是位置”仍不够：P0 要明确它是哪个版本文本上的 code point、0-based、半开区间，标题上下文是否包含在内；P2 才实现计算和校验。P0 规定“超大表格保留完整来源并报告 oversized”，P4 再实现怎样把它转成不超模型预算的检索输入。
+例如“start/end 是位置”仍不够：P0 要明确它是哪个版本文本上的 code point、0-based、半开区间，标题上下文是否包含在内；P2 才实现计算和校验。P0 规定“超大表格保留完整来源并报告 oversized”，P5 再实现怎样把它转成不超模型预算的检索输入。
 
 ### 11.2 P0 的最小交付与结束条件
 
@@ -293,11 +294,11 @@ P0 不要求重新发明文档身份、QA、治理或知识构建方法，也不
 
 | 职责 | WeKnora 的对应落点 | 我们的对应安排 |
 |---|---|---|
-| 对外切分配置 | KnowledgeBase 的 ChunkingConfig，定义大小、重叠、分隔符、父子参数、策略等 | P0 区分来源切分配置与消费窗口配置，P1 写默认值，P2/P4 实际消费 |
+| 对外切分配置 | KnowledgeBase 的 ChunkingConfig，定义大小、重叠、分隔符、父子参数、策略等 | P0 区分来源切分配置与消费窗口配置，P1 写默认值，P2/P5 实际消费 |
 | 切分函数输入输出 | chunker 的 SplitterConfig 与 Chunk；正文、ContextHeader、Seq、Start/End 分开 | P0 共享类型和坐标规则，P2 实现生成器 |
 | 应用内容记录 | types.Chunk 包含材料归属、内容、位置、父/邻接关系、类型等 | P0 定义 SourceUnit 持久化记录，P2 存为可验证来源切片 |
-| 有效参数与父子规则 | NormalizeSplitterConfig、DeriveParentChildConfigs、SplitParentChild 等共享函数 | P2 来源路由/上下文构造，P4 检索预算转换；预览和正式生成共用规则 |
-| 结果检查 | ValidateChunks 检查空结果、长文未切开、碎块过多及块大小异常，策略入口可以回退 | P2 增加本方案要求的精确回读、无重叠覆盖、指纹/资产校验；无效结果不发布为可用单元集 |
+| 有效参数与父子规则 | NormalizeSplitterConfig、DeriveParentChildConfigs、SplitParentChild 等共享函数 | P2 来源路由/上下文构造，P5 检索预算转换；预览和正式生成共用规则 |
+| 结果检查 | ValidateChunks 检查空结果、长文未切开、碎块过多及块大小异常，策略入口可以回退 | P2 增加精确回读、overlap 后范围并集完整覆盖、指纹/资产校验；无效结果不发布为可用单元集 |
 
 依据：[配置类型](https://github.com/Tencent/WeKnora/blob/main/internal/types/knowledgebase.go)、[切分类型](https://github.com/Tencent/WeKnora/blob/main/internal/infrastructure/chunker/splitter.go)、[应用 Chunk 类型](https://github.com/Tencent/WeKnora/blob/main/internal/types/chunk.go)、[共享策略入口](https://github.com/Tencent/WeKnora/blob/main/internal/infrastructure/chunker/strategy.go)、[结果校验](https://github.com/Tencent/WeKnora/blob/main/internal/infrastructure/chunker/validator.go)。
 
@@ -323,7 +324,7 @@ P2 是切片系统的主体，不是只交 schema 或往旧 Provider 块增加�
 | P2.1 来源适配与坐标 | 原件经过解析生成规范产物；统一 LF、身份/指纹和行字符映射 | artifact 读取接口；中文/emoji/CRLF 坐标样例正确 |
 | P2.2 章节结构与自有范围 | Bundle 优先用可靠 outline；普通 Markdown 解析结构；父 scope 扣子 scope | Section + owned ranges；无双重归属，不依赖 ledger 状态 |
 | P2.3 受保护结构 | 识别代码围栏、公式、条款、列表、表格与资产边界 | 结构块清单及异常；表题/单位/脚注关联不丢失 |
-| P2.4 结构优先切分 | 短结构在同一归属内合并，长章节内部细分，不跨不连续 owned range | 核心无重叠 SourceUnits；每块能精确回指原文 |
+| P2.4 结构优先切分 | 短结构在同一归属内合并，长章节内部细分，不跨不连续 owned range，按 source 配置施加有限 overlap | SourceUnit 即共享 canonical chunk；每块能精确回指原文，范围并集完整覆盖 |
 | P2.5 递归与有限启发式 | 按段/句/分隔符递归；缺可靠标题时识别编号/分隔线；明确 auto 路由 | 选中策略、回退和 oversized 原因可查；不使用 LLM 决定基础边界 |
 | P2.6 章节/相邻与父上下文 | 生成所属 section、prev/next；实现预算内组合单元的 context 接口 | 小单元可扩展到有界父上下文；核心和附带内容区分，跨子章节有明确引用 |
 | P2.7 资产与精确引用 | 文本、表格、图片有类型 locator；正文和上下文哈希边界明确 | unit_ref 可解析；图表引用完整，未知页/区域不伪造 |
@@ -331,47 +332,58 @@ P2 是切片系统的主体，不是只交 schema 或往旧 Provider 块增加�
 | P2.9 读取与预览 | build/preview/list/get/context/validate 接入同一实现 | 可查看边界和诊断、按 ID 回读原文；preview 与 build 对同输入一致 |
 | P2.10 独立验收 | 从一份真实原件生成、读取、扩上下文并核对覆盖；测试损坏/不完整产物 | 无 Provider、无 Wiki 的共享切片系统能独立完成上述行为 |
 
-WeKnora 的 heading/recursive/heuristic/auto 能力对应 P2.2–P2.5，但我们优先使用已有可靠 outline；没有必要先做复杂文档画像评分。P2.6 实现父上下文的通用组合能力，P3/P4 决定任务预算与何时扩展。
+WeKnora 的 heading/recursive/heuristic/auto 能力对应 P2.2–P2.5，但我们优先使用已有可靠 outline；没有必要先做复杂文档画像评分。P2.6 实现父上下文的通用组合能力，P3/P5 决定任务预算与何时扩展。
 
-基础 SourceUnit 尽量直接作为检索输入的核心。大小不合适时 P4 才合并相邻单元或细分到子范围，并记录精确映射。不同名称不意味着必须把同一份文本实体存三份。
+P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上下文与 tokenizer 测量是投影元数据，不产生另一套普通 chunk。若 canonical Unit 超过模型硬上限，P5 必须阻止索引并要求新 UnitSet 配置，或对已报告的 oversized 特例生成明确 subspan，不能静默普遍重切。
 
-### 11.6 P3：账本与 Wiki 复用细分
+### 11.6 P3：Pass/Reduce、知识身份与 Build Finalize
 
 | 子任务 | 工作 | 可验收结果 |
 |---|---|---|
 | P3.1 单元任务与领取 | task type、目标 refs、revision、重叠任务检查、中断重试 | 同一任务不重复提交，不同任务可消费同一单元 |
 | P3.2 阅读材料包 | 从 source units 构造 reading window，记录核心、上下文、资产和预算截断 | 展示上下文不冒充实际覆盖；遗漏范围可列出 |
-| P3.3 候选与补读 | 记录候选及支持 refs，按对象/适用范围补条件和例外 | 同名对象不混并；有候选/无候选都能交代读取与判断 |
-| P3.4 页面引用与复核 | 页面段落/候选对单元的支持关系、output review、完整来源同步 | 每个实际来源可回查；派生页不循环充当原始来源 |
-| P3.5 依赖与恢复 | 提交账本/页面/依赖的运行记录；失败可重试；新版本影响报告 | 没有隐式双写旧引用；任务完成、QA和可见性分别判定 |
-| P3.6 跨来源实践 | 使用 P2 输出完成一次真实知识构建 | 多来源页面引用准确；不依赖先建向量索引 |
+| P3.3 Pass 0/Pass 1..N | 记录候选及支持 refs，按对象/适用范围补条件和例外 | 同名对象不混并；有候选/无候选都能交代读取与判断 |
+| P3.4 稳定知识身份 | subject_id/page_id registry；候选 ID 与稳定对象分离；路径/slug/别名作为投影 | 移动页面或调整目录不改变对象身份；近似名称只提供候选 |
+| P3.5 Reduce 与页面修订 | 按稳定对象聚合多来源贡献，生成 create/update/reuse/relate 修订 | 页面修订引用准确；派生页不循环充当原始来源 |
+| P3.6 Build Finalize | output review、provenance、页面依赖与任务 revision 一致提交 | 失败可恢复；任务完成、QA、业务资格和可见性分别判定 |
+| P3.7 跨来源实践 | 使用 P2 输出完成一次真实 Pass/Reduce/Build Finalize | 多来源页面可回查；不依赖先建向量索引 |
 
-### 11.7 P4：Provider 与查询细分
-
-| 子任务 | 工作 | 可验收结果 |
-|---|---|---|
-| P4.1 单元语料入口 | 按来源资格读单元及获准派生页，替换 Provider 独立来源切块入口 | 每个新检索输入都有真实来源 refs，不能退回粗行号猜测 |
-| P4.2 检索窗口 | 默认直接消费单元；必要时合并、子范围细分、有限 overlap；附带标题单列 | 总输入按模型 tokenizer 计预算，窗口 → 单元/子范围映射可验证 |
-| P4.3 存储与指纹 | Chroma/BM25 同投影 manifest；窗口、模型、来源变化分别失效 | 改模型不改来源 ID；重建不产生混代结果 |
-| P4.4 传输与能力校验 | CLI/HTTP/normalizer 一起传 unit_refs、projection 指纹及定位精度 | 字段不在适配中丢失，缺能力明确报错 |
-| P4.5 命中与父上下文 | 命中窗口 → 真正来源单元 → 有预算的相邻/章节上下文；治理再检查 | 小范围匹配、大范围理解；上下文去重，不跨资格边界泄漏 |
-| P4.6 端到端验证 | 原文引用核验、索引不可用、过期投影、无答案、派生页依赖场景 | 查询只读，回答回到原文，而非把 snippet 当最终证据 |
-
-### 11.8 P5/P6：完整实践与正式重建细分
+### 11.7 P4：Vault Finalize 与独立 Skill
 
 | 子任务 | 工作 | 可验收结果 |
 |---|---|---|
-| P5.1 全新实践库 | 用统一代码 bootstrap，从至少两份相关原件开始 ingest | 解析、切片、账本、知识页、检索与查询贯通 |
-| P5.2 质量评测 | 标注问题与支持范围，检查条款/例外/表格和同名对象；比较新窗口策略 | 输出定位正确性、证据覆盖、知识质量与检索性能报告 |
-| P5.3 故障和更新演练 | 各阶段中断、重复输入、改解析/窗口/模型、来源失效 | 恢复与失效规则符合第 12/13 节 |
-| P5.4 第二次空库重跑 | 修正代码后再次从空库与原件构建，覆盖正式清单的格式 | 无手工补账本、引用、配置，流程可重复 |
-| P6.1 一致发布 | main 验证推送，merge intranet 保留部署值；部署核验 | Skill、共享模块、Provider、配置及验证器版本匹配 |
-| P6.2 正式 bootstrap | 在明确的新目标库初始化，核对配置、格式能力和原件清单 | 新正式库可投入摄取，不依赖试验库状态 |
-| P6.3 正式 ingest 与验收 | 全批新解析/单元/知识构建/索引/query；记录失败或 QA 待办 | 每份材料有可核对结果，无静默遗漏或虚假完成 |
+| P4.1 受影响集合 | 汇总已提交 build、变更 unit sets、页面/subject 依赖与旧贡献 | 只处理真正受影响对象；遗漏和阻塞项明确列出 |
+| P4.2 来源贡献维护 | 处理 stale、withdrawn、剩余支持及需重审页面 | 删除/重解析来源不会按文件粗暴删除仍受支持页面 |
+| P4.3 身份与导航投影 | 检查别名、slug、重定向、死链、反向链接和目录投影 | page_id 不随路径变化；目录层级只承担导航 |
+| P4.4 Release manifest | 钉住 unit sets、build runs、page revisions、QA/blocked 和索引资格 | 一次收尾范围及结果可审计，不能把局部成功冒充全库完成 |
+| P4.5 Finalize Skill | `hermes-obsidian-knowledge-finalize` 的 plan/apply/validate 与恢复入口 | 可独立重跑，不解析来源、不隐式同步 Provider、不批准业务版本 |
+
+### 11.8 P5：Provider 与查询细分
+
+| 子任务 | 工作 | 可验收结果 |
+|---|---|---|
+| P5.1 单元语料入口 | 按来源资格读 canonical units 及已提交派生页，删除 Provider 独立来源切块入口 | 每个普通检索输入恰好钉住一个真实 unit_ref，不能退回粗行号猜测 |
+| P5.2 索引渲染 | 一个可索引 Unit 对应一个普通索引文档；标题面包屑单列加入，按模型 tokenizer 测量；硬上限/oversized 特例显式阻断或记录 subspan | Provider 不普遍合并、重切或另加 overlap；渲染输入和 Unit 映射可验证 |
+| P5.3 存储与指纹 | Chroma/BM25 同投影 manifest；窗口、模型、来源变化分别失效 | 改模型不改来源 ID；重建不产生混代结果 |
+| P5.4 传输与能力校验 | CLI/HTTP/normalizer 一起传 unit_refs、projection 指纹及定位精度 | 字段不在适配中丢失，缺能力明确报错 |
+| P5.5 命中与父上下文 | 命中窗口 → 真正来源单元 → 有预算的相邻/章节上下文；治理再检查 | 小范围匹配、大范围理解；上下文去重，不跨资格边界泄漏 |
+| P5.6 端到端验证 | 原文引用核验、索引不可用、过期投影、无答案、派生页依赖场景 | 查询只读，回答回到原文，而非把 snippet 当最终证据 |
+
+### 11.9 P6/P7：完整实践与正式重建细分
+
+| 子任务 | 工作 | 可验收结果 |
+|---|---|---|
+| P6.1 全新实践库 | 用统一代码 bootstrap，从至少两份相关原件开始 ingest | 解析、单元、Pass/Reduce、Finalize、检索与查询贯通 |
+| P6.2 质量评测 | 标注问题与支持范围，检查条款/例外/表格和同名对象；比较新窗口策略 | 输出定位正确性、证据覆盖、知识质量与检索性能报告 |
+| P6.3 故障和更新演练 | 各阶段中断、重复输入、改解析/窗口/模型、来源失效 | 恢复与失效规则符合第 12/13 节 |
+| P6.4 第二次空库重跑 | 修正代码后再次从空库与原件构建，覆盖正式清单的格式 | 无手工补账本、引用、配置，流程可重复 |
+| P7.1 一致发布 | main 验证推送，merge intranet 保留部署值；部署核验 | Skill、共享模块、Provider、配置及验证器版本匹配 |
+| P7.2 正式 bootstrap | 在明确的新目标库初始化，核对配置、格式能力和原件清单 | 新正式库可投入摄取，不依赖试验库状态 |
+| P7.3 正式 ingest 与验收 | 全批新解析/单元/知识构建/finalize/索引/query；记录失败或 QA 待办 | 每份材料有可核对结果，无静默遗漏或虚假完成 |
 
 阶段编号表达依赖和验收里程碑，不要求每项单独开 PR。P0 完成最小定义后即进入实现；P1/P2 初期即可有第一个可运行检查点。细分没有增加旧数据兼容工作，原工期仍是粗估，不能把子任务行数当作工期天数。
 
-### 11.9 主要代码落点
+### 11.10 主要代码落点
 
 | 现有组件 | 改动方向 |
 |---|---|
@@ -400,7 +412,7 @@ WeKnora 的 heading/recursive/heuristic/auto 能力对应 P2.2–P2.5，但我�
 | 场景 | 验收要求 |
 |---|---|
 | 空库 bootstrap | 仅靠新代码和配置可重现全部必要结构 |
-| 原文覆盖 | eligible 内容核心范围全覆盖且无重叠；排除部分有类型与理由 |
+| 原文覆盖 | eligible 内容按范围并集全覆盖；overlap 符合配置且不跨 owned range；排除部分有类型与理由 |
 | 精确引用 | 单元回读哈希、字符、行与资产定位一致 |
 | 重复文本与编码 | 重复段落 ID 不碰撞；中文、emoji、CRLF 等定位正确 |
 | 任务覆盖 | 上下文展示不冒充完成；无候选有完整阅读与判断记录 |
@@ -429,7 +441,8 @@ WeKnora 的 heading/recursive/heuristic/auto 能力对应 P2.2–P2.5，但我�
 | 原件或业务版次变更 | 新资源/版本，按已知业务关系登记 |
 | 同原件重解析 | 新 artifact_revision，保留被引用产物 |
 | 来源切分规则变更 | 新 unit_set；依赖页面进入复核清单 |
-| 检索窗口变更 | 重建投影，不修改来源单元 |
+| canonical chunk 大小/overlap/策略变更 | 生成新 UnitSet；知识与索引依赖按 unit_set_id 失效 |
+| embedding 模型或标题渲染变更 | 只重建 Provider 投影，不修改来源单元 |
 | embedding 变更 | 重建向量，保留来源与知识引用 |
 | 来源撤销/访问变化 | 查询立即检查当前资格，写侧清除失效索引 |
 

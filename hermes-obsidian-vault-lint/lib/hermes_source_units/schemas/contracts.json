@@ -593,6 +593,10 @@
               "type": "integer",
               "minimum": 1
             },
+            "overlap_codepoints": {
+              "type": "integer",
+              "minimum": 0
+            },
             "separators": {
               "type": "array",
               "items": {
@@ -609,6 +613,7 @@
             "strategy",
             "target_codepoints",
             "max_codepoints",
+            "overlap_codepoints",
             "separators",
             "oversized_policy"
           ],
@@ -638,10 +643,6 @@
               "type": "integer",
               "minimum": 1
             },
-            "overlap_tokens": {
-              "type": "integer",
-              "minimum": 0
-            },
             "context_max_tokens": {
               "type": "integer",
               "minimum": 1
@@ -660,7 +661,6 @@
           "required": [
             "target_tokens",
             "max_tokens",
-            "overlap_tokens",
             "context_max_tokens",
             "tokenizer"
           ],

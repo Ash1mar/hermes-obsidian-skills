@@ -237,10 +237,10 @@ def validate_record(kind: str, record: Mapping[str, Any]) -> None:
                 _unique(item[field], path + "." + field)
     if kind == "config":
         source, retrieval = record["source"], record["retrieval"]
-        if source["target_codepoints"] > source["max_codepoints"]:
-            _fail("INVALID_BUDGET", "$.source", "target exceeds maximum")
-        if not retrieval["overlap_tokens"] < retrieval["target_tokens"] <= retrieval["max_tokens"]:
-            _fail("INVALID_BUDGET", "$.retrieval", "requires overlap < target <= maximum")
+        if not source["overlap_codepoints"] < source["target_codepoints"] <= source["max_codepoints"]:
+            _fail("INVALID_BUDGET", "$.source", "requires overlap < target <= maximum")
+        if retrieval["target_tokens"] > retrieval["max_tokens"]:
+            _fail("INVALID_BUDGET", "$.retrieval", "target exceeds maximum")
     if kind == "unit":
         asset = record["locator"]["kind"] == "asset"
         if (record["content_type"] == "source_asset") != asset:

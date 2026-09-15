@@ -2,8 +2,9 @@
   "contract": "hermes-source-unit-config/v1",
   "source": {
     "strategy": "auto",
-    "target_codepoints": 1600,
-    "max_codepoints": 3200,
+    "target_codepoints": 512,
+    "max_codepoints": 1024,
+    "overlap_codepoints": 512,
     "separators": [
       "\n\n",
       "\n",
@@ -19,7 +20,6 @@
   "retrieval": {
     "target_tokens": 800,
     "max_tokens": 1024,
-    "overlap_tokens": 800,
     "context_max_tokens": 2400,
     "tokenizer": null
   }

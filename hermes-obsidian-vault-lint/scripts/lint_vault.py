@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from hermes_source_units import ContractError, FileSourceUnitService
 from hermes_source_units.vault_config import validate_vault as validate_source_unit_vault
 
 SCHEMA_VERSION = "1.0"
@@ -1384,6 +1385,24 @@ def lint(args: argparse.Namespace) -> dict[str, Any]:
         trace.append({"stage": name, "elapsed_ms": round((time.perf_counter() - before) * 1000, 2)})
         return value
 
+    def source_unit_stage() -> None:
+        root = vault / "_system/sources/units"
+        currents = sorted(root.glob("*/current.json")) if root.is_dir() else []
+        metrics["source_unit_resources"] = len(currents)
+        metrics["source_unit_count"] = 0
+        if not currents:
+            return
+        issue_path = root
+        try:
+            service = FileSourceUnitService(vault)
+            for current_path in currents:
+                issue_path = current_path
+                report = service.validate(current_path.parent.name)
+                metrics["source_unit_count"] += int(report["unit_count"])
+        except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
+            add_issue(issues, "source_units.invalid_repository", "error",
+                      issue_path.relative_to(vault).as_posix(), str(exc))
+
     manifest_path = vault / "_system/vault.json"
     if manifest_path.is_file():
         try:
@@ -1391,11 +1410,12 @@ def lint(args: argparse.Namespace) -> dict[str, Any]:
             if "source_units" in manifest:
                 metrics["source_units"] = validate_source_unit_vault(vault)
                 add_issue(issues, "source_units.pipeline_pending", "error", "_system/vault.json",
-                          "P1 scaffold is valid, but ingest/query pipelines are not implemented.")
+                          "P2 source plane is available, but knowledge construction/finalize and Provider pipelines are not implemented.")
         except (OSError, ValueError, TypeError) as exc:
             add_issue(issues, "source_units.invalid_config", "error", "_system/vault.json", str(exc))
 
     stage("structure", lambda: lint_structure(vault, issues, metrics))
+    stage("source_units", source_unit_stage)
     stage("governance", lambda: lint_governance_control_plane(vault, profile, issues, metrics))
     stage("governance.projections", lambda: lint_governance_projections(vault, issues, metrics))
     ingest_skill = discover_ingest_skill(Path(__file__), args.ingest_skill_path)
