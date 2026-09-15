@@ -101,7 +101,7 @@ After setup, report:
 8. governance backend and readiness for the engineering profile
 9. next prompt the user can give Hermes for ingestion
 
-## P1 Source-unit Vaults
+## Source-unit Vaults
 
 Copy this entire Skill directory, including `lib/`. The embedded shared runtime
 uses Python 3.11+ standard library only; no pip installation or service is needed.
@@ -110,8 +110,10 @@ New bootstrap Vaults contain `_system/metadata/source-unit-config.json` and a
 `source_units` declaration in `_system/vault.json`. Configuration uses Unicode
 codepoints for source/reading sizes and separate token budgets for retrieval;
 `tokenizer: null` does not promise exact tokenization or an available Provider.
-P1 validates the scaffold only. Do not execute legacy ingest/query on these Vaults.
-Full lint reports `source_units.pipeline_pending` until the new pipelines exist.
+P2 supplies source preparation and exact reads through controlled ingest. Knowledge
+construction, Finalize and Provider/query remain gated. Do not execute their legacy
+paths on these Vaults. Full lint reports `source_units.pipeline_pending` until those
+pipelines exist.
 
 Initialize with `python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" --vault-path "/path/to/new-vault"`.
 An optional `--source-unit-config "/path/to/config.json"` replaces the complete
@@ -126,4 +128,4 @@ Validate the scaffold with:
 python3 "<bootstrap-skill-root>/scripts/validate_source_unit_vault.py" --vault "/path/to/new-vault"
 ```
 
-A successful result includes `bootstrap_ready: true` and `query_ready: false`.
+A successful result includes phase `P2`, `bootstrap_ready: true` and `query_ready: false`.

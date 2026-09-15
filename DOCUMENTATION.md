@@ -16,7 +16,7 @@
 
 ## 仓库级文档
 
-来源单元新体系的实现入口：[ADR-0003](docs/architecture/0003-source-unit-contracts.md)、[共享包规范](hermes-source-units/README.md)、[P0 验收](docs/SOURCE_UNITS_P0_ACCEPTANCE.md)和 [P1 验收](docs/SOURCE_UNITS_P1_ACCEPTANCE.md)。P1 已接入 bootstrap 与 lint；ingest、知识构建和 Provider 仍待 P2–P4 实现。
+来源单元新体系的实现入口：[ADR-0003](docs/architecture/0003-source-unit-contracts.md)、[ADR-0004](docs/architecture/0004-knowledge-identity-and-finalize.md)、[共享包规范](hermes-source-units/README.md)及 [P0](docs/SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](docs/SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](docs/SOURCE_UNITS_P2_ACCEPTANCE.md) 验收。P2 已接入 controlled-ingest 与 lint；Pass/Reduce、Vault Finalize 和 Provider 依次留到 P3–P5。
 
 | 文档 | 内容与用途 |
 | --- | --- |
@@ -24,6 +24,9 @@
 | [`DOCUMENTATION.md`](DOCUMENTATION.md) | 当前文档索引，说明每份文档讲什么、应该何时阅读，以及哪些仓库外资料仅作关联参考。 |
 | [`docs/OFFICIAL_TECHNICAL_SPECIFICATION.md`](docs/OFFICIAL_TECHNICAL_SPECIFICATION.md) | 项目级官方技术规范：统一定义系统范围、架构、组件职责、数据权威、schema/协议、四条工作流、分支部署、QA、安全、故障降级、兼容性与验收标准。 |
 | [`docs/architecture/0001-weknora-inspired-document-governance.md`](docs/architecture/0001-weknora-inspired-document-governance.md) | 已接受且阶段 1、2 已实现的架构决策：借鉴 WeKnora 分层建立最小文档身份、来源、业务版本、隔离和存储引用合同，并以 JSON repository 为数据库迁移做准备。 |
+| [`docs/architecture/0003-source-unit-contracts.md`](docs/architecture/0003-source-unit-contracts.md) | SourceUnit 身份、坐标、核心/上下文、文件仓库和复制式运行契约；记录 P0–P2 实践结论。 |
+| [`docs/architecture/0004-knowledge-identity-and-finalize.md`](docs/architecture/0004-knowledge-identity-and-finalize.md) | 稳定 subject/page identity、Build Finalize、Vault Finalize、独立 Finalize Skill 和数据库后置决策。 |
+| [`docs/SOURCE_UNITS_EVOLUTION_PLAN.md`](docs/SOURCE_UNITS_EVOLUTION_PLAN.md) | 从 P0 契约到 P7 正式重建的当前阶段计划、子任务与验收边界。 |
 | [`charts.md`](charts.md) | Mermaid 端到端流程图：`main`/`intranet` 环境差异、建库、摄取、Lint、单遍 Query Session、Provider 与 Vault 的读写关系。 |
 | [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md) | 双分支维护合同：共享变更先进入 `main`，再 merge 到 `intranet`；定义受保护配置、冲突处理、验证和推送顺序。 |
 | [`RETRIEVAL_PROVIDER_OPERATIONS.md`](RETRIEVAL_PROVIDER_OPERATIONS.md) | 检索 Provider 运维说明：仓库默认、主机部署、Provider 主机三层配置，query/ingest 开关，启用门禁和验证命令。 |

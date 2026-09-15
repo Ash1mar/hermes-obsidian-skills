@@ -1,4 +1,4 @@
-"""Structural interfaces for P2 implementations. These are not working services.
+"""Structural interfaces implemented by the P2 file-backed service.
 
 All spans use LF-normalized Unicode code points, zero-based [start, end).
 Reference spans are absolute within the referenced unit's source file.
@@ -79,7 +79,7 @@ class SourceUnitReader(Protocol):
     Construct with an explicit vault_root. Implementations must resolve symlinks
     under that root, reject inaccessible/changed versions and report errors using
     ContractError codes documented in README. Historical reads still check the
-    current access policy. No implementation ships in P0.
+    current access policy. FileSourceUnitService implements this protocol.
     """
 
     def get(self, request: ReadRequest) -> ReadResult: ...

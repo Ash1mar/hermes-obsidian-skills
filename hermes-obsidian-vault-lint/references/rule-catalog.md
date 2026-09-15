@@ -116,4 +116,5 @@ These checks apply only to Vaults with `_system/vault.json`. Existing legacy Vau
 ## Source-unit rollout
 
 - `source_units.invalid_config`: malformed configuration, missing directories, declaration/fingerprint mismatch.
-- `source_units.pipeline_pending`: P1 scaffold exists but content and retrieval pipelines are unavailable; error for full lint profiles.
+- `source_units.invalid_repository`: current pointer, manifest, units, sections, source content or hashes are inconsistent.
+- `source_units.pipeline_pending`: the source plane exists but knowledge/finalize and retrieval pipelines are unavailable; error for full lint profiles.

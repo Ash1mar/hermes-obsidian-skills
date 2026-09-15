@@ -134,7 +134,7 @@ When responding to the user:
 
 If no errors are found but warnings remain, call the result `pass-with-warnings`, not failure.
 
-## P1 Source-unit Vaults
+## Source-unit Vaults
 
 Copy this entire Skill directory, including `lib/`. The embedded shared runtime
 uses Python 3.11+ standard library only; no pip installation or service is needed.
@@ -143,5 +143,6 @@ New bootstrap Vaults contain `_system/metadata/source-unit-config.json` and a
 `source_units` declaration in `_system/vault.json`. Configuration uses Unicode
 codepoints for source/reading sizes and separate token budgets for retrieval;
 `tokenizer: null` does not promise exact tokenization or an available Provider.
-P1 validates the scaffold only. Do not execute legacy ingest/query on these Vaults.
-Full lint reports `source_units.pipeline_pending` until the new pipelines exist.
+P2 also validates every published current unit set against its immutable artifact,
+section partition, unit references and hashes. Knowledge construction, Finalize and
+Provider/query remain unavailable; full lint reports `source_units.pipeline_pending`.
