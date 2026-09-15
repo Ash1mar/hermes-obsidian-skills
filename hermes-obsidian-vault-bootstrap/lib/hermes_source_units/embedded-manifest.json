@@ -1,11 +1,21 @@
 {
-  "__init__.py": "81d1d06364ccb0384ff0668d2458f75c99a38ababa4687afc706630bee8558e4",
+  "__init__.py": "9c4c4eae39a358343f10b055b79aa13133d0382135ca2a3729064e994d57b666",
   "__main__.py": "48884b5bd01638149212d2f65b0d35ef31d866a84f13eeeb7c4c2cda6e5529bb",
-  "defaults/config.json": "aaaa22430aad32412c14e59e9d9873da00fb1f6e451b17b0a18a30adee2ff8bc",
+  "chunk_engine/__init__.py": "65035eca98305cc142b2a2ddb46443e085d4e7acd9d226fc168f0073d4ad1df4",
+  "chunk_engine/atoms.py": "bf2811ed114aa929dac3e6dce541438e6fd3cb1fd2ccbae1bcbf05cd4f797d82",
+  "chunk_engine/engine.py": "99e94e93e70fa885bee7369c856509e7412c311f2d1dfca280f35c03c29d04bd",
+  "chunk_engine/models.py": "f15c1c7f71e6b3e6472a5f155101550ddd4c94bd0cc14537e88f0b670c03ee0b",
+  "chunk_engine/overlap.py": "38d96771b53cbf4a029b7f853085a00a0e0349d63c37d4435e3d9560318b0f7a",
+  "chunk_engine/profile.py": "c02e472275c5c9d30a10aa16509b3c9fa11d7a456e8a262f2748f4c3ba5134db",
+  "chunk_engine/sections.py": "e09b12aa18946de66a7dae4a7e2daaeb08cb3b964da350ff4c9cf57e12f3ab3d",
+  "chunk_engine/strategies.py": "0a5f0ba6dad3a107d91ed32b1a8ff477db9edc08a04f658506238cfd837d3fb3",
+  "chunk_engine/tokenization.py": "da8c87116a3a627b7b970679ed67c503b6e18efc401fd7a0e116d422f2dbdba4",
+  "chunk_engine/validation.py": "35d6ab342f838fac18eb175f2ebdf45a70d04c63e9e0c94731928347f4cf8d36",
+  "defaults/config.json": "1bf63565930370259243430afee19f89f26776ace4b055c728826b2e3aa024dd",
   "interfaces.py": "61a20795f4f57a69f5e53746d67ef11b4f1f7c0379627bd88e3e2d3ff3f05dd4",
   "py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "schemas/contracts.json": "10759b941dde10b8be44250de9e5deefaadf06874db1cd0a06c95b3b447f9804",
-  "source_units.py": "f3fa984c52768b150177eebd08f762e4d511929b83ff198f77a5b782fb6c059b",
-  "validation.py": "2f5e8a5fe1ae4dc75e5d2a8406f09268d2ff95993b00bceb9d6b1ff62a38c3e6",
-  "vault_config.py": "1bb3f650fbca9135f1c5eb772fc8a4686654ba9b702292e1ece0d0b8b2fb2ba1"
+  "schemas/contracts.json": "68bd0e44f09f5ecb4cc7d920556362528ef8d3e4974d83a84f31ca762f9db905",
+  "source_units.py": "b4fcf919816d4e8bbe8b27fb2d5dd999d55d3e3ab777d8919f8692dac35b19df",
+  "validation.py": "1e5345242931002d09e01b64cbd75b15bd863173db1d23bfebc1c671ea3cf31b",
+  "vault_config.py": "7589123ae8cb3a9cd100c96f7ef4dcb2da72773223fd5b3fd52c785ed6c2f82a"
 }

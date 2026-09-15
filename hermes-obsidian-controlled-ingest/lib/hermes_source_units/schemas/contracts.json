@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.hermes.invalid/source-units/0.1/contracts.json",
+  "$id": "https://schemas.hermes.invalid/source-units/0.2.1/contracts.json",
   "$defs": {
     "span": {
       "type": "object",
@@ -496,7 +496,7 @@
       "type": "object",
       "properties": {
         "contract": {
-          "const": "hermes-source-unit-set/v1"
+          "const": "hermes-source-unit-set/v2"
         },
         "identity": {
           "$ref": "#/$defs/identity"
@@ -509,12 +509,25 @@
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
-        "splitter_version": {
+        "engine_version": {
           "type": "string",
           "minLength": 1,
           "pattern": "\\S"
         },
-        "config_fingerprint": {
+        "engine_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "effective_config_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "engine_report_path": {
+          "type": "string",
+          "minLength": 1,
+          "format": "vault-relative-path"
+        },
+        "engine_report_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"
         },
@@ -540,12 +553,161 @@
         "identity",
         "artifact_revision",
         "unit_set_id",
-        "splitter_version",
-        "config_fingerprint",
+        "engine_version",
+        "engine_fingerprint",
+        "effective_config_fingerprint",
+        "engine_report_path",
+        "engine_report_sha256",
         "unit_ids",
         "state",
         "revision"
       ],
+      "additionalProperties": false
+    },
+    "engine_report": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-chunk-engine-report/v1"},
+        "engine_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "engine_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "artifact_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "effective_config": {
+          "type": "object",
+          "properties": {
+            "strategy": {"enum": ["auto", "structure", "recursive", "heuristic"]},
+            "target_codepoints": {"type": "integer", "minimum": 1},
+            "max_codepoints": {"type": "integer", "minimum": 1},
+            "overlap_codepoints": {"type": "integer", "minimum": 0},
+            "separators": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+            "languages": {"type": "array", "items": {"type": "string", "minLength": 2}, "minItems": 1, "uniqueItems": true},
+            "token_budget": {
+              "type": "object",
+              "properties": {
+                "mode": {"enum": ["off", "audit", "hard"]},
+                "max_tokens": {"type": "integer", "minimum": 1},
+                "tokenizer_fingerprint": {"anyOf": [{"type": "string", "minLength": 1, "pattern": "\\S"}, {"type": "null"}]}
+              },
+              "required": ["mode", "max_tokens", "tokenizer_fingerprint"],
+              "additionalProperties": false
+            },
+            "oversized_policy": {"const": "preserve-and-report"}
+          },
+          "required": ["strategy", "target_codepoints", "max_codepoints", "overlap_codepoints", "separators", "languages", "token_budget", "oversized_policy"],
+          "additionalProperties": false
+        },
+        "document_profile": {
+          "type": "object",
+          "properties": {
+            "codepoints": {"type": "integer", "minimum": 1},
+            "lines": {"type": "integer", "minimum": 1},
+            "nonempty_lines": {"type": "integer", "minimum": 0},
+            "outline_sections": {"type": "integer", "minimum": 0},
+            "numbered_boundaries": {"type": "integer", "minimum": 0},
+            "page_markers": {"type": "integer", "minimum": 0},
+            "divider_boundaries": {"type": "integer", "minimum": 0},
+            "language_signal": {"enum": ["mixed", "cjk", "latin", "unknown"]}
+          },
+          "required": ["codepoints", "lines", "nonempty_lines", "outline_sections", "numbered_boundaries", "page_markers", "divider_boundaries", "language_signal"],
+          "additionalProperties": false
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "strategy": {"enum": ["structure", "heuristic", "recursive"]},
+              "accepted": {"type": "boolean"},
+              "reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 0}
+            },
+            "required": ["strategy", "accepted", "reasons"],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "selected_strategy": {"enum": ["structure", "heuristic", "recursive"]},
+        "statistics": {
+          "type": "object",
+          "properties": {
+            "chunk_count": {"type": "integer", "minimum": 1},
+            "minimum_codepoints": {"type": "integer", "minimum": 1},
+            "maximum_codepoints": {"type": "integer", "minimum": 1},
+            "average_codepoints": {"type": "integer", "minimum": 1},
+            "tiny_chunk_count": {"type": "integer", "minimum": 0},
+            "oversized_protected_count": {"type": "integer", "minimum": 0},
+            "protected_kinds": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {"kind": {"type": "string", "minLength": 1}, "count": {"type": "integer", "minimum": 1}},
+                "required": ["kind", "count"],
+                "additionalProperties": false
+              },
+              "minItems": 0
+            },
+            "covered_codepoints": {"type": "integer", "minimum": 1},
+            "document_codepoints": {"type": "integer", "minimum": 1},
+            "coverage_complete": {"type": "boolean"}
+          },
+          "required": ["chunk_count", "minimum_codepoints", "maximum_codepoints", "average_codepoints", "tiny_chunk_count", "oversized_protected_count", "protected_kinds", "covered_codepoints", "document_codepoints", "coverage_complete"],
+          "additionalProperties": false
+        },
+        "token_audit": {
+          "type": "object",
+          "properties": {
+            "mode": {"enum": ["off", "audit", "hard"]},
+            "status": {"enum": ["disabled", "unavailable", "complete"]},
+            "tokenizer_fingerprint": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+            "max_tokens": {"type": "integer", "minimum": 1},
+            "maximum_observed_tokens": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+            "over_limit_count": {"type": "integer", "minimum": 0}
+          },
+          "required": ["mode", "status", "tokenizer_fingerprint", "max_tokens", "maximum_observed_tokens", "over_limit_count"],
+          "additionalProperties": false
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "code": {"type": "string", "minLength": 1},
+              "requested": {
+                "anyOf": [
+                  {"type": "string", "minLength": 1},
+                  {"type": "integer", "minimum": 0}
+                ]
+              },
+              "selected": {"type": "string", "minLength": 1},
+              "attempted": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+              "span": {"$ref": "#/$defs/span"},
+              "reason": {"type": "string", "minLength": 1},
+              "reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+              "separator": {"type": "string"},
+              "tokenizer_fingerprint": {"type": "string", "minLength": 1},
+              "kind": {"type": "string", "minLength": 1},
+              "section_id": {"type": "string", "minLength": 1},
+              "size": {"type": "integer", "minimum": 1},
+              "maximum": {"type": "integer", "minimum": 1},
+              "tokens": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+              "at": {"type": "integer", "minimum": 0},
+              "actual": {"type": "integer", "minimum": 0}
+            },
+            "required": ["code"],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "coverage": {
+          "type": "object",
+          "properties": {
+            "complete": {"type": "boolean"},
+            "covered_codepoints": {"type": "integer", "minimum": 1},
+            "document_codepoints": {"type": "integer", "minimum": 1}
+          },
+          "required": ["complete", "covered_codepoints", "document_codepoints"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["contract", "engine_version", "engine_fingerprint", "artifact_revision", "effective_config", "document_profile", "attempts", "selected_strategy", "statistics", "token_audit", "diagnostics", "coverage"],
       "additionalProperties": false
     },
     "tokenizer": {
@@ -572,51 +734,67 @@
       "type": "object",
       "properties": {
         "contract": {
-          "const": "hermes-source-unit-config/v1"
+          "const": "hermes-source-unit-config/v2"
         },
         "source": {
           "type": "object",
           "properties": {
-            "strategy": {
-              "enum": [
-                "auto",
-                "structure",
-                "recursive",
-                "heuristic"
-              ]
-            },
-            "target_codepoints": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "max_codepoints": {
-              "type": "integer",
-              "minimum": 1
-            },
-            "overlap_codepoints": {
-              "type": "integer",
-              "minimum": 0
-            },
-            "separators": {
-              "type": "array",
-              "items": {
-                "type": "string",
-                "minLength": 1
+            "chunking": {
+              "type": "object",
+              "properties": {
+                "strategy": {
+                  "enum": ["auto", "structure", "recursive", "heuristic"]
+                },
+                "target_codepoints": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "max_codepoints": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "overlap_codepoints": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "separators": {
+                  "type": "array",
+                  "items": {"type": "string", "minLength": 1},
+                  "minItems": 1
+                },
+                "languages": {
+                  "type": "array",
+                  "items": {"type": "string", "minLength": 2},
+                  "minItems": 1,
+                  "uniqueItems": true
+                },
+                "token_budget": {
+                  "type": "object",
+                  "properties": {
+                    "mode": {"enum": ["off", "audit", "hard"]},
+                    "max_tokens": {"type": "integer", "minimum": 1},
+                    "tokenizer_fingerprint": {
+                      "anyOf": [
+                        {"type": "string", "minLength": 1, "pattern": "\\S"},
+                        {"type": "null"}
+                      ]
+                    }
+                  },
+                  "required": ["mode", "max_tokens", "tokenizer_fingerprint"],
+                  "additionalProperties": false
+                },
+                "oversized_policy": {
+                  "const": "preserve-and-report"
+                }
               },
-              "minItems": 1
-            },
-            "oversized_policy": {
-              "const": "preserve-and-report"
+              "required": [
+                "strategy", "target_codepoints", "max_codepoints", "overlap_codepoints",
+                "separators", "languages", "token_budget", "oversized_policy"
+              ],
+              "additionalProperties": false
             }
           },
-          "required": [
-            "strategy",
-            "target_codepoints",
-            "max_codepoints",
-            "overlap_codepoints",
-            "separators",
-            "oversized_policy"
-          ],
+          "required": ["chunking"],
           "additionalProperties": false
         },
         "reading": {

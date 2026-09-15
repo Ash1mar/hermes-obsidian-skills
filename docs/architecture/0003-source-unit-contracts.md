@@ -1,6 +1,6 @@
 # ADR-0003：来源单元共享契约与 P0 实践
 
-2026-09-11，2026-09-15 更新。状态：P0/P1 已完成，P2 来源内容层已实现并校正为共享 canonical chunk；后续阶段按 [ADR-0004](0004-knowledge-identity-and-finalize.md) 重排。关联：[全新建库计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)、[共享包与接口规范](../../hermes-source-units/README.md)。
+2026-09-11，2026-09-15 更新。状态：P0/P1 已完成，P2 来源内容层已实现并校正为共享 canonical chunk；P3 前按 [ADR-0005](0005-shared-chunk-engine.md) 完成 P2.1 Chunk Engine 门禁，后续阶段按 [ADR-0004](0004-knowledge-identity-and-finalize.md) 执行。关联：[全新建库计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)、[共享包与接口规范](../../hermes-source-units/README.md)。
 
 ## 范围
 
@@ -12,7 +12,7 @@
 
 P0 新增开发态 Python distribution `hermes-source-units`，import 名为 `hermes_source_units`。按用户后续明确的复制式部署方式，不向 Hermes 环境额外安装 wheel。P1 已将必需模块与资源内置到 bootstrap/lint；P2 增加 ingest 内置副本和运行入口；P5 随 Provider 自身发行需要的同源逻辑，不引用 Hermes 目录。开发源码单份维护，交付副本生成并校验指纹，不人工分别维护。
 
-共享库 0.2.0 只使用标准库。未知 schema 特性拒绝执行；不另造通用 JSON Schema 引擎。完整 ingest Skill 在 `python -I -S` 隔离环境中完成准备、发布、回读和校验，不需要全仓库路径或额外安装。
+共享库 0.2.1 只使用标准库。未知 schema 特性拒绝执行；不另造通用 JSON Schema 引擎。完整 ingest Skill 在 `python -I -S` 隔离环境中完成准备、发布、回读和校验，不需要全仓库路径或额外安装。
 
 ## 已确定决策
 
@@ -43,4 +43,4 @@ P0 新增开发态 Python distribution `hermes-source-units`，import 名为 `he
 
 P2 的文件式实现提供 Markdown/Bundle v2 adapter、LF/codepoint 坐标、outline owned ranges、结构保护与递归回退、canonical chunk overlap、确定性 ID、`manifest + sections + units.jsonl` 原子发布、current revision、get/context/validate 和治理版本检查。数据库不是 Unit 成立的条件；RAG、Wiki/知识构建与图谱等消费者共享这些 Unit。
 
-下一阶段按 ADR-0004 实现 Pass/Reduce、稳定知识对象身份和 Build Finalize；不把当前 v3 ledger 或 Provider chunk 继续当来源身份。具体基础验收见 [P0](../SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](../SOURCE_UNITS_P1_ACCEPTANCE.md)及 [P2](../SOURCE_UNITS_P2_ACCEPTANCE.md) 验收记录。
+P2.1 已按 ADR-0005 把 splitter 校正为可验证、可回退、可审计的共享 Chunk Engine。下一阶段按 ADR-0004 实现 Pass/Reduce、稳定知识对象身份和 Build Finalize；不把当前 v3 ledger 或 Provider chunk 继续当来源身份。具体基础验收见 [P0](../SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](../SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](../SOURCE_UNITS_P2_ACCEPTANCE.md)及 [P2.1](../SOURCE_UNITS_P2_1_ACCEPTANCE.md) 验收记录。

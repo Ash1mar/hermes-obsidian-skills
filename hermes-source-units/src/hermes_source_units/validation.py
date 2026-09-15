@@ -236,9 +236,13 @@ def validate_record(kind: str, record: Mapping[str, Any]) -> None:
             if field in item:
                 _unique(item[field], path + "." + field)
     if kind == "config":
-        source, retrieval = record["source"], record["retrieval"]
-        if not source["overlap_codepoints"] < source["target_codepoints"] <= source["max_codepoints"]:
-            _fail("INVALID_BUDGET", "$.source", "requires overlap < target <= maximum")
+        chunking, retrieval = record["source"]["chunking"], record["retrieval"]
+        if not chunking["overlap_codepoints"] < chunking["target_codepoints"] <= chunking["max_codepoints"]:
+            _fail("INVALID_BUDGET", "$.source.chunking", "requires overlap < target <= maximum")
+        budget = chunking["token_budget"]
+        if budget["mode"] == "hard" and not budget["tokenizer_fingerprint"]:
+            _fail("TOKENIZER_REQUIRED", "$.source.chunking.token_budget.tokenizer_fingerprint",
+                  "hard token mode requires a tokenizer fingerprint")
         if retrieval["target_tokens"] > retrieval["max_tokens"]:
             _fail("INVALID_BUDGET", "$.retrieval", "target exceeds maximum")
     if kind == "unit":

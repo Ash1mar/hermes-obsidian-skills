@@ -52,6 +52,14 @@ def test_schema_is_valid_and_self_contained():
     check(schema)
 
 
+def test_hard_token_mode_requires_a_bound_tokenizer_identity():
+    config = default_config()
+    config["source"]["chunking"]["token_budget"]["mode"] = "hard"
+    with pytest.raises(ContractError) as error:
+        validate_record("config", config)
+    assert error.value.code == "TOKENIZER_REQUIRED"
+
+
 @pytest.mark.parametrize("case", example("invalid/cases.json"), ids=lambda c: c["file"])
 def test_negative_fixture_rejected(case):
     with pytest.raises(ContractError) as raised:

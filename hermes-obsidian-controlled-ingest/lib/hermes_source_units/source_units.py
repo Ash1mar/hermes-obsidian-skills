@@ -1,4 +1,4 @@
-"""P2 file-backed normalized artifacts, source-unit generation and exact reads."""
+"""P2.1 file repository, SourceUnit identity, publication and exact reads."""
 from __future__ import annotations
 
 import hashlib
@@ -9,21 +9,18 @@ import re
 import shutil
 from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
-from typing import Any, Iterable, Mapping
+from typing import Any, Mapping
 
+from .chunk_engine import (ENGINE_VERSION, ChunkEngineInput, ChunkProfile,
+                           SharedChunkEngine, TokenCounter)
 from .validation import ContractError, canonical_json, fingerprint, validate_record, validate_references
 from .vault_config import CONFIG_PATH, declaration
 
-SPLITTER_VERSION = "hermes-shared-chunk-splitter/2"
 ARTIFACT_ROOT = "_system/sources/artifacts"
 UNIT_ROOT = "_system/sources/units"
 _ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 _HEADING = re.compile(r"^(#{1,6})[ \t]+(.+?)[ \t]*#*[ \t]*(?:\n|$)")
 _FENCE = re.compile(r"^[ \t]*(`{3,}|~{3,})")
-_LIST = re.compile(r"^[ \t]*(?:[-+*]|\d+[.)])[ \t]+")
-_NUMBERED = re.compile(r"^[ \t]*(?:第[一二三四五六七八九十百零〇\d]+[章节篇]|[一二三四五六七八九十百零〇]+、|\d+(?:\.\d+)*[.)、])[ \t]*\S")
-_DIVIDER = re.compile(r"^[ \t]*(?:-{3,}|\*{3,}|_{3,})[ \t]*(?:\n|$)")
-_PAGE_MARKER = re.compile(r"^[ \t]*<!--[ \t]*source-page:[ \t]*(\d+)[ \t]*-->[ \t]*(?:\n|$)")
 
 
 def _fail(code: str, message: str, path: str = "$") -> None:
@@ -104,23 +101,6 @@ def _normalize_text(data: bytes) -> str:
     return text
 
 
-def _line_offsets(text: str) -> list[int]:
-    offsets = [0]
-    for match in re.finditer("\n", text):
-        offsets.append(match.end())
-    return offsets
-
-
-def _line_span(text: str, start_line: int, end_line: int) -> dict[str, int]:
-    offsets = _line_offsets(text)
-    count = len(text.splitlines()) or 1
-    if start_line < 1 or end_line < start_line or end_line > count:
-        _fail("INVALID_RANGE", f"line range {start_line}-{end_line} exceeds document")
-    start = offsets[start_line - 1]
-    end = offsets[end_line] if end_line < len(offsets) else len(text)
-    return {"start": start, "end": end}
-
-
 def _markdown_outline(text: str) -> dict[str, Any]:
     lines = text.splitlines(keepends=True)
     headings: list[dict[str, Any]] = []
@@ -158,37 +138,6 @@ def _markdown_outline(text: str) -> dict[str, Any]:
                 break
     return {"schema_version": "source-outline/1", "document": "document.md",
             "sections": headings}
-
-
-def _heuristic_outline(text: str) -> dict[str, Any]:
-    lines = text.splitlines(keepends=True)
-    boundaries: list[tuple[int, str, list[int]]] = []
-    for number, line in enumerate(lines, 1):
-        if (_NUMBERED.match(line) and len(line.strip()) <= 120
-                and (number == 1 or not lines[number - 2].strip())):
-            boundaries.append((number, line.strip(), []))
-    if not boundaries:
-        for number, line in enumerate(lines, 1):
-            page = _PAGE_MARKER.match(line)
-            if page:
-                boundaries.append((number, f"Page {page.group(1)}", [int(page.group(1))]))
-    if not boundaries:
-        for number, line in enumerate(lines, 1):
-            if not _DIVIDER.match(line):
-                continue
-            following = number + 1
-            while following <= len(lines) and not lines[following - 1].strip():
-                following += 1
-            if following <= len(lines):
-                boundaries.append((following, f"Segment {len(boundaries) + 1}", []))
-    sections = []
-    for index, (start, title, pages) in enumerate(boundaries):
-        end = boundaries[index + 1][0] - 1 if index + 1 < len(boundaries) else len(lines)
-        sections.append({"id": "section-" + fingerprint({"heuristic": title, "line": start})[:20],
-                         "title": title, "level": 1, "parent": "section-root",
-                         "path": [title], "start_line": start, "end_line": end,
-                         "pages": pages, "assets": [], "quality": "pass"})
-    return {"schema_version": "source-outline/1", "document": "document.md", "sections": sections}
 
 
 def _asset_entries(bundle: Path, manifest: Mapping[str, Any], vault: Path) -> list[tuple[dict[str, Any], Path]]:
@@ -234,14 +183,15 @@ def _artifact_payload(source_sha: str, document_sha: str, outline_sha: str,
 class FileSourceUnitService:
     """A standard-library P2 repository rooted at one explicit Vault."""
 
-    def __init__(self, vault_root: str | Path):
+    def __init__(self, vault_root: str | Path, token_counter: TokenCounter | None = None):
         self.vault = Path(vault_root).expanduser().resolve()
         self.vault_manifest = _load_json(_vault_path(self.vault, "_system/vault.json"))
         self.config = _load_json(_vault_path(self.vault, CONFIG_PATH))
         validate_record("config", self.config)
         source_units = self.vault_manifest.get("source_units")
         if not isinstance(source_units, Mapping) or source_units != declaration(self.config):
-            _fail("INVALID_SCHEMA", "Vault does not declare the complete P2 source-reader capability")
+            _fail("INVALID_SCHEMA", "Vault does not declare the complete P2.1 source-reader capability")
+        self.engine = SharedChunkEngine(token_counter)
 
     @property
     def vault_id(self) -> str:
@@ -361,255 +311,34 @@ class FileSourceUnitService:
             _fail("SOURCE_CHANGED", "artifact revision fingerprint mismatch")
         return value, text, outline
 
-    def _sections(self, artifact: Mapping[str, Any], text: str,
-                  outline: Mapping[str, Any]) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]]]:
-        raw_sections = outline.get("sections")
-        if not isinstance(raw_sections, list):
-            _fail("INVALID_SCHEMA", "outline sections must be an array")
-        line_count = len(text.splitlines()) or 1
-        prepared: list[dict[str, Any]] = [{
-            "id": "section-root", "parent": None, "title": "Document", "path": [],
-            "level": 0, "start_line": 1, "end_line": line_count, "pages": [],
-            "assets": [], "quality": "pass",
-        }]
-        ids = {"section-root"}
-        for raw in raw_sections:
-            if not isinstance(raw, Mapping):
-                _fail("INVALID_SCHEMA", "outline section must be an object")
-            section_id = str(raw.get("id", ""))
-            if not _ID.fullmatch(section_id) or section_id in ids:
-                _fail("INVALID_SCHEMA", f"invalid or duplicate section id: {section_id}")
-            ids.add(section_id)
-            parent = raw.get("parent") or "section-root"
-            path = raw.get("path", [])
-            prepared.append({
-                "id": section_id, "parent": str(parent),
-                "title": str(raw.get("title") or section_id),
-                "path": [str(item) for item in path] if isinstance(path, list) else [],
-                "level": int(raw.get("level", 1)), "start_line": int(raw["start_line"]),
-                "end_line": int(raw["end_line"]),
-                "pages": [int(item) for item in raw.get("pages", [])],
-                "assets": [str(item) for item in raw.get("assets", [])],
-                "quality": str(raw.get("quality", "pass")),
-            })
-        if any(item["parent"] is not None and item["parent"] not in ids for item in prepared):
-            _fail("UNRESOLVED_REFERENCE", "outline contains an unknown parent section")
-        by_id = {item["id"]: item for item in prepared}
-        for item in prepared:
-            item["scope"] = _line_span(text, item["start_line"], item["end_line"])
-        children: dict[str, list[dict[str, Any]]] = {key: [] for key in by_id}
-        for item in prepared[1:]:
-            children[item["parent"]].append(item)
-        records: list[dict[str, Any]] = []
-        metadata: dict[str, dict[str, Any]] = {}
-        for item in prepared:
-            scope = item["scope"]
-            cursor = scope["start"]
-            owned: list[dict[str, int]] = []
-            for child in sorted(children[item["id"]], key=lambda value: value["scope"]["start"]):
-                child_scope = child["scope"]
-                if child_scope["start"] < cursor or child_scope["end"] > scope["end"]:
-                    _fail("INVALID_OWNERSHIP", f"child section {child['id']} overlaps or escapes {item['id']}")
-                if cursor < child_scope["start"]:
-                    owned.append({"start": cursor, "end": child_scope["start"]})
-                cursor = child_scope["end"]
-            if cursor < scope["end"]:
-                owned.append({"start": cursor, "end": scope["end"]})
-            record = {"contract": "hermes-source-section/v1", "section_id": item["id"],
-                      "parent_id": item["parent"], "artifact_revision": artifact["artifact_revision"],
-                      "path": artifact["document_path"], "title": item["title"],
-                      "scope": scope, "owned_ranges": owned}
-            validate_record("section", record)
-            records.append(record)
-            metadata[item["id"]] = item
-        coverage = sorted((span["start"], span["end"]) for record in records for span in record["owned_ranges"])
-        cursor = 0
-        for start, end in coverage:
-            if start != cursor:
-                _fail("INCOMPLETE_COVERAGE", "section ownership does not partition the document")
-            cursor = end
-        if cursor != len(text):
-            _fail("INCOMPLETE_COVERAGE", "section ownership does not cover the document")
-        return records, metadata
-
-    @staticmethod
-    def _block_atoms(text: str, start: int, end: int) -> list[tuple[int, int, str | None]]:
-        segment = text[start:end]
-        lines = segment.splitlines(keepends=True)
-        atoms: list[tuple[int, int, str | None]] = []
-        offset = start
-        index = 0
-        while index < len(lines):
-            line = lines[index]
-            begin = offset
-            fence = _FENCE.match(line)
-            if fence:
-                marker = fence.group(1)[0]
-                offset += len(line); index += 1
-                while index < len(lines):
-                    current = lines[index]
-                    offset += len(current); index += 1
-                    closing = _FENCE.match(current)
-                    if closing and closing.group(1)[0] == marker:
-                        break
-                atoms.append((begin, offset, "code")); continue
-            if line.strip().startswith("$$"):
-                offset += len(line); index += 1
-                if line.strip().count("$$") < 2:
-                    while index < len(lines):
-                        current = lines[index]
-                        offset += len(current); index += 1
-                        if "$$" in current:
-                            break
-                atoms.append((begin, offset, "formula")); continue
-            if "|" in line and index + 1 < len(lines) and re.match(r"^[ \t]*\|?[ :]?-{3,}", lines[index + 1]):
-                offset += len(line); index += 1
-                while index < len(lines) and "|" in lines[index] and lines[index].strip():
-                    offset += len(lines[index]); index += 1
-                atoms.append((begin, offset, "table")); continue
-            kind = "list" if _LIST.match(line) else None
-            offset += len(line); index += 1
-            while index < len(lines):
-                current = lines[index]
-                if not current.strip() or _FENCE.match(current) or current.strip().startswith("$$"):
-                    break
-                if kind == "list" and _LIST.match(current):
-                    break
-                if kind is None and _LIST.match(current):
-                    break
-                offset += len(current); index += 1
-            if index < len(lines) and not lines[index].strip():
-                offset += len(lines[index]); index += 1
-            atoms.append((begin, offset, kind))
-        if not atoms and start < end:
-            atoms.append((start, end, None))
-        if atoms and atoms[-1][1] != end:
-            atoms.append((atoms[-1][1], end, None))
-        return atoms
-
-    @staticmethod
-    def _split_normal(text: str, start: int, end: int, target: int, maximum: int,
-                      separators: Iterable[str], diagnostics: list[dict[str, Any]]) -> list[tuple[int, int]]:
-        result: list[tuple[int, int]] = []
-        cursor = start
-        while end - cursor > maximum:
-            ceiling = cursor + maximum
-            preferred = min(cursor + target, ceiling)
-            cut = -1
-            chosen = ""
-            for separator in separators:
-                position = text.rfind(separator, cursor + 1, ceiling + 1)
-                if position >= cursor + max(1, target // 3):
-                    candidate = position + len(separator)
-                    if cut < 0 or abs(candidate - preferred) < abs(cut - preferred):
-                        cut, chosen = candidate, separator
-            if cut <= cursor:
-                cut = ceiling
-                diagnostics.append({"code": "forced-split", "span": {"start": cursor, "end": cut},
-                                    "reason": "no configured semantic separator before maximum"})
-            else:
-                diagnostics.append({"code": "recursive-split", "span": {"start": cursor, "end": cut},
-                                    "separator": chosen})
-            result.append((cursor, cut)); cursor = cut
-        if cursor < end:
-            result.append((cursor, end))
-        return result
-
-    def _unit_spans(self, text: str, sections: list[dict[str, Any]]) -> tuple[list[tuple[int, int, str]], list[dict[str, Any]]]:
-        source = self.config["source"]
-        target, maximum = source["target_codepoints"], source["max_codepoints"]
-        overlap = source["overlap_codepoints"]
-        merge_target = target - overlap
-        diagnostics: list[dict[str, Any]] = []
-        spans: list[tuple[int, int, str]] = []
-        for section in sections:
-            for owned in section["owned_ranges"]:
-                parts: list[tuple[int, int]] = []
-                protected_ranges: list[tuple[int, int]] = []
-                for start, end, protected in self._block_atoms(text, owned["start"], owned["end"]):
-                    if protected:
-                        protected_ranges.append((start, end))
-                    if protected and end - start > maximum:
-                        diagnostics.append({"code": "oversized-protected-structure", "kind": protected,
-                                            "section_id": section["section_id"],
-                                            "span": {"start": start, "end": end},
-                                            "size": end - start, "maximum": maximum})
-                        parts.append((start, end))
-                    elif end - start > maximum:
-                        parts.extend(self._split_normal(text, start, end, merge_target, maximum,
-                                                        source["separators"], diagnostics))
-                    else:
-                        parts.append((start, end))
-                current: tuple[int, int] | None = None
-                for part in parts:
-                    if current is None:
-                        current = part
-                    elif current[1] == part[0] and part[1] - current[0] <= merge_target:
-                        current = (current[0], part[1])
-                    else:
-                        parts_start = current[0]
-                        if spans and overlap and spans[-1][2] == section["section_id"]:
-                            candidate = max(owned["start"], parts_start - overlap)
-                            if (current[1] - candidate <= maximum
-                                    and not any(lo < parts_start and hi > candidate
-                                                for lo, hi in protected_ranges)):
-                                parts_start = candidate
-                            else:
-                                diagnostics.append({"code": "overlap-reduced", "section_id": section["section_id"],
-                                                    "at": current[0], "requested": overlap,
-                                                    "actual": current[0] - parts_start})
-                        spans.append((parts_start, current[1], section["section_id"])); current = part
-                if current is not None:
-                    parts_start = current[0]
-                    if spans and overlap and spans[-1][2] == section["section_id"]:
-                        candidate = max(owned["start"], parts_start - overlap)
-                        if (current[1] - candidate <= maximum
-                                and not any(lo < parts_start and hi > candidate
-                                            for lo, hi in protected_ranges)):
-                            parts_start = candidate
-                        else:
-                            diagnostics.append({"code": "overlap-reduced", "section_id": section["section_id"],
-                                                "at": current[0], "requested": overlap,
-                                                "actual": current[0] - parts_start})
-                    spans.append((parts_start, current[1], section["section_id"]))
-        return spans, diagnostics
-
     def _generate(self, artifact_manifest: str, expected_revision: int) -> dict[str, Any]:
         artifact_path = self._artifact_path(artifact_manifest)
         artifact, text, outline = self._verify_artifact(artifact_path)
         self._verify_governance(artifact, None)
-        source_config = self.config["source"]
-        requested_strategy = source_config["strategy"]
-        has_structure = bool(outline.get("sections")) if isinstance(outline, Mapping) else False
-        selected_strategy = requested_strategy
-        effective_outline = outline
-        route_reason = "explicit configuration"
-        if requested_strategy == "auto":
-            selected_strategy = "structure" if has_structure else "heuristic"
-            route_reason = "outline sections present" if has_structure else "no outline sections"
-        if selected_strategy == "heuristic" and not has_structure:
-            candidate = _heuristic_outline(text)
-            if candidate["sections"]:
-                effective_outline = candidate
-                has_structure = True
-                route_reason = "numbered, page or divider boundaries detected"
-            else:
-                selected_strategy = "recursive"
-                route_reason = "no heuristic section boundary; recursive fallback"
-        sections, metadata = self._sections(artifact, text, effective_outline)
-        text_spans, split_diagnostics = self._unit_spans(text, sections)
-        diagnostics = [{"code": "strategy-selected", "requested": requested_strategy,
-                        "selected": selected_strategy, "reason": route_reason}, *split_diagnostics]
+        source_config = self.config["source"]["chunking"]
+        engine_result = self.engine.build(ChunkEngineInput(
+            text=text, outline=outline, assets=artifact["assets"],
+            artifact_revision=artifact["artifact_revision"],
+            profile=ChunkProfile.from_mapping(source_config),
+        ))
+        sections = list(engine_result.sections)
+        metadata = engine_result.section_metadata
+        diagnostics = list(engine_result.diagnostics)
+        engine_report = dict(engine_result.report)
+        validate_record("engine_report", engine_report)
+        effective_config_fingerprint = fingerprint(source_config)
         unit_set_id = fingerprint({"artifact_revision": artifact["artifact_revision"],
-                                   "splitter_version": SPLITTER_VERSION,
-                                   "source_config": source_config})
+                                   "engine_version": ENGINE_VERSION,
+                                   "engine_fingerprint": engine_result.engine_fingerprint,
+                                   "effective_config_fingerprint": effective_config_fingerprint})
         identity = artifact["identity"]
         base_ref = {"vault_id": identity["vault_id"], "resource_id": identity["resource_id"],
                     "artifact_revision": artifact["artifact_revision"], "unit_set_id": unit_set_id}
         assets_by_id = {asset["asset_id"]: asset for asset in artifact["assets"]}
-        quality_path = f"{UNIT_ROOT}/{identity['resource_id']}/{unit_set_id}/diagnostics.json"
+        quality_path = f"{UNIT_ROOT}/{identity['resource_id']}/{unit_set_id}/engine.json"
         drafts: list[dict[str, Any]] = []
-        for start, end, section_id in text_spans:
+        for chunk in engine_result.chunks:
+            start, end, section_id = chunk.start, chunk.end, chunk.section_id
             meta = metadata[section_id]
             linked = [asset for asset in artifact["assets"]
                       if asset["path"] in text[start:end] or asset["asset_id"] in meta["assets"]]
@@ -666,16 +395,22 @@ class FileSourceUnitService:
         if expected_revision != current_revision:
             _fail("REVISION_CONFLICT", f"expected source-unit revision {expected_revision}, current is {current_revision}")
         revision = current_revision if current and current.get("unit_set_id") == unit_set_id else current_revision + 1
-        unit_set = {"contract": "hermes-source-unit-set/v1", "identity": identity,
+        engine_report_path = f"{UNIT_ROOT}/{identity['resource_id']}/{unit_set_id}/engine.json"
+        engine_report_sha256 = _sha(canonical_json(engine_report))
+        unit_set = {"contract": "hermes-source-unit-set/v2", "identity": identity,
                     "artifact_revision": artifact["artifact_revision"], "unit_set_id": unit_set_id,
-                    "splitter_version": SPLITTER_VERSION,
-                    "config_fingerprint": fingerprint(source_config),
+                    "engine_version": ENGINE_VERSION,
+                    "engine_fingerprint": engine_result.engine_fingerprint,
+                    "effective_config_fingerprint": effective_config_fingerprint,
+                    "engine_report_path": engine_report_path,
+                    "engine_report_sha256": engine_report_sha256,
                     "unit_ids": [unit["ref"]["unit_id"] for unit in drafts],
                     "state": "complete", "revision": revision}
         validate_references("unit_set", unit_set, drafts)
         self._verify_coverage(text, sections, drafts)
         return {"mode": "preview", "manifest": unit_set, "units": drafts,
                 "sections": sections, "diagnostics": diagnostics,
+                "engine_report": engine_report,
                 "artifact_manifest": artifact_manifest}
 
     @staticmethod
@@ -732,7 +467,7 @@ class FileSourceUnitService:
                 try:
                     (temporary / "manifest.json").write_bytes(_json_bytes(manifest))
                     (temporary / "sections.json").write_bytes(_json_bytes(generated["sections"]))
-                    (temporary / "diagnostics.json").write_bytes(_json_bytes(generated["diagnostics"]))
+                    (temporary / "engine.json").write_bytes(_json_bytes(generated["engine_report"]))
                     lines = b"".join(canonical_json(unit) + b"\n" for unit in generated["units"])
                     (temporary / "units.jsonl").write_bytes(lines)
                     root.mkdir(parents=True, exist_ok=True)
@@ -800,10 +535,30 @@ class FileSourceUnitService:
         manifest, units, sections = self._load_set(resource_id, unit_set_id)
         validate_references("unit_set", manifest, units)
         repository = _vault_path(self.vault, f"{UNIT_ROOT}/{resource_id}/{manifest['unit_set_id']}")
-        diagnostics = _load_json(repository / "diagnostics.json")
-        if not isinstance(diagnostics, list):
-            _fail("INVALID_SCHEMA", "source-unit diagnostics must be an array")
-        expected_quality_ref = (repository / "diagnostics.json").relative_to(self.vault).as_posix()
+        engine_path = repository / "engine.json"
+        engine_report = _load_json(engine_path)
+        if not isinstance(engine_report, dict):
+            _fail("INVALID_SCHEMA", "source-unit engine report is invalid")
+        validate_record("engine_report", engine_report)
+        if _sha(canonical_json(engine_report)) != manifest["engine_report_sha256"]:
+            _fail("SOURCE_CHANGED", "source-unit engine report hash changed")
+        if engine_report.get("engine_version") != manifest["engine_version"] or engine_report.get("engine_fingerprint") != manifest["engine_fingerprint"]:
+            _fail("UNIT_SET_MISMATCH", "engine report and unit-set manifest disagree")
+        if engine_report.get("artifact_revision") != manifest["artifact_revision"]:
+            _fail("UNIT_SET_MISMATCH", "engine report belongs to a different artifact")
+        if manifest["engine_report_path"] != engine_path.relative_to(self.vault).as_posix():
+            _fail("UNIT_SET_MISMATCH", "engine report path and repository disagree")
+        if fingerprint(engine_report.get("effective_config")) != manifest["effective_config_fingerprint"]:
+            _fail("UNIT_SET_MISMATCH", "effective Chunk Engine configuration fingerprint differs")
+        expected_unit_set_id = fingerprint({
+            "artifact_revision": manifest["artifact_revision"],
+            "engine_version": manifest["engine_version"],
+            "engine_fingerprint": manifest["engine_fingerprint"],
+            "effective_config_fingerprint": manifest["effective_config_fingerprint"],
+        })
+        if expected_unit_set_id != manifest["unit_set_id"]:
+            _fail("UNIT_SET_MISMATCH", "unit-set identity does not match its engine inputs")
+        expected_quality_ref = engine_path.relative_to(self.vault).as_posix()
         for section in sections:
             validate_record("section", section)
             if section["artifact_revision"] != manifest["artifact_revision"]:
@@ -825,12 +580,39 @@ class FileSourceUnitService:
         self._verify_coverage(text, sections, units)
         return {"ok": True, "resource_id": resource_id, "unit_set_id": manifest["unit_set_id"],
                 "artifact_revision": manifest["artifact_revision"], "revision": manifest["revision"],
-                "unit_count": len(units), "section_count": len(sections)}
+                "unit_count": len(units), "section_count": len(sections),
+                "engine_version": manifest["engine_version"],
+                "selected_strategy": engine_report["selected_strategy"],
+                "token_audit": engine_report["token_audit"]}
 
     def list(self, resource_id: str, unit_set_id: str | None = None) -> list[dict[str, Any]]:
         manifest, units, _ = self._load_set(resource_id, unit_set_id)
         validate_references("unit_set", manifest, units)
         return units
+
+    def audit_tokens(self, resource_id: str, counter: TokenCounter,
+                     unit_set_id: str | None = None, max_tokens: int | None = None) -> dict[str, Any]:
+        """Measure an immutable UnitSet with an explicitly identified tokenizer adapter."""
+        manifest, units, _ = self._load_set(resource_id, unit_set_id)
+        artifact_path = _vault_path(
+            self.vault, f"{ARTIFACT_ROOT}/{resource_id}/{manifest['artifact_revision']}/manifest.json")
+        _, text, _ = self._verify_artifact(artifact_path)
+        limit = int(max_tokens or self.config["source"]["chunking"]["token_budget"]["max_tokens"])
+        if limit < 1:
+            _fail("INVALID_SCHEMA", "token audit maximum must be positive")
+        measured = []
+        for unit in units:
+            if unit["locator"]["kind"] != "text":
+                continue
+            span = unit["locator"]["span"]
+            count = counter.count(text[span["start"]:span["end"]])
+            measured.append({"unit_ref": unit["ref"], "tokens": count, "over_limit": count > limit})
+        return {
+            "ok": True, "resource_id": resource_id, "unit_set_id": manifest["unit_set_id"],
+            "tokenizer_fingerprint": counter.fingerprint, "max_tokens": limit,
+            "unit_count": len(measured), "maximum_observed_tokens": max((item["tokens"] for item in measured), default=0),
+            "over_limit_count": sum(item["over_limit"] for item in measured), "units": measured,
+        }
 
     def _verify_governance(self, artifact: Mapping[str, Any], access: Mapping[str, Any] | None) -> int:
         governance = self.vault_manifest.get("governance")

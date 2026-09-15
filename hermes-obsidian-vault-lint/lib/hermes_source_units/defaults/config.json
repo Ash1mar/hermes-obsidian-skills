@@ -1,18 +1,20 @@
 {
-  "contract": "hermes-source-unit-config/v1",
+  "contract": "hermes-source-unit-config/v2",
   "source": {
-    "strategy": "auto",
-    "target_codepoints": 512,
-    "max_codepoints": 1024,
-    "overlap_codepoints": 80,
-    "separators": [
-      "\n\n",
-      "\n",
-      "。",
-      "；",
-      ". "
-    ],
-    "oversized_policy": "preserve-and-report"
+    "chunking": {
+      "strategy": "auto",
+      "target_codepoints": 512,
+      "max_codepoints": 1024,
+      "overlap_codepoints": 80,
+      "separators": ["\n\n", "\n", "。", "；", ". "],
+      "languages": ["zh", "en"],
+      "token_budget": {
+        "mode": "audit",
+        "max_tokens": 1024,
+        "tokenizer_fingerprint": null
+      },
+      "oversized_policy": "preserve-and-report"
+    }
   },
   "reading": {
     "max_codepoints": 12000

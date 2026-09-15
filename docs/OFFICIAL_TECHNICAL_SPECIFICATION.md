@@ -197,20 +197,20 @@ flowchart LR
 | Query trace | `1.5` | `_system/reports/query-traces/` | 记录候选、证据包、Claim、事件、耗时和结论 |
 | Vault Lint output | `1.0` | `lint_vault.py --json` 输出 | 为 CI、验收和修复计划提供稳定检查结果 |
 | Document governance | `1.0` / `hermes-governance/v1` | `_system/vault.json` 及其声明的 schema、机构表和 registry | 定义 Vault 隔离、文档/版本/资源身份、来源事件、状态和未来 SQL 映射 |
-| SourceUnit contracts | `hermes-normalized-artifact/v1`、`hermes-source-section/v1`、`hermes-source-unit/v1`、`hermes-source-unit-set/v1`、`hermes-source-unit-current/v1` | `_system/sources/artifacts/`、`_system/sources/units/` | 钉住规范产物、非重叠来源核心、精确坐标、资产、质量引用、确定性 Unit 身份和当前 revision 指针 |
+| SourceUnit contracts | `hermes-normalized-artifact/v1`、`hermes-source-section/v1`、`hermes-source-unit/v1`、`hermes-source-unit-set/v2`、`hermes-source-unit-current/v1`、`hermes-chunk-engine-report/v1` | `_system/sources/artifacts/`、`_system/sources/units/` | 钉住规范产物、非重叠来源核心、精确坐标、资产、Chunk Engine 配置/诊断、确定性 Unit 身份和当前 revision 指针 |
 | Coarse recall protocol | `hermes-coarse-recall/v1` | Provider 请求/响应 | 在 Skill 与 Provider 之间传递候选，不传递最终答案 |
 
 修改以下任一事项时，必须进行兼容性评审：必需字段、字段语义、状态含义、状态转换、协议版本、CLI 必需参数、退出码或目录约定。
 
 ### 8.1 SourceUnit 新链路阶段门禁
 
-P2 新 Vault 以 `_system/vault.json` 的 `source_units.phase: P2` 和
+P2.1 新 Vault 以 `_system/vault.json` 的 `source_units.phase: P2.1` 和
 `capabilities.source_reader: true` 启用来源内容层。controlled-ingest 可从 governed Bundle v2
 或已登记 Markdown 创建不可变 artifact，预览/发布 UnitSet，并按完整 UnitRef 精确读取；lint
 重验仓库、来源 hash 和覆盖。SourceUnit 是知识构建与 RAG 共用的 canonical chunk，可按 source
 配置保留有限 overlap；标题和阅读上下文单独返回，ledger 不再决定内容边界。
 
-P2 尚不执行 Pass/Reduce、知识页提交、Vault Finalize 或 Provider 投影，因此这种 Vault 必须保持
+P2.1 尚不执行 Pass/Reduce、知识页提交、Vault Finalize 或 Provider 投影，因此这种 Vault 必须保持
 `knowledge_build: false`、`retrieval: false` 和 `query_ready: false`。旧生产链路在 P7 正式重建前
 继续按本规范既有 ledger/query 合同运行；禁止把两条链路的 ID、状态或索引混写。新阶段定义见
 [ADR-0003](architecture/0003-source-unit-contracts.md)、[ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)

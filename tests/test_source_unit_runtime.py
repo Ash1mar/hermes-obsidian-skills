@@ -1,4 +1,4 @@
-"""P2 source-plane acceptance using the copied ingest Skill runtime."""
+"""P2.1 source-plane acceptance using the copied ingest Skill runtime."""
 from __future__ import annotations
 
 import hashlib
@@ -58,8 +58,8 @@ def runtime(tmp_path: Path):
     shutil.copytree(ROOT / "hermes-obsidian-controlled-ingest", ingest,
                     ignore=shutil.ignore_patterns("__pycache__"))
     config = json.loads((ingest / "lib/hermes_source_units/defaults/config.json").read_text(encoding="utf-8"))
-    config["source"].update({"target_codepoints": 45, "max_codepoints": 70,
-                             "overlap_codepoints": 10})
+    config["source"]["chunking"].update({"target_codepoints": 45, "max_codepoints": 70,
+                                          "overlap_codepoints": 10})
     config_path = tmp_path / "source-config.json"
     config_path.write_text(json.dumps(config), encoding="utf-8")
     vault = tmp_path / "vault"
@@ -98,15 +98,22 @@ def test_markdown_build_is_deterministic_exact_and_self_contained(runtime, tmp_p
     orphan.mkdir(parents=True)
     for name, value in (("manifest.json", preview["manifest"]),
                         ("sections.json", preview["sections"]),
-                        ("diagnostics.json", preview["diagnostics"])):
+                        ("engine.json", preview["engine_report"])):
         (orphan / name).write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
     (orphan / "units.jsonl").write_text(
         "".join(json.dumps(unit, ensure_ascii=False) + "\n" for unit in preview["units"]), encoding="utf-8")
     built = execute(script, "--vault", vault, "build", "--artifact-manifest", artifact,
                     "--actor", "tester", "--expected-revision", 0)
     assert built["mode"] == "published"
+    assert built["manifest"]["contract"] == "hermes-source-unit-set/v2"
+    assert built["manifest"]["engine_version"] == "hermes-shared-chunk-engine/1"
     assert built["manifest"]["unit_set_id"] == preview["manifest"]["unit_set_id"]
     assert built["manifest"]["unit_ids"] == preview["manifest"]["unit_ids"]
+    report_path = vault / built["manifest"]["engine_report_path"]
+    assert report_path.is_file()
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["selected_strategy"] == "structure"
+    assert report["token_audit"]["status"] == "unavailable"
     assert any(item["code"] == "oversized-protected-structure" for item in built["diagnostics"])
     validated = execute(script, "--vault", vault, "validate", "--resource-id", "resource-demo-1")
     assert validated["unit_count"] == len(built["units"])
@@ -126,6 +133,10 @@ def test_markdown_build_is_deterministic_exact_and_self_contained(runtime, tmp_p
     assert all(left["section_id"] == right["section_id"]
                for left, right in zip(text_units, text_units[1:])
                if left["locator"]["span"]["end"] > right["locator"]["span"]["start"])
+    audit = execute(script, "--vault", vault, "audit-tokens", "--resource-id", "resource-demo-1",
+                    "--max-tokens", 60)
+    assert audit["tokenizer_fingerprint"] == "hermes-token-counter/unicode-codepoints-v1"
+    assert audit["unit_count"] == len(text_units)
 
     source_ref = {"unit_ref": units[0]["ref"], "span": None}
     ref_path = tmp_path / "source-ref.json"
@@ -224,3 +235,16 @@ def test_auto_uses_numbered_heading_heuristic(runtime):
     route = next(item for item in preview["diagnostics"] if item["code"] == "strategy-selected")
     assert route["selected"] == "heuristic"
     assert {section["title"] for section in preview["sections"]} >= {"一、适用范围", "二、例外"}
+
+
+def test_engine_report_tamper_is_detected(runtime):
+    vault, script = runtime
+    prepared = prepare_markdown(runtime, "# Stable\nsource text\n")
+    built = execute(script, "--vault", vault, "build", "--artifact-manifest", prepared["artifact_manifest"],
+                    "--actor", "tester", "--expected-revision", 0)
+    report_path = vault / built["manifest"]["engine_report_path"]
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["selected_strategy"] = "recursive"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+    failure = execute(script, "--vault", vault, "validate", "--resource-id", "resource-demo-1", expected=2)
+    assert failure["code"] == "SOURCE_CHANGED"

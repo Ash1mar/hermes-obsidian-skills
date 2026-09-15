@@ -128,4 +128,4 @@ Validate the scaffold with:
 python3 "<bootstrap-skill-root>/scripts/validate_source_unit_vault.py" --vault "/path/to/new-vault"
 ```
 
-A successful result includes phase `P2`, `bootstrap_ready: true` and `query_ready: false`.
+A successful result includes phase `P2.1`, `bootstrap_ready: true` and `query_ready: false`.

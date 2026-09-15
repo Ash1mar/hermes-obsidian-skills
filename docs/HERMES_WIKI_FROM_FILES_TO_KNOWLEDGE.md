@@ -455,7 +455,7 @@ A 的组成说明 + B 的维护条件
 
 ## 19. 如果希望 chunk 成为通用内容单元，建议怎样演进
 
-本节最初是设计建议。2026-09-15 校正后，P2 已把 SourceUnit 实现为知识构建与 RAG 共用的 canonical chunk；早期“Provider 可普遍另切检索窗口”的建议已撤销，阶段状态以 ADR-0003/0004 和演进计划为准。
+本节最初是设计建议。2026-09-15 校正后，P2/P2.1 已把 SourceUnit 实现为知识构建与 RAG 共用的 canonical chunk，并把策略验证、回退及报告收敛到共享 Chunk Engine；早期“Provider 可普遍另切检索窗口”的建议已撤销，阶段状态以 ADR-0003/0004/0005 和演进计划为准。
 
 ### 19.1 建议目标
 
@@ -524,8 +524,8 @@ SourceUnit 的 chunk size/overlap 变化会形成新 UnitSet；工作窗口和�
 | Office | 专门解析器/anydoc/MarkItDown 等 | MarkItDown 转 Markdown | 能转换，不代表已达到 PDF 同等治理闭环 |
 | 图像证据 | 图片存储、OCR/描述子记录 | 图像资产、图片 Bundle、针对性 QA | 都保留图像；派生内容策略不同 |
 | 规范正文 | Reader 结果继而入 chunk 仓库 | 单一 `document.md` 为规范文本 | 我们更依赖文件式来源 |
-| 结构划分 | 标题/启发式/递归切块 | P2 outline owned ranges + 结构/启发式/递归 canonical chunk | 来源层已对齐，策略细节仍不同 |
-| 检索子块 | 配置切块，应用库持久化 | P2 UnitSet 已持久化；旧 Provider 仍保留标题父段 + token 窗口 | P5 必须删除旧独立切片并直接索引 Unit |
+| 结构划分 | 标题/启发式/递归切块 | P2.1 outline owned ranges + structure/heuristic/recursive 策略验证回退 | 来源层能力已对齐，同时保留更严格 ownership 和报告 |
+| 检索子块 | 配置切块，应用库持久化 | P2.1 UnitSet v2 与 engine report 已持久化；旧 Provider 仍保留标题父段 + token 窗口 | P5 必须删除旧独立切片并直接索引 Unit |
 | 精确子块定位 | 规范文本字符坐标等 | P2 Unit 使用规范文本 codepoint 精确范围 | 来源定位已补；Provider 透传留到 P5 |
 | 共享内容单元 | 来源 chunks 被 Wiki 和检索消费 | P2 canonical Unit 已成立，P3/P5 将分别接入知识构建和检索 | 内容对象已对齐，消费者接线未完成 |
 | 模型输入组装 | 服务按阶段自动组装 | agent 阅读规则、正文及旧页 | 有操作方式，缺统一组装器 |

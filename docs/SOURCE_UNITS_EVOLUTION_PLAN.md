@@ -1,7 +1,7 @@
 # 通用来源单元：全新建库设计与实施计划
 
-日期：2026-09-11，2026-09-15 校正。修订：R4，保留全新建库前提，明确 SourceUnit 是知识构建与 RAG 共用的 canonical chunk，并细分后续实施任务。
-状态：P0/P1 已完成，P2 来源内容层已实现；P3–P7 待实施，未执行正式库重建或 ingest。阶段重排见 [ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)，实现入口见 [ADR-0003](architecture/0003-source-unit-contracts.md)、[共享包规范](../hermes-source-units/README.md)、[P0](SOURCE_UNITS_P0_ACCEPTANCE.md)和[P1](SOURCE_UNITS_P1_ACCEPTANCE.md)验收。
+日期：2026-09-11，2026-09-15 校正。修订：R5，保留全新建库前提，在 P2 与 P3 之间加入共享 Chunk Engine 校正门禁。
+状态：P0/P1/P2/P2.1 已完成；下一阶段 P3，P4–P7 待实施，未执行正式库重建或 ingest。阶段重排见 [ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)，P2.1 决策见 [ADR-0005](architecture/0005-shared-chunk-engine.md)，实现入口见 [ADR-0003](architecture/0003-source-unit-contracts.md)、[共享包规范](../hermes-source-units/README.md)及 [P0](SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](SOURCE_UNITS_P2_1_ACCEPTANCE.md)验收。
 
 ## 1. 本轮确定的前提
 
@@ -315,28 +315,37 @@ WeKnora 的这些约定已经进入 Go 结构和运行代码，并不是要求�
 | P1.3 模板与流程入口 | 更新知识引用模板、ingest/query 指令、lint 接口；将所需共享模块和 schema/defaults 内置到 Skill | 通过脚本自身路径加载；不要求额外安装共享包或假定 jsonschema 已存在 |
 | P1.4 空库与复制部署验收 | 将完整 Skill 复制到独立目录，在无仓库源码路径、无 PYTHONPATH/外部包可见性的环境中运行；校验重复运行及非空目标处理 | 保持用户现有复制部署方式；无需手工补配置或 pip install；bootstrap 不冒充内容摄取完成 |
 
-### 11.5 P2：切片、父子上下文、存储读取细分
+### 11.5 P2：来源内容层基础实现（已完成）
 
 P2 是切片系统的主体，不是只交 schema 或往旧 Provider 块增加字段。以下步骤按依赖实现，验收不要求 Chroma 在线。
 
 | 子任务 | 输入与工作 | 输出及完成判据 |
 |---|---|---|
-| P2.1 来源适配与坐标 | 原件经过解析生成规范产物；统一 LF、身份/指纹和行字符映射 | artifact 读取接口；中文/emoji/CRLF 坐标样例正确 |
-| P2.2 章节结构与自有范围 | Bundle 优先用可靠 outline；普通 Markdown 解析结构；父 scope 扣子 scope | Section + owned ranges；无双重归属，不依赖 ledger 状态 |
-| P2.3 受保护结构 | 识别代码围栏、公式、条款、列表、表格与资产边界 | 结构块清单及异常；表题/单位/脚注关联不丢失 |
-| P2.4 结构优先切分 | 短结构在同一归属内合并，长章节内部细分，不跨不连续 owned range，按 source 配置施加有限 overlap | SourceUnit 即共享 canonical chunk；每块能精确回指原文，范围并集完整覆盖 |
-| P2.5 递归与有限启发式 | 按段/句/分隔符递归；缺可靠标题时识别编号/分隔线；明确 auto 路由 | 选中策略、回退和 oversized 原因可查；不使用 LLM 决定基础边界 |
-| P2.6 章节/相邻与父上下文 | 生成所属 section、prev/next；实现预算内组合单元的 context 接口 | 小单元可扩展到有界父上下文；核心和附带内容区分，跨子章节有明确引用 |
-| P2.7 资产与精确引用 | 文本、表格、图片有类型 locator；正文和上下文哈希边界明确 | unit_ref 可解析；图表引用完整，未知页/区域不伪造 |
-| P2.8 存储与发布 | manifest + units.jsonl；版本化规范产物；完整验证后发布指针 | ID 确定性、重复文本不碰撞；失败构建不能被当作完整来源集 |
-| P2.9 读取与预览 | build/preview/list/get/context/validate 接入同一实现 | 可查看边界和诊断、按 ID 回读原文；preview 与 build 对同输入一致 |
-| P2.10 独立验收 | 从一份真实原件生成、读取、扩上下文并核对覆盖；测试损坏/不完整产物 | 无 Provider、无 Wiki 的共享切片系统能独立完成上述行为 |
+| P2-A 来源适配与坐标 | 原件经过解析生成规范产物；统一 LF、身份/指纹和行字符映射 | artifact 读取接口；中文/emoji/CRLF 坐标样例正确 |
+| P2-B 章节结构与自有范围 | Bundle 优先用可靠 outline；普通 Markdown 解析结构；父 scope 扣子 scope | Section + owned ranges；无双重归属，不依赖 ledger 状态 |
+| P2-C 受保护结构和切分 | 代码、公式、列表、表格保护；递归切分、有限 overlap | SourceUnit 精确回读且完整覆盖 owned ranges |
+| P2-D 上下文、资产与引用 | section、prev/next、context、资产 locator 和 QA 引用 | 核心与上下文区分，图表可引用，未知坐标不伪造 |
+| P2-E 文件存储与入口 | artifact、UnitSet、current pointer 和 preview/build/list/get/context/validate | 无 Provider 或 Wiki 也可发布、读取、验证 |
 
-WeKnora 的 heading/recursive/heuristic/auto 能力对应 P2.2–P2.5，但我们优先使用已有可靠 outline；没有必要先做复杂文档画像评分。P2.6 实现父上下文的通用组合能力，P3/P5 决定任务预算与何时扩展。
+P2 建立了可工作的来源层，但策略选择和报告仍耦合在 repository service，尚不满足共享 Chunk Engine 门禁。父上下文已有通用组合能力，P3/P5 决定任务预算与何时扩展。
+
+### 11.6 P2.1：共享 Chunk Engine 校正
+
+P2.1 是 P3 的前置门禁，详细决定见 ADR-0005。
+
+| 子任务 | 工作 | 可验收结果 |
+|---|---|---|
+| P2.1-A 模块边界 | 从 FileSourceUnitService 提取 models/profile/sections/atoms/strategies/overlap/validation/engine | repository、身份与切片算法职责分开；文件与未来 SQL 后端共用引擎 |
+| P2.1-B 策略链 | 实现 auto/structure/heuristic/recursive 候选、验证和逐级回退 | engine report 可解释 attempted、rejected、selected 和原因 |
+| P2.1-C 结构保护 | 保留代码、公式、表格、列表、资产关系及 oversized preserve-and-report | 普通切片不破坏受保护结构；例外阻止 Provider 静默处理 |
+| P2.1-D 配置与身份 | source.chunking、config v2、UnitSet v2、engine/config/report 指纹 | 算法或 canonical 参数变化生成新 UnitSet；embedding 变化不改变 Unit |
+| P2.1-E TokenCounter | 定义无重依赖 counter 接口和 off/audit/hard 行为，提供只读 audit | 未提供真实 tokenizer 时明确 unavailable；P5 可注入实际 tokenizer |
+| P2.1-F 发布与 CLI | 发布 engine.json；preview/validate 展示并重验报告；增加 audit-tokens | 不可变 UnitSet 可复现、可解释、可审计 |
+| P2.1-G 回归验收 | 中英文、混合语言、emoji、CRLF、分页、策略失败、overlap、确定性和隔离复制 | P2 能力不退化，P3 fixtures 只使用 v2 UnitSet |
 
 P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上下文与 tokenizer 测量是投影元数据，不产生另一套普通 chunk。若 canonical Unit 超过模型硬上限，P5 必须阻止索引并要求新 UnitSet 配置，或对已报告的 oversized 特例生成明确 subspan，不能静默普遍重切。
 
-### 11.6 P3：Pass/Reduce、知识身份与 Build Finalize
+### 11.7 P3：Pass/Reduce、知识身份与 Build Finalize
 
 | 子任务 | 工作 | 可验收结果 |
 |---|---|---|
@@ -348,7 +357,7 @@ P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上�
 | P3.6 Build Finalize | output review、provenance、页面依赖与任务 revision 一致提交 | 失败可恢复；任务完成、QA、业务资格和可见性分别判定 |
 | P3.7 跨来源实践 | 使用 P2 输出完成一次真实 Pass/Reduce/Build Finalize | 多来源页面可回查；不依赖先建向量索引 |
 
-### 11.7 P4：Vault Finalize 与独立 Skill
+### 11.8 P4：Vault Finalize 与独立 Skill
 
 | 子任务 | 工作 | 可验收结果 |
 |---|---|---|
@@ -358,7 +367,7 @@ P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上�
 | P4.4 Release manifest | 钉住 unit sets、build runs、page revisions、QA/blocked 和索引资格 | 一次收尾范围及结果可审计，不能把局部成功冒充全库完成 |
 | P4.5 Finalize Skill | `hermes-obsidian-knowledge-finalize` 的 plan/apply/validate 与恢复入口 | 可独立重跑，不解析来源、不隐式同步 Provider、不批准业务版本 |
 
-### 11.8 P5：Provider 与查询细分
+### 11.9 P5：Provider 与查询细分
 
 | 子任务 | 工作 | 可验收结果 |
 |---|---|---|
@@ -369,7 +378,7 @@ P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上�
 | P5.5 命中与父上下文 | 命中窗口 → 真正来源单元 → 有预算的相邻/章节上下文；治理再检查 | 小范围匹配、大范围理解；上下文去重，不跨资格边界泄漏 |
 | P5.6 端到端验证 | 原文引用核验、索引不可用、过期投影、无答案、派生页依赖场景 | 查询只读，回答回到原文，而非把 snippet 当最终证据 |
 
-### 11.9 P6/P7：完整实践与正式重建细分
+### 11.10 P6/P7：完整实践与正式重建细分
 
 | 子任务 | 工作 | 可验收结果 |
 |---|---|---|
@@ -383,7 +392,7 @@ P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上�
 
 阶段编号表达依赖和验收里程碑，不要求每项单独开 PR。P0 完成最小定义后即进入实现；P1/P2 初期即可有第一个可运行检查点。细分没有增加旧数据兼容工作，原工期仍是粗估，不能把子任务行数当作工期天数。
 
-### 11.10 主要代码落点
+### 11.11 主要代码落点
 
 | 现有组件 | 改动方向 |
 |---|---|

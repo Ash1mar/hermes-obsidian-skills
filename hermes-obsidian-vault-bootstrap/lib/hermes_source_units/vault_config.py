@@ -1,4 +1,4 @@
-"""Portable bootstrap contract with P2 source-plane capability."""
+"""Portable bootstrap contract with P2.1 source-plane capability."""
 import json
 import re
 from pathlib import Path
@@ -9,9 +9,14 @@ CONFIG_PATH = "_system/metadata/source-unit-config.json"
 DIRECTORIES = ["_system/sources/artifacts", "_system/sources/sections",
                "_system/sources/units", "_system/ledgers/unit-work",
                "_system/knowledge-builds"]
-CONTRACTS = ["hermes-source-unit-config/v1", "hermes-unit-work-ledger/v1",
-             "hermes-knowledge-build/v4", "hermes-source-unit-capability/v1"]
-NOTICE = """\n## Source-unit rollout gate (P2)
+CONTRACTS = [
+    "hermes-source-unit-config/v2", "hermes-normalized-artifact/v1",
+    "hermes-source-section/v1", "hermes-source-unit/v1", "hermes-source-unit-set/v2",
+    "hermes-source-unit-current/v1", "hermes-chunk-engine-report/v1",
+    "hermes-unit-work-ledger/v1", "hermes-knowledge-build/v4",
+    "hermes-source-unit-capability/v1",
+]
+NOTICE = """\n## Source-unit rollout gate (P2.1)
 
 This Vault uses the new source-unit architecture. Bootstrap initializes identity,
 storage directories and validated configuration. Controlled ingest can prepare,
@@ -36,7 +41,7 @@ def configuration(override=None):
 
 def declaration(config):
     validate_record("config", config)
-    return {"contract": "hermes-source-unit-vault/v1", "phase": "P2",
+    return {"contract": "hermes-source-unit-vault/v1", "phase": "P2.1",
             "config_path": CONFIG_PATH, "config_fingerprint": fingerprint(config),
             "contracts": CONTRACTS, "directories": DIRECTORIES,
             "capabilities": {"bootstrap": True, "source_reader": True,
@@ -66,6 +71,6 @@ def validate_vault(vault):
     for relative in DIRECTORIES:
         if not local(relative).is_dir():
             raise ValueError(f"Missing source-unit directory: {relative}")
-    return {"ok": True, "phase": "P2", "bootstrap_ready": True,
+    return {"ok": True, "phase": "P2.1", "bootstrap_ready": True,
             "query_ready": False, "config_fingerprint": fingerprint(value),
             "effective_config": value}
