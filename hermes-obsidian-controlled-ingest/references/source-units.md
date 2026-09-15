@@ -1,6 +1,6 @@
-# P2 Source-unit operations
+# P2.1 Source-unit and Chunk Engine operations
 
-Use this path only when `_system/vault.json` declares `phase: P2` and
+Use this path only when `_system/vault.json` declares `phase: P2.1` and
 `capabilities.source_reader: true`. It is the new source-preparation path; it does
 not run knowledge construction, Finalize, Provider sync or query.
 
@@ -45,10 +45,13 @@ python3 "<ingest-skill-root>/scripts/manage_source_units.py" --vault "/path/to/v
   --actor "<actor>" --expected-revision 0
 ```
 
-Build publishes `manifest.json`, `sections.json`, `units.jsonl` and diagnostics
+Build publishes `manifest.json`, `sections.json`, `units.jsonl` and `engine.json`
 under `_system/sources/units/<resource>/<unit-set>/`, then atomically updates
 `current.json`. Published revision directories are immutable. Repeating the same
 build is idempotent; an historical unit set cannot silently become current again.
+The engine report records the effective canonical configuration, document profile,
+attempted/rejected strategies, selected strategy, size/coverage statistics, token
+audit status, protected-structure exceptions and other diagnostics.
 
 ## Read and validate
 
@@ -62,6 +65,9 @@ inspected core evidence.
 ```bash
 python3 "<ingest-skill-root>/scripts/manage_source_units.py" --vault "/path/to/vault" \
   validate --resource-id resource-example-1
+
+python3 "<ingest-skill-root>/scripts/manage_source_units.py" --vault "/path/to/vault" \
+  audit-tokens --resource-id resource-example-1 --max-tokens 1024
 ```
 
 Text coordinates are LF-normalized Unicode codepoint, zero-based half-open spans.
@@ -74,5 +80,9 @@ model or rendering changes do not.
 Oversized fenced code, formulas and tables are preserved and reported rather than
 silently truncated. Unknown pages or image regions remain unknown.
 
-P2 completion means normalized artifacts and source units are usable. Do not
+The packaged `audit-tokens` command uses the explicitly named Unicode-codepoint
+diagnostic counter; it exercises the adapter path but is not a model tokenizer.
+P5 must inject the actual embedding tokenizer and immutable fingerprint.
+
+P2.1 completion means normalized artifacts and shared canonical chunks are usable. Do not
 create knowledge-build v4 records or replace Provider input until P3/P5 ships.

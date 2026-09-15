@@ -8,7 +8,7 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-from hermes_source_units import ContractError, FileSourceUnitService
+from hermes_source_units import ContractError, FileSourceUnitService, UnicodeCodepointCounter
 
 
 def load(path: str):
@@ -29,6 +29,9 @@ def run(args):
         return {"units": service.list(args.resource_id, args.unit_set_id)}
     if args.command == "validate":
         return service.validate(args.resource_id, args.unit_set_id)
+    if args.command == "audit-tokens":
+        return service.audit_tokens(args.resource_id, UnicodeCodepointCounter(),
+                                    args.unit_set_id, args.max_tokens)
     access = {"actor": args.actor, "purpose": args.purpose,
               "registry_revision": args.registry_revision}
     if args.command == "get":
@@ -61,6 +64,10 @@ def main():
     validate = sub.add_parser("validate")
     validate.add_argument("--resource-id", required=True)
     validate.add_argument("--unit-set-id")
+    audit = sub.add_parser("audit-tokens")
+    audit.add_argument("--resource-id", required=True)
+    audit.add_argument("--unit-set-id")
+    audit.add_argument("--max-tokens", type=int)
     for name, field in (("get", "source-ref"), ("context", "core-refs")):
         command = sub.add_parser(name)
         command.add_argument(f"--{field}", required=True, help="JSON file")

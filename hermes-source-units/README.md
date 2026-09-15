@@ -1,12 +1,13 @@
 # Hermes Source Units
 
-版本 `0.2.0`，运行时第三方依赖为零，仅使用 Python 3.11+ 标准库。P0/P1 的契约和复制式运行基础已落地，P2 已实现规范产物、结构切片、SourceUnit 文件仓库与精确回读。知识构建、Vault Finalize 和 Provider 分别属于 P3、P4、P5。
+版本 `0.2.1`，运行时第三方依赖为零，仅使用 Python 3.11+ 标准库。P2.1 已把 P2 splitter 校正为独立共享 Chunk Engine；规范产物、SourceSection、SourceUnit、策略回退、文件仓库和精确回读共同构成来源内容层。知识构建、Vault Finalize 和 Provider 分别属于 P3、P4、P5。
 
 ## 交付与运行
 
 - `src/hermes_source_units/schemas/contracts.json`：JSON Schema Draft 2020-12，所有 `$ref` 内联到同文件，不请求网络。
 - `validation.py`：形状校验、局部约束及针对给定单元清单的引用关系检查。
-- `source_units.py`：P2 `FileSourceUnitService`，实现 Markdown/Bundle v2 适配、预览、发布、验证、读取和上下文组合。
+- `chunk_engine/`：P2.1 的 profile、sections、atoms、strategies、overlap、validation 和 engine；不依赖 repository 或 Provider。
+- `source_units.py`：`FileSourceUnitService`，实现 Markdown/Bundle v2 适配、确定性身份、预览、发布、验证、读取、token audit 和上下文组合。
 - `interfaces.py`：P2 `SourceUnitBuilder` / `SourceUnitReader` 的 Protocol 与请求/响应类型。
 - `defaults/config.json`：来源、阅读、检索分开的起始配置；每次读取返回独立对象。
 - `examples/`：手工编写的中文/emoji、条款、表格链接及完整资产样例；两块正文和一个表格资产；12 个错误记录。
@@ -34,7 +35,7 @@ python3 "<ingest-skill-root>/scripts/manage_source_units.py" --vault "/path/to/v
 python3 "<ingest-skill-root>/scripts/manage_source_units.py" --vault "/path/to/vault" build --artifact-manifest "_system/sources/artifacts/<resource>/<revision>/manifest.json" --actor "<actor>" --expected-revision 0
 ```
 
-artifact 按 resource/revision 保存规范正文、outline、资产和 manifest；UnitSet 按 resource/unit-set 保存 manifest、sections、diagnostics 与 JSONL，并用 revision-checked `current.json` 选择当前版本。preview 不写 UnitSet，build 在完整校验后原子发布。具体命令和阶段门禁见 controlled-ingest 的 `references/source-units.md`。
+artifact 按 resource/revision 保存规范正文、outline、资产和 manifest；UnitSet v2 按 resource/unit-set 保存 manifest、sections、`engine.json` 与 JSONL，并用 revision-checked `current.json` 选择当前版本。`engine.json` 钉住画像、策略尝试/拒绝、统计、token audit、coverage 和诊断。preview 不写 UnitSet，build 在完整校验后原子发布。具体命令和阶段门禁见 controlled-ingest 的 `references/source-units.md`。
 
 ### 部署修正：保持直接复制 Skill 目录
 
@@ -44,7 +45,7 @@ P1/P2 的交付方式是：需要共享逻辑的 Skill 自带脚本、模块及 
 
 源码可以继续在本目录维护一份，发行生成所需 Skill/Provider 的内置副本，并检查版本和内容指纹。直接复制部署要求这些生成内容已在交付的 Skill 目录内，不能让用户在目标机器补做构建。禁止人工分别修改副本；“单份维护”不要求运行时所有进程必须访问同一个物理文件。
 
-0.2.0 继续不依赖 jsonschema，使用标准库检查本项目固定 schema 词汇与现有业务约束，不实现通用 JSON Schema 引擎。新增未知关键字、远程引用、递归定义或未知 format 一律报 UNSUPPORTED_SCHEMA，不静默漏检。JSON Schema 文件仍是共享的字段定义，无需维护两份字段表。
+0.2.1 继续不依赖 jsonschema，使用标准库检查本项目固定 schema 词汇与现有业务约束，不实现通用 JSON Schema 引擎。新增未知关键字、远程引用、递归定义或未知 format 一律报 UNSUPPORTED_SCHEMA，不静默漏检。JSON Schema 文件仍是共享的字段定义，无需维护两份字段表。
 
 隔离复制测试已通过：模块和资源复制到临时 Skill 布局，入口按自身位置加载，在 `python -I -S`（不加载 site-packages、忽略 PYTHONPATH）下运行。P1 已接入 bootstrap 和 lint 的真实 Skill 交付和入口。现有测试框架 pytest 与可选的打包工具 setuptools/wheel 只在开发端使用；jsonschema 仅可作额外开发对照，不是运行或测试集的必装项。
 
@@ -78,12 +79,12 @@ SourceUnit 的 locator + content_sha256 描述核心。标题面包屑和追加�
 
 提供 `canonical_json` 与 `fingerprint`：UTF-8、按 key 排序、紧凑 JSON、只接受整数数字，不接受 float/NaN，不作隐式文本规范化；这是项目自己的 `canonical-json/v1`，不是 RFC 8785 实现。
 
-样例的 `p0-hand-authored/1` 是**手工样例配方版本，不是已实现的 splitter**。其哈希载荷明确为：
+P2.1 的确定性哈希分层为：
 
 1. artifact_revision：artifact 记录去掉 `contract`、`identity`、`artifact_revision` 后的对象。
-2. unit_set_id：`{artifact_revision, splitter_version, source_config}`。
+2. unit_set_id：`{artifact_revision, engine_version, engine_fingerprint, effective_config_fingerprint}`。
 3. unit_id：`{identity, unit_set_id, locator, content_sha256}`。
-4. unit-set.config_fingerprint 只计算含 chunk overlap 的 source 配置；embedding 模型和索引渲染指纹只计算 retrieval/Provider 配置。
+4. `effective_config_fingerprint` 只计算 `source.chunking`；embedding 模型和索引渲染指纹只计算 retrieval/Provider 配置。
 
 P2 生成器已采用以上分层依赖并验证确定性 ID；P5 对同一 Unit 的最终索引渲染、tokenizer/模型版本另算投影指纹。P0 样例不把手工 window_id 或 input_tokens 当作已测量的索引数据。
 
@@ -103,7 +104,8 @@ P0 的页面 output 包含 authored_sha256 和 review；这些字段的真实文
 
 | 组 | 初始值与含义 |
 |---|---|
-| source | auto；target 512 code points，max 1024，overlap 80；段/行/句分隔符；oversized preserve-and-report |
+| source.chunking | auto；target 512 code points，max 1024，overlap 80；中英文分隔符；oversized preserve-and-report |
+| token_budget | 默认 audit/max 1024/tokenizer fingerprint null；未注入 counter 时报告 unavailable，不伪造 token 结果 |
 | reading | 最大 12000 code points；不等于任意模型的 token 上限 |
 | retrieval | 索引渲染 target 800 / max 1024 tokens；命中后 context 预算 2400 tokens |
 | tokenizer | 默认 null，表示尚未绑定 embedding tokenizer，P5 必须解析实际 id 和固定 revision 后才能索引 |
@@ -143,7 +145,7 @@ P5 同时更新生产者、CLI/HTTP 传输与消费者，删除 Provider 独立 
 | schema-only 外部验证器 | 必须自己注册 vault-relative-path；纯 schema 不验证哈希、状态转换或跨记录关系 |
 | 原件/规范正文实际回读、总覆盖、资产真实存在 | P2 已实现；OCR/model-derived 的完整派生 DAG 留给相应 adapter |
 | registry 身份/hash/processing 与读取资格 | P2 已实现；知识页真实 review、幂等任务提交在 P3/P4 |
-| tokenizer 真实计数、检索效果 | P5；样例 tokenizer/input_tokens 是明确的占位测试数据 |
+| tokenizer adapter 与只读计数 | P2.1 已提供 TokenCounter/audit 接口；真实 embedding tokenizer 和检索效果属于 P5 |
 
 P0 的通过只表示契约实践通过，不代表已经完成 bootstrap、知识生成、检索或正式新库验收。
 
@@ -153,11 +155,11 @@ Run `python3 tools/sync_skill_runtime.py` from this package directory after a
 canonical source change, then run it with `--check`. Generated copies are committed
 inside bootstrap/lint/controlled-ingest; recipients only copy the complete Skill. Hashes describe
 UTF-8 text with normalized LF line endings to support Windows/Linux checkouts.
-Provider packaging remains P5 work. Runtime version is 0.2.0; existing record
+Provider packaging remains P5 work. Runtime version is 0.2.1; existing record
 contracts stay versioned independently, and the Vault declaration remains
 `hermes-source-unit-vault/v1`.
 
-P1 writes the combined `hermes-source-unit-config/v1` JSON rather than independent
+P2.1 writes the combined `hermes-source-unit-config/v2` JSON rather than independent
 YAML copies of the same budgets. `source`, `reading`, and `retrieval` are loaded and
 validated together. Explicit complete bootstrap configuration wins over packaged
 defaults; subsequent reads use the Vault copy and verify its fingerprint. Updating

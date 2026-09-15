@@ -1,5 +1,7 @@
 # P2：来源内容层验收
 
+> 这是 P2 基础实现的历史验收。P2.1 已用 UnitSet v2 和 `engine.json` 取代这里记录的 UnitSet v1/`diagnostics.json` 发布格式；最新门禁见 ADR-0005 和 P2.1 验收记录。
+
 日期：2026-09-15。范围：本地 `main` 实现；不迁移旧内容，不创建正式 Vault，不接入知识构建或 Provider。
 
 ## 交付

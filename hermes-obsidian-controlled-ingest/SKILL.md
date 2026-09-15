@@ -220,20 +220,21 @@ After a completed source ingest or at the end of a related batch, run `python3 "
 
 Treat `document.md` as the single normalized text source. Do not duplicate every section into separate Markdown files. Use the ledger's non-overlapping `content_ranges` for staged ingestion and the JSON ledger as the section-state authority.
 
-## P2 Source-unit Route
+## P2.1 Source-unit Route
 
-When `_system/vault.json` declares source-unit phase `P2` with
+When `_system/vault.json` declares source-unit phase `P2.1` with
 `capabilities.source_reader: true`, read `references/source-units.md` and use
 `python3 "<ingest-skill-root>/scripts/manage_source_units.py"`. After source
 registration and Bundle validation/`ingest-finish`, prepare the immutable normalized
 artifact, preview the boundaries, then publish the unit set with the current expected
 revision. For direct Markdown, use its registered document/version/resource identity.
 
-In a P2 Vault, SourceUnit owns source boundaries and exact reads. Do not initialize a
+In a P2.1 Vault, SourceUnit owns source boundaries and exact reads. Do not initialize a
 legacy section ledger or use Provider chunks as source identity. Stop after validated
 source-unit publication unless a later phase is actually installed: knowledge-build v4,
 canonical page identity, Finalize and Provider consumption remain unavailable in P2.
-Report the artifact revision, unit-set ID, revision, unit/section counts, diagnostics and
+Report the artifact revision, unit-set ID, engine version/fingerprint, selected strategy,
+revision, unit/section counts, token-audit status, diagnostics and
 validation result. An oversized protected structure is an explicit diagnostic requiring
 review, not permission to truncate it or claim every consumer can fit it.
 

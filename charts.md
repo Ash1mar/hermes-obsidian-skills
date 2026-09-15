@@ -1,6 +1,6 @@
 # Hermes + Obsidian 受控知识流程图
 
-> 本文档已按 2026-09-15 的工作树技术基线复核。旧生产链路图保留到 P7 正式重建；新增 P2 来源内容层单独列出。Mermaid 图可在 Obsidian 阅读视图中直接渲染，在编辑视图中修改节点和连线。具体命令契约以当前分支的 `SKILL.md` 和直接 reference 为准。
+> 本文档已按 2026-09-15 的工作树技术基线复核。旧生产链路图保留到 P7 正式重建；新增 P2/P2.1 来源内容层单独列出。Mermaid 图可在 Obsidian 阅读视图中直接渲染，在编辑视图中修改节点和连线。具体命令契约以当前分支的 `SKILL.md` 和直接 reference 为准。
 
 ## 两个分支实际使用的环境
 
@@ -205,7 +205,7 @@ flowchart TB
 
 多题请求还要检查 request summary：题目序号必须连续、不能同时存在两个 in-progress trace，最后一题关闭 request 后才能把各题 answer capsule 合并进最终回复。
 
-## P2 新来源内容层
+## P2/P2.1 新来源内容层
 
 ```mermaid
 flowchart LR
@@ -230,7 +230,7 @@ flowchart LR
     SET -. "不可在 P2 提前接线" .-> LATER
 ```
 
-P2 的 SourceUnit 是可引用来源核心，也是知识构建与 Provider 共用的 canonical chunk；它不是 ledger 工作项、Claim 或本体实体。UnitSet 已能在文件后端维护稳定引用；当前 `knowledge_build` 和 `retrieval` capability 仍为 false。
+P2.1 的 SourceUnit 是可引用来源核心，也是知识构建与 Provider 共用的 canonical chunk；共享 Chunk Engine 在 owned range 内执行结构保护、策略验证、回退、overlap 和 token audit，并随 UnitSet v2 发布 `engine.json`。它不是 ledger 工作项、Claim 或本体实体；当前 `knowledge_build` 和 `retrieval` capability 仍为 false。
 
 ## 辅助关系图：谁调用什么，读写哪些文件
 

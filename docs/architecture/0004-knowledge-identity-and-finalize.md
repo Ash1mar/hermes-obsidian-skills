@@ -1,6 +1,6 @@
 # ADR-0004：稳定知识身份与显式 Finalize
 
-日期：2026-09-14，2026-09-15 校正。状态：接受；P3–P7 待实施。关联：[来源单元契约](0003-source-unit-contracts.md)和[演进计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)。
+日期：2026-09-14，2026-09-15 校正。状态：接受；P3–P7 待实施，P3 以前置 [P2.1 Chunk Engine](0005-shared-chunk-engine.md) 为输入门禁。关联：[来源单元契约](0003-source-unit-contracts.md)和[演进计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)。
 
 ## 背景
 
@@ -30,7 +30,7 @@ Vault Finalize 是增量一致性操作，不是全库巨型事务或发布锁�
 
 ## 阶段
 
-P2 来源内容层；P3 Pass/Reduce、知识身份及 Build Finalize；P4 Vault Finalize 与新 Skill；P5 Provider/query；P6 文件式完整实践和故障演练；P7 发布及正式新库重建。数据库 adapter 在文件式端到端语义稳定后单列实施，可在正式重建前加入，但不得重新定义 ID 和状态合同。
+P2 来源内容层；P2.1 共享 Chunk Engine 校正；P3 Pass/Reduce、知识身份及 Build Finalize；P4 Vault Finalize 与新 Skill；P5 Provider/query；P6 文件式完整实践和故障演练；P7 发布及正式新库重建。数据库 adapter 在文件式端到端语义稳定后单列实施，可在正式重建前加入，但不得重新定义 ID 和状态合同。
 
 ## 后果
 
