@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://schemas.hermes.invalid/source-units/0.2.1/contracts.json",
+  "$id": "https://schemas.hermes.invalid/source-units/0.3.0/contracts.json",
   "$defs": {
     "span": {
       "type": "object",
@@ -911,6 +911,48 @@
       ],
       "additionalProperties": false
     },
+    "reading_material": {
+      "type": "object",
+      "properties": {
+        "role": {"enum": ["core", "context"]},
+        "source_ref": {"$ref": "#/$defs/source_ref"},
+        "unit_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "selected_sha256": {
+          "anyOf": [
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            {"type": "null"}
+          ]
+        },
+        "core_text": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "asset_refs": {"type": "array", "items": {"$ref": "#/$defs/asset"}, "minItems": 0},
+        "quality_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "format": "vault-relative-path"}, "minItems": 0},
+        "section_id": {
+          "anyOf": [
+            {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+            {"type": "null"}
+          ]
+        },
+        "heading_path": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0}
+      },
+      "required": ["role", "source_ref", "unit_content_sha256", "selected_sha256", "core_text", "asset_refs", "quality_refs", "section_id", "heading_path"],
+      "additionalProperties": false
+    },
+    "reading_package": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-reading-package/v1"},
+        "package_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "task_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "task_revision": {"type": "integer", "minimum": 1},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "document_registry_revision": {"type": "integer", "minimum": 0},
+        "window": {"$ref": "#/$defs/reading_window"},
+        "materials": {"type": "array", "items": {"$ref": "#/$defs/reading_material"}, "minItems": 1},
+        "total_codepoints": {"type": "integer", "minimum": 0}
+      },
+      "required": ["contract", "package_id", "task_id", "task_revision", "actor", "document_registry_revision", "window", "materials", "total_codepoints"],
+      "additionalProperties": false
+    },
     "retrieval_window": {
       "type": "object",
       "properties": {
@@ -1303,6 +1345,177 @@
         "outputs",
         "reason"
       ],
+      "additionalProperties": false
+    },
+    "candidate_observation": {
+      "type": "object",
+      "properties": {
+        "candidate_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "name": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "kind": {"enum": ["entity", "concept", "requirement", "fact", "analysis"]},
+        "identity_rationale": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "finding": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "applicability": {"type": "string"},
+        "conditions": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true},
+        "exceptions": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true},
+        "support_refs": {"type": "array", "items": {"$ref": "#/$defs/source_ref"}, "minItems": 1}
+      },
+      "required": ["candidate_id", "name", "kind", "identity_rationale", "finding", "applicability", "conditions", "exceptions", "support_refs"],
+      "additionalProperties": false
+    },
+    "knowledge_pass": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-pass/v1"},
+        "pass_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "task_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "task_revision": {"type": "integer", "minimum": 1},
+        "pass_kind": {"enum": ["candidate", "citation"]},
+        "sequence": {"type": "integer", "minimum": 0},
+        "reading_window_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "reading_package_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "inspections": {"type": "array", "items": {"$ref": "#/$defs/inspection"}, "minItems": 1},
+        "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate_observation"}, "minItems": 0},
+        "empty_reason": {"type": "string"},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"}
+      },
+      "required": ["contract", "pass_id", "task_id", "task_revision", "pass_kind", "sequence", "reading_window_id", "reading_package_id", "inspections", "candidates", "empty_reason", "actor"],
+      "additionalProperties": false
+    },
+    "knowledge_subject": {
+      "type": "object",
+      "properties": {
+        "subject_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "page_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "kind": {"enum": ["entity", "concept", "requirement", "fact", "analysis"]},
+        "identity_key": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "canonical_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "aliases": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true},
+        "status": {"enum": ["active", "retired"]},
+        "current_path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "current_revision_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "created_by_run": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}
+      },
+      "required": ["subject_id", "page_id", "kind", "identity_key", "canonical_name", "aliases", "status", "current_path", "current_revision_id", "created_by_run"],
+      "additionalProperties": false
+    },
+    "identity_registry": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-identity-registry/v1"},
+        "revision": {"type": "integer", "minimum": 0},
+        "subjects": {"type": "array", "items": {"$ref": "#/$defs/knowledge_subject"}, "minItems": 0}
+      },
+      "required": ["contract", "revision", "subjects"],
+      "additionalProperties": false
+    },
+    "knowledge_identity": {
+      "type": "object",
+      "properties": {
+        "subject_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "kind": {"enum": ["entity", "concept", "requirement", "fact", "analysis"]},
+        "identity_key": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "canonical_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "aliases": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true}
+      },
+      "required": ["subject_id", "kind", "identity_key", "canonical_name", "aliases"],
+      "additionalProperties": false
+    },
+    "pass_candidate_ref": {
+      "type": "object",
+      "properties": {
+        "pass_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "candidate_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}
+      },
+      "required": ["pass_id", "candidate_id"],
+      "additionalProperties": false
+    },
+    "page_revision": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-page-revision/v1"},
+        "revision_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "page_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "subject_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "parent_revision_id": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+        "action": {"enum": ["create", "update", "reuse", "relate"]},
+        "path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "authored_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "support_refs": {"type": "array", "items": {"$ref": "#/$defs/source_ref"}, "minItems": 1},
+        "qa_status": {"enum": ["usable", "qa_required"]},
+        "business_status": {"const": "unassessed"},
+        "visibility": {"const": "draft"},
+        "state": {"enum": ["draft", "committed"]},
+        "review": {
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "properties": {
+                "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                "note": {"type": "string", "minLength": 1, "pattern": "\\S"}
+              },
+              "required": ["actor", "note"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": ["contract", "revision_id", "page_id", "subject_id", "parent_revision_id", "action", "path", "authored_sha256", "support_refs", "qa_status", "business_status", "visibility", "state", "review"],
+      "additionalProperties": false
+    },
+    "build_decision": {
+      "type": "object",
+      "properties": {
+        "candidate_refs": {"type": "array", "items": {"$ref": "#/$defs/pass_candidate_ref"}, "minItems": 1},
+        "subject_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "page_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "action": {"enum": ["create", "update", "reuse", "relate"]},
+        "path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "support_refs": {"type": "array", "items": {"$ref": "#/$defs/source_ref"}, "minItems": 1},
+        "revision_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "identity": {"$ref": "#/$defs/knowledge_identity"}
+      },
+      "required": ["candidate_refs", "subject_id", "page_id", "action", "path", "support_refs", "revision_id", "identity"],
+      "additionalProperties": false
+    },
+    "task_snapshot": {
+      "type": "object",
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "revision": {"type": "integer", "minimum": 1}
+      },
+      "required": ["task_id", "revision"],
+      "additionalProperties": false
+    },
+    "build_review": {
+      "type": "object",
+      "properties": {
+        "page_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "authored_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "parent_authored_sha256": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "note": {"type": "string", "minLength": 1, "pattern": "\\S"}
+      },
+      "required": ["page_id", "authored_sha256", "parent_authored_sha256", "actor", "note"],
+      "additionalProperties": false
+    },
+    "build_run": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-build-run/v1"},
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "revision": {"type": "integer", "minimum": 1},
+        "state": {"enum": ["draft", "completed"]},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "identity_registry_revision": {"type": "integer", "minimum": 0},
+        "tasks": {"type": "array", "items": {"$ref": "#/$defs/task_snapshot"}, "minItems": 1},
+        "decisions": {"type": "array", "items": {"$ref": "#/$defs/build_decision"}, "minItems": 0},
+        "page_revisions": {"type": "array", "items": {"$ref": "#/$defs/page_revision"}, "minItems": 0},
+        "reviews": {"type": "array", "items": {"$ref": "#/$defs/build_review"}, "minItems": 0},
+        "reason": {"type": "string"}
+      },
+      "required": ["contract", "run_id", "revision", "state", "actor", "identity_registry_revision", "tasks", "decisions", "page_revisions", "reviews", "reason"],
       "additionalProperties": false
     },
     "provider_extension": {

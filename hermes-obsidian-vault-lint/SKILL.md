@@ -143,6 +143,7 @@ New bootstrap Vaults contain `_system/metadata/source-unit-config.json` and a
 `source_units` declaration in `_system/vault.json`. Configuration uses Unicode
 codepoints for source/reading sizes and separate token budgets for retrieval;
 `tokenizer: null` does not promise exact tokenization or an available Provider.
-P2 also validates every published current unit set against its immutable artifact,
-section partition, unit references and hashes. Knowledge construction, Finalize and
+P2/P2.1 validates every published current unit set against its immutable artifact,
+section partition, unit references and hashes. P3 also validates knowledge build runs,
+page revision sidecars, stable identities and current page hashes. Vault Finalize and
 Provider/query remain unavailable; full lint reports `source_units.pipeline_pending`.

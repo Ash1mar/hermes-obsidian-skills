@@ -1,4 +1,4 @@
-"""P2.1 file repository, SourceUnit identity, publication and exact reads."""
+"""P3 file repository foundation for SourceUnit identity and exact reads."""
 from __future__ import annotations
 
 import hashlib
@@ -190,7 +190,7 @@ class FileSourceUnitService:
         validate_record("config", self.config)
         source_units = self.vault_manifest.get("source_units")
         if not isinstance(source_units, Mapping) or source_units != declaration(self.config):
-            _fail("INVALID_SCHEMA", "Vault does not declare the complete P2.1 source-reader capability")
+            _fail("INVALID_SCHEMA", "Vault does not declare the current source-reader capability")
         self.engine = SharedChunkEngine(token_counter)
 
     @property

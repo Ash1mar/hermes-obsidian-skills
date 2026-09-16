@@ -1,5 +1,8 @@
 # General Knowledge Construction
 
+> Legacy line/section-ledger path. When `_system/vault.json` declares source-unit
+> phase `P3`, use `references/source-units.md` and `manage_knowledge_build.py` instead.
+
 Default workflow, with no business configuration or pre-enumerated systems required.
 Use after source/Bundle QA and before durable knowledge writes, including synthesis and
 query-derived writeback. Do not rerun conversion merely to use this workflow.

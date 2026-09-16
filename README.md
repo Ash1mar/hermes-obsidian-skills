@@ -20,7 +20,7 @@ Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): impl
   - Supports standalone image Bundle v2 for scanned pages, table screenshots, diagrams, and other image-only sources with OCR review controls.
   - Supports MarkItDown as an optional pre-ingestion conversion layer for non-PDF sources and simple fallback conversion.
   - Manages engineering document identity, source organizations, source occurrences, versions, status, and atomic activation through the `hermes-governance/v1` JSON repository.
-  - For P2.1 Vaults, runs the shared Chunk Engine and publishes deterministic, exact-readable SourceUnits with an auditable engine report, without a service or third-party runtime dependency.
+  - For P3 Vaults, publishes deterministic SourceUnits through the shared Chunk Engine, then runs UnitSet-native reading packages, Pass/Reduce and Build Finalize without a service or third-party runtime dependency.
 
 - `hermes-obsidian-controlled-query/`
   - Governed read-only query workflow for existing Hermes + Obsidian vaults.
@@ -33,13 +33,13 @@ Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): impl
   - Checks bootstrap structure, bundle validation, section ledgers, source maps, governed Markdown evidence, structured multi-source synthesis, QA authority boundaries, and optional engineering document-governance invariants.
   - Provides `post-ingest`, `query-ready`, `strict`, and `qa-review` profiles with stable JSON and Markdown report output.
   - Reuses the controlled-ingest bundle validator when available.
-  - Validates current P2.1 SourceUnit repositories, engine reports and unit counts while later knowledge/query stages remain gated.
+  - Validates current SourceUnit repositories, engine reports and P3 knowledge-build runs while Vault Finalize and Provider/query remain gated.
 
 - `hermes-obsidian-vault-bootstrap/`
   - Initializes governed Obsidian vaults.
   - Creates the standard folder layout, prompts, templates, metadata registries, Dataview indexes, and setup report.
   - Supports `general`, `meeting`, and `engineering` profiles; engineering creates a draft JSON governance repository with a future SQLite/PostgreSQL mapping.
-  - Creates the P2.1 source-unit directories, validated v2 shared configuration and explicit capability declaration for new Vaults.
+  - Creates the P3 source/knowledge directories, validated v2 shared configuration, identity registry and explicit capability declaration for new Vaults.
   - Can copy `.obsidian/` and base concept pages from a template vault.
   - Does not copy raw sources, test cards, test projects, or historical reports by default.
 

@@ -16,7 +16,7 @@
 
 ## 仓库级文档
 
-来源单元新体系的实现入口：[ADR-0003](docs/architecture/0003-source-unit-contracts.md)、[ADR-0004](docs/architecture/0004-knowledge-identity-and-finalize.md)、[ADR-0005](docs/architecture/0005-shared-chunk-engine.md)、[共享包规范](hermes-source-units/README.md)及 [P0](docs/SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](docs/SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](docs/SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](docs/SOURCE_UNITS_P2_1_ACCEPTANCE.md) 验收。P2.1 已完成共享 Chunk Engine 校正；Pass/Reduce、Vault Finalize 和 Provider 依次留到 P3–P5。
+来源单元新体系的实现入口：[ADR-0003](docs/architecture/0003-source-unit-contracts.md)、[ADR-0004](docs/architecture/0004-knowledge-identity-and-finalize.md)、[ADR-0005](docs/architecture/0005-shared-chunk-engine.md)、[共享包规范](hermes-source-units/README.md)及 [P0](docs/SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](docs/SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](docs/SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](docs/SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](docs/SOURCE_UNITS_P3_ACCEPTANCE.md) 验收。P3 已完成 UnitSet-native Pass/Reduce、稳定知识身份和 Build Finalize；Vault Finalize 与 Provider 留到 P4/P5。
 
 | 文档 | 内容与用途 |
 | --- | --- |

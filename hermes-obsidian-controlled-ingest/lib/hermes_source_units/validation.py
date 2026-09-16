@@ -279,8 +279,31 @@ def validate_record(kind: str, record: Mapping[str, Any]) -> None:
             scopes = {tuple(r["unit_ref"][k] for k in ("vault_id", "resource_id", "artifact_revision", "unit_set_id")) for r in refs}
             if len(scopes) != 1:
                 _fail("MIXED_SOURCE", "$", "retrieval windows must use one source version/set")
+    if kind == "reading_package":
+        expected = fingerprint({key: value for key, value in record.items() if key != "package_id"})
+        if record["package_id"] != expected:
+            _fail("IDENTITY_MISMATCH", "$.package_id", "reading package identity does not match its content")
+        window = record["window"]
+        expected_roles = [["core", item] for item in window["core_refs"]] + [
+            ["context", item] for item in window["context_refs"]]
+        actual_roles = [[item["role"], item["source_ref"]] for item in record["materials"]]
+        _unique(actual_roles, "$.materials")
+        if sorted(canonical_json(item) for item in actual_roles) != sorted(canonical_json(item) for item in expected_roles):
+            _fail("WINDOW_MISMATCH", "$.materials", "materials must exactly represent core and context refs")
+        total = 0
+        for item in record["materials"]:
+            if item["core_text"] is None:
+                if item["selected_sha256"] is not None:
+                    _fail("HASH_MISMATCH", "$.materials", "binary material cannot declare a selected text hash")
+            else:
+                selected = item["core_text"].encode("utf-8")
+                if item["selected_sha256"] != hashlib.sha256(selected).hexdigest():
+                    _fail("HASH_MISMATCH", "$.materials", "selected material hash differs from text")
+                total += len(item["core_text"])
+        if record["total_codepoints"] != total:
+            _fail("INVALID_BUDGET", "$.total_codepoints", "reading package codepoint total is incorrect")
     if kind == "work":
-        expected_contract = {"knowledge_build": "hermes-knowledge-build/v4", "entity_extraction": "hermes-entity-extraction/v1", "table_qa": "hermes-table-qa/v1"}[record["task_type"]]
+        expected_contract = {"knowledge_build": "hermes-knowledge-build-run/v1", "entity_extraction": "hermes-entity-extraction/v1", "table_qa": "hermes-table-qa/v1"}[record["task_type"]]
         if record["task_contract"] != expected_contract:
             _fail("TASK_CONTRACT_MISMATCH", "$.task_contract", "task type requires its declared contract version")
         if record["status"] in ("blocked", "failed", "skipped") and not record["reason"].strip():
@@ -307,6 +330,49 @@ def validate_record(kind: str, record: Mapping[str, Any]) -> None:
                 _fail("INVALID_OUTPUT_PATH", "$.outputs", "only governed knowledge directories allowed")
         if record["execution_status"] == "completed" and not record["outputs"] and not record["reason"].strip():
             _fail("REASON_REQUIRED", "$.reason", "zero-output completion requires a finding")
+    if kind == "knowledge_pass":
+        expected_sequence = 0 if record["pass_kind"] == "candidate" else None
+        if expected_sequence is not None and record["sequence"] != expected_sequence:
+            _fail("INVALID_PASS", "$.sequence", "candidate Pass 0 must use sequence 0")
+        if record["pass_kind"] == "citation" and record["sequence"] < 1:
+            _fail("INVALID_PASS", "$.sequence", "citation passes start at sequence 1")
+        _unique([item["candidate_id"] for item in record["candidates"]], "$.candidates")
+        _unique([item["source_ref"] for item in record["inspections"]], "$.inspections")
+        if not record["candidates"] and not record["empty_reason"].strip():
+            _fail("REASON_REQUIRED", "$.empty_reason", "an empty pass requires a finding")
+        expected = fingerprint({key: value for key, value in record.items() if key != "pass_id"})
+        if record["pass_id"] != expected:
+            _fail("IDENTITY_MISMATCH", "$.pass_id", "pass identity does not match its content")
+    if kind == "identity_registry":
+        _unique([item["subject_id"] for item in record["subjects"]], "$.subjects")
+        _unique([item["page_id"] for item in record["subjects"]], "$.subjects")
+        _unique([[item["kind"], item["identity_key"]] for item in record["subjects"]], "$.subjects")
+        _unique([item["current_path"] for item in record["subjects"] if item["status"] == "active"], "$.subjects")
+    if kind == "page_revision":
+        if (record["state"] == "draft") != (record["review"] is None):
+            _fail("INVALID_STATE", "$.review", "draft pages are unreviewed; committed pages require review")
+        expected = fingerprint({key: record[key] for key in (
+            "page_id", "subject_id", "parent_revision_id", "action", "path",
+            "authored_sha256", "support_refs", "qa_status", "business_status", "visibility")})
+        if record["revision_id"] != expected:
+            _fail("IDENTITY_MISMATCH", "$.revision_id", "page revision identity does not match content and support")
+    if kind == "build_run":
+        _unique([item["task_id"] for item in record["tasks"]], "$.tasks")
+        _unique([item["subject_id"] for item in record["decisions"]], "$.decisions")
+        _unique([item["page_id"] for item in record["page_revisions"]], "$.page_revisions")
+        _unique([item["path"] for item in record["page_revisions"]], "$.page_revisions")
+        for decision in record["decisions"]:
+            _unique(decision["candidate_refs"], "$.decisions.candidate_refs")
+        if {item["page_id"] for item in record["decisions"]} != {item["page_id"] for item in record["page_revisions"]}:
+            _fail("OUTPUT_MISMATCH", "$", "Reduce decisions and page revisions must agree")
+        if record["state"] == "draft" and record["reviews"]:
+            _fail("INVALID_STATE", "$.reviews", "draft build cannot contain final reviews")
+        if record["state"] == "completed" and {item["page_id"] for item in record["reviews"]} != {item["page_id"] for item in record["page_revisions"]}:
+            _fail("REVIEW_REQUIRED", "$.reviews", "completed build requires one review per page")
+        if any((record["state"] == "completed") != (item["state"] == "committed") for item in record["page_revisions"]):
+            _fail("INVALID_STATE", "$.page_revisions", "page state must follow build state")
+        if not record["page_revisions"] and not record["reason"].strip():
+            _fail("REASON_REQUIRED", "$.reason", "zero-output build requires a finding")
 
 
 def validate_references(kind: str, record: Mapping[str, Any], units: list[dict[str, Any]]) -> None:
@@ -397,3 +463,13 @@ def validate_references(kind: str, record: Mapping[str, Any], units: list[dict[s
                 affected = any(k == key and a < hi and lo < b for k, a, b in map(interval, output["support_refs"]))
                 if affected and output["status"] != "draft":
                     _fail("QA_REQUIRES_DRAFT", "$", "affected output must retain draft status")
+    if kind == "knowledge_pass":
+        inspected = [item["source_ref"] for item in record["inspections"]]
+        for candidate in record["candidates"]:
+            if not all(covered(ref, inspected) for ref in candidate["support_refs"]):
+                _fail("UNINSPECTED_SUPPORT", "$", "pass candidate cites evidence outside its inspected ranges")
+    if kind == "build_run":
+        for page in record["page_revisions"]:
+            decision = next(item for item in record["decisions"] if item["page_id"] == page["page_id"])
+            if page["support_refs"] != decision["support_refs"] or page["revision_id"] != decision["revision_id"]:
+                _fail("PROVENANCE_MISMATCH", "$", "page revision and Reduce decision disagree")

@@ -527,7 +527,7 @@ SourceUnit 的 chunk size/overlap 变化会形成新 UnitSet；工作窗口和�
 | 结构划分 | 标题/启发式/递归切块 | P2.1 outline owned ranges + structure/heuristic/recursive 策略验证回退 | 来源层能力已对齐，同时保留更严格 ownership 和报告 |
 | 检索子块 | 配置切块，应用库持久化 | P2.1 UnitSet v2 与 engine report 已持久化；旧 Provider 仍保留标题父段 + token 窗口 | P5 必须删除旧独立切片并直接索引 Unit |
 | 精确子块定位 | 规范文本字符坐标等 | P2 Unit 使用规范文本 codepoint 精确范围 | 来源定位已补；Provider 透传留到 P5 |
-| 共享内容单元 | 来源 chunks 被 Wiki 和检索消费 | P2 canonical Unit 已成立，P3/P5 将分别接入知识构建和检索 | 内容对象已对齐，消费者接线未完成 |
+| 共享内容单元 | 来源 chunks 被 Wiki 和检索消费 | P2 canonical Unit 已成立，P3 已接入知识构建，P5 再接入检索 | 知识消费者已对齐，检索消费者待实施 |
 | 模型输入组装 | 服务按阶段自动组装 | agent 阅读规则、正文及旧页 | 有操作方式，缺统一组装器 |
 | 通用候选发现 | 实体/概念等提示流程 | entity/concept/requirement/fact/analysis | 思想相近，类别与执行方式不同 |
 | 同一性判断 | 预筛选、模型判断、名称/slug 协调 | agent 查旧页及理由记录 | 有语义规则，缺同等自动协调 |
@@ -547,7 +547,7 @@ SourceUnit 的 chunk size/overlap 变化会形成新 UnitSet；工作窗口和�
 
 你提出的方向有实质意义：让 chunk 不只是“给向量检索切出来的一段文本”，而成为知识构建能稳定引用的来源单元。
 
-新体系保留 Bundle 的解析产物职责；ledger 退回工作与审计控制面。P2 已补齐 Provider 无关的 Unit 身份、精确读取、QA 继承和 canonical chunk overlap。P3 与 P5 应消费同一 UnitSet，其中 Provider 只做索引渲染，不能恢复自己的普通切片权威。
+新体系保留 Bundle 的解析产物职责；ledger 退回工作与审计控制面。P2 已补齐 Provider 无关的 Unit 身份、精确读取、QA 继承和 canonical chunk overlap。P3 已使用同一 UnitSet 完成 Pass/Reduce 与 Build Finalize；P5 也必须消费该 UnitSet，其中 Provider 只做索引渲染，不能恢复自己的普通切片权威。
 
 这项改造和“换数据库”“重写 OCR”“增加本体”是不同工作。建议先验证最小内容单元契约，避免同时扩大所有层的范围。
 

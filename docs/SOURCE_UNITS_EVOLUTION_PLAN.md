@@ -1,7 +1,7 @@
 # 通用来源单元：全新建库设计与实施计划
 
-日期：2026-09-11，2026-09-15 校正。修订：R5，保留全新建库前提，在 P2 与 P3 之间加入共享 Chunk Engine 校正门禁。
-状态：P0/P1/P2/P2.1 已完成；下一阶段 P3，P4–P7 待实施，未执行正式库重建或 ingest。阶段重排见 [ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)，P2.1 决策见 [ADR-0005](architecture/0005-shared-chunk-engine.md)，实现入口见 [ADR-0003](architecture/0003-source-unit-contracts.md)、[共享包规范](../hermes-source-units/README.md)及 [P0](SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](SOURCE_UNITS_P2_1_ACCEPTANCE.md)验收。
+日期：2026-09-11，2026-09-16 校正。修订：R6，保留全新建库前提，完成 P3 UnitSet-native 知识构建状态机。
+状态：P0/P1/P2/P2.1/P3 已完成；下一阶段 P4，P5–P7 待实施，未执行正式库重建或 ingest。阶段重排见 [ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)，P2.1 决策见 [ADR-0005](architecture/0005-shared-chunk-engine.md)，实现入口见 [ADR-0003](architecture/0003-source-unit-contracts.md)、[共享包规范](../hermes-source-units/README.md)及 [P0](SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](SOURCE_UNITS_P3_ACCEPTANCE.md)验收。
 
 ## 1. 本轮确定的前提
 
@@ -345,7 +345,7 @@ P2.1 是 P3 的前置门禁，详细决定见 ADR-0005。
 
 P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上下文与 tokenizer 测量是投影元数据，不产生另一套普通 chunk。若 canonical Unit 超过模型硬上限，P5 必须阻止索引并要求新 UnitSet 配置，或对已报告的 oversized 特例生成明确 subspan，不能静默普遍重切。
 
-### 11.7 P3：Pass/Reduce、知识身份与 Build Finalize
+### 11.7 P3：Pass/Reduce、知识身份与 Build Finalize（已完成）
 
 | 子任务 | 工作 | 可验收结果 |
 |---|---|---|

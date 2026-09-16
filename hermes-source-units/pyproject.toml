@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "hermes-source-units"
-version = "0.2.1"
-description = "Provider-independent SourceUnit contracts and shared Chunk Engine for Hermes"
+version = "0.3.0"
+description = "Provider-independent SourceUnit and file-backed knowledge-build runtime for Hermes"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
