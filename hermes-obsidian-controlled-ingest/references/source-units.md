@@ -1,8 +1,9 @@
-# P2.1 Source-unit and Chunk Engine operations
+# P3 Source-unit and knowledge-build operations
 
-Use this path only when `_system/vault.json` declares `phase: P2.1` and
-`capabilities.source_reader: true`. It is the new source-preparation path; it does
-not run knowledge construction, Finalize, Provider sync or query.
+Use this path only when `_system/vault.json` declares `phase: P3`,
+`capabilities.source_reader: true` and `capabilities.knowledge_build: true`.
+It runs source preparation through Build Finalize. Vault Finalize, Provider sync
+and query remain unavailable.
 
 The runtime is embedded under the Skill `lib/` directory and uses Python 3.11+
 standard library only. All paths passed to the commands below are Vault-relative.
@@ -84,5 +85,30 @@ The packaged `audit-tokens` command uses the explicitly named Unicode-codepoint
 diagnostic counter; it exercises the adapter path but is not a model tokenizer.
 P5 must inject the actual embedding tokenizer and immutable fingerprint.
 
-P2.1 completion means normalized artifacts and shared canonical chunks are usable. Do not
-create knowledge-build v4 records or replace Provider input until P3/P5 ships.
+## Pass/Reduce and Build Finalize
+
+Use `manage_knowledge_build.py` after publishing UnitSet v2. Requests are JSON
+files so shell quoting cannot alter content or exact references.
+
+1. `plan --request task.json`, then `claim`, creates and revision-checks a bounded
+   `knowledge_build` task. Active overlapping tasks are reported; they are not
+   silently merged because separate tasks may intentionally consume the same Unit.
+2. `read` persists a `hermes-reading-package/v1` containing core/context roles,
+   actual text or asset metadata, hashes, omitted refs and budget truncation.
+3. `pass --request pass.json` records Pass 0 candidates followed by contiguous
+   Pass 1..N citations. Every support ref must lie inside an explicitly inspected
+   material. Context may support a candidate after inspection, but it does not
+   complete the task's target coverage.
+4. `reduce --request reduce.json` consumes citation Pass candidates, requires full
+   target inspection and no deferred range, then stages one immutable page revision
+   per stable subject. Identity keys are explicit judgments; aliases and similar
+   names never auto-merge subjects.
+5. `finalize --request finalize.json` checks task/build/identity revisions, draft
+   and parent hashes, exact provenance and one review per page before any write.
+   It then commits page files, revision sidecars, identity registry and task state.
+   The run manifest is written last, so an interruption can be safely retried.
+
+Zero-candidate work still records Pass 0, complete inspections and a substantive
+Reduce reason; it can Finalize with no page or identity. A committed page remains
+`business_status: unassessed` and `visibility: draft`; QA is independently
+`usable` or `qa_required`. P4 Vault Finalize will determine release projections.

@@ -33,6 +33,13 @@ def test_isolated_bootstrap_and_no_overwrite(copied, tmp_path, profile):
     assert check.returncode == 0, check.stdout + check.stderr
     data = json.loads(check.stdout)
     assert data["bootstrap_ready"] and not data["query_ready"]
+    assert data["phase"] == "P3"
+    declaration = json.loads((vault / "_system/vault.json").read_text(encoding="utf-8"))["source_units"]
+    assert declaration["capabilities"] == {"bootstrap": True, "source_reader": True,
+                                            "knowledge_build": True, "retrieval": False}
+    identities = json.loads((vault / "_system/metadata/knowledge-identities.json").read_text(encoding="utf-8"))
+    assert identities == {"contract": "hermes-knowledge-identity-registry/v1",
+                          "revision": 0, "subjects": []}
     before = {p.relative_to(vault): p.read_bytes() for p in vault.rglob("*") if p.is_file()}
     for extra in [[], ["--force-empty"]]:
         assert run(script, "--vault-path", vault, *extra).returncode != 0

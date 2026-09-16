@@ -1,6 +1,6 @@
 # ADR-0004：稳定知识身份与显式 Finalize
 
-日期：2026-09-14，2026-09-15 校正。状态：接受；P3–P7 待实施，P3 以前置 [P2.1 Chunk Engine](0005-shared-chunk-engine.md) 为输入门禁。关联：[来源单元契约](0003-source-unit-contracts.md)和[演进计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)。
+日期：2026-09-14，2026-09-16 校正。状态：接受；P3 已实现，P4–P7 待实施。P3 以前置 [P2.1 Chunk Engine](0005-shared-chunk-engine.md) 为输入门禁。关联：[来源单元契约](0003-source-unit-contracts.md)、[P3 验收](../SOURCE_UNITS_P3_ACCEPTANCE.md)和[演进计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)。
 
 ## 背景
 
@@ -35,3 +35,5 @@ P2 来源内容层；P2.1 共享 Chunk Engine 校正；P3 Pass/Reduce、知识�
 ## 后果
 
 controlled-ingest 继续负责来源准备、Unit 发布、阅读任务、候选和页面修订生成；不再独自承担全库收尾。lint 保持独立只读审计。Provider 仍是可重建数据面。目录移动、slug 调整和数据库迁移都不改变 SourceUnit 或知识对象身份。
+
+2026-09-16 实现补充：P3 使用 `FileKnowledgeBuildService` 和文件式 repository，发布持久化 reading package、连续 Pass 记录、identity registry、page revision sidecar 与 build run。Build Finalize 在写入前完成 review、parent hash、UnitRef、task revision 和 identity/path 冲突检查，run manifest 最后写入以支持幂等恢复。页面提交、QA、业务资格和可见性分别记录；P3 不发布 Vault release。

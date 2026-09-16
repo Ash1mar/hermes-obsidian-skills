@@ -941,6 +941,11 @@ def setup(args: argparse.Namespace) -> None:
     generated_governance = governance_files(args, vault)
     generated_governance["_system/vault.json"]["source_units"] = declaration(effective_config)
     generated_governance[CONFIG_PATH] = effective_config
+    generated_governance["_system/metadata/knowledge-identities.json"] = {
+        "contract": "hermes-knowledge-identity-registry/v1",
+        "revision": 0,
+        "subjects": [],
+    }
 
     created_dirs = []
     for rel in BASE_DIRS + PROFILE_DIRS[args.profile] + DIRECTORIES:

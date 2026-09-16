@@ -2,7 +2,7 @@
   "contract": "hermes-unit-work-ledger/v1",
   "task_id": "task-example",
   "task_type": "knowledge_build",
-  "task_contract": "hermes-knowledge-build/v4",
+  "task_contract": "hermes-knowledge-build-run/v1",
   "revision": 1,
   "attempt": 1,
   "actor": "p0-example-author",

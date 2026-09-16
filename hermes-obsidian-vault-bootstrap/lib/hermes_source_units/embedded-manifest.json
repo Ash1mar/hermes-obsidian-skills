@@ -1,5 +1,5 @@
 {
-  "__init__.py": "9c4c4eae39a358343f10b055b79aa13133d0382135ca2a3729064e994d57b666",
+  "__init__.py": "76ed4945c165cc66b8ec82e0f4e1781feae09f04c2f6434c94cbf6afe1b9a7e3",
   "__main__.py": "48884b5bd01638149212d2f65b0d35ef31d866a84f13eeeb7c4c2cda6e5529bb",
   "chunk_engine/__init__.py": "65035eca98305cc142b2a2ddb46443e085d4e7acd9d226fc168f0073d4ad1df4",
   "chunk_engine/atoms.py": "bf2811ed114aa929dac3e6dce541438e6fd3cb1fd2ccbae1bcbf05cd4f797d82",
@@ -12,10 +12,11 @@
   "chunk_engine/tokenization.py": "da8c87116a3a627b7b970679ed67c503b6e18efc401fd7a0e116d422f2dbdba4",
   "chunk_engine/validation.py": "35d6ab342f838fac18eb175f2ebdf45a70d04c63e9e0c94731928347f4cf8d36",
   "defaults/config.json": "1bf63565930370259243430afee19f89f26776ace4b055c728826b2e3aa024dd",
-  "interfaces.py": "61a20795f4f57a69f5e53746d67ef11b4f1f7c0379627bd88e3e2d3ff3f05dd4",
+  "interfaces.py": "451bdd2b811854b3547452cadf5cec401d397cc48d4614023a5171e218cae294",
+  "knowledge_build.py": "8e8c80d6d49d6071005f011b7a57fb03bb286354c0d75952fac299a04defe59c",
   "py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "schemas/contracts.json": "68bd0e44f09f5ecb4cc7d920556362528ef8d3e4974d83a84f31ca762f9db905",
-  "source_units.py": "b4fcf919816d4e8bbe8b27fb2d5dd999d55d3e3ab777d8919f8692dac35b19df",
-  "validation.py": "1e5345242931002d09e01b64cbd75b15bd863173db1d23bfebc1c671ea3cf31b",
-  "vault_config.py": "7589123ae8cb3a9cd100c96f7ef4dcb2da72773223fd5b3fd52c785ed6c2f82a"
+  "schemas/contracts.json": "452083c79e1dabaf05a482a064ed223f2fa3f98e77535bdadf17e40901edf14e",
+  "source_units.py": "3a8ddce2ee88674c958eab975e56937b0b3b8e1e8c821197deb422f20df1fb35",
+  "validation.py": "f5bffd71530933495ebae9bedf82826c5f19d493478b2b8d9d320ae1c0495726",
+  "vault_config.py": "e962daece773bc6c1ef41cfbeda35f8413248d5a184a800820259ba082f86158"
 }
