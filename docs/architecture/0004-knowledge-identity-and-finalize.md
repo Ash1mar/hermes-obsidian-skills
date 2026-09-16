@@ -1,6 +1,6 @@
 # ADR-0004：稳定知识身份与显式 Finalize
 
-日期：2026-09-14，2026-09-16 校正。状态：接受；P3 已实现，P4–P7 待实施。P3 以前置 [P2.1 Chunk Engine](0005-shared-chunk-engine.md) 为输入门禁。关联：[来源单元契约](0003-source-unit-contracts.md)、[P3 验收](../SOURCE_UNITS_P3_ACCEPTANCE.md)和[演进计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)。
+日期：2026-09-14，2026-09-16 校正。状态：接受；P3/P4 已实现，P5–P7 待实施。P3 以前置 [P2.1 Chunk Engine](0005-shared-chunk-engine.md) 为输入门禁。关联：[来源单元契约](0003-source-unit-contracts.md)、[P3 验收](../SOURCE_UNITS_P3_ACCEPTANCE.md)、[P4 验收](../SOURCE_UNITS_P4_ACCEPTANCE.md)和[演进计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)。
 
 ## 背景
 
@@ -15,7 +15,7 @@ WeKnora 的可借鉴流程可抽象为候选发现、分批 chunk citation、按
 3. P3 将知识构建明确为 Pass 0 候选、Pass 1..N 单元引用、Reduce 页面修订和 Build Finalize。Build Finalize 提交复核、provenance、依赖与任务终态。
 4. P4 新增增量 Vault Finalize：计算受影响集合，核对页面修订和来源依赖，处理 stale/withdrawn 贡献，整理别名、重定向、链接和目录投影，并发布可审计的 knowledge release manifest。
 5. 新增 `hermes-obsidian-knowledge-finalize` Skill 作为 P4 操作入口。先实现可测试的领域模块与 `plan/apply/validate`，Skill 不成为后台服务，也不自动批准业务版本。
-6. Finalize 输出索引资格集合，但不隐式修改 Provider。P5 Provider sync 直接消费可索引 SourceUnit 和已提交页面修订，不普遍重切来源；原始来源检索不被全库导航收尾阻塞。
+6. Finalize 输出索引资格集合，但不隐式修改 Provider。P5 按 [ADR-0006](0006-release-driven-retrieval-projection.md) 由显式 Provider sync 消费当前 release 中可索引 SourceUnit 和已提交页面修订，不普遍重切来源；原始来源检索不被全库导航收尾阻塞。
 7. WorkLedger 不再拥有内容边界。它保留任务领取、实际检查、覆盖、QA、重试、执行者、输出和完成依据，是工作/审计控制面，不因数据库出现而消失。
 8. 数据库作为 repository backend 后置。它改善查询、唯一约束、事务、并发和影响分析；`pg_trgm` 只用于名称/别名候选预筛选，不能决定对象同一性。禁止长期 JSON/SQL 双写。
 
@@ -37,3 +37,5 @@ P2 来源内容层；P2.1 共享 Chunk Engine 校正；P3 Pass/Reduce、知识�
 controlled-ingest 继续负责来源准备、Unit 发布、阅读任务、候选和页面修订生成；不再独自承担全库收尾。lint 保持独立只读审计。Provider 仍是可重建数据面。目录移动、slug 调整和数据库迁移都不改变 SourceUnit 或知识对象身份。
 
 2026-09-16 实现补充：P3 使用 `FileKnowledgeBuildService` 和文件式 repository，发布持久化 reading package、连续 Pass 记录、identity registry、page revision sidecar 与 build run。Build Finalize 在写入前完成 review、parent hash、UnitRef、task revision 和 identity/path 冲突检查，run manifest 最后写入以支持幂等恢复。页面提交、QA、业务资格和可见性分别记录；P3 不发布 Vault release。
+
+2026-09-16 P4 实现补充：`FileVaultFinalizeService` 与独立 `hermes-obsidian-knowledge-finalize` Skill 提供 plan/apply/validate/status。计划钉住 build、identity registry、UnitSet current pointer、页面与 source changes；贡献分为 active/stale/withdrawn，页面分为 current/review_required/blocked。页面移动只在旧内容可验证时生成 redirect；导航投影验证死链、歧义、反向链接与目录。Apply 重算计划并最后写 release manifest，不调用 Provider，也不把 unassessed/draft 页面提升为可索引。

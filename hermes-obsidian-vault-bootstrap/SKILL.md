@@ -111,9 +111,10 @@ New bootstrap Vaults contain `_system/metadata/source-unit-config.json` and a
 codepoints for source/reading sizes and separate token budgets for retrieval;
 `tokenizer: null` does not promise exact tokenization or an available Provider.
 P2/P2.1 supplies source preparation and exact reads; P3 supplies UnitSet-native
-knowledge construction and Build Finalize through controlled ingest. Vault Finalize
-and Provider/query remain gated. Do not execute the legacy line/ledger knowledge path
-on these Vaults. Full lint reports `source_units.pipeline_pending` until P4/P5 exist.
+knowledge construction and Build Finalize through controlled ingest; P4 supplies
+explicit knowledge releases through the Knowledge Finalize Skill. Provider/query
+remain gated. Do not execute the legacy line/ledger knowledge path on these Vaults.
+Full lint reports `source_units.pipeline_pending` until P5 exists.
 
 Initialize with `python3 "<bootstrap-skill-root>/scripts/init_obsidian_vault.py" --vault-path "/path/to/new-vault"`.
 An optional `--source-unit-config "/path/to/config.json"` replaces the complete
@@ -128,4 +129,4 @@ Validate the scaffold with:
 python3 "<bootstrap-skill-root>/scripts/validate_source_unit_vault.py" --vault "/path/to/new-vault"
 ```
 
-A successful result includes phase `P3`, `bootstrap_ready: true` and `query_ready: false`.
+A successful result includes phase `P4`, `bootstrap_ready: true` and `query_ready: false`.

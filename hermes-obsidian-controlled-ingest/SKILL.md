@@ -24,9 +24,9 @@ Select scope from the user's requested outcome, not from the amount of conversio
 `pending` is work to select, not a blocker. No page quota is required, but knowledge construction
 requires actual range inspection and decisions, including evidence-backed skip/defer decisions.
 An empty build record, query-index generation, Provider sync or gap query cannot replace this work.
-For a P3 source-unit Vault, use the UnitSet-native route in `references/source-units.md`.
+For a P4 source-unit Vault, use the UnitSet-native route in `references/source-units.md`.
 The older line/ledger build record in `references/knowledge-construction.md` remains
-only for Vaults that do not declare the P3 capability.
+only for Vaults that do not declare the source-unit knowledge-build capability.
 
 Report separate completion dimensions: source preservation; registration; conversion/processing;
 section processing (status counts); knowledge construction (inspected scope, decisions and outputs);
@@ -221,9 +221,9 @@ After a completed source ingest or at the end of a related batch, run `python3 "
 
 Treat `document.md` as the single normalized text source. Do not duplicate every section into separate Markdown files. Use the ledger's non-overlapping `content_ranges` for staged ingestion and the JSON ledger as the section-state authority.
 
-## P3 Source-unit Route
+## P4 Source-unit Route
 
-When `_system/vault.json` declares source-unit phase `P3` with
+When `_system/vault.json` declares source-unit phase `P4` with
 `capabilities.source_reader: true` and `capabilities.knowledge_build: true`, read
 `references/source-units.md`. Use `manage_source_units.py` for artifact/UnitSet work
 and `manage_knowledge_build.py` for tasks, readings, Pass/Reduce and Build Finalize. After source
@@ -231,10 +231,11 @@ registration and Bundle validation/`ingest-finish`, prepare the immutable normal
 artifact, preview the boundaries, then publish the unit set with the current expected
 revision. For direct Markdown, use its registered document/version/resource identity.
 
-In a P3 Vault, SourceUnit owns source boundaries and exact reads. Do not initialize a
+In a P4 Vault, SourceUnit owns source boundaries and exact reads. Do not initialize a
 legacy section ledger, create line-based build records or use Provider chunks as source
 identity. Knowledge work must start from task target UnitRefs and end through Build Finalize.
-Vault Finalize and Provider consumption remain unavailable until P4/P5.
+Hand completed builds to `hermes-obsidian-knowledge-finalize`; controlled ingest must
+not synthesize release state itself. Provider consumption remains unavailable until P5.
 Report the artifact revision, unit-set ID, engine version/fingerprint, selected strategy,
 revision, unit/section counts, token-audit status, diagnostics and
 validation result. An oversized protected structure is an explicit diagnostic requiring
@@ -246,7 +247,7 @@ draft knowledge. Only claim verified or authoritative rules after the required e
 
 ## Material Classification
 
-For legacy non-P3 Vaults, before creating or updating durable knowledge, read `references/knowledge-construction.md`.
+For legacy Vaults without the source-unit knowledge-build capability, before creating or updating durable knowledge, read `references/knowledge-construction.md`.
 Use its default candidate -> identity -> evidence -> decision -> writing -> review workflow,
 including for batch synthesis and query-derived writeback. No business configuration is required.
 Record new knowledge decisions in one bounded `*.knowledge-build.json` beside the ingest log;

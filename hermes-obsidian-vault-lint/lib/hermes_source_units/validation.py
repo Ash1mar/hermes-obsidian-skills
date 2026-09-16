@@ -373,6 +373,52 @@ def validate_record(kind: str, record: Mapping[str, Any]) -> None:
             _fail("INVALID_STATE", "$.page_revisions", "page state must follow build state")
         if not record["page_revisions"] and not record["reason"].strip():
             _fail("REASON_REQUIRED", "$.reason", "zero-output build requires a finding")
+    if kind == "vault_finalize_plan":
+        _unique([item["run_id"] for item in record["build_runs"]], "$.build_runs")
+        _unique([item["resource_id"] for item in record["source_changes"]], "$.source_changes")
+        _unique([item["page_id"] for item in record["subjects"]], "$.subjects")
+        _unique([item["from_path"] for item in record["redirects"]], "$.redirects")
+        _unique([item["page_id"] for item in record["navigation"]], "$.navigation")
+        _unique([[item["kind"], item["id"]] for item in record["index_eligibility"]], "$.index_eligibility")
+        expected = fingerprint({key: value for key, value in record.items()
+                                if key not in ("plan_id", "revision", "state")})
+        if record["plan_id"] != expected:
+            _fail("IDENTITY_MISMATCH", "$.plan_id", "Finalize plan identity does not match its content")
+        for item in record["subjects"]:
+            if item["disposition"] == "current" and (item["stale_support_refs"] or item["withdrawn_support_refs"]):
+                _fail("INVALID_STATE", "$.subjects", "current subject cannot contain invalidated contributions")
+            if item["disposition"] == "blocked" and item["active_support_refs"]:
+                _fail("INVALID_STATE", "$.subjects", "blocked subject cannot claim current support")
+        for item in record["index_eligibility"]:
+            if item["eligible"] != (not item["reasons"]):
+                _fail("INVALID_STATE", "$.index_eligibility", "eligibility must agree with reasons")
+            source = item["kind"] == "source_unit_set"
+            if source != (item["resource_id"] is not None and item["unit_set_id"] is not None):
+                _fail("INVALID_STATE", "$.index_eligibility", "source eligibility requires resource and UnitSet identity")
+            if source == (item["page_revision_id"] is not None):
+                _fail("INVALID_STATE", "$.index_eligibility", "page eligibility requires only page revision identity")
+    if kind == "knowledge_navigation":
+        _unique([item["page_id"] for item in record["entries"]], "$.entries")
+        _unique([item["path"] for item in record["entries"]], "$.entries")
+        _unique([item["from_path"] for item in record["redirects"]], "$.redirects")
+        pages = {item["page_id"] for item in record["entries"]}
+        for item in record["entries"]:
+            if not set(item["outgoing_page_ids"] + item["incoming_page_ids"]).issubset(pages):
+                _fail("UNRESOLVED_REFERENCE", "$.entries", "navigation edge references an absent page")
+    if kind == "knowledge_release_state":
+        if (record["current_release_id"] is None) != (not record["releases"]):
+            _fail("INVALID_STATE", "$.current_release_id", "release state current pointer and history disagree")
+        if record["current_release_id"] is not None and record["current_release_id"] not in record["releases"]:
+            _fail("UNRESOLVED_REFERENCE", "$.current_release_id", "current release is absent from history")
+    if kind == "knowledge_release":
+        _unique([item["run_id"] for item in record["build_runs"]], "$.build_runs")
+        _unique([item["resource_id"] for item in record["source_changes"]], "$.source_changes")
+        _unique([item["page_id"] for item in record["subjects"]], "$.subjects")
+        _unique([item["from_path"] for item in record["redirects"]], "$.redirects")
+        _unique([[item["kind"], item["id"]] for item in record["index_eligibility"]], "$.index_eligibility")
+        for item in record["index_eligibility"]:
+            if item["eligible"] != (not item["reasons"]):
+                _fail("INVALID_STATE", "$.index_eligibility", "eligibility must agree with reasons")
 
 
 def validate_references(kind: str, record: Mapping[str, Any], units: list[dict[str, Any]]) -> None:

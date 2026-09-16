@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "hermes-source-units/src/hermes_source_units"
 TARGETS = ("hermes-obsidian-vault-bootstrap", "hermes-obsidian-vault-lint",
-           "hermes-obsidian-controlled-ingest")
+           "hermes-obsidian-controlled-ingest", "hermes-obsidian-knowledge-finalize")
 
 
 def main():
