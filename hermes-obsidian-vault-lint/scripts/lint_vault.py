@@ -19,7 +19,9 @@ from urllib.parse import urlsplit
 
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-from hermes_source_units import ContractError, FileKnowledgeBuildService, FileSourceUnitService
+from hermes_source_units import (ContractError, FileKnowledgeBuildService,
+                                 FileSourceUnitService,
+                                 FileVaultFinalizeService)
 from hermes_source_units.vault_config import validate_vault as validate_source_unit_vault
 
 SCHEMA_VERSION = "1.0"
@@ -1416,6 +1418,19 @@ def lint(args: argparse.Namespace) -> dict[str, Any]:
                 add_issue(issues, "source_units.knowledge_build_invalid", "error",
                           manifest.relative_to(vault).as_posix(), str(exc))
 
+    def knowledge_release_stage() -> None:
+        manifests = sorted((vault / "_system/knowledge-releases").glob("*/manifest.json"))
+        metrics["knowledge_releases"] = len(manifests)
+        if not manifests:
+            return
+        service = FileVaultFinalizeService(vault)
+        for release in manifests:
+            try:
+                service.validate(release.parent.name)
+            except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
+                add_issue(issues, "source_units.knowledge_release_invalid", "error",
+                          release.relative_to(vault).as_posix(), str(exc))
+
     manifest_path = vault / "_system/vault.json"
     if manifest_path.is_file():
         try:
@@ -1423,13 +1438,14 @@ def lint(args: argparse.Namespace) -> dict[str, Any]:
             if "source_units" in manifest:
                 metrics["source_units"] = validate_source_unit_vault(vault)
                 add_issue(issues, "source_units.pipeline_pending", "error", "_system/vault.json",
-                          "P3 source and Build Finalize are available, but Vault Finalize and Provider/query pipelines are not implemented.")
+                          "P4 Vault Finalize is available, but Provider/query pipelines are not implemented.")
         except (OSError, ValueError, TypeError) as exc:
             add_issue(issues, "source_units.invalid_config", "error", "_system/vault.json", str(exc))
 
     stage("structure", lambda: lint_structure(vault, issues, metrics))
     stage("source_units", source_unit_stage)
     stage("source_units.knowledge_build", unit_knowledge_build_stage)
+    stage("source_units.knowledge_release", knowledge_release_stage)
     stage("governance", lambda: lint_governance_control_plane(vault, profile, issues, metrics))
     stage("governance.projections", lambda: lint_governance_projections(vault, issues, metrics))
     ingest_skill = discover_ingest_skill(Path(__file__), args.ingest_skill_path)

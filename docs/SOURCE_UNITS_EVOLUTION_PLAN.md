@@ -1,7 +1,7 @@
 # 通用来源单元：全新建库设计与实施计划
 
-日期：2026-09-11，2026-09-16 校正。修订：R6，保留全新建库前提，完成 P3 UnitSet-native 知识构建状态机。
-状态：P0/P1/P2/P2.1/P3 已完成；下一阶段 P4，P5–P7 待实施，未执行正式库重建或 ingest。阶段重排见 [ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)，P2.1 决策见 [ADR-0005](architecture/0005-shared-chunk-engine.md)，实现入口见 [ADR-0003](architecture/0003-source-unit-contracts.md)、[共享包规范](../hermes-source-units/README.md)及 [P0](SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](SOURCE_UNITS_P3_ACCEPTANCE.md)验收。
+日期：2026-09-11，2026-09-16 校正。修订：R8，保留全新建库前提，完成 P4，并钉住 P5 Release 驱动的检索投影契约。
+状态：P0/P1/P2/P2.1/P3/P4 已完成；下一阶段 P5，P6–P7 待实施，未执行正式库重建或 ingest。阶段重排见 [ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)，P2.1 决策见 [ADR-0005](architecture/0005-shared-chunk-engine.md)，P5 决策见 [ADR-0006](architecture/0006-release-driven-retrieval-projection.md)，实现入口见 [ADR-0003](architecture/0003-source-unit-contracts.md)、[共享包规范](../hermes-source-units/README.md)及 [P0](SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](SOURCE_UNITS_P3_ACCEPTANCE.md)、[P4](SOURCE_UNITS_P4_ACCEPTANCE.md)验收。
 
 ## 1. 本轮确定的前提
 
@@ -357,7 +357,7 @@ P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上�
 | P3.6 Build Finalize | output review、provenance、页面依赖与任务 revision 一致提交 | 失败可恢复；任务完成、QA、业务资格和可见性分别判定 |
 | P3.7 跨来源实践 | 使用 P2 输出完成一次真实 Pass/Reduce/Build Finalize | 多来源页面可回查；不依赖先建向量索引 |
 
-### 11.8 P4：Vault Finalize 与独立 Skill
+### 11.8 P4：Vault Finalize 与独立 Skill（已完成）
 
 | 子任务 | 工作 | 可验收结果 |
 |---|---|---|
@@ -371,12 +371,14 @@ P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上�
 
 | 子任务 | 工作 | 可验收结果 |
 |---|---|---|
-| P5.1 单元语料入口 | 按来源资格读 canonical units 及已提交派生页，删除 Provider 独立来源切块入口 | 每个普通检索输入恰好钉住一个真实 unit_ref，不能退回粗行号猜测 |
-| P5.2 索引渲染 | 一个可索引 Unit 对应一个普通索引文档；标题面包屑单列加入，按模型 tokenizer 测量；硬上限/oversized 特例显式阻断或记录 subspan | Provider 不普遍合并、重切或另加 overlap；渲染输入和 Unit 映射可验证 |
-| P5.3 存储与指纹 | Chroma/BM25 同投影 manifest；窗口、模型、来源变化分别失效 | 改模型不改来源 ID；重建不产生混代结果 |
-| P5.4 传输与能力校验 | CLI/HTTP/normalizer 一起传 unit_refs、projection 指纹及定位精度 | 字段不在适配中丢失，缺能力明确报错 |
-| P5.5 命中与父上下文 | 命中窗口 → 真正来源单元 → 有预算的相邻/章节上下文；治理再检查 | 小范围匹配、大范围理解；上下文去重，不跨资格边界泄漏 |
-| P5.6 端到端验证 | 原文引用核验、索引不可用、过期投影、无答案、派生页依赖场景 | 查询只读，回答回到原文，而非把 snippet 当最终证据 |
+| P5.1 Release 语料入口 | 只读当前 P4 release 的 eligibility，枚举 `source_unit_set` 和 `knowledge_page`；sync 由 release submission 触发；删除新链路 Markdown glob 与 Provider 独立 chunker | 每个输入钉住 release hash 和真实 UnitSet/Unit 或 page revision；Query 不触发构建，旧入口不能混入新代次 |
+| P5.2 索引渲染与 tokenizer | 一个 eligible Unit 对应一个普通 `source_unit` 文档；`knowledge_page` 保存 page revision 与 active refs；标题面包屑仅作 projection context；绑定 embedding 模型真实 tokenizer 资产及 checksum；普通超限阻断，仅显式 oversized 特例可建立精确 subspan | Provider 不普遍合并、重切或另加 overlap；tokenizer 缺失/不匹配不回退；两类 projection 不互相冒充 |
+| P5.3 存储、代次与指纹 | manifest 钉住 release ID/hash、UnitSet/Unit、renderer、tokenizer/模型、reranker 及 Chroma/BM25 generation；首次部署从 release 全量建立新代次 | 内容、renderer、模型和存储失效可区分；改模型不改来源 ID；不迁移旧 Markdown chunk，不产生混代结果 |
+| P5.4 协议、传输与能力 | 保留 `hermes-coarse-recall/v1` 与 `candidate-navigation-only`，扩展 `source_units` capability、完整 UnitRef、projection kind/fingerprint、release/generation；CLI/HTTP/normalizer/Query adapter 同步更新 | 字段端到端不丢失；旧 Provider 或缺 tokenizer readiness 明确拒绝，不退回粗行号猜测 |
+| P5.5 Query 精确回读 | 校验当前 release 与 index generation、UnitRef 和 eligibility；用 reader 回读核心正文，按预算组合相邻 Unit/章节/资产并去重；融合层级候选，最终核验原文/PDF | snippet、标题 context 和 `parent_text` 不作为最终证据；上下文不跨资格边界，Query 不修复索引 |
+| P5.6 端到端与部署验收 | 覆盖 stale release、UnitSet/renderer/模型变化、索引中断、Provider 不可用、无答案、派生页溯源及 CLI/HTTP 一致性；验证 main 本地模型与 intranet 远端模型拓扑 | 所有失败显式可恢复；Provider 状态在 Vault 外；正式 intranet 使用可检查的 host bind state，离线镜像及 tokenizer 资产有摘要 |
+
+P5 首次部署必须创建新 index generation，不迁移当前 Provider 的旧 Markdown chunk。Provider 仍作为独立进程或容器发布；共享 SourceUnit 语义通过 release/UnitRef 契约交互，不把 Chroma、模型或 tokenizer 重依赖安装进 Hermes。完整决策和门禁见 [ADR-0006](architecture/0006-release-driven-retrieval-projection.md)。
 
 ### 11.10 P6/P7：完整实践与正式重建细分
 

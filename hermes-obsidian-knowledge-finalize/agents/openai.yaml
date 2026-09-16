@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hermes Knowledge Finalize"
+  short_description: "发布可审计的增量知识 Release"
+  default_prompt: "使用 $hermes-obsidian-knowledge-finalize 检查已完成构建、来源贡献、导航与索引资格，并显式发布 Vault knowledge release。"

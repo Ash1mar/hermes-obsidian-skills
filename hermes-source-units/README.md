@@ -1,6 +1,6 @@
 # Hermes Source Units
 
-版本 `0.3.0`，运行时第三方依赖为零，仅使用 Python 3.11+ 标准库。P2.1 的共享 Chunk Engine 提供 canonical SourceUnit；P3 在同一 UnitRef 上实现任务领取、阅读材料包、Pass 0/Pass 1..N、稳定知识身份、Reduce 页面修订和 Build Finalize。Vault Finalize 与 Provider 分别属于 P4、P5。
+版本 `0.4.0`，运行时第三方依赖为零，仅使用 Python 3.11+ 标准库。P2.1 的共享 Chunk Engine 提供 canonical SourceUnit；P3 在同一 UnitRef 上实现任务领取、阅读材料包、Pass 0/Pass 1..N、稳定知识身份、Reduce 页面修订和 Build Finalize；P4 实现增量 Vault Finalize。Provider 属于 P5。
 
 ## 交付与运行
 
@@ -9,7 +9,8 @@
 - `chunk_engine/`：P2.1 的 profile、sections、atoms、strategies、overlap、validation 和 engine；不依赖 repository 或 Provider。
 - `source_units.py`：`FileSourceUnitService`，实现 Markdown/Bundle v2 适配、确定性身份、预览、发布、验证、读取、token audit 和上下文组合。
 - `knowledge_build.py`：`FileKnowledgeBuildService`，实现 P3 文件式工作账本、阅读包、Pass/Reduce、身份 registry、页面修订和可恢复 Build Finalize。
-- `interfaces.py`：P2 `SourceUnitBuilder` / `SourceUnitReader` 及 P3 `KnowledgeBuildRepository` 的 Protocol 与请求/响应类型。
+- `vault_finalize.py`：`FileVaultFinalizeService`，实现 P4 影响分析、贡献失效、导航/重定向投影、索引资格与 knowledge release。
+- `interfaces.py`：P2 `SourceUnitBuilder` / `SourceUnitReader`、P3 `KnowledgeBuildRepository` 及 P4 `VaultFinalizeRepository` 的 Protocol。
 - `defaults/config.json`：来源、阅读、检索分开的起始配置；每次读取返回独立对象。
 - `examples/`：手工编写的中文/emoji、条款、表格链接及完整资产样例；两块正文和一个表格资产；12 个错误记录。
 
@@ -47,6 +48,15 @@ python3 "<ingest-skill-root>/scripts/manage_knowledge_build.py" --vault "/path/t
 python3 "<ingest-skill-root>/scripts/manage_knowledge_build.py" --vault "/path/to/vault" finalize --request finalize.json
 ```
 
+P4 由独立 Skill 执行，不让 ingest 隐式完成全库收尾：
+
+```bash
+python3 "<finalize-skill-root>/scripts/manage_vault_finalize.py" "/path/to/vault" plan --request plan.json
+python3 "<finalize-skill-root>/scripts/manage_vault_finalize.py" "/path/to/vault" apply --request apply.json
+python3 "<finalize-skill-root>/scripts/manage_vault_finalize.py" "/path/to/vault" validate --release-id <release-id>
+python3 "<finalize-skill-root>/scripts/manage_vault_finalize.py" "/path/to/vault" status
+```
+
 ### 部署修正：保持直接复制 Skill 目录
 
 用户的实际部署是将仓库内 Skill 目录直接复制到 Hermes skills 目录。Hermes 读取 SKILL.md 并执行其指定脚本；它不会自动发现仓库旁边的 Python distribution，也不会自动安装 wheel。因此撤销“用户需向 Hermes 环境额外安装同一 wheel”的部署前提。
@@ -55,11 +65,11 @@ P1/P2 的交付方式是：需要共享逻辑的 Skill 自带脚本、模块及 
 
 源码可以继续在本目录维护一份，发行生成所需 Skill/Provider 的内置副本，并检查版本和内容指纹。直接复制部署要求这些生成内容已在交付的 Skill 目录内，不能让用户在目标机器补做构建。禁止人工分别修改副本；“单份维护”不要求运行时所有进程必须访问同一个物理文件。
 
-0.3.0 继续不依赖 jsonschema，使用标准库检查本项目固定 schema 词汇与现有业务约束，不实现通用 JSON Schema 引擎。新增未知关键字、远程引用、递归定义或未知 format 一律报 UNSUPPORTED_SCHEMA，不静默漏检。JSON Schema 文件仍是共享的字段定义，无需维护两份字段表。
+0.4.0 继续不依赖 jsonschema，使用标准库检查本项目固定 schema 词汇与现有业务约束，不实现通用 JSON Schema 引擎。新增未知关键字、远程引用、递归定义或未知 format 一律报 UNSUPPORTED_SCHEMA，不静默漏检。JSON Schema 文件仍是共享的字段定义，无需维护两份字段表。
 
 隔离复制测试已通过：模块和资源复制到临时 Skill 布局，入口按自身位置加载，在 `python -I -S`（不加载 site-packages、忽略 PYTHONPATH）下运行。P1 已接入 bootstrap 和 lint 的真实 Skill 交付和入口。现有测试框架 pytest 与可选的打包工具 setuptools/wheel 只在开发端使用；jsonschema 仅可作额外开发对照，不是运行或测试集的必装项。
 
-**当前共享模块已内置到 bootstrap、lint 和 controlled-ingest 的 `lib/` 目录，并通过真实 Skill 的无第三方依赖复制运行验证。** wheel 测试只证明 Python 包资源能打包，不证明 Hermes 能发现它。此实现不引入独立服务或额外后台进程。
+**当前共享模块已内置到 bootstrap、lint、controlled-ingest 和 knowledge-finalize 的 `lib/` 目录，并通过真实 Skill 的无第三方依赖复制运行验证。** wheel 测试只证明 Python 包资源能打包，不证明 Hermes 能发现它。此实现不引入独立服务或额外后台进程。
 
 ## 已确定的语义
 
@@ -108,7 +118,11 @@ P2 生成器已采用以上分层依赖并验证确定性 ID；P5 对同一 Unit
 
 `hermes-knowledge-build/v4` 是 P0 的静态组合契约；P3 执行路径使用 `hermes-knowledge-pass/v1`、`hermes-knowledge-page-revision/v1` 和 `hermes-knowledge-build-run/v1`。每个页面的支持范围等于所选 citation candidates 的支持并集，且候选证据已被检查。多来源、多版本比较可在同库 reading/build 记录中表达；一个普通 Provider 索引记录仍钉住一个 canonical Unit。
 
-P3 的页面修订钉住 authored_sha256、支持 UnitRefs 和 review，并将提交状态、QA、业务资格和可见性分开。P3 不自动批准业务资格：新页面保持 `business_status: unassessed` 与 `visibility: draft`，P4 再决定 Vault release。
+P3 的页面修订钉住 authored_sha256、支持 UnitRefs 和 review，并将提交状态、QA、业务资格和可见性分开。P3 不自动批准业务资格：新页面保持 `business_status: unassessed` 与 `visibility: draft`。P4 可以发布审计 release，但同样不批准业务资格，因此这些页面继续明确排除在索引资格之外。
+
+P4 的 `plan` 钉住当前 identity registry、Build revisions、UnitSet current pointers、页面哈希和显式 source changes。旧贡献不再属于当前 UnitSet 时标记 `stale`；撤回标记 `withdrawn`。仍有当前支持的页面进入 `review_required`，没有当前支持的页面进入 `blocked`，两者都不会被自动删除。`apply` 在写入前重算完整计划，并拒绝死链、歧义链接、页面漂移和 revision 冲突。
+
+页面移动不改变 page_id。Finalize 只有在旧路径内容仍匹配已提交 page revision 或既有 Hermes redirect 时才写重定向；不覆盖无关文件。版本化 navigation 与 release manifest 保留可审计快照，当前 navigation 只是最新投影。Release manifest 最后写入；缺少 manifest 表示操作没有完成，可以按同一 plan 幂等恢复。
 
 ## 配置：参数先可用，效果待测
 
@@ -137,6 +151,7 @@ P2 实现对象由调用方传入显式 vault_root。接口原型在 interfaces.
 | plan/claim/read/pass | UnitRefs、任务 revision、actor、阅读预算和显式判断 | 可重试工作账本、持久化阅读材料包、候选/引用 Pass；context 不冒充 target coverage |
 | reduce | 当前任务 snapshots、citation candidates、身份判断和页面正文 | 稳定 subject/page ID、跨来源支持并集及 draft 页面修订 |
 | finalize | build revision、每页内容 hash、parent hash 与 review | 校验完再提交页面、revision sidecar、identity registry 和任务终态；中断可幂等恢复 |
+| release plan/apply/validate | completed builds、source changes、release state revision | 影响集合、贡献 disposition、导航/重定向、索引资格及最后提交的 release manifest |
 
 P0 已实现错误包括 INVALID_SCHEMA、INVALID_RANGE、UNRESOLVED_REFERENCE、OUTSIDE_UNIT、UNIT_SET_MISMATCH、INCOMPLETE_COVERAGE、UNINSPECTED_SUPPORT、PROVENANCE_MISMATCH、QA_REQUIRES_DRAFT、INVALID_BUDGET 等，均为 `ContractError(code, path, message)`。
 
@@ -157,7 +172,7 @@ P5 同时更新生产者、CLI/HTTP 传输与消费者，删除 Provider 独立 
 | 给定清单内的精确引用、子范围、覆盖、候选/页面依赖 | validate_references 已实现 |
 | schema-only 外部验证器 | 必须自己注册 vault-relative-path；纯 schema 不验证哈希、状态转换或跨记录关系 |
 | 原件/规范正文实际回读、总覆盖、资产真实存在 | P2 已实现；OCR/model-derived 的完整派生 DAG 留给相应 adapter |
-| registry 身份/hash/processing 与读取资格 | P2 已实现来源治理；P3 已实现稳定知识身份、真实 review、幂等任务与 Build Finalize |
+| registry 身份/hash/processing 与读取资格 | P2 已实现来源治理；P3 已实现稳定知识身份、真实 review、幂等任务与 Build Finalize；P4 已实现增量 release |
 | tokenizer adapter 与只读计数 | P2.1 已提供 TokenCounter/audit 接口；真实 embedding tokenizer 和检索效果属于 P5 |
 
 P0 的通过只表示契约实践通过，不代表已经完成 bootstrap、知识生成、检索或正式新库验收。
@@ -166,9 +181,9 @@ P0 的通过只表示契约实践通过，不代表已经完成 bootstrap、知�
 
 Run `python3 tools/sync_skill_runtime.py` from this package directory after a
 canonical source change, then run it with `--check`. Generated copies are committed
-inside bootstrap/lint/controlled-ingest; recipients only copy the complete Skill. Hashes describe
+inside bootstrap/lint/controlled-ingest/knowledge-finalize; recipients only copy the complete Skill. Hashes describe
 UTF-8 text with normalized LF line endings to support Windows/Linux checkouts.
-Provider packaging remains P5 work. Runtime version is 0.3.0; existing record
+Provider packaging remains P5 work. Runtime version is 0.4.0; existing record
 contracts stay versioned independently, and the Vault declaration remains
 `hermes-source-unit-vault/v1`.
 

@@ -4,7 +4,7 @@
 
 ## 推荐阅读顺序
 
-1. 先读 [`README.md`](README.md)，了解仓库能力、四个 Skill、短命令和 Provider 边界。
+1. 先读 [`README.md`](README.md)，了解仓库能力、五个 Skill、短命令和 Provider 边界。
 2. 做设计、评审、交付或跨团队沟通时读 [`docs/OFFICIAL_TECHNICAL_SPECIFICATION.md`](docs/OFFICIAL_TECHNICAL_SPECIFICATION.md)。
 3. 设计多机构材料、文档身份或业务版本时读 [`docs/architecture/0001-weknora-inspired-document-governance.md`](docs/architecture/0001-weknora-inspired-document-governance.md)。
 4. 需要理解端到端关系时读 [`charts.md`](charts.md)。
@@ -16,16 +16,17 @@
 
 ## 仓库级文档
 
-来源单元新体系的实现入口：[ADR-0003](docs/architecture/0003-source-unit-contracts.md)、[ADR-0004](docs/architecture/0004-knowledge-identity-and-finalize.md)、[ADR-0005](docs/architecture/0005-shared-chunk-engine.md)、[共享包规范](hermes-source-units/README.md)及 [P0](docs/SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](docs/SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](docs/SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](docs/SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](docs/SOURCE_UNITS_P3_ACCEPTANCE.md) 验收。P3 已完成 UnitSet-native Pass/Reduce、稳定知识身份和 Build Finalize；Vault Finalize 与 Provider 留到 P4/P5。
+来源单元新体系的实现入口：[ADR-0003](docs/architecture/0003-source-unit-contracts.md)、[ADR-0004](docs/architecture/0004-knowledge-identity-and-finalize.md)、[ADR-0005](docs/architecture/0005-shared-chunk-engine.md)、[ADR-0006](docs/architecture/0006-release-driven-retrieval-projection.md)、[共享包规范](hermes-source-units/README.md)及 [P0](docs/SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](docs/SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](docs/SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](docs/SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](docs/SOURCE_UNITS_P3_ACCEPTANCE.md)、[P4](docs/SOURCE_UNITS_P4_ACCEPTANCE.md) 验收。P4 已完成增量 Vault Finalize、导航投影和 knowledge release；P5 按 release 驱动 Provider/query 投影。
 
 | 文档 | 内容与用途 |
 | --- | --- |
-| [`README.md`](README.md) | 仓库总览：四个 Skill、Hermes slash aliases、目录结构、qmd-like-rag、验证方法及 MinerU、图片 Bundle、MarkItDown 集成入口。 |
+| [`README.md`](README.md) | 仓库总览：五个 Skill、Hermes slash aliases、目录结构、qmd-like-rag、验证方法及 MinerU、图片 Bundle、MarkItDown 集成入口。 |
 | [`DOCUMENTATION.md`](DOCUMENTATION.md) | 当前文档索引，说明每份文档讲什么、应该何时阅读，以及哪些仓库外资料仅作关联参考。 |
 | [`docs/OFFICIAL_TECHNICAL_SPECIFICATION.md`](docs/OFFICIAL_TECHNICAL_SPECIFICATION.md) | 项目级官方技术规范：统一定义系统范围、架构、组件职责、数据权威、schema/协议、四条工作流、分支部署、QA、安全、故障降级、兼容性与验收标准。 |
 | [`docs/architecture/0001-weknora-inspired-document-governance.md`](docs/architecture/0001-weknora-inspired-document-governance.md) | 已接受且阶段 1、2 已实现的架构决策：借鉴 WeKnora 分层建立最小文档身份、来源、业务版本、隔离和存储引用合同，并以 JSON repository 为数据库迁移做准备。 |
 | [`docs/architecture/0003-source-unit-contracts.md`](docs/architecture/0003-source-unit-contracts.md) | SourceUnit 身份、坐标、核心/上下文、文件仓库和复制式运行契约；记录 P0–P2 实践结论。 |
 | [`docs/architecture/0004-knowledge-identity-and-finalize.md`](docs/architecture/0004-knowledge-identity-and-finalize.md) | 稳定 subject/page identity、Build Finalize、Vault Finalize、独立 Finalize Skill 和数据库后置决策。 |
+| [`docs/architecture/0006-release-driven-retrieval-projection.md`](docs/architecture/0006-release-driven-retrieval-projection.md) | P5 Release 驱动的 SourceUnit/knowledge-page 检索投影、真实 tokenizer、索引代次、Query 精确回读和部署边界。 |
 | [`docs/SOURCE_UNITS_EVOLUTION_PLAN.md`](docs/SOURCE_UNITS_EVOLUTION_PLAN.md) | 从 P0 契约到 P7 正式重建的当前阶段计划、子任务与验收边界。 |
 | [`charts.md`](charts.md) | Mermaid 端到端流程图：`main`/`intranet` 环境差异、建库、摄取、Lint、单遍 Query Session、Provider 与 Vault 的读写关系。 |
 | [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md) | 双分支维护合同：共享变更先进入 `main`，再 merge 到 `intranet`；定义受保护配置、冲突处理、验证和推送顺序。 |
@@ -47,6 +48,13 @@
 | [`references/bundle-source-map-ledger.md`](hermes-obsidian-controlled-ingest/references/bundle-source-map-ledger.md) | source map 与 section ledger 的初始化、领取、修订号、状态转换、断点续做和 stale 对账。 |
 | [`references/retrieval-indexing.md`](hermes-obsidian-controlled-ingest/references/retrieval-indexing.md) | 摄取完成后如何通过 adapter 增量同步 coarse-recall Provider，以及 Vault 控制面记录与主机索引数据的分离。 |
 | [`references/document-governance.md`](hermes-obsidian-controlled-ingest/references/document-governance.md) | 文档治理管理器的 revision、锁、审计、机构审批、登记、原子激活，以及 `ingest-start`/`ingest-finish` 与 Bundle 投影、ledger 准入链路。 |
+
+## Knowledge Finalize 文档
+
+| 文档 | 内容与用途 |
+| --- | --- |
+| [`hermes-obsidian-knowledge-finalize/SKILL.md`](hermes-obsidian-knowledge-finalize/SKILL.md) | P4 增量 Vault Finalize 的独立运行入口，负责 plan/apply/validate/status。 |
+| [`references/vault-finalize.md`](hermes-obsidian-knowledge-finalize/references/vault-finalize.md) | 来源贡献失效、页面 disposition、安全重定向、导航阻断、release manifest 与恢复规则。 |
 
 ## Controlled Query 文档
 

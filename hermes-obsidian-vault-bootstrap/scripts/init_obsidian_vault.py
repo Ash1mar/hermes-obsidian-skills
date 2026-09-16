@@ -44,6 +44,8 @@ GOVERNANCE_FILE_PATHS = (
     "_system/metadata/document-governance.schema.json",
     "_system/metadata/source-organizations.json",
     "_system/metadata/document-registry.json",
+    "_system/metadata/knowledge-identities.json",
+    "_system/metadata/knowledge-release-state.json",
 )
 STABLE_ID_PATTERN = re.compile(r"^[a-z0-9][a-z0-9._-]{2,127}$")
 
@@ -945,6 +947,13 @@ def setup(args: argparse.Namespace) -> None:
         "contract": "hermes-knowledge-identity-registry/v1",
         "revision": 0,
         "subjects": [],
+    }
+    generated_governance["_system/metadata/knowledge-release-state.json"] = {
+        "contract": "hermes-knowledge-release-state/v1",
+        "revision": 0,
+        "current_release_id": None,
+        "applied_build_runs": [],
+        "releases": [],
     }
 
     created_dirs = []

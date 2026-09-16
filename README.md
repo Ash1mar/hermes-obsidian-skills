@@ -1,6 +1,6 @@
 # Hermes Obsidian Skills
 
-This repository stores local skills and tool-integration notes for the Hermes + Obsidian knowledge workflow. It also maintains `qmd-like-rag/`, the independently installed coarse-recall Provider used by the ingest/query Skills; it is repository code, not a fifth Skill.
+This repository stores local skills and tool-integration notes for the Hermes + Obsidian knowledge workflow. It also maintains `qmd-like-rag/`, the independently installed coarse-recall Provider used by the ingest/query Skills; it is repository code, not a sixth Skill.
 
 The system-level architecture, data authority, interface, compatibility, and acceptance baseline is defined in [`docs/OFFICIAL_TECHNICAL_SPECIFICATION.md`](docs/OFFICIAL_TECHNICAL_SPECIFICATION.md).
 
@@ -20,7 +20,13 @@ Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): impl
   - Supports standalone image Bundle v2 for scanned pages, table screenshots, diagrams, and other image-only sources with OCR review controls.
   - Supports MarkItDown as an optional pre-ingestion conversion layer for non-PDF sources and simple fallback conversion.
   - Manages engineering document identity, source organizations, source occurrences, versions, status, and atomic activation through the `hermes-governance/v1` JSON repository.
-  - For P3 Vaults, publishes deterministic SourceUnits through the shared Chunk Engine, then runs UnitSet-native reading packages, Pass/Reduce and Build Finalize without a service or third-party runtime dependency.
+  - For P4 Vaults, publishes deterministic SourceUnits through the shared Chunk Engine, then runs UnitSet-native reading packages, Pass/Reduce and Build Finalize without a service or third-party runtime dependency.
+
+- `hermes-obsidian-knowledge-finalize/`
+  - Plans, applies and validates incremental P4 knowledge releases after Build Finalize.
+  - Tracks stale and withdrawn source contributions without deleting pages that retain current support.
+  - Publishes safe redirects, link/backlink and directory navigation, plus explicit Provider index eligibility.
+  - Does not parse sources, approve business versions or invoke the retrieval Provider.
 
 - `hermes-obsidian-controlled-query/`
   - Governed read-only query workflow for existing Hermes + Obsidian vaults.
@@ -33,13 +39,13 @@ Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): impl
   - Checks bootstrap structure, bundle validation, section ledgers, source maps, governed Markdown evidence, structured multi-source synthesis, QA authority boundaries, and optional engineering document-governance invariants.
   - Provides `post-ingest`, `query-ready`, `strict`, and `qa-review` profiles with stable JSON and Markdown report output.
   - Reuses the controlled-ingest bundle validator when available.
-  - Validates current SourceUnit repositories, engine reports and P3 knowledge-build runs while Vault Finalize and Provider/query remain gated.
+  - Validates current SourceUnit repositories, engine reports, P3 knowledge-build runs and P4 knowledge releases while Provider/query remains gated.
 
 - `hermes-obsidian-vault-bootstrap/`
   - Initializes governed Obsidian vaults.
   - Creates the standard folder layout, prompts, templates, metadata registries, Dataview indexes, and setup report.
   - Supports `general`, `meeting`, and `engineering` profiles; engineering creates a draft JSON governance repository with a future SQLite/PostgreSQL mapping.
-  - Creates the P3 source/knowledge directories, validated v2 shared configuration, identity registry and explicit capability declaration for new Vaults.
+  - Creates the P4 source, build, release and navigation directories, validated v2 shared configuration, identity/release registries and explicit capability declaration for new Vaults.
   - Can copy `.obsidian/` and base concept pages from a template vault.
   - Does not copy raw sources, test cards, test projects, or historical reports by default.
 
@@ -70,7 +76,7 @@ Hermes normalizes bundle names to lowercase slugs, so use the lowercase forms ab
 
 ## Representative Package Layout
 
-The compact tree below illustrates the shared package shape with two representative Skills; it is not an exhaustive inventory. The current four-Skill, Provider, bundle, test, and documentation map is maintained in [`DOCUMENTATION.md`](DOCUMENTATION.md).
+The compact tree below illustrates the shared package shape with two representative Skills; it is not an exhaustive inventory. The current five-Skill, Provider, bundle, test, and documentation map is maintained in [`DOCUMENTATION.md`](DOCUMENTATION.md).
 
 ```text
 hermes-obsidian-skills/

@@ -33,13 +33,18 @@ def test_isolated_bootstrap_and_no_overwrite(copied, tmp_path, profile):
     assert check.returncode == 0, check.stdout + check.stderr
     data = json.loads(check.stdout)
     assert data["bootstrap_ready"] and not data["query_ready"]
-    assert data["phase"] == "P3"
+    assert data["phase"] == "P4"
     declaration = json.loads((vault / "_system/vault.json").read_text(encoding="utf-8"))["source_units"]
     assert declaration["capabilities"] == {"bootstrap": True, "source_reader": True,
-                                            "knowledge_build": True, "retrieval": False}
+                                            "knowledge_build": True, "vault_finalize": True,
+                                            "retrieval": False}
     identities = json.loads((vault / "_system/metadata/knowledge-identities.json").read_text(encoding="utf-8"))
     assert identities == {"contract": "hermes-knowledge-identity-registry/v1",
-                          "revision": 0, "subjects": []}
+                         "revision": 0, "subjects": []}
+    releases = json.loads((vault / "_system/metadata/knowledge-release-state.json").read_text(encoding="utf-8"))
+    assert releases == {"contract": "hermes-knowledge-release-state/v1", "revision": 0,
+                        "current_release_id": None, "applied_build_runs": [], "releases": []}
+    assert declaration["capabilities"]["vault_finalize"] is True
     before = {p.relative_to(vault): p.read_bytes() for p in vault.rglob("*") if p.is_file()}
     for extra in [[], ["--force-empty"]]:
         assert run(script, "--vault-path", vault, *extra).returncode != 0

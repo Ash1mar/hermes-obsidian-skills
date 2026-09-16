@@ -1,6 +1,6 @@
 # Hermes + Obsidian 受控知识流程图
 
-> 本文档已按 2026-09-16 的工作树技术基线复核。旧生产链路图保留到 P7 正式重建；新增 P2/P2.1 来源内容层与 P3 知识构建单独列出。Mermaid 图可在 Obsidian 阅读视图中直接渲染，在编辑视图中修改节点和连线。具体命令契约以当前分支的 `SKILL.md` 和直接 reference 为准。
+> 本文档已按 2026-09-16 的工作树技术基线复核。旧生产链路图保留到 P7 正式重建；新增 P2/P2.1 来源内容层、P3 知识构建与 P4 Vault Finalize 单独列出。Mermaid 图可在 Obsidian 阅读视图中直接渲染，在编辑视图中修改节点和连线。具体命令契约以当前分支的 `SKILL.md` 和直接 reference 为准。
 
 ## 两个分支实际使用的环境
 
@@ -205,7 +205,7 @@ flowchart TB
 
 多题请求还要检查 request summary：题目序号必须连续、不能同时存在两个 in-progress trace，最后一题关闭 request 后才能把各题 answer capsule 合并进最终回复。
 
-## P2/P2.1 来源内容层与 P3 知识构建
+## P2/P2.1 来源内容层、P3 知识构建与 P4 Release
 
 ```mermaid
 flowchart LR
@@ -221,22 +221,25 @@ flowchart LR
     PASS["Pass 0 candidates<br/>Pass 1..N chunk citations"]
     REDUCE["Reduce<br/>稳定 subject/page ID + draft revision"]
     BUILD["Build Finalize<br/>review + provenance + task revision"]
+    VPLAN["P4 Vault Finalize plan<br/>builds + source changes + affected subjects"]
+    RELEASE["Knowledge release<br/>stale/withdrawn + redirects + navigation + eligibility"]
     LINT["lint / validate<br/>hash、覆盖、引用和仓库一致性"]
-    LATER["P4 Vault Finalize<br/>P5 直接索引可用 Unit"]
+    LATER["P5 Provider/query<br/>直接索引 release 许可的 Unit"]
 
     RAW --> PREP --> ART --> SPLIT
     SPLIT --> PREVIEW
     SPLIT --> PUBLISH --> SET
     SET --> READ
     ART --> READ
-    READ --> TASK --> PASS --> REDUCE --> BUILD
+    READ --> TASK --> PASS --> REDUCE --> BUILD --> VPLAN --> RELEASE
     SET --> LINT
     ART --> LINT
     BUILD --> LINT
-    BUILD -. "后续阶段" .-> LATER
+    RELEASE --> LINT
+    RELEASE -. "后续阶段" .-> LATER
 ```
 
-P2.1 的 SourceUnit 是可引用来源核心，也是知识构建与 Provider 共用的 canonical chunk；共享 Chunk Engine 在 owned range 内执行结构保护、策略验证、回退、overlap 和 token audit，并随 UnitSet v2 发布 `engine.json`。P3 的 ledger 只管理任务领取、检查覆盖和恢复；reading package、Pass、Reduce 与 Build Finalize 全部引用 UnitRef，不重新定义正文边界。当前 `knowledge_build` capability 为 true，`retrieval` 仍为 false。
+P2.1 的 SourceUnit 是可引用来源核心，也是知识构建与 Provider 共用的 canonical chunk；共享 Chunk Engine 在 owned range 内执行结构保护、策略验证、回退、overlap 和 token audit，并随 UnitSet v2 发布 `engine.json`。P3 的 ledger 只管理任务领取、检查覆盖和恢复；reading package、Pass、Reduce 与 Build Finalize 全部引用 UnitRef，不重新定义正文边界。P4 将 completed builds 与 source changes 收尾为可审计 release，不调用 Provider。当前 `vault_finalize` capability 为 true，`retrieval` 仍为 false。
 
 ## 辅助关系图：谁调用什么，读写哪些文件
 
@@ -306,12 +309,13 @@ flowchart TB
     TRACE -- "写 query trace，不改知识文档" --> LOGS
 ```
 
-## 四个 Skill 的具体输入与输出
+## 五个 Skill 的具体输入与输出
 
 | Skill | 输入 | 实际执行的事 | 输出 |
 | --- | --- | --- | --- |
 | `hermes-obsidian-vault-bootstrap` | Vault 路径或 intranet 固定路径；`general`/`meeting` profile | 创建目录，写入 AGENTS.md、prompts、metadata registry、templates、Dataview 页和 setup report | 一个空的、可执行摄取规则的 Vault |
 | `hermes-obsidian-controlled-ingest` | 外部材料、Vault 中已有原文、Bundle 或 query-writeback candidate | 校验原文，转换 Bundle，按 ledger section 读取，核对 QA，创建/更新知识文档；只在批次结束且 ingest adapter 启用时维护检索索引 | Bundle、source map、section ledger、卡片/概念/项目/报告、ingest log、可审计的索引状态 |
+| `hermes-obsidian-knowledge-finalize` | completed build runs、当前 UnitSet/identity repositories、显式 source changes | 计算受影响对象，区分 current/stale/withdrawn 支持，验证页面移动与 wikilinks，发布 navigation 和 release | redirect、版本化导航、索引资格、blocked/review 清单及 knowledge release manifest |
 | `hermes-obsidian-vault-lint` | Vault 和检查 profile | 只读验证目录、Bundle、ledger、source map、frontmatter、证据引用和 QA 限制 | `pass`、`pass-with-warnings` 或包含具体文件/规则的 errors |
 | `hermes-obsidian-controlled-query` | 用户问题、可选范围，以及是否明确要求目视核验原页 | 每个请求先 `bootstrap`；每题用 `query_session.py` 执行 `query → finalize`，其中 `query` 自动融合检索并检查首个紧凑窗口；不补检索、不做第二次 inspect；只有显式要求时才 `verify`；多题严格串行并在最后关闭 request | 带原 PDF 路径/页码/段落/图表位置和证据等级的答案；原子完成、含路线/证据/Claim/耗时的 trace；多题 answer capsules；intranet 可附 locator 返回的 viewer 链接 |
 
