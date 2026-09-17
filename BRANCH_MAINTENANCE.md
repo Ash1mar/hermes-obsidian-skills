@@ -44,7 +44,7 @@ git switch main
 下面的文件表达部署差异。merge 时默认保留 `intranet` 的有效值，除非任务明确要求修改内网部署：
 
 - `hermes-obsidian-controlled-ingest/config/deployment.json`
-- `hermes-obsidian-controlled-ingest/config/retrieval-provider.json`
+- `hermes-obsidian-knowledge-finalize/config/retrieval-provider.json`
 - `hermes-obsidian-controlled-query/config/deployment.json`
 - `hermes-obsidian-controlled-query/config/retrieval-provider.json`
 - `hermes-obsidian-vault-bootstrap/config/deployment.json`

@@ -42,24 +42,12 @@ class HybridRetriever:
             output.append(item)
         return output
 
-    def _expand_parent(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        output: list[dict[str, Any]] = []
-        parent_counts: dict[str, int] = {}
-        for item in results:
-            parent_id = str(item.get("parent_id") or item.get("id") or "")
-            if parent_counts.get(parent_id, 0) >= self.config.max_same_parent:
-                continue
-            parent_counts[parent_id] = parent_counts.get(parent_id, 0) + 1
-            expanded = dict(item)
-            expanded["context"] = item.get("parent_text", item.get("text", ""))
-            expanded.setdefault("score_type", "rrf")
-            output.append(expanded)
-        return output
-
     def search(self, query: str, top_k: int | None = None) -> list[dict[str, Any]]:
         candidate_limit = max(self.config.top_k, top_k or 0)
         vector = self.chroma.search(query, candidate_limit)
         lexical = self.bm25.search(query, candidate_limit)
         fused = rrf_fuse([vector, lexical], self.config.rrf_k)
-        expanded = self._expand_parent(self._deduplicate(fused))
-        return expanded[: max(1, top_k or self.config.rerank_top_k)]
+        results = self._deduplicate(fused)
+        for item in results:
+            item.setdefault("score_type", "rrf")
+        return results[: max(1, top_k or self.config.rerank_top_k)]

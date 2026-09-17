@@ -1,6 +1,6 @@
 services:
   qmd-like-rag:
-    image: qmd-like-rag:0.4.0-intranet
+    image: qmd-like-rag:0.5.0-intranet
     container_name: qmd-like-rag
     restart: unless-stopped
     command:

@@ -16,7 +16,7 @@
 
 ## 仓库级文档
 
-来源单元新体系的实现入口：[ADR-0003](docs/architecture/0003-source-unit-contracts.md)、[ADR-0004](docs/architecture/0004-knowledge-identity-and-finalize.md)、[ADR-0005](docs/architecture/0005-shared-chunk-engine.md)、[ADR-0006](docs/architecture/0006-release-driven-retrieval-projection.md)、[共享包规范](hermes-source-units/README.md)及 [P0](docs/SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](docs/SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](docs/SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](docs/SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](docs/SOURCE_UNITS_P3_ACCEPTANCE.md)、[P4](docs/SOURCE_UNITS_P4_ACCEPTANCE.md) 验收。P4 已完成增量 Vault Finalize、导航投影和 knowledge release；P5 按 release 驱动 Provider/query 投影。
+来源单元新体系的实现入口：[ADR-0003](docs/architecture/0003-source-unit-contracts.md)、[ADR-0004](docs/architecture/0004-knowledge-identity-and-finalize.md)、[ADR-0005](docs/architecture/0005-shared-chunk-engine.md)、[ADR-0006](docs/architecture/0006-release-driven-retrieval-projection.md)、[共享包规范](hermes-source-units/README.md)及 [P0](docs/SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](docs/SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](docs/SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](docs/SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](docs/SOURCE_UNITS_P3_ACCEPTANCE.md)、[P4](docs/SOURCE_UNITS_P4_ACCEPTANCE.md)、[P5](docs/SOURCE_UNITS_P5_ACCEPTANCE.md) 验收。P5 仓库实现已将 release、canonical Unit、Provider 投影和 Query 精确回读贯通；实际 Provider 0.5 部署与新 generation 验收仍待执行。
 
 | 文档 | 内容与用途 |
 | --- | --- |
@@ -53,7 +53,7 @@
 
 | 文档 | 内容与用途 |
 | --- | --- |
-| [`hermes-obsidian-knowledge-finalize/SKILL.md`](hermes-obsidian-knowledge-finalize/SKILL.md) | P4 增量 Vault Finalize 的独立运行入口，负责 plan/apply/validate/status。 |
+| [`hermes-obsidian-knowledge-finalize/SKILL.md`](hermes-obsidian-knowledge-finalize/SKILL.md) | P4 增量 Vault Finalize 的独立运行入口，负责 plan/apply/validate/status，并在 P5 由显式 release submission 触发可选 Provider sync。 |
 | [`references/vault-finalize.md`](hermes-obsidian-knowledge-finalize/references/vault-finalize.md) | 来源贡献失效、页面 disposition、安全重定向、导航阻断、release manifest 与恢复规则。 |
 
 ## Controlled Query 文档

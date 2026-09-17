@@ -7,8 +7,14 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "hermes-source-units/src/hermes_source_units"
-TARGETS = ("hermes-obsidian-vault-bootstrap", "hermes-obsidian-vault-lint",
-           "hermes-obsidian-controlled-ingest", "hermes-obsidian-knowledge-finalize")
+TARGETS = {
+    "hermes-obsidian-vault-bootstrap": ROOT / "hermes-obsidian-vault-bootstrap/lib/hermes_source_units",
+    "hermes-obsidian-vault-lint": ROOT / "hermes-obsidian-vault-lint/lib/hermes_source_units",
+    "hermes-obsidian-controlled-ingest": ROOT / "hermes-obsidian-controlled-ingest/lib/hermes_source_units",
+    "hermes-obsidian-knowledge-finalize": ROOT / "hermes-obsidian-knowledge-finalize/lib/hermes_source_units",
+    "hermes-obsidian-controlled-query": ROOT / "hermes-obsidian-controlled-query/lib/hermes_source_units",
+    "qmd-like-rag": ROOT / "qmd-like-rag/src/hermes_source_units",
+}
 
 
 def main():
@@ -17,8 +23,7 @@ def main():
     args = parser.parse_args()
     files = {p.relative_to(SOURCE): p.read_text(encoding="utf-8").encode("utf-8") for p in SOURCE.rglob("*")
              if p.is_file() and "__pycache__" not in p.parts and p.suffix != ".pyc"}
-    for skill in TARGETS:
-        target = ROOT / skill / "lib/hermes_source_units"
+    for skill, target in TARGETS.items():
         expected = dict(files)
         expected[Path("embedded-manifest.json")] = (json.dumps(
             {str(p).replace("\\", "/"): hashlib.sha256(b).hexdigest()

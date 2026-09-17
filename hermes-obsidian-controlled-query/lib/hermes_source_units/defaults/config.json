@@ -1,0 +1,28 @@
+{
+  "contract": "hermes-source-unit-config/v2",
+  "source": {
+    "chunking": {
+      "strategy": "auto",
+      "target_codepoints": 512,
+      "max_codepoints": 1024,
+      "overlap_codepoints": 80,
+      "separators": ["\n\n", "\n", "。", "；", ". "],
+      "languages": ["zh", "en"],
+      "token_budget": {
+        "mode": "audit",
+        "max_tokens": 1024,
+        "tokenizer_fingerprint": null
+      },
+      "oversized_policy": "preserve-and-report"
+    }
+  },
+  "reading": {
+    "max_codepoints": 12000
+  },
+  "retrieval": {
+    "target_tokens": 800,
+    "max_tokens": 1024,
+    "context_max_tokens": 2400,
+    "tokenizer": null
+  }
+}

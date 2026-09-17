@@ -171,6 +171,18 @@ def canonical_coarse(
             "route_scores": {route: item.get("score")},
             "provider_ref": item.get("provider_ref"),
             "source_hash_matches": item.get("source_hash_matches"),
+            "projection_kind": item.get("projection_kind"),
+            "projection_fingerprint": item.get("projection_fingerprint"),
+            "unit_ref": item.get("unit_ref"),
+            "page_id": item.get("page_id"),
+            "page_revision_id": item.get("page_revision_id"),
+            "source_unit_refs": item.get("source_unit_refs", []),
+            "subspan": item.get("subspan"),
+            "subspan_reason": item.get("subspan_reason"),
+            "projection_content_sha256": item.get("projection_content_sha256"),
+            "core_text": item.get("core_text"),
+            "core_content_sha256": item.get("core_content_sha256"),
+            "exact_source_unit": item.get("exact_source_unit", False),
         }
     )
     return candidate

@@ -1,6 +1,6 @@
 # Hermes + Obsidian 受控知识流程图
 
-> 本文档已按 2026-09-16 的工作树技术基线复核。旧生产链路图保留到 P7 正式重建；新增 P2/P2.1 来源内容层、P3 知识构建与 P4 Vault Finalize 单独列出。Mermaid 图可在 Obsidian 阅读视图中直接渲染，在编辑视图中修改节点和连线。具体命令契约以当前分支的 `SKILL.md` 和直接 reference 为准。
+> 本文档已按 2026-09-17 的工作树技术基线复核。首张大图保留旧生产摄取细节作为 P7 重建前的现状说明；后面的目标链路已覆盖 P2/P2.1 来源内容层、P3 知识构建、P4 Vault Finalize 和 P5 release 驱动检索。Mermaid 图可在 Obsidian 阅读视图中直接渲染，在编辑视图中修改节点和连线。具体命令契约以当前分支的 `SKILL.md` 和直接 reference 为准。
 
 ## 两个分支实际使用的环境
 
@@ -17,7 +17,7 @@
 | 领域短语触发配置 | 从 Query Skill 的 `config/domain-routing.json` 读取 | 从 Query Skill 的 `config/domain-routing.json` 与 `config/deployment.json` 读取；部署文件还保存固定 Vault 和 viewer 地址 |
 | Vault 中是否放 Skill 副本 | Bootstrap 保留可选的 `--copy-skill-note` 用法 | 运行时 Skill 始终位于 `/opt/data/skills/<skill-name>/`，不把 Skill 或安装路径复制进 Vault |
 
-`qmd-like-rag` 是独立安装的检索 Provider，不是第五个 Skill。Query adapter（Query 是否可以只读调用粗召回的开关）和 ingest adapter（Ingest 是否可以维护索引的开关）彼此独立。Vault 内只保存可审计的检索配置和索引状态；可重建的向量、BM25 索引和模型文件保存在 Provider 主机上。
+`qmd-like-rag` 是独立安装的检索 Provider，不是第五个 Skill。Query adapter 控制只读粗召回；P5 的 release sync adapter 属于 Knowledge Finalize，Controlled Ingest 不再维护 Provider 索引。Vault 内只保存可审计的 release、检索配置和索引状态；可重建的向量、BM25 索引和模型文件保存在 Provider 主机上。
 
 ## 从建库、摄取到查询的完整流程
 
@@ -71,7 +71,7 @@ flowchart TB
         IS["有多个相关来源时，比较共同对象、参数、接口和冲突<br/>只用已通过的 section 生成跨来源卡片或候选概念评审"]
         ID["如果本次使用 section ledger，将 section 结束为 ingested（已生成并记录输出）、<br/>qa_required（等待人工核验）或 skipped（有理由地跳过）<br/>无论是否使用 ledger，都记录创建/更新/复用/跳过的文件<br/>并写 ingest log（本次摄取做了什么的审计记录）"]
         IH["可选生成 query-index（按文档/章节标题和层级定位候选的可重建索引）<br/>位于 _system/reports/query-index/source-name.json<br/>只供导航，失败不改变摄取结果"]
-        IQ["每个来源完成后或相关批次结束时检查 ingest adapter（是否允许摄取流程维护检索索引的开关）<br/>只有部署层启用时才调用 sync_retrieval_index.py，增量同步新增、修改或删除的可检索文档<br/>默认关闭时只记录 skipped/disabled；同步失败只告警，不改变已完成的摄取和 ledger 状态<br/>原子写 retrieval-index-manifest.json（记录协议、模型/配置/语料/索引指纹、数量和最近成功状态）"]
+        IQ["旧生产链路在此曾由 ingest adapter 同步 Markdown 索引<br/>P5 目标链路已移除该职责：Ingest 发布 SourceUnit，Knowledge Finalize 发布 release 后<br/>才可显式调用 sync_release_index.py 建立全新 generation"]
 
         I0 --> ICTRL --> ISTATE
         ISTATE -- "外部新原文，10_Raw 无相同指纹副本" --> I1 --> I2
@@ -116,9 +116,9 @@ flowchart TB
         subgraph QAUTO["query_session.py 自动执行、计时并写 trace"]
             direction TB
             QQUERY["query（开始一题并自动检查首窗）<br/>创建 trace，继承 Hermes session/message ID，记录 verification-required<br/>启动候选定位；模型不会收到候选清单，也没有人工选择候选步骤"]
-            QC["可选粗召回<br/>qmd-like-rag 用向量 + BM25 + 去重 + 父章节恢复 + reranker 返回候选 chunk<br/>Provider disabled/unavailable 只记为 attempted，不冒充 effective，也不阻塞另一条路线"]
+            QC["可选粗召回<br/>qmd-like-rag 对 release 许可的 SourceUnit/knowledge page 投影执行向量 + BM25 + 去重 + reranker<br/>返回完整 UnitRef、projection、release 和 generation；disabled/unavailable 只记为 attempted"]
             QH["分层定位<br/>locate_source_sections.py 读 query-index<br/>按文档名、section 标题和完整父子路径定位候选章节"]
-            QM["候选融合<br/>把 Provider chunk 扩展为完整 ledger-owned section（台账划定的完整章节范围）<br/>取两路并集、按文档/section/重叠范围去重并用 RRF 排序；完整候选与淘汰原因只写 trace sidecar"]
+            QM["候选融合<br/>校验 release/generation/eligibility，按 UnitRef 精确回读来源核心或显式 subspan<br/>与分层候选取并集、去重并用 RRF 排序；完整候选与淘汰原因只写 trace sidecar"]
             QPACK["自动检查紧凑首窗<br/>检查前三个候选（不足三个则全部），批量读取完整 section-owned range、关联治理文档、图表、<br/>manifest、ledger、source-map、原 PDF 页码、QA 与 viewer 信息，只向模型返回 P1/P2 等 evidence packets"]
             QC --> QM
             QH --> QM
@@ -205,7 +205,7 @@ flowchart TB
 
 多题请求还要检查 request summary：题目序号必须连续、不能同时存在两个 in-progress trace，最后一题关闭 request 后才能把各题 answer capsule 合并进最终回复。
 
-## P2/P2.1 来源内容层、P3 知识构建与 P4 Release
+## P2/P2.1 来源内容层、P3/P4 知识发布与 P5 检索投影
 
 ```mermaid
 flowchart LR
@@ -224,7 +224,9 @@ flowchart LR
     VPLAN["P4 Vault Finalize plan<br/>builds + source changes + affected subjects"]
     RELEASE["Knowledge release<br/>stale/withdrawn + redirects + navigation + eligibility"]
     LINT["lint / validate<br/>hash、覆盖、引用和仓库一致性"]
-    LATER["P5 Provider/query<br/>直接索引 release 许可的 Unit"]
+    PROJECTION["P5 renderer<br/>一 Unit 一普通投影；oversized 特例才使用精确 subspan"]
+    GENERATION["Provider generation<br/>Chroma/BM25 + release/renderer/tokenizer/model 指纹"]
+    QUERYREAD["Query<br/>校验资格后按 UnitRef 精确回读"]
 
     RAW --> PREP --> ART --> SPLIT
     SPLIT --> PREVIEW
@@ -236,10 +238,10 @@ flowchart LR
     ART --> LINT
     BUILD --> LINT
     RELEASE --> LINT
-    RELEASE -. "后续阶段" .-> LATER
+    RELEASE --> PROJECTION --> GENERATION --> QUERYREAD
 ```
 
-P2.1 的 SourceUnit 是可引用来源核心，也是知识构建与 Provider 共用的 canonical chunk；共享 Chunk Engine 在 owned range 内执行结构保护、策略验证、回退、overlap 和 token audit，并随 UnitSet v2 发布 `engine.json`。P3 的 ledger 只管理任务领取、检查覆盖和恢复；reading package、Pass、Reduce 与 Build Finalize 全部引用 UnitRef，不重新定义正文边界。P4 将 completed builds 与 source changes 收尾为可审计 release，不调用 Provider。当前 `vault_finalize` capability 为 true，`retrieval` 仍为 false。
+P2.1 的 SourceUnit 是可引用来源核心，也是知识构建与 Provider 共用的 canonical chunk；共享 Chunk Engine 在 owned range 内执行结构保护、策略验证、回退、overlap 和 token audit，并随 UnitSet v2 发布 `engine.json`。P3 的 ledger 只管理任务领取、检查覆盖和恢复；reading package、Pass、Reduce 与 Build Finalize 全部引用 UnitRef，不重新定义正文边界。P4 将 completed builds 与 source changes 收尾为可审计 release。P5 的 Finalize adapter 显式提交 release，Provider 创建可重建 generation，Query 不使用 snippet 代替来源回读。新 Vault 的 `vault_finalize` 与 `retrieval` capability 均为 true；query-ready 仍要求存在与当前 release 一致的 retrieval manifest 2.0。
 
 ## 辅助关系图：谁调用什么，读写哪些文件
 
@@ -250,6 +252,7 @@ flowchart TB
 
     BS["Vault Bootstrap Skill<br/>创建目录、治理规则、模板和 Dataview 索引"]
     IS["Controlled Ingest Skill<br/>保存原文、转换 Bundle、管理 section 状态、生成受控文档"]
+    FS["Knowledge Finalize Skill<br/>发布 release；按部署开关显式提交 Provider sync"]
     LS["Vault Lint Skill<br/>只读检查结构、Bundle、ledger、引用和 QA 边界"]
     QS["Controlled Query Skill<br/>定义只读边界、问题类型、证据等级、原 PDF 引用和写回规则"]
     SESSION["query_session.py（统一 Query 状态机）<br/>bootstrap 读配置；query 检索并自动组首窗证据包；可选 verify；finalize 原子收口"]
@@ -257,7 +260,7 @@ flowchart TB
     TRACE["query trace Markdown + JSON sidecar（详细伴随数据）<br/>保存候选全集、P1/P2 证据包出处、Evidence、Claim、事件和耗时<br/>manage_query_trace.py 仍是底层/旧流程记录器，不再是普通查询的主入口"]
 
     MINERU["MinerU CLI 或 intranet HTTP API<br/>把 PDF 转成 Markdown、大纲、表格、图片和 QA 证据"]
-    PROVIDER["qmd-like-rag 0.3.0 Provider<br/>用固定 revision 的 embedding/reranker、向量召回、BM25、去重和父章节恢复查候选<br/>只返回候选文件和行范围，不回答问题；Query 只读，Ingest 才能维护索引"]
+    PROVIDER["qmd-like-rag P5 Provider<br/>消费 release 许可的 SourceUnit/knowledge page，使用固定模型与真实 tokenizer 建立 generation<br/>只返回候选与完整来源身份，不回答问题；Query 只读，Finalize 才能提交同步"]
 
     RAW["10_Raw<br/>原始文件副本，摄取后不修改"]
     BUNDLE["10_Raw/converted/..._document_bundle<br/>manifest.json、document.md、outline.json、tables/images、_evidence"]
@@ -270,6 +273,7 @@ flowchart TB
     USER --> HERMES
     HERMES --> BS
     HERMES --> IS
+    HERMES --> FS
     HERMES --> LS
     HERMES --> QS
 
@@ -286,7 +290,7 @@ flowchart TB
     IS -- "创建/更新 ledger、source map、query-index 和索引状态" --> CONTROL
     IS -- "创建或增量更新" --> KNOWLEDGE
     IS -- "写入摄取和 QA 记录" --> LOGS
-    IS -- "批次结束且 ingest adapter 已启用时才调用 sync" --> PROVIDER
+    FS -- "release apply 后且 adapter 已启用时提交 release ID/hash" --> PROVIDER
     PROVIDER -- "保存索引" --> INDEX
 
     LS -- "只读检查" --> RAW
@@ -314,8 +318,8 @@ flowchart TB
 | Skill | 输入 | 实际执行的事 | 输出 |
 | --- | --- | --- | --- |
 | `hermes-obsidian-vault-bootstrap` | Vault 路径或 intranet 固定路径；`general`/`meeting` profile | 创建目录，写入 AGENTS.md、prompts、metadata registry、templates、Dataview 页和 setup report | 一个空的、可执行摄取规则的 Vault |
-| `hermes-obsidian-controlled-ingest` | 外部材料、Vault 中已有原文、Bundle 或 query-writeback candidate | 校验原文，转换 Bundle，按 ledger section 读取，核对 QA，创建/更新知识文档；只在批次结束且 ingest adapter 启用时维护检索索引 | Bundle、source map、section ledger、卡片/概念/项目/报告、ingest log、可审计的索引状态 |
-| `hermes-obsidian-knowledge-finalize` | completed build runs、当前 UnitSet/identity repositories、显式 source changes | 计算受影响对象，区分 current/stale/withdrawn 支持，验证页面移动与 wikilinks，发布 navigation 和 release | redirect、版本化导航、索引资格、blocked/review 清单及 knowledge release manifest |
+| `hermes-obsidian-controlled-ingest` | 外部材料、Vault 中已有原文、Bundle 或 query-writeback candidate | 校验原文，转换并发布 artifact/SourceUnit，管理工作账本，核对 QA，创建知识构建输入；不维护 Provider 索引 | 原件、artifact、UnitSet、工作记录、构建输入和 ingest 审计 |
+| `hermes-obsidian-knowledge-finalize` | completed build runs、当前 UnitSet/identity repositories、显式 source changes | 计算受影响对象，区分 current/stale/withdrawn 支持，验证页面移动与 wikilinks，发布 navigation 和 release；部署开关启用时显式同步该 release | redirect、版本化导航、索引资格、blocked/review 清单、knowledge release manifest 和可审计 retrieval manifest |
 | `hermes-obsidian-vault-lint` | Vault 和检查 profile | 只读验证目录、Bundle、ledger、source map、frontmatter、证据引用和 QA 限制 | `pass`、`pass-with-warnings` 或包含具体文件/规则的 errors |
 | `hermes-obsidian-controlled-query` | 用户问题、可选范围，以及是否明确要求目视核验原页 | 每个请求先 `bootstrap`；每题用 `query_session.py` 执行 `query → finalize`，其中 `query` 自动融合检索并检查首个紧凑窗口；不补检索、不做第二次 inspect；只有显式要求时才 `verify`；多题严格串行并在最后关闭 request | 带原 PDF 路径/页码/段落/图表位置和证据等级的答案；原子完成、含路线/证据/Claim/耗时的 trace；多题 answer capsules；intranet 可附 locator 返回的 viewer 链接 |
 

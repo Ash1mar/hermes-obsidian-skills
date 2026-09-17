@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Synchronize the configured coarse-recall Provider and write a portable Vault manifest."""
+"""Project the current knowledge release and write a portable retrieval manifest."""
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import subprocess
@@ -36,11 +37,25 @@ def provider_config(path: Path | None) -> tuple[Path, dict[str, Any]]:
     return configured, load_json(configured)
 
 
-def call_command(config: dict[str, Any], vault_root: Path, rebuild: bool) -> dict[str, Any]:
+def release_identity(vault_root: Path) -> tuple[str, str]:
+    state = load_json(vault_root / "_system" / "metadata" / "knowledge-release-state.json")
+    release_id = state.get("current_release_id")
+    if not isinstance(release_id, str) or not release_id:
+        raise ValueError("Vault has no current knowledge release")
+    data = (vault_root / "_system" / "knowledge-releases" / release_id / "manifest.json").read_bytes()
+    release = json.loads(data.decode("utf-8"))
+    if release.get("release_id") != release_id or release.get("state") != "completed":
+        raise ValueError("Current release pointer and manifest disagree")
+    return release_id, hashlib.sha256(data).hexdigest()
+
+
+def call_command(config: dict[str, Any], vault_root: Path, rebuild: bool,
+                 release_id: str, release_hash: str) -> dict[str, Any]:
     command = config.get("command")
     if not isinstance(command, list) or not command or not all(isinstance(item, str) for item in command):
         raise ValueError("command transport requires a non-empty string array")
-    args = [*command, "sync", "--vault-root", str(vault_root)]
+    args = [*command, "sync", "--vault-root", str(vault_root),
+            "--release-id", release_id, "--release-hash", release_hash]
     if rebuild:
         args.append("--rebuild")
     for option, flag in (("provider_config", "--config"), ("state_root", "--state-root"), ("vault_id", "--vault-id")):
@@ -61,13 +76,14 @@ def call_command(config: dict[str, Any], vault_root: Path, rebuild: bool) -> dic
         raise RuntimeError("Provider command did not return one JSON object on stdout") from exc
 
 
-def call_http(config: dict[str, Any], rebuild: bool) -> dict[str, Any]:
+def call_http(config: dict[str, Any], rebuild: bool, release_id: str, release_hash: str) -> dict[str, Any]:
     base_url = str(config.get("base_url") or "").rstrip("/")
     if not base_url:
         raise ValueError("http transport requires base_url")
     req = request.Request(
         base_url + "/sync",
-        data=json.dumps({"rebuild": rebuild}).encode("utf-8"),
+        data=json.dumps({"rebuild": rebuild, "release_id": release_id,
+                         "release_hash": release_hash}).encode("utf-8"),
         headers={"Content-Type": "application/json", "Accept": "application/json"},
         method="POST",
     )
@@ -79,7 +95,7 @@ def portable_manifest(payload: dict[str, Any], transport: str, previous: dict[st
     now = utc_now()
     ready = payload.get("status") == "ready" and payload.get("protocol_version") == PROTOCOL_VERSION
     manifest = {
-        "schema_version": "1.0",
+        "schema_version": "2.0",
         "authority": "retrieval-index-status",
         "provider": payload.get("provider", "qmd-like-rag"),
         "provider_version": payload.get("provider_version"),
@@ -95,6 +111,15 @@ def portable_manifest(payload: dict[str, Any], transport: str, previous: dict[st
         "models": payload.get("models"),
         "corpus_fingerprint": payload.get("corpus_fingerprint"),
         "index_fingerprint": payload.get("index_fingerprint"),
+        "release_id": payload.get("release_id"),
+        "release_hash": payload.get("release_hash"),
+        "index_generation": payload.get("index_generation"),
+        "renderer_version": payload.get("renderer_version"),
+        "renderer_fingerprint": payload.get("renderer_fingerprint"),
+        "tokenizer": payload.get("tokenizer"),
+        "reranker_tokenizer": payload.get("reranker_tokenizer"),
+        "capabilities": payload.get("capabilities"),
+        "projection_counts": payload.get("projection_counts", {}),
         "document_count": payload.get("document_count", 0),
         "chunk_count": payload.get("chunk_count", 0),
         "errors": payload.get("errors", []),
@@ -131,10 +156,11 @@ def main() -> int:
             }
         else:
             transport = str(config.get("transport") or "command")
+            release_id, release_hash = release_identity(vault_root)
             if transport == "command":
-                payload = call_command(config, vault_root, args.rebuild)
+                payload = call_command(config, vault_root, args.rebuild, release_id, release_hash)
             elif transport == "http":
-                payload = call_http(config, args.rebuild)
+                payload = call_http(config, args.rebuild, release_id, release_hash)
             else:
                 raise ValueError(f"Unsupported Provider transport: {transport}")
     except Exception as exc:

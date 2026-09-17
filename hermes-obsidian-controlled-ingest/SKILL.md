@@ -217,13 +217,11 @@ Keep the agent-facing path small. Do not recursively scan a bundle.
 
 After ledger initialization, reconciliation, or completed source ingestion, optionally run `python3 "<ingest-skill-root>/scripts/build_section_query_index.py" <vault-root> --bundle <bundle>`. It writes only a disposable, non-authoritative projection under `_system/reports/query-index/`; failure must not change Bundle, ledger, source-map, spec-index, or ingest status. The projection contains no generated section summaries. See `../hermes-obsidian-controlled-query/references/Hierarchical_search.md`.
 
-After a completed source ingest or at the end of a related batch, run `python3 "<ingest-skill-root>/scripts/sync_retrieval_index.py" <vault-root>`. This is the only Skill-side path that may update the configured coarse-recall Provider. It writes a portable status record to `_system/reports/retrieval-index-manifest.json`; Provider databases, model files, caches, and locks remain on the Provider host outside the Vault. Index failure is a retrieval warning and must not change Bundle, ledger, source-map, governed artifact, or ingest completion status. Use `--rebuild` only for an explicit maintenance request, configuration/model incompatibility, or unrecoverable index state. Read `references/retrieval-indexing.md` before configuring local versus HTTP transport.
-
 Treat `document.md` as the single normalized text source. Do not duplicate every section into separate Markdown files. Use the ledger's non-overlapping `content_ranges` for staged ingestion and the JSON ledger as the section-state authority.
 
-## P4 Source-unit Route
+## P5 Source-unit Route
 
-When `_system/vault.json` declares source-unit phase `P4` with
+When `_system/vault.json` declares source-unit phase `P5` with
 `capabilities.source_reader: true` and `capabilities.knowledge_build: true`, read
 `references/source-units.md`. Use `manage_source_units.py` for artifact/UnitSet work
 and `manage_knowledge_build.py` for tasks, readings, Pass/Reduce and Build Finalize. After source
@@ -231,11 +229,12 @@ registration and Bundle validation/`ingest-finish`, prepare the immutable normal
 artifact, preview the boundaries, then publish the unit set with the current expected
 revision. For direct Markdown, use its registered document/version/resource identity.
 
-In a P4 Vault, SourceUnit owns source boundaries and exact reads. Do not initialize a
+In a P5 Vault, SourceUnit owns source boundaries and exact reads. Do not initialize a
 legacy section ledger, create line-based build records or use Provider chunks as source
 identity. Knowledge work must start from task target UnitRefs and end through Build Finalize.
 Hand completed builds to `hermes-obsidian-knowledge-finalize`; controlled ingest must
-not synthesize release state itself. Provider consumption remains unavailable until P5.
+not synthesize release state or synchronize the Provider. The Finalize Skill publishes
+the release first and then explicitly projects that exact release when its adapter is enabled.
 Report the artifact revision, unit-set ID, engine version/fingerprint, selected strategy,
 revision, unit/section counts, token-audit status, diagnostics and
 validation result. An oversized protected structure is an explicit diagnostic requiring

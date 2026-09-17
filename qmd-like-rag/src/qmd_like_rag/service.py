@@ -54,7 +54,9 @@ def make_handler(config: ProviderConfig) -> type[BaseHTTPRequestHandler]:
                     self._write(200, result)
                 elif self.path == "/sync":
                     with runtime_lock:
-                        result = sync(config, bool(payload.get("rebuild", False)))
+                        result = sync(config, bool(payload.get("rebuild", False)),
+                                      expected_release_id=payload.get("release_id"),
+                                      expected_release_hash=payload.get("release_hash"))
                     self._write(200, result)
                 else:
                     self._write(404, {"status": "error", "error": "not-found"})

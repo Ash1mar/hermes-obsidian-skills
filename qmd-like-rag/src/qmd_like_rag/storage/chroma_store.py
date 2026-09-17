@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Any
 
 
@@ -67,10 +68,19 @@ class ChromaStore:
                 "source_sha256": str(chunk["source_sha256"]),
                 "start_line": int(chunk["start_line"]),
                 "end_line": int(chunk["end_line"]),
-                "parent_id": str(chunk["parent_id"]),
-                "parent_text": str(chunk["parent_text"]),
                 "heading": str(chunk.get("heading", "")),
                 "chunk_type": str(chunk.get("chunk_type", "normal")),
+                "projection_kind": str(chunk["projection_kind"]),
+                "projection_fingerprint": str(chunk["projection_fingerprint"]),
+                "release_id": str(chunk["release_id"]),
+                "release_hash": str(chunk["release_hash"]),
+                "unit_ref_json": json.dumps(chunk.get("unit_ref"), sort_keys=True),
+                "page_id": str(chunk.get("page_id") or ""),
+                "page_revision_id": str(chunk.get("page_revision_id") or ""),
+                "source_unit_refs_json": json.dumps(chunk.get("source_unit_refs", []), sort_keys=True),
+                "subspan_json": json.dumps(chunk.get("subspan"), sort_keys=True),
+                "subspan_reason": str(chunk.get("subspan_reason") or ""),
+                "projection_content_sha256": str(chunk.get("projection_content_sha256") or ""),
             }
             for chunk in chunks
         ]
@@ -116,10 +126,19 @@ class ChromaStore:
                     "source_sha256": metadata.get("source_sha256", ""),
                     "start_line": metadata.get("start_line"),
                     "end_line": metadata.get("end_line"),
-                    "parent_id": metadata.get("parent_id"),
-                    "parent_text": metadata.get("parent_text"),
                     "heading": metadata.get("heading", ""),
                     "chunk_type": metadata.get("chunk_type", "normal"),
+                    "projection_kind": metadata.get("projection_kind"),
+                    "projection_fingerprint": metadata.get("projection_fingerprint"),
+                    "release_id": metadata.get("release_id"),
+                    "release_hash": metadata.get("release_hash"),
+                    "unit_ref": json.loads(metadata.get("unit_ref_json") or "null"),
+                    "page_id": metadata.get("page_id") or None,
+                    "page_revision_id": metadata.get("page_revision_id") or None,
+                    "source_unit_refs": json.loads(metadata.get("source_unit_refs_json") or "[]"),
+                    "subspan": json.loads(metadata.get("subspan_json") or "null"),
+                    "subspan_reason": metadata.get("subspan_reason") or None,
+                    "projection_content_sha256": metadata.get("projection_content_sha256") or "",
                     "score": 1 / (1 + float(distance)),
                 }
             )

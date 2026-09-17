@@ -39,13 +39,13 @@ Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): impl
   - Checks bootstrap structure, bundle validation, section ledgers, source maps, governed Markdown evidence, structured multi-source synthesis, QA authority boundaries, and optional engineering document-governance invariants.
   - Provides `post-ingest`, `query-ready`, `strict`, and `qa-review` profiles with stable JSON and Markdown report output.
   - Reuses the controlled-ingest bundle validator when available.
-  - Validates current SourceUnit repositories, engine reports, P3 knowledge-build runs and P4 knowledge releases while Provider/query remains gated.
+  - Validates current SourceUnit repositories, engine reports, knowledge-build runs, releases and P5 retrieval readiness.
 
 - `hermes-obsidian-vault-bootstrap/`
   - Initializes governed Obsidian vaults.
   - Creates the standard folder layout, prompts, templates, metadata registries, Dataview indexes, and setup report.
   - Supports `general`, `meeting`, and `engineering` profiles; engineering creates a draft JSON governance repository with a future SQLite/PostgreSQL mapping.
-  - Creates the P4 source, build, release and navigation directories, validated v2 shared configuration, identity/release registries and explicit capability declaration for new Vaults.
+  - Creates the P5 source, build, release, navigation and retrieval-control directories, validated v2 shared configuration, identity/release registries and explicit capability declaration for new Vaults.
   - Can copy `.obsidian/` and base concept pages from a template vault.
   - Does not copy raw sources, test cards, test projects, or historical reports by default.
 
@@ -99,11 +99,11 @@ hermes-obsidian-skills/
 
 ## qmd-like-rag Provider
 
-`qmd-like-rag/` is derived from the earlier `qmd-rag-v2.1` prototype and retains Markdown chunking, Chroma, BM25, RRF, deduplication, parent expansion, reranking, and incremental fingerprints. Standalone LLM answer generation and the prototype Skill wrapper were removed because controlled-query owns answer synthesis and evidence verification.
+`qmd-like-rag/` 0.5 consumes the current knowledge release rather than scanning Markdown. It validates eligible canonical SourceUnits, renders one ordinary index document per Unit, separately projects eligible knowledge pages, and retains Chroma, BM25, RRF, deduplication and optional reranking. Controlled-query owns answer synthesis and exact UnitRef evidence readback.
 
 The package exposes the `qmd-like-rag` CLI and an optional HTTP server. On `main`, install it with the `local-models` extra into a WSL-native virtual environment and use the Skill adapters' command transport. On `intranet`, do not deploy QMD; run the same tagged qmd-like-rag release as a CPU-only container and let it call the approved remote embedding/reranker services.
 
-Both maintained branches receive qmd-like-rag from `main` and retain the stable `hermes-coarse-recall/v1` protocol. Provider source and Skills share one Git revision, but deployment remains separate: copying either branch does not install qmd-like-rag, its model services, or indexes. A deployment whose query and ingest adapters remain `enabled: false` never invokes the Provider, so an intranet checkout may be upgraded before its Provider runtime is provisioned. See `qmd-like-rag/README.md`.
+Both maintained branches receive qmd-like-rag from `main` and retain the stable `hermes-coarse-recall/v1` protocol with P5 SourceUnit capabilities. Provider source and Skills share one Git revision, but deployment remains separate: copying either branch does not install qmd-like-rag, tokenizer/model services, or indexes. A deployment whose Query and Finalize adapters remain `enabled: false` never invokes the Provider, so an intranet checkout may be upgraded before its Provider runtime is provisioned. See `qmd-like-rag/README.md`.
 
 ## Validation
 

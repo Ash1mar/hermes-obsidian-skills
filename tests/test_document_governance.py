@@ -23,9 +23,6 @@ def test_stage_four_current_history_and_identity_gates(tmp_path: Path) -> None:
     spec = importlib.util.spec_from_file_location("governance_locator_test", locator)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
-    sys.path.insert(0, str(ROOT / "qmd-like-rag/src"))
-    from qmd_like_rag.corpus import resolve_sources
-
     vault = create_engineering_vault(tmp_path)
     organization_add(vault, status="approved")
     raw = vault / "10_Raw/stage-three.pdf"
@@ -36,23 +33,18 @@ def test_stage_four_current_history_and_identity_gates(tmp_path: Path) -> None:
                 "--version-id", "version-stage-three-1", "--expected-revision", "1", "--actor", "test")
     relative = (bundle / "document.md").relative_to(vault).as_posix()
     assert not module.GovernanceQueryPolicy(vault).allows(relative)
-    assert resolve_sources(vault, ["10_Raw/converted/**/document.md"]) == []
     run_manager(vault, "activate", "--version-id", "version-stage-three-1",
                 "--expected-revision", "2", "--actor", "reviewer")
     assert module.GovernanceQueryPolicy(vault).allows(relative)
-    assert len(resolve_sources(vault, ["10_Raw/converted/**/document.md"])) == 1
     run_manager(vault, "status", "--version-id", "version-stage-three-1",
                 "--governance-status", "withdrawn", "--expected-revision", "3", "--actor", "reviewer")
     assert not module.GovernanceQueryPolicy(vault).allows(relative)
     assert module.GovernanceQueryPolicy(vault, True).allows(relative)
-    # Provider retains history; ordinary Query filters it using current state.
-    assert len(resolve_sources(vault, ["10_Raw/converted/**/document.md"])) == 1
     path = bundle / "manifest.json"
     value = json.loads(path.read_text(encoding="utf-8"))
     value["governance"]["vault_id"] = "vault-wrong"
     path.write_text(json.dumps(value), encoding="utf-8")
     assert not module.GovernanceQueryPolicy(vault, True).allows(relative)
-    assert resolve_sources(vault, ["10_Raw/converted/**/document.md"]) == []
     linted = subprocess.run([sys.executable, str(LINT), "--vault", str(vault), "--json"],
                             text=True, capture_output=True)
     assert "governance.projection_mismatch" in {i["code"] for i in json.loads(linted.stdout)["issues"]}
@@ -705,20 +697,15 @@ def test_candidate_source_can_build_draft_without_becoming_query_visible(tmp_pat
     spec = importlib.util.spec_from_file_location("draft_query_policy", ROOT / "hermes-obsidian-controlled-query/scripts/locate_source_sections.py")
     query = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(query)
-    sys.path.insert(0, str(ROOT / "qmd-like-rag/src"))
-    from qmd_like_rag.governance import eligible_corpus_paths
     assert not query.GovernanceQueryPolicy(vault).allows(output)
-    assert output not in eligible_corpus_paths(vault)
     # Approval alone still does not activate the source.
     run_manager(vault, "organization-status", "--organization-id", "organization-owner", "--status", "approved",
                 "--expected-revision", "1", "--actor", "reviewer")
     assert not query.GovernanceQueryPolicy(vault).allows(output)
     run_manager(vault, "activate", "--version-id", "version-stage-three-1", "--expected-revision", "2", "--actor", "reviewer")
     assert query.GovernanceQueryPolicy(vault).allows(output)
-    assert output in eligible_corpus_paths(vault)
     # A shared output also registered under an ineligible source must be excluded.
     excluded = json.loads(ledger_path.read_text(encoding="utf-8"))
     excluded["governance"]["version_id"] = "unresolved-supporting-version"
     (vault / "_system/reports/other.section-ledger.json").write_text(json.dumps(excluded), encoding="utf-8")
     assert not query.GovernanceQueryPolicy(vault).allows(output)
-    assert output not in eligible_corpus_paths(vault)

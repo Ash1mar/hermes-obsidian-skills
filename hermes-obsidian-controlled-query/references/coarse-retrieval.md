@@ -25,7 +25,7 @@ python3 "<query-skill-root>/scripts/query_session.py" query \
   <vault-root> "<query>" --query-type <type>
 ```
 
-It starts the trace, invokes the adapter below concurrently with hierarchical location, expands Provider chunks to complete sections, fuses the union, and automatically inspects the bounded first window. Provider and hierarchical raw scores remain separate; fusion ordering uses route ranks. Candidate details and rejection reasons are retained in the trace sidecar; stdout contains evidence packets rather than a candidate list.
+It starts the trace and invokes the adapter below concurrently with hierarchical location. For P5 source projections, the adapter validates release/generation/eligibility and reads the exact SourceUnit core or explicit subspan from the source repository; the Provider snippet is navigation context only. The scope workflow fuses this with hierarchical candidates and automatically inspects the bounded first window. Provider and hierarchical raw scores remain separate; fusion ordering uses route ranks. Candidate details and rejection reasons are retained in the trace sidecar; stdout contains evidence packets rather than a candidate list.
 
 Call `retrieve_query_scope.py` directly only for an explicit diagnostic or legacy fallback.
 
@@ -50,9 +50,10 @@ Main normally uses command transport:
 }
 ```
 
-Keep `enabled: false` while the Provider has no ready index. After ingest performs the first
-successful sync, enable both the ingest and query adapters together. The host config pins the
-models and host-local state location; it is not Vault content.
+Keep `enabled: false` while the Provider has no ready P5 generation. After Knowledge Finalize
+performs the first successful release sync, enable the Query adapter. The Finalize and Query
+switches remain independently deployable. The host config pins models, tokenizer assets and the
+host-local state location; it is not Vault content.
 
 The intranet branch may replace that file or point its checked-in
 `config/deployment.json` deployment policy at HTTP:
@@ -70,7 +71,7 @@ Do not store credentials or machine-local state paths in Vault metadata. Do not 
 
 ## Result boundary
 
-Accept only `hermes-coarse-recall/v1` responses with `authority: candidate-navigation-only`. Reject absolute paths, traversal paths, missing files, and invalid line ranges. A source-hash mismatch marks the candidate as changed but does not by itself remove it; re-open and re-locate the current source.
+Accept only `hermes-coarse-recall/v1` responses with `authority: candidate-navigation-only`, P5 SourceUnit/release capabilities, a current release ID/hash and an index generation. Reject absolute paths, traversal paths, missing files, invalid ranges, ineligible objects and incomplete UnitRefs. Source candidates are re-read by UnitRef; knowledge-page candidates must match the eligible page revision.
 
 Provider score, section ingest status, and extraction QA status use different scales. Do not add them together. Merge by Vault-relative path and overlapping ranges, retain retrieval routes, and use source verification to determine evidence quality.
 

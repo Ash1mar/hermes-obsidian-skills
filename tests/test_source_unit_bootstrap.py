@@ -33,11 +33,11 @@ def test_isolated_bootstrap_and_no_overwrite(copied, tmp_path, profile):
     assert check.returncode == 0, check.stdout + check.stderr
     data = json.loads(check.stdout)
     assert data["bootstrap_ready"] and not data["query_ready"]
-    assert data["phase"] == "P4"
+    assert data["phase"] == "P5"
     declaration = json.loads((vault / "_system/vault.json").read_text(encoding="utf-8"))["source_units"]
     assert declaration["capabilities"] == {"bootstrap": True, "source_reader": True,
                                             "knowledge_build": True, "vault_finalize": True,
-                                            "retrieval": False}
+                                            "retrieval": True}
     identities = json.loads((vault / "_system/metadata/knowledge-identities.json").read_text(encoding="utf-8"))
     assert identities == {"contract": "hermes-knowledge-identity-registry/v1",
                          "revision": 0, "subjects": []}
@@ -82,7 +82,7 @@ def test_missing_directory_and_false_ready(copied, tmp_path):
     directory.mkdir()
     manifest = vault / "_system/vault.json"
     value = json.loads(manifest.read_text(encoding="utf-8"))
-    value["source_units"]["capabilities"]["retrieval"] = True
+    value["source_units"]["capabilities"]["retrieval"] = False
     manifest.write_text(json.dumps(value))
     assert run(check, "--vault", vault).returncode == 1
 

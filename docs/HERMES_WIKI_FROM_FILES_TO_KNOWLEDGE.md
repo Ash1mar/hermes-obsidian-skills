@@ -1,6 +1,6 @@
 # 我们如何从文件生成 Wiki：解析、内容单元、知识构建与 WeKnora 对比
 
-核对日期：2026-09-11。本仓库基线：`a74b631437541129b61dccb44f1101eab59dc567`；WeKnora 为当日核对的官方 main，不是固定发布版。本文只说明流程和设计建议，不代表已实施新的 chunk 层。
+初次核对日期：2026-09-11；实施状态更新：2026-09-17。WeKnora 分析仍对应初次核对时的官方 main，不是固定发布版。第 1–18 节保留当时旧链路分析作为决策背景；当前实现状态以第 19–21 节、ADR-0003–0006 和演进计划为准。P2/P2.1 已建立 canonical SourceUnit，P3/P4 已建立知识构建与 release，P5 仓库代码已让 Provider 消费 release 投影并让 Query 按 UnitRef 精确回读；实际 Provider 0.5 部署尚未执行。
 
 本文以我们自己的实际流程为主线，穿插解释三个容易混淆的问题：解析如何完成，chunk 究竟在哪一层，以及“Wiki 阅读材料”到底是什么。最后列出逐项对比表。
 
@@ -525,9 +525,9 @@ SourceUnit 的 chunk size/overlap 变化会形成新 UnitSet；工作窗口和�
 | 图像证据 | 图片存储、OCR/描述子记录 | 图像资产、图片 Bundle、针对性 QA | 都保留图像；派生内容策略不同 |
 | 规范正文 | Reader 结果继而入 chunk 仓库 | 单一 `document.md` 为规范文本 | 我们更依赖文件式来源 |
 | 结构划分 | 标题/启发式/递归切块 | P2.1 outline owned ranges + structure/heuristic/recursive 策略验证回退 | 来源层能力已对齐，同时保留更严格 ownership 和报告 |
-| 检索子块 | 配置切块，应用库持久化 | P2.1 UnitSet v2 与 engine report 已持久化；旧 Provider 仍保留标题父段 + token 窗口 | P5 必须删除旧独立切片并直接索引 Unit |
-| 精确子块定位 | 规范文本字符坐标等 | P2 Unit 使用规范文本 codepoint 精确范围 | 来源定位已补；Provider 透传留到 P5 |
-| 共享内容单元 | 来源 chunks 被 Wiki 和检索消费 | P2 canonical Unit 已成立，P3 已接入知识构建，P4 已发布 release/资格，P5 再接入检索 | 知识消费者和发布边界已对齐，检索消费者待实施 |
+| 检索子块 | 配置切块，应用库持久化 | P2.1 UnitSet v2 与 engine report 已持久化；P5 Provider 一 Unit 一普通投影，仅 oversized 特例使用精确 subspan | 已删除 Provider 旧独立 chunker，不迁移旧索引 |
+| 精确子块定位 | 规范文本字符坐标等 | P2 Unit 使用规范文本 codepoint 精确范围；P5 端到端保留 UnitRef/subspan | Query 已通过来源 reader 精确回读 |
+| 共享内容单元 | 来源 chunks 被 Wiki 和检索消费 | P2 canonical Unit 已成立，P3 接入知识构建，P4 发布 release/资格，P5 接入检索投影 | 内容消费者和发布边界已对齐；部署验收待执行 |
 | 模型输入组装 | 服务按阶段自动组装 | agent 阅读规则、正文及旧页 | 有操作方式，缺统一组装器 |
 | 通用候选发现 | 实体/概念等提示流程 | entity/concept/requirement/fact/analysis | 思想相近，类别与执行方式不同 |
 | 同一性判断 | 预筛选、模型判断、名称/slug 协调 | agent 查旧页及理由记录 | 有语义规则，缺同等自动协调 |
@@ -547,7 +547,7 @@ SourceUnit 的 chunk size/overlap 变化会形成新 UnitSet；工作窗口和�
 
 你提出的方向有实质意义：让 chunk 不只是“给向量检索切出来的一段文本”，而成为知识构建能稳定引用的来源单元。
 
-新体系保留 Bundle 的解析产物职责；ledger 退回工作与审计控制面。P2 已补齐 Provider 无关的 Unit 身份、精确读取、QA 继承和 canonical chunk overlap。P3 已使用同一 UnitSet 完成 Pass/Reduce 与 Build Finalize；P4 将其收尾为可审计 release 与索引资格；P5 必须消费该 UnitSet 和 release，其中 Provider 只做索引渲染，不能恢复自己的普通切片权威。
+新体系保留 Bundle 的解析产物职责；ledger 退回工作与审计控制面。P2 已补齐 Provider 无关的 Unit 身份、精确读取、QA 继承和 canonical chunk overlap。P3 已使用同一 UnitSet 完成 Pass/Reduce 与 Build Finalize；P4 将其收尾为可审计 release 与索引资格；P5 仓库实现已消费该 UnitSet 和 release，其中 Provider 只做索引渲染，没有恢复自己的普通切片权威。下一门禁是在实际 main/intranet 运行拓扑创建新 generation 并完成联调。
 
 这项改造和“换数据库”“重写 OCR”“增加本体”是不同工作。建议先验证最小内容单元契约，避免同时扩大所有层的范围。
 

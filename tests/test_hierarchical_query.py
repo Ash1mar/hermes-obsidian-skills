@@ -127,6 +127,16 @@ def make_vault(tmp_path: Path) -> Path:
         "---\ntype: source-map\nvalidation_status: pass\nledger_revision: 2\n---\n",
         encoding="utf-8",
     )
+    release = {
+        "contract": "hermes-knowledge-release/v1", "release_id": "release-test",
+        "state": "completed", "index_eligibility": [{
+            "kind": "knowledge_page", "id": "page-test", "eligible": True,
+            "page_revision_id": "revision-test", "source_unit_refs": [],
+        }],
+    }
+    write_json(vault / "_system/knowledge-releases/release-test/manifest.json", release)
+    write_json(vault / "_system/metadata/knowledge-release-state.json",
+               {"current_release_id": "release-test"})
     return vault
 
 
@@ -522,9 +532,12 @@ def test_scope_fusion_expands_provider_chunk_and_records_duplicate_reason(tmp_pa
     trace_id = json.loads(started.stdout)["trace_id"]
     provider = tmp_path / "provider.py"
     provider.write_text(
-        """import argparse, json
+        """import argparse, hashlib, json
+from pathlib import Path
 p=argparse.ArgumentParser(); p.add_argument('command'); p.add_argument('--vault-root'); p.add_argument('--query'); p.add_argument('--top-k'); a=p.parse_args()
-print(json.dumps({'protocol_version':'hermes-coarse-recall/v1','provider':'qmd-like-rag','provider_version':'test','status':'ok','authority':'candidate-navigation-only','index_fingerprint':'idx','warnings':[],'candidates':[{'vault_path':'10_Raw/converted/0712XFNPXTS02_document_bundle/document.md','line_start':3,'line_end':4,'heading':'参数子系统','score':0.9}]}))
+release=Path(a.vault_root)/'_system/knowledge-releases/release-test/manifest.json'
+release_hash=hashlib.sha256(release.read_bytes()).hexdigest()
+print(json.dumps({'protocol_version':'hermes-coarse-recall/v1','provider':'qmd-like-rag','provider_version':'test','status':'ok','authority':'candidate-navigation-only','index_fingerprint':'idx','release_id':'release-test','release_hash':release_hash,'index_generation':'generation-test','capabilities':{'source_units':True,'release_driven':True,'projection_kinds':['source_unit','knowledge_page']},'warnings':[],'candidates':[{'vault_path':'10_Raw/converted/0712XFNPXTS02_document_bundle/document.md','line_start':3,'line_end':4,'heading':'参数子系统','score':0.9,'projection_kind':'knowledge_page','projection_fingerprint':'sha256:projection','release_id':'release-test','release_hash':release_hash,'page_id':'page-test','page_revision_id':'revision-test','source_unit_refs':[]}]}))
 """,
         encoding="utf-8",
     )
