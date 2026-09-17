@@ -1,6 +1,6 @@
 # P5 Release 驱动检索投影验收
 
-日期：2026-09-17。范围：P5.1–P5.5 代码链路与 P5.6 自动化门禁。状态：仓库实现通过；实际 WSL/内网 Provider 0.5 部署、新 generation 构建和模型服务联调待执行。
+日期：2026-09-17。范围：P5.1–P5.5 代码链路与 P5.6 自动化门禁。状态：仓库实现和 main WSL Provider 0.5 运行时部署通过；新 release generation、真实材料检索及内网模型服务联调待执行。
 
 ## 验收结论
 
@@ -32,9 +32,9 @@ P5 已把 qmd-like-rag 的来源入口从“扫描 Markdown 并自行切 chunk�
 
 ## 尚未宣称完成的运行验收
 
-本次没有部署 qmd-like-rag 0.5，没有在 WSL 下载或固定生产 tokenizer/model 资产校验和，没有连接 intranet 远端 embedding/reranker 服务，也没有创建 Chroma/BM25 generation。因此以下项目仍是 P5.6 的部署门禁：
+main WSL 已从 Provider 0.4.0 升级到 0.5.0，复用了固定 revision 的本地模型，写入并验证 embedding/reranker tokenizer SHA-256；`doctor` 确认 CUDA 13.0 与 NVIDIA GeForce RTX 5070 Ti Laptop GPU 可用，五个 Skill 已同步。由于尚无 P5 新库和当前 release，`status` 正确为 `absent`，两个 Provider adapter 保持关闭，也没有创建 Chroma/BM25 generation。以下项目仍是 P5.6/P6 的运行门禁：
 
-1. main 本地模型拓扑实际 sync/recall，并核对 tokenizer、模型、CUDA 和 generation 指纹。
+1. main 本地模型拓扑针对真实 P5 release 执行 sync/recall，并核对 generation 与检索质量。
 2. intranet 远端模型拓扑的 CLI/HTTP 等价性、只读 Vault 挂载、host bind state、超时和故障恢复。
 3. stale release、索引中断及 tokenizer/model 资产变更在实际进程中的拒绝与重建。
 4. 新 generation 完整重建后的检索质量与无答案行为；这些结果进入 P6 实践报告。
