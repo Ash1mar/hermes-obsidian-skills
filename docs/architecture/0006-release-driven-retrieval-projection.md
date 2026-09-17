@@ -50,4 +50,4 @@ P5 会主动打破旧 qmd-like-rag 索引格式和配置语义。`include_patter
 
 2026-09-17 的仓库实现将 qmd-like-rag 升级到 0.5：删除 Provider 独立 Markdown chunker 与 `tiktoken`，从当前 knowledge release 枚举 eligible SourceUnit/knowledge page，以发布者 tokenizer 资产执行一 Unit 一普通投影。普通超限会阻断同步；只有 Chunk Engine 报告的超大受保护结构可生成无重叠精确 subspan，候选始终保留父 UnitRef。
 
-索引以新 generation 写入 Vault 外状态目录，manifest 钉住 release、renderer、tokenizer、模型和 projection；Recall 拒绝配置、模型、tokenizer 或 release 不匹配的代次。Finalize Skill 持有显式 release sync 入口，Query 校验能力与 eligibility 后通过 SourceUnit reader 回读核心或 subspan。仓库自动化验收已通过；尚未在本次实施中安装 0.5 WSL 运行时、下载或核验生产 tokenizer/model 资产，也未创建实际索引，因此部署态 P5.6 仍是后续门禁。
+索引以新 generation 写入 Vault 外状态目录，manifest 钉住 release、renderer、tokenizer、模型和 projection；Recall 拒绝配置、模型、tokenizer 或 release 不匹配的代次。Finalize Skill 持有显式 release sync 入口，Query 校验能力与 eligibility 后通过 SourceUnit reader 回读核心或 subspan。仓库自动化验收已通过；0.5 WSL 运行时、固定模型和两个 tokenizer 校验和也已部署验证。由于尚无 P5 release，实际 generation、sync/recall 和 intranet 拓扑仍是后续门禁。

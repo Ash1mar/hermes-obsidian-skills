@@ -380,7 +380,7 @@ P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上�
 
 P5 首次部署必须创建新 index generation，不迁移当前 Provider 的旧 Markdown chunk。Provider 仍作为独立进程或容器发布；共享 SourceUnit 语义通过 release/UnitRef 契约交互，不把 Chroma、模型或 tokenizer 重依赖安装进 Hermes。完整决策和门禁见 [ADR-0006](architecture/0006-release-driven-retrieval-projection.md)。
 
-2026-09-17 实施状态：P5.1–P5.5 及可自动执行的 P5.6 故障/契约测试已完成，详见 [P5 验收](SOURCE_UNITS_P5_ACCEPTANCE.md)。本次未部署 Provider 0.5、未建立实际 generation，也未连接 intranet 模型服务；main/intranet 两种真实拓扑的 P5.6 验收必须在进入 P6 正式实践前完成，不能由单元测试结果替代。
+2026-09-17 实施状态：P5.1–P5.5 及可自动执行的 P5.6 故障/契约测试已完成，详见 [P5 验收](SOURCE_UNITS_P5_ACCEPTANCE.md)。main WSL 已部署 Provider 0.5、固定模型和两个真实 tokenizer；尚无 P5 release，因而未建立实际 generation，也未连接 intranet 模型服务。main 的真实 sync/recall 与 intranet 拓扑验收必须由 P6 实践补齐，不能由单元测试或空状态 readiness 替代。
 
 ### 11.10 P6/P7：完整实践与正式重建细分
 
