@@ -1,7 +1,7 @@
 # 通用来源单元：全新建库设计与实施计划
 
-日期：2026-09-11，2026-09-16 校正。修订：R8，保留全新建库前提，完成 P4，并钉住 P5 Release 驱动的检索投影契约。
-状态：P0/P1/P2/P2.1/P3/P4 已完成；下一阶段 P5，P6–P7 待实施，未执行正式库重建或 ingest。阶段重排见 [ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)，P2.1 决策见 [ADR-0005](architecture/0005-shared-chunk-engine.md)，P5 决策见 [ADR-0006](architecture/0006-release-driven-retrieval-projection.md)，实现入口见 [ADR-0003](architecture/0003-source-unit-contracts.md)、[共享包规范](../hermes-source-units/README.md)及 [P0](SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](SOURCE_UNITS_P3_ACCEPTANCE.md)、[P4](SOURCE_UNITS_P4_ACCEPTANCE.md)验收。
+日期：2026-09-11，2026-09-17 校正。修订：R9，保留全新建库前提，完成 P5 仓库实现并把实际部署验收单列为 P5.6 门禁。
+状态：P0/P1/P2/P2.1/P3/P4 已完成；P5.1–P5.5 与自动化门禁已完成，P5.6 实际部署验收待执行；P6–P7 待实施，未执行正式库重建或 ingest。阶段重排见 [ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)，P2.1 决策见 [ADR-0005](architecture/0005-shared-chunk-engine.md)，P5 决策见 [ADR-0006](architecture/0006-release-driven-retrieval-projection.md)，实现入口见 [ADR-0003](architecture/0003-source-unit-contracts.md)、[共享包规范](../hermes-source-units/README.md)及 [P0](SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](SOURCE_UNITS_P3_ACCEPTANCE.md)、[P4](SOURCE_UNITS_P4_ACCEPTANCE.md)、[P5](SOURCE_UNITS_P5_ACCEPTANCE.md)验收。
 
 ## 1. 本轮确定的前提
 
@@ -64,7 +64,7 @@ ingest：原件登记 → 解析与规范化产物
 | Section | 文档层级、完整 scope、自有范围 | 自有范围由结构算法产生 |
 | SourceUnit | 规范来源的连续核心文本或有类型资产单元 | 属于确定来源版本与 section，可精确回读 |
 | ReadingWindow | 某次任务要读的单元、上下文与资产集合 | 不拥有新的原文权威 |
-| RetrievalWindow | 为 embedding/BM25 构造的索引输入 | 映射 unit_ref 及实际子范围，可重叠 |
+| Retrieval projection | 为 embedding/BM25 构造的可重建索引输入 | 普通情况一 Unit 一投影；只有已报告的 oversized 特例可映射精确、无重叠子范围 |
 | WorkLedger | 工作类型、目标单元、执行状态、覆盖、QA与输出 | 引用 source units，不定义切片 |
 | KnowledgeArtifact | 摘要、卡片、概念页、综合页等 | 记录实际支持它的 unit_ref 与页面修订 |
 
@@ -367,7 +367,7 @@ P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上�
 | P4.4 Release manifest | 钉住 unit sets、build runs、page revisions、QA/blocked 和索引资格 | 一次收尾范围及结果可审计，不能把局部成功冒充全库完成 |
 | P4.5 Finalize Skill | `hermes-obsidian-knowledge-finalize` 的 plan/apply/validate 与恢复入口 | 可独立重跑，不解析来源、不隐式同步 Provider、不批准业务版本 |
 
-### 11.9 P5：Provider 与查询细分
+### 11.9 P5：Provider 与查询细分（仓库实现已完成，部署验收待执行）
 
 | 子任务 | 工作 | 可验收结果 |
 |---|---|---|
@@ -379,6 +379,8 @@ P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上�
 | P5.6 端到端与部署验收 | 覆盖 stale release、UnitSet/renderer/模型变化、索引中断、Provider 不可用、无答案、派生页溯源及 CLI/HTTP 一致性；验证 main 本地模型与 intranet 远端模型拓扑 | 所有失败显式可恢复；Provider 状态在 Vault 外；正式 intranet 使用可检查的 host bind state，离线镜像及 tokenizer 资产有摘要 |
 
 P5 首次部署必须创建新 index generation，不迁移当前 Provider 的旧 Markdown chunk。Provider 仍作为独立进程或容器发布；共享 SourceUnit 语义通过 release/UnitRef 契约交互，不把 Chroma、模型或 tokenizer 重依赖安装进 Hermes。完整决策和门禁见 [ADR-0006](architecture/0006-release-driven-retrieval-projection.md)。
+
+2026-09-17 实施状态：P5.1–P5.5 及可自动执行的 P5.6 故障/契约测试已完成，详见 [P5 验收](SOURCE_UNITS_P5_ACCEPTANCE.md)。本次未部署 Provider 0.5、未建立实际 generation，也未连接 intranet 模型服务；main/intranet 两种真实拓扑的 P5.6 验收必须在进入 P6 正式实践前完成，不能由单元测试结果替代。
 
 ### 11.10 P6/P7：完整实践与正式重建细分
 

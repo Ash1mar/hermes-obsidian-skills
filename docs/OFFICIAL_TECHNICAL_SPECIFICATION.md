@@ -124,7 +124,7 @@ flowchart LR
     LINT -. read only .-> VAULT
     QUERY -. governed read .-> VAULT
     QUERY -. candidate recall .-> PROVIDER
-    INGEST -. optional index sync .-> PROVIDER
+    FINALIZE -. explicit release sync .-> PROVIDER
     PROVIDER --> STATE
 ```
 
@@ -141,8 +141,8 @@ flowchart LR
 | 组件 | 核心职责 | 允许写入 | 禁止行为 |
 | --- | --- | --- | --- |
 | Vault Bootstrap | 创建标准目录、规则、模板、注册表、Dataview 和 setup report；engineering profile 创建 revision-0 JSON 文档治理控制面 | 新 Vault 的治理骨架 | 自动摄取业务原文；覆盖或升级已有治理控制面；把运行时 Skill 路径固化为可移植 Vault 内容 |
-| Controlled Ingest | 保存原件、转换、校验、管理 ledger、通过治理管理器登记文档/版本/来源；在 P2 Vault 中准备规范产物并发布 SourceUnit；旧链路仍生成治理知识、记录 ingest/QA、可选同步 Provider | `10_Raw/` 新原件、`10_Raw/converted/` 派生物、治理注册表、治理目录、`_system/sources/` 和 `_system/reports/` | 直接手改治理注册表；覆盖冲突原件；跳过 Bundle/来源单元门禁；把 QA 内容静默提升为权威事实 |
-| Knowledge Finalize | 在 Build Finalize 后计算受影响对象、维护 stale/withdrawn 贡献、验证导航并发布 knowledge release 与索引资格 | `_system/knowledge-releases/`、`_system/navigation/`、release state 和受控 redirect | 解析来源；批准业务版本；删除仍受支持页面；隐式同步 Provider |
+| Controlled Ingest | 保存原件、转换、校验、管理 ledger、通过治理管理器登记文档/版本/来源；准备规范产物并发布 SourceUnit；记录 ingest/QA，不维护 Provider 索引 | `10_Raw/` 新原件、`10_Raw/converted/` 派生物、治理注册表、治理目录、`_system/sources/` 和 `_system/reports/` | 直接手改治理注册表；覆盖冲突原件；跳过 Bundle/来源单元门禁；把 QA 内容静默提升为权威事实；同步 Provider |
+| Knowledge Finalize | 在 Build Finalize 后计算受影响对象、维护 stale/withdrawn 贡献、验证导航并发布 knowledge release 与索引资格；apply 完成后可通过独立部署开关显式提交 release sync | `_system/knowledge-releases/`、`_system/navigation/`、release state、受控 redirect 和 retrieval manifest | 解析来源；批准业务版本；删除仍受支持页面；在 release 提交前同步 Provider |
 | Vault Lint | 按 profile 只读检查 Vault 健康、证据链、QA 边界及可选 engineering 治理不变量 | 无 | 自动修复 Vault 或改变业务状态 |
 | Controlled Query | 融合候选、自动检查首窗、形成可追溯答案并写 trace | 当前查询 trace | 修改治理知识；查询时同步索引；补检索绕过单遍边界 |
 | MinerU/OCR/MarkItDown | 把外部格式转换为可检查的派生表示 | 转换输出目录 | 决定知识产物、批准概念或替代人工专业判断 |
@@ -199,7 +199,7 @@ flowchart LR
 | Bundle manifest/outline | `2.0` | Bundle `manifest.json`、`outline.json` | 描述来源、结构、页码、图表、质量和派生文件 |
 | Section ledger | `1.0` | `_system/reports/*.section-ledger.json` | 记录章节状态、内容指纹、revision、QA 和输出 |
 | Query index | `1.0` | `_system/reports/query-index/*.json` | 按文档和章节层级定位候选 |
-| Retrieval index manifest | `1.0` | `_system/reports/retrieval-index-manifest.json` | 记录 Provider、配置/模型/语料/索引指纹与最近状态 |
+| Retrieval index manifest | `2.0` | `_system/reports/retrieval-index-manifest.json` | 记录 release、generation、renderer、tokenizer、模型、语料及索引指纹与最近状态 |
 | Query trace | `1.5` | `_system/reports/query-traces/` | 记录候选、证据包、Claim、事件、耗时和结论 |
 | Vault Lint output | `1.0` | `lint_vault.py --json` 输出 | 为 CI、验收和修复计划提供稳定检查结果 |
 | Document governance | `1.0` / `hermes-governance/v1` | `_system/vault.json` 及其声明的 schema、机构表和 registry | 定义 Vault 隔离、文档/版本/资源身份、来源事件、状态和未来 SQL 映射 |
@@ -212,14 +212,13 @@ flowchart LR
 
 ### 8.1 SourceUnit 新链路阶段门禁
 
-P4 新 Vault 以 `_system/vault.json` 的 `source_units.phase: P4`、
+P5 新 Vault 以 `_system/vault.json` 的 `source_units.phase: P5`、
 `capabilities.source_reader: true`、`capabilities.knowledge_build: true` 和 `capabilities.vault_finalize: true` 启用来源内容层、知识构建及显式 release。controlled-ingest 可从 governed Bundle v2
 或已登记 Markdown 创建不可变 artifact，预览/发布 UnitSet，并按完整 UnitRef 精确读取；lint
 重验仓库、来源 hash 和覆盖。SourceUnit 是知识构建与 RAG 共用的 canonical chunk，可按 source
 配置保留有限 overlap；标题和阅读上下文单独返回，ledger 不再决定内容边界。
 
-P3 从 UnitRefs 建立任务、持久化阅读材料、执行 Pass 0/Pass 1..N、Reduce 和 Build Finalize；页面提交、QA、业务资格与可见性分别记录。P4 独立 Skill 将 completed builds 与 source changes 收尾为可审计 release，验证 stale/withdrawn 贡献、页面移动、导航和索引资格。P4 不执行 Provider 投影，因此这种 Vault 必须保持
-`retrieval: false` 和 `query_ready: false`。旧生产链路在 P7 正式重建前
+P3 从 UnitRefs 建立任务、持久化阅读材料、执行 Pass 0/Pass 1..N、Reduce 和 Build Finalize；页面提交、QA、业务资格与可见性分别记录。P4/P5 独立 Skill 将 completed builds 与 source changes 收尾为可审计 release，验证 stale/withdrawn 贡献、页面移动、导航和索引资格；随后由显式 release sync 投影 Provider。`retrieval: true` 表示能力可用，只有 schema 2.0 retrieval manifest 与当前 release、SourceUnit capability 和 ready tokenizer 一致时 `query_ready` 才为 true。旧生产链路在 P7 正式重建前
 继续按本规范既有 ledger/query 合同运行；禁止把两条链路的 ID、状态或索引混写。新阶段定义见
 [ADR-0003](architecture/0003-source-unit-contracts.md)、[ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)和 [ADR-0006](architecture/0006-release-driven-retrieval-projection.md)
 和[演进计划](SOURCE_UNITS_EVOLUTION_PLAN.md)。
@@ -322,7 +321,8 @@ detect source state
 -> read evidence and existing knowledge
 -> create/update/reuse/skip governed artifacts
 -> finish ledger and write ingest/QA record
--> optionally sync Provider when ingest adapter is enabled
+-> Build/Vault Finalize publishes a release
+-> optionally project that release when Finalize adapter is enabled
 ```
 
 摄取必须优先更新已有产物和关系，不得因为新来源出现就创建近似重复卡片或概念。Query 产生的 writeback candidate 只能作为新的摄取输入；Ingest 必须重新打开原始证据、查重并执行 QA。
@@ -379,18 +379,19 @@ bootstrap once per request
 
 ## 12. 检索 Provider 合同
 
-`main` 与 `intranet` 统一维护 qmd-like-rag `0.3.0`，并实现稳定协议 `hermes-coarse-recall/v1`。代码版本统一不表示运行时、模型或索引已经部署：当 query/ingest adapter 为 `enabled: false` 时，Skill 必须在启动 Provider 命令、读取主机模型配置或加载模型库之前返回 disabled。Provider 可以使用 command 或 HTTP transport，但必须返回协议兼容的候选响应。
+`main` 与 `intranet` 统一维护 qmd-like-rag `0.5.0`，并实现稳定协议 `hermes-coarse-recall/v1` 的 SourceUnit 扩展。代码版本统一不表示运行时、模型或索引已经部署：当 Query/Finalize adapter 为 `enabled: false` 时，Skill 必须在启动 Provider 命令、读取主机模型配置或加载模型库之前返回 disabled。Provider 可以使用 command 或 HTTP transport，但必须返回协议兼容的候选响应。
 
 Provider 的职责边界：
 
-- 索引允许的 Vault Markdown；
-- 使用 heading-aware chunk、semantic retrieval、BM25、RRF、去重、父范围恢复和可选 reranker 返回候选；
-- 记录 Provider 版本、索引指纹和警告；
+- 只读当前 release 的 eligibility，验证 canonical Unit，并分别投影 SourceUnit 和获准知识页；
+- 一个普通 Unit 对应一个索引文档，标题只作渲染上下文，不拥有第二套 chunk/overlap；
+- 使用实际 embedding tokenizer 检查硬上限，再以 semantic retrieval、BM25、RRF、去重和可选 reranker 返回候选；
+- 记录 release/generation、renderer、tokenizer、模型及索引指纹和警告；
 - 不生成最终答案；
 - 不决定证据等级；
 - 不在 Query 调用中写入或重建索引。
 
-模型身份必须使用不可变 revision 或等价校验信息。生产同步和召回应在模型准备完成后使用 local-files-only 模式。模型、Chroma/BM25 索引、缓存、锁和运行环境保存在 Provider 主机数据面，不进入 Vault。
+模型和 tokenizer 身份必须使用不可变 revision 或等价校验信息。tokenizer 资产缺失、校验不符或不能加载时同步失败，不得回退到其他 tokenizer。生产同步和召回应在模型准备完成后使用 local-files-only 模式。模型/tokenizer、Chroma/BM25 generation、缓存、锁和运行环境保存在 Provider 主机数据面，不进入 Vault。
 
 ## 13. 配置分层
 
@@ -400,7 +401,7 @@ Provider 的职责边界：
 2. **主机部署层**：实际命令、HTTP 服务、模型路径、设备和本机状态目录；
 3. **Vault 控制面**：可审计的期望配置、模型/embedding 指纹和最近索引状态。
 
-高层不得假定低层已经部署。复制 Skill 目录不等于安装 qmd-like-rag、MinerU、模型或 CUDA 依赖。配置中的 `enabled` 是对应 adapter 的独立开关：Query 是否可以只读召回与 Ingest 是否可以维护索引互不隐含。
+高层不得假定低层已经部署。复制 Skill 目录不等于安装 qmd-like-rag、MinerU、tokenizer、模型或 CUDA 依赖。配置中的 `enabled` 是对应 adapter 的独立开关：Query 是否可以只读召回与 Finalize 是否可以投影 release 互不隐含。
 
 ## 14. `main` 与 `intranet` 部署基线
 
@@ -410,7 +411,7 @@ Provider 的职责边界：
 | Skill 解析 | 必须优先使用 runtime loader 返回目录，不假定安装路径 | 同样优先 loader；配置的 `/opt/data/skills/<skill-name>/` 只作部署后备检查 |
 | PDF 转换 | 通常调用 WSL 本地 `/usr/local/bin/mineru` | 分支实现默认使用已配置的 MinerU HTTP API；明确要求时可切换本地 CLI |
 | Query Provider 默认 | qmd-like-rag command adapter 启用 | 仓库默认关闭，部署时必须显式配置并启用 command 或 HTTP transport |
-| Ingest Provider 默认 | 关闭；需要维护索引时显式启用 | 关闭；需要维护索引时显式启用 |
+| Finalize Provider 默认 | 关闭；release 后显式启用 | 关闭；部署 Provider 后显式启用 |
 | QMD | 仅作为明确要求时的对比实验 | 不部署 |
 | Viewer | 默认答案使用原 PDF 路径、页码和位置 | 可以附配置返回的原文定位 viewer URL，但 URL 只用于导航 |
 | Provider 状态 | WSL 本地状态目录，按 Vault 隔离 | Linux Provider 主机的 Vault 外目录 |
@@ -507,6 +508,8 @@ Provider 的职责边界：
 - Query 正常路径保持 `bootstrap → query → finalize`。
 - 单遍窗口、禁止 supplement/第二次 inspect、多题串行和原子 finalize 通过回归测试。
 - Provider doctor 返回正确协议、包版本、模型/依赖状态和无阻断问题。
+- 普通 SourceUnit 与索引文档一一对应；完整 UnitRef、release/generation 和 projection fingerprint 经 CLI/HTTP/Query 不丢失。
+- Query 使用 UnitRef 精确回读核心正文，不把 snippet 或标题渲染当证据；stale release 明确拒绝。
 - Query disabled/unavailable Provider 回退不阻塞 hierarchical route。
 - 查询结果能解析到原始 PDF、页码和证据状态；intranet viewer 只作为附加导航。
 

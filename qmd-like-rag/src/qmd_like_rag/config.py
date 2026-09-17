@@ -9,16 +9,6 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_INCLUDE_PATTERNS = [
-    "30_Cards/**/*.md",
-    "40_Concepts/**/*.md",
-    "50_Projects/**/*.md",
-    "_system/reports/*.source-map.md",
-    "_system/reports/*.spec-index.md",
-    "10_Raw/converted/**/document.md",
-]
-
-
 def default_state_root() -> Path:
     configured = os.environ.get("QMD_LIKE_RAG_STATE_ROOT")
     if configured:
@@ -40,7 +30,6 @@ class ProviderConfig:
     vault_root: Path
     state_root: Path = field(default_factory=default_state_root)
     vault_id: str = ""
-    include_patterns: list[str] = field(default_factory=lambda: list(DEFAULT_INCLUDE_PATTERNS))
     embedding_model: str = "BAAI/bge-m3"
     reranker_model: str = "BAAI/bge-reranker-large"
     embedding_revision: str | None = None
@@ -61,13 +50,22 @@ class ProviderConfig:
     model_request_timeout_seconds: float = 120.0
     model_request_max_retries: int = 2
     model_audit_mode: str | None = None
-    chunk_size: int = 800
-    chunk_overlap: float = 0.15
+    embedding_tokenizer_id: str | None = None
+    embedding_tokenizer_revision: str | None = None
+    embedding_tokenizer_path: Path | None = None
+    embedding_tokenizer_sha256: str | None = None
+    embedding_max_tokens: int = 8192
+    reranker_tokenizer_id: str | None = None
+    reranker_tokenizer_revision: str | None = None
+    reranker_tokenizer_path: Path | None = None
+    reranker_tokenizer_sha256: str | None = None
+    reranker_max_tokens: int = 8192
+    renderer_version: str = "source-unit-renderer/v1"
+    index_generation: str | None = None
     top_k: int = 20
     rerank_top_k: int = 12
     rrf_k: int = 60
     dedup_similarity_threshold: float = 0.7
-    max_same_parent: int = 1
     ignore_chunk_types: list[str] = field(default_factory=lambda: ["navigation", "backlink"])
 
     def __post_init__(self) -> None:
@@ -75,10 +73,13 @@ class ProviderConfig:
         self.state_root = Path(self.state_root).expanduser().resolve()
         if not self.vault_id:
             self.vault_id = stable_vault_id(self.vault_root)
-        if not 0 <= self.chunk_overlap < 1:
-            raise ValueError("chunk_overlap must be in [0, 1)")
-        if self.chunk_size < 1 or self.top_k < 1 or self.rerank_top_k < 1:
-            raise ValueError("chunk_size and retrieval limits must be positive")
+        for name in ("embedding_tokenizer_path", "reranker_tokenizer_path"):
+            value = getattr(self, name)
+            if value is not None:
+                setattr(self, name, Path(value).expanduser().resolve())
+        if (self.embedding_max_tokens < 1 or self.reranker_max_tokens < 1
+                or self.top_k < 1 or self.rerank_top_k < 1):
+            raise ValueError("model token limits and retrieval limits must be positive")
         if self.device not in {"cpu", "cuda", "mps"}:
             raise ValueError("device must be one of: cpu, cuda, mps")
         if self.embedding_dimension is not None and self.embedding_dimension < 1:
@@ -125,16 +126,25 @@ class ProviderConfig:
         return value[:63]
 
     def chroma_path(self) -> Path:
-        return self.persist_dir / "chroma"
+        return self.generation_dir / "chroma"
 
     def bm25_path(self) -> Path:
-        return self.persist_dir / "bm25.json"
+        return self.generation_dir / "bm25.json"
 
     def fingerprint_path(self) -> Path:
-        return self.persist_dir / "fingerprints.json"
+        return self.generation_dir / "fingerprints.json"
 
     def state_path(self) -> Path:
         return self.persist_dir / "index-state.json"
+
+    @property
+    def generation_dir(self) -> Path:
+        return self.persist_dir / "generations" / (self.index_generation or "pending")
+
+    def with_generation(self, generation: str) -> "ProviderConfig":
+        values = asdict(self)
+        values["index_generation"] = generation
+        return ProviderConfig(**values)
 
     def ensure_dirs(self) -> None:
         self.persist_dir.mkdir(parents=True, exist_ok=True)
@@ -143,36 +153,17 @@ class ProviderConfig:
         data = asdict(self)
         data.pop("vault_root", None)
         data.pop("state_root", None)
-        new_fields = {
-            "embedding_backend",
-            "reranker_backend",
-            "embedding_endpoint",
-            "reranker_endpoint",
-            "embedding_request_model",
-            "embedding_api_key_env",
-            "reranker_api_key_env",
-            "embedding_batch_size",
-            "model_request_timeout_seconds",
-            "model_request_max_retries",
-            "model_audit_mode",
-        }
-        remote = self.embedding_backend != "sentence_transformers" or (
-            self.use_reranker and self.reranker_backend != "cross_encoder"
-        )
-        if not remote and self.model_audit_mode is None:
-            # Keep 0.3.x local-model fingerprints byte-for-byte compatible so
-            # existing WSL indexes remain usable after upgrading the package.
-            for name in new_fields:
-                data.pop(name, None)
-        else:
-            embedding_endpoint = data.pop("embedding_endpoint", None)
-            reranker_endpoint = data.pop("reranker_endpoint", None)
-            data.pop("embedding_api_key_env", None)
-            data.pop("reranker_api_key_env", None)
-            if embedding_endpoint:
-                data["embedding_endpoint_fingerprint"] = self._endpoint_fingerprint(embedding_endpoint)
-            if reranker_endpoint:
-                data["reranker_endpoint_fingerprint"] = self._endpoint_fingerprint(reranker_endpoint)
+        data.pop("index_generation", None)
+        for path_name in ("embedding_tokenizer_path", "reranker_tokenizer_path"):
+            data.pop(path_name, None)
+        embedding_endpoint = data.pop("embedding_endpoint", None)
+        reranker_endpoint = data.pop("reranker_endpoint", None)
+        data.pop("embedding_api_key_env", None)
+        data.pop("reranker_api_key_env", None)
+        if embedding_endpoint:
+            data["embedding_endpoint_fingerprint"] = self._endpoint_fingerprint(embedding_endpoint)
+        if reranker_endpoint:
+            data["reranker_endpoint_fingerprint"] = self._endpoint_fingerprint(reranker_endpoint)
         return data
 
     @staticmethod
@@ -203,6 +194,21 @@ class ProviderConfig:
                 else None
             ),
             "local_files_only": self.local_files_only,
+            "embedding_tokenizer": {
+                "identity": self.embedding_tokenizer_id or self.embedding_model,
+                "revision": self.embedding_tokenizer_revision or self.embedding_revision,
+                "sha256": self.embedding_tokenizer_sha256,
+                "max_tokens": self.embedding_max_tokens,
+            },
+            "reranker_tokenizer": (
+                {
+                    "identity": self.reranker_tokenizer_id or self.reranker_model,
+                    "revision": self.reranker_tokenizer_revision or self.reranker_revision,
+                    "sha256": self.reranker_tokenizer_sha256,
+                    "max_tokens": self.reranker_max_tokens,
+                }
+                if self.use_reranker else None
+            ),
         }
         remote = self.embedding_backend != "sentence_transformers" or (
             self.use_reranker and self.reranker_backend != "cross_encoder"

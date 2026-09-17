@@ -1,0 +1,1706 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.hermes.invalid/source-units/0.4.0/contracts.json",
+  "$defs": {
+    "span": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "additionalProperties": false
+    },
+    "unit_ref": {
+      "type": "object",
+      "properties": {
+        "vault_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "resource_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "artifact_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "unit_set_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "unit_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "vault_id",
+        "resource_id",
+        "artifact_revision",
+        "unit_set_id",
+        "unit_id"
+      ],
+      "additionalProperties": false
+    },
+    "source_ref": {
+      "type": "object",
+      "properties": {
+        "unit_ref": {
+          "$ref": "#/$defs/unit_ref"
+        },
+        "span": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/span"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "unit_ref",
+        "span"
+      ],
+      "additionalProperties": false
+    },
+    "identity": {
+      "type": "object",
+      "properties": {
+        "vault_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "version_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "resource_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        }
+      },
+      "required": [
+        "vault_id",
+        "document_id",
+        "version_id",
+        "resource_id"
+      ],
+      "additionalProperties": false
+    },
+    "asset": {
+      "type": "object",
+      "properties": {
+        "asset_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "format": "vault-relative-path"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "pages": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "asset_id",
+        "path",
+        "sha256",
+        "media_type",
+        "pages"
+      ],
+      "additionalProperties": false
+    },
+    "text_locator": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "text"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "format": "vault-relative-path"
+        },
+        "span": {
+          "$ref": "#/$defs/span"
+        },
+        "line_start": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "line_end": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "pages": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 0
+        },
+        "precision": {
+          "const": "text-codepoint"
+        }
+      },
+      "required": [
+        "kind",
+        "path",
+        "span",
+        "line_start",
+        "line_end",
+        "pages",
+        "precision"
+      ],
+      "additionalProperties": false
+    },
+    "asset_locator": {
+      "type": "object",
+      "properties": {
+        "kind": {
+          "const": "asset"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "format": "vault-relative-path"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "media_type": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "pages": {
+          "type": "array",
+          "items": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "minItems": 0
+        },
+        "precision": {
+          "const": "whole-asset"
+        }
+      },
+      "required": [
+        "kind",
+        "path",
+        "sha256",
+        "media_type",
+        "pages",
+        "precision"
+      ],
+      "additionalProperties": false
+    },
+    "artifact": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "hermes-normalized-artifact/v1"
+        },
+        "identity": {
+          "$ref": "#/$defs/identity"
+        },
+        "artifact_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "normalization": {
+          "const": "lf-codepoint/v1"
+        },
+        "document_path": {
+          "type": "string",
+          "minLength": 1,
+          "format": "vault-relative-path"
+        },
+        "document_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "outline_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "assets": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/asset"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "contract",
+        "identity",
+        "artifact_revision",
+        "source_sha256",
+        "normalization",
+        "document_path",
+        "document_sha256",
+        "outline_sha256",
+        "assets"
+      ],
+      "additionalProperties": false
+    },
+    "unit": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "hermes-source-unit/v1"
+        },
+        "ref": {
+          "$ref": "#/$defs/unit_ref"
+        },
+        "document_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "version_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "source_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "section_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "content_type": {
+          "enum": [
+            "normalized_source",
+            "source_asset",
+            "ocr_transcription",
+            "model_derived"
+          ]
+        },
+        "locator": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/text_locator"
+            },
+            {
+              "$ref": "#/$defs/asset_locator"
+            }
+          ]
+        },
+        "content_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "heading_path": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "\\S"
+          },
+          "minItems": 0
+        },
+        "asset_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/asset"
+          },
+          "minItems": 0
+        },
+        "derived_from": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_ref"
+          },
+          "minItems": 0
+        },
+        "quality_refs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "format": "vault-relative-path"
+          },
+          "minItems": 0
+        },
+        "prev_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/unit_ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "next_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/unit_ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "contract",
+        "ref",
+        "document_id",
+        "version_id",
+        "source_sha256",
+        "section_id",
+        "content_type",
+        "locator",
+        "content_sha256",
+        "heading_path",
+        "asset_refs",
+        "derived_from",
+        "quality_refs",
+        "prev_ref",
+        "next_ref"
+      ],
+      "additionalProperties": false
+    },
+    "section": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "hermes-source-section/v1"
+        },
+        "section_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "parent_id": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 160,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "artifact_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "format": "vault-relative-path"
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "scope": {
+          "$ref": "#/$defs/span"
+        },
+        "owned_ranges": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/span"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "contract",
+        "section_id",
+        "parent_id",
+        "artifact_revision",
+        "path",
+        "title",
+        "scope",
+        "owned_ranges"
+      ],
+      "additionalProperties": false
+    },
+    "unit_set": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "hermes-source-unit-set/v2"
+        },
+        "identity": {
+          "$ref": "#/$defs/identity"
+        },
+        "artifact_revision": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "unit_set_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "engine_version": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "engine_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "effective_config_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "engine_report_path": {
+          "type": "string",
+          "minLength": 1,
+          "format": "vault-relative-path"
+        },
+        "engine_report_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "unit_ids": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "minItems": 0,
+          "uniqueItems": true
+        },
+        "state": {
+          "const": "complete"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "contract",
+        "identity",
+        "artifact_revision",
+        "unit_set_id",
+        "engine_version",
+        "engine_fingerprint",
+        "effective_config_fingerprint",
+        "engine_report_path",
+        "engine_report_sha256",
+        "unit_ids",
+        "state",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "engine_report": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-chunk-engine-report/v1"},
+        "engine_version": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "engine_fingerprint": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "artifact_revision": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "effective_config": {
+          "type": "object",
+          "properties": {
+            "strategy": {"enum": ["auto", "structure", "recursive", "heuristic"]},
+            "target_codepoints": {"type": "integer", "minimum": 1},
+            "max_codepoints": {"type": "integer", "minimum": 1},
+            "overlap_codepoints": {"type": "integer", "minimum": 0},
+            "separators": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+            "languages": {"type": "array", "items": {"type": "string", "minLength": 2}, "minItems": 1, "uniqueItems": true},
+            "token_budget": {
+              "type": "object",
+              "properties": {
+                "mode": {"enum": ["off", "audit", "hard"]},
+                "max_tokens": {"type": "integer", "minimum": 1},
+                "tokenizer_fingerprint": {"anyOf": [{"type": "string", "minLength": 1, "pattern": "\\S"}, {"type": "null"}]}
+              },
+              "required": ["mode", "max_tokens", "tokenizer_fingerprint"],
+              "additionalProperties": false
+            },
+            "oversized_policy": {"const": "preserve-and-report"}
+          },
+          "required": ["strategy", "target_codepoints", "max_codepoints", "overlap_codepoints", "separators", "languages", "token_budget", "oversized_policy"],
+          "additionalProperties": false
+        },
+        "document_profile": {
+          "type": "object",
+          "properties": {
+            "codepoints": {"type": "integer", "minimum": 1},
+            "lines": {"type": "integer", "minimum": 1},
+            "nonempty_lines": {"type": "integer", "minimum": 0},
+            "outline_sections": {"type": "integer", "minimum": 0},
+            "numbered_boundaries": {"type": "integer", "minimum": 0},
+            "page_markers": {"type": "integer", "minimum": 0},
+            "divider_boundaries": {"type": "integer", "minimum": 0},
+            "language_signal": {"enum": ["mixed", "cjk", "latin", "unknown"]}
+          },
+          "required": ["codepoints", "lines", "nonempty_lines", "outline_sections", "numbered_boundaries", "page_markers", "divider_boundaries", "language_signal"],
+          "additionalProperties": false
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "strategy": {"enum": ["structure", "heuristic", "recursive"]},
+              "accepted": {"type": "boolean"},
+              "reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 0}
+            },
+            "required": ["strategy", "accepted", "reasons"],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "selected_strategy": {"enum": ["structure", "heuristic", "recursive"]},
+        "statistics": {
+          "type": "object",
+          "properties": {
+            "chunk_count": {"type": "integer", "minimum": 1},
+            "minimum_codepoints": {"type": "integer", "minimum": 1},
+            "maximum_codepoints": {"type": "integer", "minimum": 1},
+            "average_codepoints": {"type": "integer", "minimum": 1},
+            "tiny_chunk_count": {"type": "integer", "minimum": 0},
+            "oversized_protected_count": {"type": "integer", "minimum": 0},
+            "protected_kinds": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {"kind": {"type": "string", "minLength": 1}, "count": {"type": "integer", "minimum": 1}},
+                "required": ["kind", "count"],
+                "additionalProperties": false
+              },
+              "minItems": 0
+            },
+            "covered_codepoints": {"type": "integer", "minimum": 1},
+            "document_codepoints": {"type": "integer", "minimum": 1},
+            "coverage_complete": {"type": "boolean"}
+          },
+          "required": ["chunk_count", "minimum_codepoints", "maximum_codepoints", "average_codepoints", "tiny_chunk_count", "oversized_protected_count", "protected_kinds", "covered_codepoints", "document_codepoints", "coverage_complete"],
+          "additionalProperties": false
+        },
+        "token_audit": {
+          "type": "object",
+          "properties": {
+            "mode": {"enum": ["off", "audit", "hard"]},
+            "status": {"enum": ["disabled", "unavailable", "complete"]},
+            "tokenizer_fingerprint": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+            "max_tokens": {"type": "integer", "minimum": 1},
+            "maximum_observed_tokens": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+            "over_limit_count": {"type": "integer", "minimum": 0}
+          },
+          "required": ["mode", "status", "tokenizer_fingerprint", "max_tokens", "maximum_observed_tokens", "over_limit_count"],
+          "additionalProperties": false
+        },
+        "diagnostics": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "code": {"type": "string", "minLength": 1},
+              "requested": {
+                "anyOf": [
+                  {"type": "string", "minLength": 1},
+                  {"type": "integer", "minimum": 0}
+                ]
+              },
+              "selected": {"type": "string", "minLength": 1},
+              "attempted": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+              "span": {"$ref": "#/$defs/span"},
+              "reason": {"type": "string", "minLength": 1},
+              "reasons": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 1},
+              "separator": {"type": "string"},
+              "tokenizer_fingerprint": {"type": "string", "minLength": 1},
+              "kind": {"type": "string", "minLength": 1},
+              "section_id": {"type": "string", "minLength": 1},
+              "size": {"type": "integer", "minimum": 1},
+              "maximum": {"type": "integer", "minimum": 1},
+              "tokens": {"anyOf": [{"type": "integer", "minimum": 0}, {"type": "null"}]},
+              "at": {"type": "integer", "minimum": 0},
+              "actual": {"type": "integer", "minimum": 0}
+            },
+            "required": ["code"],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "coverage": {
+          "type": "object",
+          "properties": {
+            "complete": {"type": "boolean"},
+            "covered_codepoints": {"type": "integer", "minimum": 1},
+            "document_codepoints": {"type": "integer", "minimum": 1}
+          },
+          "required": ["complete", "covered_codepoints", "document_codepoints"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["contract", "engine_version", "engine_fingerprint", "artifact_revision", "effective_config", "document_profile", "attempts", "selected_strategy", "statistics", "token_audit", "diagnostics", "coverage"],
+      "additionalProperties": false
+    },
+    "tokenizer": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "revision": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        }
+      },
+      "required": [
+        "id",
+        "revision"
+      ],
+      "additionalProperties": false
+    },
+    "config": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "hermes-source-unit-config/v2"
+        },
+        "source": {
+          "type": "object",
+          "properties": {
+            "chunking": {
+              "type": "object",
+              "properties": {
+                "strategy": {
+                  "enum": ["auto", "structure", "recursive", "heuristic"]
+                },
+                "target_codepoints": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "max_codepoints": {
+                  "type": "integer",
+                  "minimum": 1
+                },
+                "overlap_codepoints": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "separators": {
+                  "type": "array",
+                  "items": {"type": "string", "minLength": 1},
+                  "minItems": 1
+                },
+                "languages": {
+                  "type": "array",
+                  "items": {"type": "string", "minLength": 2},
+                  "minItems": 1,
+                  "uniqueItems": true
+                },
+                "token_budget": {
+                  "type": "object",
+                  "properties": {
+                    "mode": {"enum": ["off", "audit", "hard"]},
+                    "max_tokens": {"type": "integer", "minimum": 1},
+                    "tokenizer_fingerprint": {
+                      "anyOf": [
+                        {"type": "string", "minLength": 1, "pattern": "\\S"},
+                        {"type": "null"}
+                      ]
+                    }
+                  },
+                  "required": ["mode", "max_tokens", "tokenizer_fingerprint"],
+                  "additionalProperties": false
+                },
+                "oversized_policy": {
+                  "const": "preserve-and-report"
+                }
+              },
+              "required": [
+                "strategy", "target_codepoints", "max_codepoints", "overlap_codepoints",
+                "separators", "languages", "token_budget", "oversized_policy"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "required": ["chunking"],
+          "additionalProperties": false
+        },
+        "reading": {
+          "type": "object",
+          "properties": {
+            "max_codepoints": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          "required": [
+            "max_codepoints"
+          ],
+          "additionalProperties": false
+        },
+        "retrieval": {
+          "type": "object",
+          "properties": {
+            "target_tokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "max_tokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "context_max_tokens": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "tokenizer": {
+              "anyOf": [
+                {
+                  "$ref": "#/$defs/tokenizer"
+                },
+                {
+                  "type": "null"
+                }
+              ]
+            }
+          },
+          "required": [
+            "target_tokens",
+            "max_tokens",
+            "context_max_tokens",
+            "tokenizer"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "contract",
+        "source",
+        "reading",
+        "retrieval"
+      ],
+      "additionalProperties": false
+    },
+    "reading_window": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "hermes-reading-window/v1"
+        },
+        "window_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "core_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_ref"
+          },
+          "minItems": 1
+        },
+        "context_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_ref"
+          },
+          "minItems": 0
+        },
+        "context_header": {
+          "type": "string"
+        },
+        "omitted_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_ref"
+          },
+          "minItems": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "max_codepoints": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "contract",
+        "window_id",
+        "core_refs",
+        "context_refs",
+        "context_header",
+        "omitted_refs",
+        "truncated",
+        "reason",
+        "max_codepoints"
+      ],
+      "additionalProperties": false
+    },
+    "reading_material": {
+      "type": "object",
+      "properties": {
+        "role": {"enum": ["core", "context"]},
+        "source_ref": {"$ref": "#/$defs/source_ref"},
+        "unit_content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "selected_sha256": {
+          "anyOf": [
+            {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+            {"type": "null"}
+          ]
+        },
+        "core_text": {"anyOf": [{"type": "string"}, {"type": "null"}]},
+        "asset_refs": {"type": "array", "items": {"$ref": "#/$defs/asset"}, "minItems": 0},
+        "quality_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "format": "vault-relative-path"}, "minItems": 0},
+        "section_id": {
+          "anyOf": [
+            {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+            {"type": "null"}
+          ]
+        },
+        "heading_path": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0}
+      },
+      "required": ["role", "source_ref", "unit_content_sha256", "selected_sha256", "core_text", "asset_refs", "quality_refs", "section_id", "heading_path"],
+      "additionalProperties": false
+    },
+    "reading_package": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-reading-package/v1"},
+        "package_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "task_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "task_revision": {"type": "integer", "minimum": 1},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "document_registry_revision": {"type": "integer", "minimum": 0},
+        "window": {"$ref": "#/$defs/reading_window"},
+        "materials": {"type": "array", "items": {"$ref": "#/$defs/reading_material"}, "minItems": 1},
+        "total_codepoints": {"type": "integer", "minimum": 0}
+      },
+      "required": ["contract", "package_id", "task_id", "task_revision", "actor", "document_registry_revision", "window", "materials", "total_codepoints"],
+      "additionalProperties": false
+    },
+    "retrieval_window": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "hermes-retrieval-window/v1"
+        },
+        "window_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "core_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_ref"
+          },
+          "minItems": 1
+        },
+        "context_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_ref"
+          },
+          "minItems": 0
+        },
+        "context_header": {
+          "type": "string"
+        },
+        "omitted_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_ref"
+          },
+          "minItems": 0
+        },
+        "truncated": {
+          "type": "boolean"
+        },
+        "reason": {
+          "type": "string"
+        },
+        "config_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "tokenizer": {
+          "$ref": "#/$defs/tokenizer"
+        },
+        "input_tokens": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "max_tokens": {
+          "type": "integer",
+          "minimum": 1
+        }
+      },
+      "required": [
+        "contract",
+        "window_id",
+        "core_refs",
+        "context_refs",
+        "context_header",
+        "omitted_refs",
+        "truncated",
+        "reason",
+        "config_fingerprint",
+        "tokenizer",
+        "input_tokens",
+        "max_tokens"
+      ],
+      "additionalProperties": false
+    },
+    "inspection": {
+      "type": "object",
+      "properties": {
+        "source_ref": {
+          "$ref": "#/$defs/source_ref"
+        },
+        "finding": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "qa": {
+          "enum": [
+            "usable",
+            "needs-qa"
+          ]
+        },
+        "qa_note": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_ref",
+        "finding",
+        "qa",
+        "qa_note"
+      ],
+      "additionalProperties": false
+    },
+    "work": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "hermes-unit-work-ledger/v1"
+        },
+        "task_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "task_type": {
+          "enum": [
+            "knowledge_build",
+            "entity_extraction",
+            "table_qa"
+          ]
+        },
+        "task_contract": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "revision": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "actor": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "status": {
+          "enum": [
+            "pending",
+            "running",
+            "completed",
+            "blocked",
+            "failed",
+            "skipped"
+          ]
+        },
+        "target_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_ref"
+          },
+          "minItems": 1
+        },
+        "inspections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/inspection"
+          },
+          "minItems": 0
+        },
+        "deferred": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "source_ref": {
+                "$ref": "#/$defs/source_ref"
+              },
+              "reason": {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "source_ref",
+              "reason"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 0
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "format": "vault-relative-path"
+          },
+          "minItems": 0
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract",
+        "task_id",
+        "task_type",
+        "task_contract",
+        "revision",
+        "attempt",
+        "actor",
+        "status",
+        "target_refs",
+        "inspections",
+        "deferred",
+        "outputs",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "candidate": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "kind": {
+          "enum": [
+            "entity",
+            "concept",
+            "requirement",
+            "fact",
+            "analysis"
+          ]
+        },
+        "decision": {
+          "enum": [
+            "create",
+            "update",
+            "reuse",
+            "skip",
+            "defer"
+          ]
+        },
+        "identity_rationale": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "reason": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "\\S"
+        },
+        "support_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_ref"
+          },
+          "minItems": 1
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1,
+            "format": "vault-relative-path"
+          },
+          "minItems": 0
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "kind",
+        "decision",
+        "identity_rationale",
+        "reason",
+        "support_refs",
+        "outputs"
+      ],
+      "additionalProperties": false
+    },
+    "output": {
+      "type": "object",
+      "properties": {
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "format": "vault-relative-path"
+        },
+        "authored_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "status": {
+          "enum": [
+            "draft",
+            "reviewed"
+          ]
+        },
+        "support_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_ref"
+          },
+          "minItems": 1
+        },
+        "review": {
+          "type": "object",
+          "properties": {
+            "actor": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            },
+            "note": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "\\S"
+            }
+          },
+          "required": [
+            "actor",
+            "note"
+          ],
+          "additionalProperties": false
+        }
+      },
+      "required": [
+        "path",
+        "authored_sha256",
+        "status",
+        "support_refs",
+        "review"
+      ],
+      "additionalProperties": false
+    },
+    "knowledge_build": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "hermes-knowledge-build/v4"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"
+        },
+        "execution_status": {
+          "enum": [
+            "draft",
+            "completed"
+          ]
+        },
+        "inspections": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/inspection"
+          },
+          "minItems": 1
+        },
+        "candidates": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/candidate"
+          },
+          "minItems": 0
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/output"
+          },
+          "minItems": 0
+        },
+        "reason": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "contract",
+        "run_id",
+        "execution_status",
+        "inspections",
+        "candidates",
+        "outputs",
+        "reason"
+      ],
+      "additionalProperties": false
+    },
+    "candidate_observation": {
+      "type": "object",
+      "properties": {
+        "candidate_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "name": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "kind": {"enum": ["entity", "concept", "requirement", "fact", "analysis"]},
+        "identity_rationale": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "finding": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "applicability": {"type": "string"},
+        "conditions": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true},
+        "exceptions": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true},
+        "support_refs": {"type": "array", "items": {"$ref": "#/$defs/source_ref"}, "minItems": 1}
+      },
+      "required": ["candidate_id", "name", "kind", "identity_rationale", "finding", "applicability", "conditions", "exceptions", "support_refs"],
+      "additionalProperties": false
+    },
+    "knowledge_pass": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-pass/v1"},
+        "pass_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "task_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "task_revision": {"type": "integer", "minimum": 1},
+        "pass_kind": {"enum": ["candidate", "citation"]},
+        "sequence": {"type": "integer", "minimum": 0},
+        "reading_window_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "reading_package_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "inspections": {"type": "array", "items": {"$ref": "#/$defs/inspection"}, "minItems": 1},
+        "candidates": {"type": "array", "items": {"$ref": "#/$defs/candidate_observation"}, "minItems": 0},
+        "empty_reason": {"type": "string"},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"}
+      },
+      "required": ["contract", "pass_id", "task_id", "task_revision", "pass_kind", "sequence", "reading_window_id", "reading_package_id", "inspections", "candidates", "empty_reason", "actor"],
+      "additionalProperties": false
+    },
+    "knowledge_subject": {
+      "type": "object",
+      "properties": {
+        "subject_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "page_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "kind": {"enum": ["entity", "concept", "requirement", "fact", "analysis"]},
+        "identity_key": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "canonical_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "aliases": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true},
+        "status": {"enum": ["active", "retired"]},
+        "current_path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "current_revision_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "created_by_run": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}
+      },
+      "required": ["subject_id", "page_id", "kind", "identity_key", "canonical_name", "aliases", "status", "current_path", "current_revision_id", "created_by_run"],
+      "additionalProperties": false
+    },
+    "identity_registry": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-identity-registry/v1"},
+        "revision": {"type": "integer", "minimum": 0},
+        "subjects": {"type": "array", "items": {"$ref": "#/$defs/knowledge_subject"}, "minItems": 0}
+      },
+      "required": ["contract", "revision", "subjects"],
+      "additionalProperties": false
+    },
+    "knowledge_identity": {
+      "type": "object",
+      "properties": {
+        "subject_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "kind": {"enum": ["entity", "concept", "requirement", "fact", "analysis"]},
+        "identity_key": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "canonical_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "aliases": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true}
+      },
+      "required": ["subject_id", "kind", "identity_key", "canonical_name", "aliases"],
+      "additionalProperties": false
+    },
+    "pass_candidate_ref": {
+      "type": "object",
+      "properties": {
+        "pass_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "candidate_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}
+      },
+      "required": ["pass_id", "candidate_id"],
+      "additionalProperties": false
+    },
+    "page_revision": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-page-revision/v1"},
+        "revision_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "page_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "subject_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "parent_revision_id": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+        "action": {"enum": ["create", "update", "reuse", "relate"]},
+        "path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "authored_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "support_refs": {"type": "array", "items": {"$ref": "#/$defs/source_ref"}, "minItems": 1},
+        "qa_status": {"enum": ["usable", "qa_required"]},
+        "business_status": {"const": "unassessed"},
+        "visibility": {"const": "draft"},
+        "state": {"enum": ["draft", "committed"]},
+        "review": {
+          "anyOf": [
+            {"type": "null"},
+            {
+              "type": "object",
+              "properties": {
+                "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                "note": {"type": "string", "minLength": 1, "pattern": "\\S"}
+              },
+              "required": ["actor", "note"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "required": ["contract", "revision_id", "page_id", "subject_id", "parent_revision_id", "action", "path", "authored_sha256", "support_refs", "qa_status", "business_status", "visibility", "state", "review"],
+      "additionalProperties": false
+    },
+    "build_decision": {
+      "type": "object",
+      "properties": {
+        "candidate_refs": {"type": "array", "items": {"$ref": "#/$defs/pass_candidate_ref"}, "minItems": 1},
+        "subject_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "page_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "action": {"enum": ["create", "update", "reuse", "relate"]},
+        "path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "support_refs": {"type": "array", "items": {"$ref": "#/$defs/source_ref"}, "minItems": 1},
+        "revision_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "identity": {"$ref": "#/$defs/knowledge_identity"}
+      },
+      "required": ["candidate_refs", "subject_id", "page_id", "action", "path", "support_refs", "revision_id", "identity"],
+      "additionalProperties": false
+    },
+    "task_snapshot": {
+      "type": "object",
+      "properties": {
+        "task_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "revision": {"type": "integer", "minimum": 1}
+      },
+      "required": ["task_id", "revision"],
+      "additionalProperties": false
+    },
+    "build_review": {
+      "type": "object",
+      "properties": {
+        "page_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "authored_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "parent_authored_sha256": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "note": {"type": "string", "minLength": 1, "pattern": "\\S"}
+      },
+      "required": ["page_id", "authored_sha256", "parent_authored_sha256", "actor", "note"],
+      "additionalProperties": false
+    },
+    "build_run": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-build-run/v1"},
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "revision": {"type": "integer", "minimum": 1},
+        "state": {"enum": ["draft", "completed"]},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "identity_registry_revision": {"type": "integer", "minimum": 0},
+        "tasks": {"type": "array", "items": {"$ref": "#/$defs/task_snapshot"}, "minItems": 1},
+        "decisions": {"type": "array", "items": {"$ref": "#/$defs/build_decision"}, "minItems": 0},
+        "page_revisions": {"type": "array", "items": {"$ref": "#/$defs/page_revision"}, "minItems": 0},
+        "reviews": {"type": "array", "items": {"$ref": "#/$defs/build_review"}, "minItems": 0},
+        "reason": {"type": "string"}
+      },
+      "required": ["contract", "run_id", "revision", "state", "actor", "identity_registry_revision", "tasks", "decisions", "page_revisions", "reviews", "reason"],
+      "additionalProperties": false
+    },
+    "source_change": {
+      "type": "object",
+      "properties": {
+        "resource_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "previous_unit_set_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "current_unit_set_id": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+        "change": {"enum": ["replaced", "withdrawn"]},
+        "reason": {"type": "string", "minLength": 1, "pattern": "\\S"}
+      },
+      "required": ["resource_id", "previous_unit_set_id", "current_unit_set_id", "change", "reason"],
+      "additionalProperties": false
+    },
+    "build_run_snapshot": {
+      "type": "object",
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "revision": {"type": "integer", "minimum": 1}
+      },
+      "required": ["run_id", "revision"],
+      "additionalProperties": false
+    },
+    "release_subject": {
+      "type": "object",
+      "properties": {
+        "subject_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "page_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "current_revision_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "current_path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "active_support_refs": {"type": "array", "items": {"$ref": "#/$defs/source_ref"}, "minItems": 0},
+        "stale_support_refs": {"type": "array", "items": {"$ref": "#/$defs/source_ref"}, "minItems": 0},
+        "withdrawn_support_refs": {"type": "array", "items": {"$ref": "#/$defs/source_ref"}, "minItems": 0},
+        "disposition": {"enum": ["current", "review_required", "blocked"]},
+        "reasons": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true},
+        "affected": {"type": "boolean"}
+      },
+      "required": ["subject_id", "page_id", "current_revision_id", "current_path", "active_support_refs", "stale_support_refs", "withdrawn_support_refs", "disposition", "reasons", "affected"],
+      "additionalProperties": false
+    },
+    "knowledge_redirect": {
+      "type": "object",
+      "properties": {
+        "from_path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "to_path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "page_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "source_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      },
+      "required": ["from_path", "to_path", "page_id", "source_sha256"],
+      "additionalProperties": false
+    },
+    "navigation_entry": {
+      "type": "object",
+      "properties": {
+        "page_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "subject_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "canonical_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "aliases": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true},
+        "directory": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "outgoing_page_ids": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "minItems": 0, "uniqueItems": true},
+        "incoming_page_ids": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "minItems": 0, "uniqueItems": true}
+      },
+      "required": ["page_id", "subject_id", "path", "canonical_name", "aliases", "directory", "outgoing_page_ids", "incoming_page_ids"],
+      "additionalProperties": false
+    },
+    "index_eligibility": {
+      "type": "object",
+      "properties": {
+        "kind": {"enum": ["source_unit_set", "knowledge_page"]},
+        "id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "eligible": {"type": "boolean"},
+        "reasons": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true},
+        "resource_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, {"type": "null"}]},
+        "unit_set_id": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+        "page_revision_id": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+        "source_unit_refs": {"type": "array", "items": {"$ref": "#/$defs/source_ref"}, "minItems": 0}
+      },
+      "required": ["kind", "id", "eligible", "reasons", "resource_id", "unit_set_id", "page_revision_id", "source_unit_refs"],
+      "additionalProperties": false
+    },
+    "vault_finalize_plan": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-vault-finalize-plan/v1"},
+        "plan_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "release_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "revision": {"type": "integer", "minimum": 1},
+        "state": {"enum": ["draft", "applied"]},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "expected_state_revision": {"type": "integer", "minimum": 0},
+        "identity_registry_revision": {"type": "integer", "minimum": 0},
+        "build_runs": {"type": "array", "items": {"$ref": "#/$defs/build_run_snapshot"}, "minItems": 0},
+        "source_changes": {"type": "array", "items": {"$ref": "#/$defs/source_change"}, "minItems": 0},
+        "subjects": {"type": "array", "items": {"$ref": "#/$defs/release_subject"}, "minItems": 0},
+        "redirects": {"type": "array", "items": {"$ref": "#/$defs/knowledge_redirect"}, "minItems": 0},
+        "navigation": {"type": "array", "items": {"$ref": "#/$defs/navigation_entry"}, "minItems": 0},
+        "index_eligibility": {"type": "array", "items": {"$ref": "#/$defs/index_eligibility"}, "minItems": 0},
+        "blockers": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true},
+        "reason": {"type": "string"}
+      },
+      "required": ["contract", "plan_id", "release_id", "revision", "state", "actor", "expected_state_revision", "identity_registry_revision", "build_runs", "source_changes", "subjects", "redirects", "navigation", "index_eligibility", "blockers", "reason"],
+      "additionalProperties": false
+    },
+    "knowledge_navigation": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-navigation/v1"},
+        "release_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "entries": {"type": "array", "items": {"$ref": "#/$defs/navigation_entry"}, "minItems": 0},
+        "redirects": {"type": "array", "items": {"$ref": "#/$defs/knowledge_redirect"}, "minItems": 0}
+      },
+      "required": ["contract", "release_id", "entries", "redirects"],
+      "additionalProperties": false
+    },
+    "knowledge_release_state": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-release-state/v1"},
+        "revision": {"type": "integer", "minimum": 0},
+        "current_release_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, {"type": "null"}]},
+        "applied_build_runs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 0, "uniqueItems": true},
+        "releases": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 0, "uniqueItems": true}
+      },
+      "required": ["contract", "revision", "current_release_id", "applied_build_runs", "releases"],
+      "additionalProperties": false
+    },
+    "knowledge_release": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-release/v1"},
+        "release_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "plan_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "state": {"const": "completed"},
+        "state_revision": {"type": "integer", "minimum": 1},
+        "identity_registry_revision": {"type": "integer", "minimum": 0},
+        "build_runs": {"type": "array", "items": {"$ref": "#/$defs/build_run_snapshot"}, "minItems": 0},
+        "source_changes": {"type": "array", "items": {"$ref": "#/$defs/source_change"}, "minItems": 0},
+        "subjects": {"type": "array", "items": {"$ref": "#/$defs/release_subject"}, "minItems": 0},
+        "redirects": {"type": "array", "items": {"$ref": "#/$defs/knowledge_redirect"}, "minItems": 0},
+        "navigation_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "index_eligibility": {"type": "array", "items": {"$ref": "#/$defs/index_eligibility"}, "minItems": 0},
+        "blockers": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true},
+        "reason": {"type": "string"}
+      },
+      "required": ["contract", "release_id", "plan_id", "actor", "state", "state_revision", "identity_registry_revision", "build_runs", "source_changes", "subjects", "redirects", "navigation_sha256", "index_eligibility", "blockers", "reason"],
+      "additionalProperties": false
+    },
+    "provider_extension": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "hermes-source-unit-capability/v1"
+        },
+        "protocol_version": {
+          "const": "hermes-coarse-recall/v1"
+        },
+        "authority": {
+          "const": "candidate-navigation-only"
+        },
+        "source_unit_refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/source_ref"
+          },
+          "minItems": 1
+        },
+        "projection_fingerprint": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "locator_precision": {
+          "const": "source-unit"
+        }
+      },
+      "required": [
+        "contract",
+        "protocol_version",
+        "authority",
+        "source_unit_refs",
+        "projection_fingerprint",
+        "locator_precision"
+      ],
+      "additionalProperties": false
+    }
+  }
+}

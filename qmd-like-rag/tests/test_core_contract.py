@@ -12,49 +12,44 @@ SRC = Path(__file__).resolve().parents[1] / "src"
 PACKAGE_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SRC))
 
-from qmd_like_rag.chunker import chunk_markdown_file
 from qmd_like_rag.config import ProviderConfig
 from qmd_like_rag.embeddings import OpenAIHttpEmbeddingBackend
 from qmd_like_rag.contract import normalize_candidate
-from qmd_like_rag.corpus import resolve_sources
+from qmd_like_rag.renderer import render_projections
 from qmd_like_rag.reranker import OpenAIHttpReranker
 from qmd_like_rag.runtime import read_status, recall
 
 
-def test_default_corpus_selects_governed_and_document_markdown(tmp_path: Path) -> None:
-    vault = tmp_path / "vault"
-    included = [
-        vault / "30_Cards" / "card.md",
-        vault / "_system" / "reports" / "manual.source-map.md",
-        vault / "10_Raw" / "converted" / "manual_document_bundle" / "document.md",
-    ]
-    excluded = [
-        vault / "_system" / "reports" / "query-traces" / "trace.md",
-        vault / "10_Raw" / "converted" / "manual_document_bundle" / "tables" / "table.md",
-    ]
-    for path in included + excluded:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(f"# {path.stem}\n", encoding="utf-8")
-    config = ProviderConfig(vault_root=vault, state_root=tmp_path / "state")
-    assert [item.path for item in resolve_sources(vault.resolve(), config.include_patterns)] == [
-        path.resolve() for path in sorted(included, key=lambda item: item.resolve().relative_to(vault.resolve()).as_posix())
-    ]
+class FakeTokenizer:
+    fingerprint = "sha256:tokenizer"
+    max_tokens = 20
+
+    @staticmethod
+    def count(text: str) -> int:
+        return len(text.split())
 
 
-def test_chinese_markdown_is_chunked_and_keeps_stable_source_location(tmp_path: Path) -> None:
-    path = tmp_path / "document.md"
-    path.write_text("# 系统要求\n\n" + "供水系统应保持可用。" * 200, encoding="utf-8")
-    chunks = chunk_markdown_file(
-        path,
-        source_id="10_Raw/converted/example/document.md",
-        source_sha256="abc",
-        chunk_size=80,
-        overlap_ratio=0.1,
-    )
-    assert len(chunks) > 1
-    assert {item["source"] for item in chunks} == {"10_Raw/converted/example/document.md"}
-    assert all(item["start_line"] == 1 and item["end_line"] == 3 for item in chunks)
-    assert all(len(item["id"]) == 64 for item in chunks)
+def projection(text: str = "supply system available") -> dict:
+    ref = {"vault_id": "vault", "resource_id": "resource", "artifact_revision": "a" * 64,
+           "unit_set_id": "b" * 64, "unit_id": "c" * 64}
+    return {"projection_kind": "source_unit", "release_id": "release", "release_hash": "d" * 64,
+            "unit_ref": ref, "page_revision_id": None, "source_unit_refs": [], "core_text": text,
+            "heading_path": ["System", "Supply"], "vault_path": "_system/sources/a/document.md",
+            "line_start": 2, "line_end": 2, "source_sha256": "e" * 64,
+            "content_sha256": "f" * 64}
+
+
+def test_renderer_keeps_one_canonical_unit_as_one_document() -> None:
+    result = render_projections([projection()], FakeTokenizer(), "source-unit-renderer/v1")
+    assert len(result) == 1
+    assert result[0]["unit_ref"]["unit_id"] == "c" * 64
+    assert result[0]["text"].startswith("Context: System / Supply")
+    assert result[0]["projection_kind"] == "source_unit"
+
+
+def test_renderer_blocks_normal_projection_over_model_limit() -> None:
+    with pytest.raises(RuntimeError, match="exceeds embedding limit"):
+        render_projections([projection("word " * 30)], FakeTokenizer(), "source-unit-renderer/v1")
 
 
 def test_candidate_contract_rejects_paths_outside_vault(tmp_path: Path) -> None:
@@ -113,11 +108,15 @@ def test_branch_examples_keep_provider_state_outside_the_vault() -> None:
     assert len(main["embedding_revision"]) == 40
     assert len(main["reranker_revision"]) == 40
     assert main["embedding_dimension"] == 1024
+    assert main["embedding_tokenizer_path"].endswith("/tokenizer.json")
+    assert "bge-reranker-large" in main["reranker_tokenizer_path"]
     assert intranet["state_root"] == "/opt/data/phq/qmd-like-rag-state"
     assert intranet["device"] == "cpu"
     assert intranet["embedding_backend"] == "openai_http"
     assert intranet["reranker_backend"] == "openai_http"
     assert intranet["model_audit_mode"] == "name-only"
+    assert intranet["embedding_tokenizer_path"] == "/opt/models/bge-m3/tokenizer.json"
+    assert intranet["reranker_tokenizer_path"] == "/opt/models/bge-reranker-v2-m3/tokenizer.json"
     assert intranet["embedding_revision"] is None
     assert intranet["reranker_revision"] is None
     assert not intranet["state_root"].startswith("/opt/data/phq/testVault/")
@@ -163,38 +162,18 @@ def test_recall_rejects_an_index_built_with_different_models(tmp_path: Path) -> 
     result = recall(config, "test")
 
     assert result["candidates"] == []
-    assert result["warnings"] == ["index-model-mismatch"]
+    assert "index-model-mismatch" in result["warnings"]
 
 
-def test_new_remote_defaults_do_not_change_legacy_local_fingerprints(tmp_path: Path) -> None:
+def test_p5_portable_config_removes_paths_and_legacy_chunk_fields(tmp_path: Path) -> None:
     config = ProviderConfig(vault_root=tmp_path / "vault", state_root=tmp_path / "state")
     portable = config.portable_dict()
-    assert portable == {
-        "vault_id": config.vault_id,
-        "include_patterns": config.include_patterns,
-        "embedding_model": "BAAI/bge-m3",
-        "reranker_model": "BAAI/bge-reranker-large",
-        "embedding_revision": None,
-        "reranker_revision": None,
-        "embedding_dimension": None,
-        "local_files_only": False,
-        "require_immutable_model_revisions": False,
-        "device": "cpu",
-        "use_reranker": True,
-        "chunk_size": 800,
-        "chunk_overlap": 0.15,
-        "top_k": 20,
-        "rerank_top_k": 12,
-        "rrf_k": 60,
-        "dedup_similarity_threshold": 0.7,
-        "max_same_parent": 1,
-        "ignore_chunk_types": ["navigation", "backlink"],
-    }
-    assert config.model_manifest() == {
-        "embedding": {"identity": "BAAI/bge-m3", "revision": None, "dimension": None},
-        "reranker": {"identity": "BAAI/bge-reranker-large", "revision": None},
-        "local_files_only": False,
-    }
+    assert "include_patterns" not in portable
+    assert "chunk_size" not in portable and "chunk_overlap" not in portable
+    assert "embedding_tokenizer_path" not in portable
+    assert portable["renderer_version"] == "source-unit-renderer/v1"
+    assert config.model_manifest()["embedding_tokenizer"] == {
+        "identity": "BAAI/bge-m3", "revision": None, "sha256": None, "max_tokens": 8192}
 
 
 def remote_config(tmp_path: Path) -> ProviderConfig:

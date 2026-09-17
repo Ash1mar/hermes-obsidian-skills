@@ -1,4 +1,4 @@
-"""Portable bootstrap contract with P4 Vault Finalize capability."""
+"""Portable bootstrap contract with P5 release-driven retrieval capability."""
 import json
 import re
 from pathlib import Path
@@ -22,14 +22,14 @@ CONTRACTS = [
     "hermes-knowledge-release-state/v1", "hermes-knowledge-release/v1",
     "hermes-source-unit-capability/v1",
 ]
-NOTICE = """\n## Source-unit rollout gate (P4)
+NOTICE = """\n## Source-unit rollout gate (P5)
 
 This Vault uses the new source-unit architecture. Bootstrap initializes identity,
 storage directories and validated configuration. Controlled ingest can prepare,
 build and exactly read source units, run Pass/Reduce and Build Finalize, then publish
-an auditable P4 knowledge release through explicit Vault Finalize. Provider indexing
-is not connected yet. Do not run the legacy knowledge/query path
-against this Vault or claim it is query-ready. Wait for the P5 implementation.
+an auditable knowledge release through explicit Vault Finalize. Release-driven Provider
+indexing is available, but the Vault is query-ready only after a matching ready retrieval
+manifest is published. Do not run the legacy knowledge/query path against this Vault.
 Knowledge citations resolve immutable unit references with exact
 source spans; appended reading context is not original evidence.
 """
@@ -48,12 +48,12 @@ def configuration(override=None):
 
 def declaration(config):
     validate_record("config", config)
-    return {"contract": "hermes-source-unit-vault/v1", "phase": "P4",
+    return {"contract": "hermes-source-unit-vault/v1", "phase": "P5",
             "config_path": CONFIG_PATH, "config_fingerprint": fingerprint(config),
             "contracts": CONTRACTS, "directories": DIRECTORIES,
             "capabilities": {"bootstrap": True, "source_reader": True,
                              "knowledge_build": True, "vault_finalize": True,
-                             "retrieval": False}}
+                             "retrieval": True}}
 
 
 def validate_vault(vault):
@@ -67,7 +67,7 @@ def validate_vault(vault):
     manifest = json.loads(local("_system/vault.json").read_text(encoding="utf-8"))
     value = configuration(local(CONFIG_PATH))
     if manifest.get("source_units") != declaration(value):
-        raise ValueError("Source-unit declaration/config fingerprint or P4 capability mismatch")
+        raise ValueError("Source-unit declaration/config fingerprint or P5 capability mismatch")
     identity = manifest.get("vault", {})
     if not isinstance(identity, dict) or not re.fullmatch(r"[a-z0-9][a-z0-9._-]{2,127}", str(identity.get("id", ""))):
         raise ValueError("Missing Vault identity")
@@ -83,6 +83,20 @@ def validate_vault(vault):
     for relative in DIRECTORIES:
         if not local(relative).is_dir():
             raise ValueError(f"Missing source-unit directory: {relative}")
-    return {"ok": True, "phase": "P4", "bootstrap_ready": True,
-            "query_ready": False, "config_fingerprint": fingerprint(value),
+    query_ready = False
+    retrieval_path = local("_system/reports/retrieval-index-manifest.json")
+    if retrieval_path.is_file() and releases["current_release_id"]:
+        retrieval = json.loads(retrieval_path.read_text(encoding="utf-8"))
+        query_ready = bool(
+            retrieval.get("schema_version") == "2.0"
+            and retrieval.get("status") == "ready"
+            and retrieval.get("release_id") == releases["current_release_id"]
+            and retrieval.get("index_generation")
+            and retrieval.get("capabilities", {}).get("source_units") is True
+            and retrieval.get("tokenizer", {}).get("ready") is True
+            and (retrieval.get("models", {}).get("reranker") is None
+                 or retrieval.get("reranker_tokenizer", {}).get("ready") is True)
+        )
+    return {"ok": True, "phase": "P5", "bootstrap_ready": True,
+            "query_ready": query_ready, "config_fingerprint": fingerprint(value),
             "effective_config": value}

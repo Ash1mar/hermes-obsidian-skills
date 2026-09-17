@@ -14,6 +14,11 @@ from pathlib import Path
 from typing import Any
 from urllib import request
 
+LIB = Path(__file__).resolve().parents[1] / "lib"
+if str(LIB) not in sys.path:
+    sys.path.insert(0, str(LIB))
+
+from hermes_source_units import FileSourceUnitService
 from locate_source_sections import GovernanceQueryPolicy
 
 
@@ -82,6 +87,60 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def current_release(vault_root: Path) -> dict[str, Any]:
+    state = load_json(vault_root / "_system" / "metadata" / "knowledge-release-state.json")
+    release_id = state.get("current_release_id")
+    if not isinstance(release_id, str) or not release_id:
+        raise ValueError("Vault has no current knowledge release")
+    path = vault_root / "_system" / "knowledge-releases" / release_id / "manifest.json"
+    data = path.read_bytes()
+    release = json.loads(data.decode("utf-8"))
+    if release.get("release_id") != release_id or release.get("state") != "completed":
+        raise ValueError("Current release pointer and manifest disagree")
+    return {"release_id": release_id, "release_hash": hashlib.sha256(data).hexdigest(),
+            "manifest": release}
+
+
+def registry_revision(vault_root: Path, reader: FileSourceUnitService) -> int:
+    relative = str(reader.vault_manifest["governance"]["repository"]["registry_path"])
+    value = load_json(vault_root / relative).get("registry_revision")
+    if type(value) is not int:
+        raise ValueError("Document registry revision is invalid")
+    return value
+
+
+def read_source_unit(candidate: dict[str, Any], reader: FileSourceUnitService,
+                     revision: int) -> dict[str, Any]:
+    ref = candidate.get("unit_ref")
+    if not isinstance(ref, dict):
+        raise ValueError("source_unit candidate has no complete UnitRef")
+    subspan = candidate.get("subspan")
+    if subspan is not None and (not isinstance(subspan, dict)
+                                or type(subspan.get("start")) is not int
+                                or type(subspan.get("end")) is not int):
+        raise ValueError("source_unit candidate has an invalid subspan")
+    if subspan is not None and candidate.get("subspan_reason") != "oversized-protected-structure":
+        raise ValueError("source_unit subspan has no approved exception reason")
+    expected_projection_hash = str(candidate.get("projection_content_sha256") or "")
+    if (len(expected_projection_hash) != 64
+            or any(value not in "0123456789abcdef" for value in expected_projection_hash)):
+        raise ValueError("source_unit candidate has no valid projection content hash")
+    result = reader.get({"source_ref": {"unit_ref": ref, "span": subspan},
+                         "access": {"actor": "hermes-query", "purpose": "query",
+                                    "registry_revision": revision}})
+    selected = result.get("core_text")
+    if (isinstance(selected, str)
+            and hashlib.sha256(selected.encode("utf-8")).hexdigest() != expected_projection_hash):
+        raise ValueError("source_unit projection content hash mismatch")
+    item = dict(candidate)
+    item["core_text"] = selected
+    item["core_content_sha256"] = result["content_sha256"]
+    item["asset_refs"] = result.get("asset_refs", [])
+    item["quality_refs"] = result.get("quality_refs", [])
+    item["exact_source_unit"] = True
+    return item
+
+
 def validate_response(
     payload: dict[str, Any],
     vault_root: Path,
@@ -91,6 +150,18 @@ def validate_response(
         raise ValueError(f"Unsupported Provider protocol: {payload.get('protocol_version')!r}")
     if payload.get("authority") != "candidate-navigation-only":
         raise ValueError("Provider results must be navigation-only")
+    capabilities = payload.get("capabilities", {})
+    if capabilities.get("source_units") is not True or capabilities.get("release_driven") is not True:
+        raise ValueError("Provider lacks required SourceUnit release capability")
+    release = current_release(vault_root)
+    if payload.get("release_id") != release["release_id"] or payload.get("release_hash") != release["release_hash"]:
+        raise ValueError("Provider index does not match the current knowledge release")
+    if not payload.get("index_generation"):
+        raise ValueError("Provider response has no index generation")
+    eligible = {(row.get("kind"), row.get("id")): row
+                for row in release["manifest"].get("index_eligibility", []) if row.get("eligible")}
+    reader: FileSourceUnitService | None = None
+    current_registry_revision: int | None = None
     normalized: list[dict[str, Any]] = []
     warnings = [str(item) for item in payload.get("warnings", [])]
     governance_policy = GovernanceQueryPolicy(vault_root, include_historical)
@@ -101,6 +172,25 @@ def validate_response(
         relative = Path(str(candidate.get("vault_path") or ""))
         if relative.is_absolute() or ".." in relative.parts:
             warnings.append("candidate-path-rejected")
+            continue
+        projection_kind = str(candidate.get("projection_kind") or "")
+        if projection_kind == "source_unit":
+            ref = candidate.get("unit_ref")
+            key = ("source_unit_set", ref.get("unit_set_id")) if isinstance(ref, dict) else (None, None)
+            if key not in eligible:
+                warnings.append("candidate-unit-ineligible")
+                continue
+            if reader is None:
+                reader = FileSourceUnitService(vault_root)
+                current_registry_revision = registry_revision(vault_root, reader)
+        elif projection_kind == "knowledge_page":
+            key = ("knowledge_page", candidate.get("page_id"))
+            eligibility = eligible.get(key)
+            if not eligibility or eligibility.get("page_revision_id") != candidate.get("page_revision_id"):
+                warnings.append("candidate-page-ineligible")
+                continue
+        else:
+            warnings.append("candidate-projection-kind-invalid")
             continue
         source = (vault_root / relative).resolve()
         try:
@@ -116,16 +206,18 @@ def validate_response(
         if start < 1 or end < start:
             warnings.append(f"candidate-lines-invalid:{relative.as_posix()}")
             continue
-        item = dict(candidate)
+        item = (read_source_unit(candidate, reader, int(current_registry_revision))
+                if projection_kind == "source_unit" else dict(candidate))
         item["vault_path"] = relative.as_posix()
         item["line_start"] = start
         item["line_end"] = end
         item["retrieval_routes"] = [str(payload.get("provider") or "coarse-recall")]
         expected_hash = str(item.get("source_sha256") or "")
-        item["source_hash_matches"] = not expected_hash or sha256(source) == expected_hash
+        item["source_hash_matches"] = (True if projection_kind == "source_unit"
+                                       else not expected_hash or sha256(source) == expected_hash)
         if not item["source_hash_matches"]:
             warnings.append(f"candidate-source-changed:{relative.as_posix()}")
-        if not governance_policy.allows(item["vault_path"]):
+        if projection_kind == "knowledge_page" and not governance_policy.allows(item["vault_path"]):
             governance_rejected += 1
             continue
         normalized.append(item)
@@ -137,6 +229,10 @@ def validate_response(
         "provider": payload.get("provider"),
         "provider_version": payload.get("provider_version"),
         "index_fingerprint": payload.get("index_fingerprint"),
+        "release_id": payload.get("release_id"),
+        "release_hash": payload.get("release_hash"),
+        "index_generation": payload.get("index_generation"),
+        "capabilities": capabilities,
         "candidates": normalized,
         "governance": governance_policy.summary(),
         "warnings": sorted(set(warnings)),

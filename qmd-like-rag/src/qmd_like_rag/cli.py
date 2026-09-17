@@ -39,6 +39,8 @@ def build_parser() -> argparse.ArgumentParser:
     sync_parser = subparsers.add_parser("sync")
     add_runtime_args(sync_parser)
     sync_parser.add_argument("--rebuild", action="store_true")
+    sync_parser.add_argument("--release-id")
+    sync_parser.add_argument("--release-hash")
     recall_parser = subparsers.add_parser("recall")
     add_runtime_args(recall_parser)
     recall_parser.add_argument("--query", required=True)
@@ -58,7 +60,9 @@ def main() -> int:
         elif args.command == "status":
             result = read_status(configured(args))
         elif args.command == "sync":
-            result = sync(configured(args), rebuild=args.rebuild)
+            result = sync(configured(args), rebuild=args.rebuild,
+                          expected_release_id=args.release_id,
+                          expected_release_hash=args.release_hash)
         elif args.command == "recall":
             result = recall(configured(args), args.query, args.top_k)
         elif args.command == "serve":

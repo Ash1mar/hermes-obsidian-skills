@@ -1,6 +1,6 @@
 # ADR-0004：稳定知识身份与显式 Finalize
 
-日期：2026-09-14，2026-09-16 校正。状态：接受；P3/P4 已实现，P5–P7 待实施。P3 以前置 [P2.1 Chunk Engine](0005-shared-chunk-engine.md) 为输入门禁。关联：[来源单元契约](0003-source-unit-contracts.md)、[P3 验收](../SOURCE_UNITS_P3_ACCEPTANCE.md)、[P4 验收](../SOURCE_UNITS_P4_ACCEPTANCE.md)和[演进计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)。
+日期：2026-09-14，2026-09-17 校正。状态：接受；P3/P4 已实现，P5 代码链路已实现且真实部署验收待执行，P6–P7 待实施。P3 以前置 [P2.1 Chunk Engine](0005-shared-chunk-engine.md) 为输入门禁。关联：[来源单元契约](0003-source-unit-contracts.md)、[P3 验收](../SOURCE_UNITS_P3_ACCEPTANCE.md)、[P4 验收](../SOURCE_UNITS_P4_ACCEPTANCE.md)、[P5 验收](../SOURCE_UNITS_P5_ACCEPTANCE.md)和[演进计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)。
 
 ## 背景
 

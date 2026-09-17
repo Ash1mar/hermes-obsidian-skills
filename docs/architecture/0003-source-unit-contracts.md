@@ -1,6 +1,6 @@
 # ADR-0003：来源单元共享契约与 P0 实践
 
-2026-09-11，2026-09-16 更新。状态：P0–P4 已完成；P2.1 按 [ADR-0005](0005-shared-chunk-engine.md) 提供共享 canonical chunk，P3/P4 按 [ADR-0004](0004-knowledge-identity-and-finalize.md) 接入 Build 与 Vault Finalize。关联：[全新建库计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)、[共享包与接口规范](../../hermes-source-units/README.md)。
+2026-09-11，2026-09-17 更新。状态：P0–P4 已完成，P5 代码链路已实现且部署验收待执行；P2.1 按 [ADR-0005](0005-shared-chunk-engine.md) 提供共享 canonical chunk，P3/P4 按 [ADR-0004](0004-knowledge-identity-and-finalize.md) 接入 Build 与 Vault Finalize，P5 按 [ADR-0006](0006-release-driven-retrieval-projection.md) 接入检索。关联：[全新建库计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)、[共享包与接口规范](../../hermes-source-units/README.md)。
 
 ## 范围
 
@@ -43,4 +43,4 @@ P0 新增开发态 Python distribution `hermes-source-units`，import 名为 `he
 
 P2 的文件式实现提供 Markdown/Bundle v2 adapter、LF/codepoint 坐标、outline owned ranges、结构保护与递归回退、canonical chunk overlap、确定性 ID、`manifest + sections + units.jsonl` 原子发布、current revision、get/context/validate 和治理版本检查。数据库不是 Unit 成立的条件；RAG、Wiki/知识构建与图谱等消费者共享这些 Unit。
 
-P2.1 已按 ADR-0005 把 splitter 校正为可验证、可回退、可审计的共享 Chunk Engine。P3 已按 ADR-0004 实现 Pass/Reduce、稳定知识对象身份和 Build Finalize；P4 实现增量 Vault Finalize、导航与 release。具体验收见 [P0](../SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](../SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](../SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](../SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](../SOURCE_UNITS_P3_ACCEPTANCE.md)及 [P4](../SOURCE_UNITS_P4_ACCEPTANCE.md)。
+P2.1 已按 ADR-0005 把 splitter 校正为可验证、可回退、可审计的共享 Chunk Engine。P3 已按 ADR-0004 实现 Pass/Reduce、稳定知识对象身份和 Build Finalize；P4 实现增量 Vault Finalize、导航与 release；P5 已实现 release 驱动的 Provider 投影和 Query 精确回读。具体验收见 [P0](../SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](../SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](../SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](../SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](../SOURCE_UNITS_P3_ACCEPTANCE.md)、[P4](../SOURCE_UNITS_P4_ACCEPTANCE.md)及 [P5](../SOURCE_UNITS_P5_ACCEPTANCE.md)。
