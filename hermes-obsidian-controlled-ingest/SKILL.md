@@ -242,7 +242,8 @@ review, not permission to truncate it or claim every consumer can fit it.
 
 For multi-task knowledge construction, use the batch orchestration documented in
 `references/source-units.md` instead of generating ad-hoc shell/Python loops. Existing plans may
-be adopted read-only; keep each model reading window bounded and preserve both human checkpoints.
+be adopted read-only. For new plans, measure first and use `batch-plan --exact-reading-budget`;
+keep each model reading window bounded and preserve both human checkpoints.
 
 Honor `manifest.quality.review_required`. Extract readable formulas, table rows and figure observations
 with explicit QA notes when deterministic/page verification is unavailable; write them as attributed

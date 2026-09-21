@@ -65,6 +65,53 @@ def publish_sources(vault: Path, texts: list[str]) -> list[dict]:
     return refs
 
 
+def publish_oversize_text_asset(vault: Path) -> dict:
+    bundle = vault / "10_Raw/converted/oversize_bundle"
+    (bundle / "tables").mkdir(parents=True)
+    document = "# Oversize asset\nSee table-oversize.\n"
+    asset = ("cell-value|" * 1400).encode("utf-8")
+    (bundle / "document.md").write_text(document, encoding="utf-8", newline="\n")
+    (bundle / "tables/oversize.md").write_bytes(asset)
+    outline = {"schema_version": "2.0", "sections": [{
+        "id": "asset", "title": "Oversize asset", "level": 1, "parent": None,
+        "path": ["Oversize asset"], "start_line": 1, "end_line": 2,
+        "pages": [1], "assets": ["table-oversize"], "quality": "pass",
+    }]}
+    (bundle / "outline.json").write_text(json.dumps(outline), encoding="utf-8")
+    source_sha = hashlib.sha256(b"oversize-source").hexdigest()
+    manifest = {
+        "schema_version": "2.0", "source": {"sha256": source_sha},
+        "document": {"path": "document.md"}, "outline": {"path": "outline.json"},
+        "images": [], "tables": [{"id": "table-oversize", "path": "tables/oversize.md",
+                                      "sha256": hashlib.sha256(asset).hexdigest(),
+                                      "media_type": "text/markdown", "pages": [1]}],
+        "governance": {"vault_id": json.loads((vault / "_system/vault.json").read_text())["vault"]["id"],
+                       "document_id": "doc-asset", "version_id": "version-asset",
+                       "resource_id": "resource-asset"},
+    }
+    (bundle / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    registry_path = vault / "_system/metadata/document-registry.json"
+    registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    registry.update({"registry_revision": 1, "records": [{
+        "document_id": "doc-asset", "version_id": "version-asset",
+        "resource_id": "resource-asset", "content_sha256": source_sha,
+        "processing_status": "completed", "governance_status": "active",
+        "source_occurrences": [{"source_organization_id": "organization-demo"}],
+    }]})
+    registry_path.write_text(json.dumps(registry), encoding="utf-8")
+    organizations_path = vault / "_system/metadata/source-organizations.json"
+    organizations = json.loads(organizations_path.read_text(encoding="utf-8"))
+    organizations.update({"registry_revision": 1, "organizations": [
+        {"id": "organization-demo", "status": "approved"}]})
+    organizations_path.write_text(json.dumps(organizations), encoding="utf-8")
+    source = FileSourceUnitService(vault)
+    prepared = source.prepare_bundle("10_Raw/converted/oversize_bundle")
+    built = source.build({"artifact_manifest": prepared["artifact_manifest"],
+                          "config": source.config, "actor": "builder", "expected_revision": 0})
+    unit = next(item for item in built["units"] if item["locator"]["kind"] == "asset")
+    return {"unit_ref": unit["ref"], "span": None}
+
+
 def run_pass(service: FileKnowledgeBuildService, task_id: str, ref: dict,
              candidate: bool = True, qa: str = "usable") -> tuple[dict, dict]:
     service.plan_task({"task_id": task_id, "actor": "agent", "target_refs": [ref],
@@ -353,6 +400,83 @@ def test_batch_adopt_is_read_only_for_existing_tasks(vault: Path):
     assert task_path.read_bytes() == before
 
 
+def test_exact_reading_measurement_matches_prepare_and_counts_serialized_metadata(vault: Path):
+    ref = publish_sources(vault, ["# Exact budget\n" + ("Measured evidence. " * 80)])[0]
+    service = FileKnowledgeBuildService(vault)
+    request = {
+        "batch_id": "exact-batch", "actor": "agent", "registry_revision": 1,
+        "exact_reading_budget": True,
+        "tasks": [{"task_id": "exact-task", "target_refs": [ref], "expected_revision": 0}],
+    }
+    preview = service.measure_batch(request)
+    measurement = preview["results"][0]["measurement"]
+    assert preview["ok"] and measurement["fits"]
+    assert measurement["metadata_codepoints"] > 0
+    assert measurement["serialized_codepoints"] == (
+        measurement["core_codepoints"] + measurement["ancestor_codepoints"]
+        + measurement["context_codepoints"] + measurement["metadata_codepoints"])
+    assert measurement["serialized_codepoints"] <= measurement["limit"]
+    assert measurement["input_fingerprint"].startswith("sha256:")
+
+    planned = service.plan_batch(request)
+    task = service._task("exact-task")
+    assert planned["created"] and task["reading_measurement"] == measurement
+    assert task["reader_config_hash"] == measurement["reader_config_hash"]
+    prepared = service.prepare_batch("exact-batch", "agent", 1)
+    assert prepared["ok"]
+    assert prepared["results"][0]["measurement"] == measurement
+    package_id = prepared["results"][0]["reading_package_id"]
+    package = json.loads((vault / f"_system/knowledge-builds/task-exact-task/readings/{package_id}.json").read_text())
+    projection = {"window": package["window"], "materials": package["materials"]}
+    serialized = json.dumps(projection, ensure_ascii=False, sort_keys=True,
+                            separators=(",", ":"), allow_nan=False)
+    assert len(serialized) == measurement["serialized_codepoints"]
+
+
+def test_exact_plan_rejects_oversize_before_writing_and_prepare_detects_config_drift(vault: Path):
+    ref = publish_sources(vault, ["# Budget guard\nEvidence.\n"])[0]
+    service = FileKnowledgeBuildService(vault)
+    oversize = {
+        "batch_id": "too-small", "actor": "agent", "registry_revision": 1,
+        "exact_reading_budget": True, "max_codepoints": 100,
+        "tasks": [{"task_id": "too-small-task", "target_refs": [ref]}],
+    }
+    measured = service.measure_batch(oversize)
+    assert measured["ok"] is False
+    assert measured["results"][0]["measurement"]["blocking_code"] == "READING_WINDOW_OVERSIZE"
+    with pytest.raises(ContractError, match="READING_WINDOW_OVERSIZE"):
+        service.plan_batch(oversize)
+    assert not (vault / "_system/ledgers/unit-work/too-small-task.json").exists()
+    assert not (vault / "_system/ledgers/knowledge-build-batches/too-small.json").exists()
+
+    request = {
+        "batch_id": "stale-budget", "actor": "agent", "registry_revision": 1,
+        "exact_reading_budget": True,
+        "tasks": [{"task_id": "stale-budget-task", "target_refs": [ref]}],
+    }
+    service.plan_batch(request)
+    prepared = service.prepare_batch("stale-budget", "agent", 1, max_codepoints=13000)
+    assert prepared["ok"] is False
+    assert prepared["failures"][0]["code"] == "STALE_PLAN"
+    assert service._task("stale-budget-task")["status"] == "pending"
+
+
+def test_whole_asset_oversize_remains_an_explicit_blocker(vault: Path):
+    ref = publish_oversize_text_asset(vault)
+    service = FileKnowledgeBuildService(vault)
+    request = {
+        "batch_id": "whole-asset", "actor": "agent", "registry_revision": 1,
+        "exact_reading_budget": True,
+        "tasks": [{"task_id": "whole-asset-task", "target_refs": [ref]}],
+    }
+    measurement = service.measure_batch(request)["results"][0]["measurement"]
+    assert measurement["core_codepoints"] > measurement["limit"]
+    assert measurement["blocking_code"] == "WHOLE_ASSET_OVERSIZE"
+    with pytest.raises(ContractError, match="WHOLE_ASSET_OVERSIZE"):
+        service.plan_batch(request)
+    assert not (vault / "_system/ledgers/unit-work/whole-asset-task.json").exists()
+
+
 def test_p3_cli_runs_from_embedded_skill_runtime(vault: Path):
     result = subprocess.run([sys.executable, "-I", "-S", str(KNOWLEDGE_CLI),
                              "--vault", str(vault), "identities"],
@@ -368,16 +492,25 @@ def test_p3_cli_runs_from_embedded_skill_runtime(vault: Path):
         "tasks": [{"task_id": "cli-batch-task", "target_refs": [ref],
                    "expected_revision": 0}],
     }), encoding="utf-8")
+    measured = subprocess.run([sys.executable, "-I", "-S", str(KNOWLEDGE_CLI),
+                               "--vault", str(vault), "batch-measure", "--request", str(request)],
+                              capture_output=True, text=True, encoding="utf-8")
+    assert measured.returncode == 0, measured.stdout + measured.stderr
+    assert json.loads(measured.stdout)["results"][0]["measurement"]["fits"] is True
     planned = subprocess.run([sys.executable, "-I", "-S", str(KNOWLEDGE_CLI),
-                              "--vault", str(vault), "batch-plan", "--request", str(request)],
+                              "--vault", str(vault), "batch-plan", "--request", str(request),
+                              "--exact-reading-budget"],
                              capture_output=True, text=True, encoding="utf-8")
     assert planned.returncode == 0, planned.stdout + planned.stderr
     assert json.loads(planned.stdout)["batch"]["task_ids"] == ["cli-batch-task"]
     status = subprocess.run([sys.executable, "-I", "-S", str(KNOWLEDGE_CLI),
-                             "--vault", str(vault), "batch-status", "--batch-id", "cli-batch"],
+                             "--vault", str(vault), "batch-status", "--batch-id", "cli-batch",
+                             "--compact"],
                             capture_output=True, text=True, encoding="utf-8")
     assert status.returncode == 0, status.stdout + status.stderr
     assert json.loads(status.stdout)["task_counts"] == {"pending": 1}
+    assert "tasks" not in json.loads(status.stdout)
+    assert json.loads(status.stdout)["coverage"]["total_tasks"] == 1
 
 
 def test_reduce_rejects_pass0_as_final_citation(vault: Path):

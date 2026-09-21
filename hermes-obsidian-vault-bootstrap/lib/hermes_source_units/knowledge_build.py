@@ -16,6 +16,9 @@ BATCH_ROOT = "_system/ledgers/knowledge-build-batches"
 BUILD_ROOT = "_system/knowledge-builds"
 IDENTITY_PATH = "_system/metadata/knowledge-identities.json"
 KNOWLEDGE_CONTRACT = "hermes-knowledge-build-run/v1"
+READING_MEASUREMENT_CONTRACT = "hermes-reading-window-measurement/v1"
+READING_SERIALIZATION = "canonical-json-window-materials/v1"
+READING_CONTEXT_SELECTION = "source-context-trimmed-to-serialized-budget/v1"
 _BATCH_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 
 
@@ -124,6 +127,152 @@ class FileKnowledgeBuildService:
         return self.source.resolve_many(refs, {"actor": actor, "purpose": "construction",
                                                "registry_revision": registry_revision})
 
+    def _reader_config(self, max_codepoints: int | None = None) -> dict[str, Any]:
+        maximum = int(self.source.config["reading"]["max_codepoints"]
+                      if max_codepoints is None else max_codepoints)
+        if maximum < 1:
+            _fail("INVALID_BUDGET", "reading maximum must be positive")
+        return {"max_codepoints": maximum, "serialization": READING_SERIALIZATION,
+                "context_selection": READING_CONTEXT_SELECTION}
+
+    def _unitset_revisions(self, refs: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+        revisions: dict[tuple[str, str], dict[str, Any]] = {}
+        for source_ref in refs:
+            unit_ref = source_ref["unit_ref"]
+            key = (str(unit_ref["resource_id"]), str(unit_ref["unit_set_id"]))
+            if key in revisions:
+                continue
+            manifest, _, _ = self.source._load_set(*key)
+            revisions[key] = {"resource_id": key[0], "unit_set_id": key[1],
+                              "revision": int(manifest["revision"])}
+        return [revisions[key] for key in sorted(revisions)]
+
+    @staticmethod
+    def _is_ancestor_material(item: Mapping[str, Any], core: Iterable[Mapping[str, Any]]) -> bool:
+        heading = tuple(item.get("heading_path", []))
+        return bool(heading) and any(
+            len(heading) < len(tuple(value.get("heading_path", [])))
+            and tuple(value.get("heading_path", []))[:len(heading)] == heading
+            for value in core)
+
+    @staticmethod
+    def _reading_projection(window: Mapping[str, Any], materials: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
+        return {"window": dict(window), "materials": [dict(item) for item in materials]}
+
+    def _assemble_reading(self, refs: list[Mapping[str, Any]], actor: str,
+                          registry_revision: int, reader_config: Mapping[str, Any]) -> dict[str, Any]:
+        maximum = int(reader_config["max_codepoints"])
+        access = {"actor": actor, "purpose": "construction",
+                  "registry_revision": registry_revision}
+        core = [self.source.get({"source_ref": ref, "access": access}) for ref in refs]
+        core_codepoints = sum(len(item["core_text"] or "") for item in core)
+        result = self.source.context({"core_refs": refs, "access": access,
+                                     "max_codepoints": max(maximum, core_codepoints)})
+        context = list(result["context"])
+        omitted = list(result["omitted_refs"])
+
+        def material(role: str, item: Mapping[str, Any]) -> dict[str, Any]:
+            selected = item["core_text"]
+            return {"role": role, "source_ref": item["source_ref"],
+                    "unit_content_sha256": item["content_sha256"],
+                    "selected_sha256": _sha(selected.encode("utf-8")) if selected is not None else None,
+                    "core_text": selected, "asset_refs": item["asset_refs"],
+                    "quality_refs": item["quality_refs"], "section_id": item["section_id"],
+                    "heading_path": item["heading_path"]}
+
+        def build() -> tuple[dict[str, Any], list[dict[str, Any]], int]:
+            context_refs = [item["source_ref"] for item in context]
+            truncated = bool(omitted)
+            reason = result["reason"]
+            if truncated and not reason:
+                reason = "serialized reading-package budget omitted context units"
+            elif truncated and "serialized reading-package budget" not in reason:
+                reason = reason + "; serialized reading-package budget applied"
+            payload = {"core_refs": refs, "context_refs": context_refs,
+                       "context_header": " | ".join(dict.fromkeys(
+                           " / ".join(item.get("heading_path", []))
+                           for item in [*core, *context] if item.get("heading_path"))),
+                       "omitted_refs": omitted, "truncated": truncated,
+                       "reason": reason, "max_codepoints": maximum}
+            window = {"contract": "hermes-reading-window/v1",
+                      "window_id": fingerprint(payload), **payload}
+            validate_record("reading_window", window)
+            materials = [material("core", item) for item in core]
+            materials.extend(material("context", item) for item in context)
+            serialized = len(canonical_json(self._reading_projection(window, materials)).decode("utf-8"))
+            return window, materials, serialized
+
+        window, materials, serialized = build()
+        while serialized > maximum and context:
+            removed = context.pop()
+            omitted.insert(0, removed["source_ref"])
+            window, materials, serialized = build()
+
+        ancestor_codepoints = sum(
+            len(item["core_text"] or "") for item in context
+            if self._is_ancestor_material(item, core))
+        context_codepoints = sum(len(item["core_text"] or "") for item in context) - ancestor_codepoints
+        reader_config_hash = fingerprint(dict(reader_config))
+        unitset_revisions = self._unitset_revisions(refs)
+        input_fingerprint = "sha256:" + fingerprint({
+            "unit_refs": refs, "registry_revision": registry_revision,
+            "unitset_revisions": unitset_revisions,
+            "reader_config_hash": reader_config_hash,
+        })
+        whole_asset = any(item.get("locator", {}).get("precision") == "whole-asset" for item in core)
+        measurement = {
+            "contract": READING_MEASUREMENT_CONTRACT,
+            "core_codepoints": core_codepoints,
+            "ancestor_codepoints": ancestor_codepoints,
+            "context_codepoints": context_codepoints,
+            "metadata_codepoints": serialized - core_codepoints - ancestor_codepoints - context_codepoints,
+            "serialized_codepoints": serialized, "limit": maximum,
+            "fits": serialized <= maximum, "input_fingerprint": input_fingerprint,
+            "reader_config_hash": reader_config_hash, "unitset_revisions": unitset_revisions,
+            "blocking_code": (None if serialized <= maximum else
+                              "WHOLE_ASSET_OVERSIZE" if whole_asset else "READING_WINDOW_OVERSIZE"),
+        }
+        validate_record("reading_window_measurement", measurement)
+        return {"window": window, "materials": materials, "measurement": measurement,
+                "core": core, "context": context}
+
+    def measure_reading_window(self, unit_refs: Iterable[Mapping[str, Any]],
+                               registry_revision: int,
+                               unitset_revisions: Iterable[Mapping[str, Any]] | None,
+                               reader_config: Mapping[str, Any], *, actor: str) -> dict[str, Any]:
+        """Measure the exact canonical reading projection without writing artifacts."""
+        refs = [dict(item) for item in unit_refs]
+        if not refs:
+            _fail("INVALID_SCHEMA", "reading measurement requires at least one UnitRef")
+        observed = self._unitset_revisions(refs)
+        if unitset_revisions is not None and list(unitset_revisions) != observed:
+            _fail("STALE_PLAN", "pinned UnitSet revisions changed during reading measurement")
+        return self._assemble_reading(refs, actor, registry_revision, reader_config)["measurement"]
+
+    def measure_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Preview exact per-task reading budgets without creating tasks or a batch."""
+        self.source.enable_session_cache()
+        actor = str(request["actor"])
+        registry_revision = int(request["registry_revision"])
+        reader_config = self._reader_config(request.get("max_codepoints"))
+        tasks = list(request["tasks"])
+        if not tasks:
+            _fail("INVALID_SCHEMA", "batch measurement requires at least one task", "$.tasks")
+        task_ids = [str(item["task_id"]) for item in tasks]
+        if len(set(task_ids)) != len(task_ids):
+            _fail("DUPLICATE", "batch measurement contains duplicate task ids", "$.tasks")
+        results = []
+        for raw in tasks:
+            refs = list(raw["target_refs"])
+            if not refs:
+                _fail("INVALID_SCHEMA", "measured task target_refs cannot be empty", "$.tasks")
+            measurement = self.measure_reading_window(
+                refs, registry_revision, self._unitset_revisions(refs), reader_config, actor=actor)
+            results.append({"task_id": str(raw["task_id"]), "measurement": measurement})
+        return {"ok": all(item["measurement"]["fits"] for item in results),
+                "reader_config": reader_config,
+                "reader_config_hash": fingerprint(reader_config), "results": results}
+
     @staticmethod
     def _ref_key(source_ref: Mapping[str, Any]) -> bytes:
         return canonical_json(source_ref["unit_ref"])
@@ -205,6 +354,8 @@ class FileKnowledgeBuildService:
         self.source.enable_session_cache()
         batch_id, actor = str(request["batch_id"]), str(request["actor"])
         registry_revision = int(request["registry_revision"])
+        exact_reading_budget = bool(request.get("exact_reading_budget", False))
+        reader_config = self._reader_config(request.get("max_codepoints"))
         task_requests = list(request["tasks"])
         if not task_requests:
             _fail("INVALID_SCHEMA", "batch plan requires at least one task", "$.tasks")
@@ -232,6 +383,14 @@ class FileKnowledgeBuildService:
                 if (existing_batch["actor"] != actor or existing_batch["task_ids"] != task_ids
                         or existing_batch["document_registry_revision"] != registry_revision):
                     _fail("DUPLICATE", "batch_id already identifies a different task set", "$.batch_id")
+                if exact_reading_budget:
+                    existing_tasks = [self._task(task_id) for task_id in task_ids]
+                    if any(task.get("reader_config_hash") != fingerprint(reader_config)
+                           or "reading_measurement" not in task for task in existing_tasks):
+                        _fail("STALE_PLAN", "existing batch was not planned with this exact reader configuration")
+                    for task in existing_tasks:
+                        self._verify_planned_measurement(
+                            task, actor, registry_revision, request.get("max_codepoints"))
                 return {"ok": True, "created": False, "batch": existing_batch,
                         "created_tasks": 0, "existing_tasks": len(task_ids)}
             units = self._live_units(all_refs, actor, registry_revision)
@@ -254,6 +413,17 @@ class FileKnowledgeBuildService:
                         "revision": 1, "attempt": 1, "actor": actor, "status": "pending",
                         "target_refs": refs, "inspections": [], "deferred": [],
                         "outputs": [], "reason": ""}
+                if exact_reading_budget:
+                    measurement = self.measure_reading_window(
+                        refs, registry_revision, self._unitset_revisions(refs),
+                        reader_config, actor=actor)
+                    if not measurement["fits"]:
+                        _fail(str(measurement["blocking_code"]),
+                              f"task {task_id} serialized reading window uses "
+                              f"{measurement['serialized_codepoints']} of {measurement['limit']} codepoints",
+                              "$.tasks")
+                    task["reading_measurement"] = measurement
+                    task["reader_config_hash"] = measurement["reader_config_hash"]
                 validate_references("work", task, units)
                 if path.exists():
                     existing = self._task(task_id)
@@ -315,7 +485,7 @@ class FileKnowledgeBuildService:
                 "code": exc.code if isinstance(exc, ContractError) else type(exc).__name__,
                 "message": str(exc)}
 
-    def batch_status(self, batch_id: str) -> dict[str, Any]:
+    def batch_status(self, batch_id: str, compact: bool = False) -> dict[str, Any]:
         batch = self._batch(batch_id)
         tasks = [self._task(task_id) for task_id in batch["task_ids"]]
         task_counts: dict[str, int] = {}
@@ -360,11 +530,20 @@ class FileKnowledgeBuildService:
             next_actions.append("human-checkpoint-1-then-batch-finalize")
         if run_details and all(item["state"] == "completed" for item in run_details):
             next_actions.append("vault-finalize-plan")
-        return {"ok": True, "batch": batch, "task_counts": task_counts,
-                "tasks": task_details, "runs": run_details,
-                "uncovered_task_ids": uncovered,
-                "duplicate_task_run_ids": duplicate_task_runs,
-                "next_actions": list(dict.fromkeys(next_actions))}
+        status = {"ok": True, "batch": batch, "task_counts": task_counts,
+                  "runs": run_details,
+                  "duplicate_task_run_ids": duplicate_task_runs,
+                  "next_actions": list(dict.fromkeys(next_actions))}
+        if compact:
+            status["coverage"] = {"total_tasks": len(tasks),
+                                  "reading_packages": sum(item["reading_packages"] for item in task_details),
+                                  "passes": sum(item["passes"] for item in task_details),
+                                  "uncovered_tasks": len(uncovered)}
+            status["failure_count"] = len(batch["failures"])
+        else:
+            status["tasks"] = task_details
+            status["uncovered_task_ids"] = uncovered
+        return status
 
     def resume_batch(self, batch_id: str) -> dict[str, Any]:
         """Return the authoritative recovery point; stage commands are idempotent."""
@@ -381,6 +560,24 @@ class FileKnowledgeBuildService:
                     and package["window"]["core_refs"] == task["target_refs"]):
                 return package
         return None
+
+    def _verify_planned_measurement(self, task: Mapping[str, Any], actor: str,
+                                    registry_revision: int,
+                                    max_codepoints: int | None) -> dict[str, Any] | None:
+        planned = task.get("reading_measurement")
+        if planned is None:
+            return None
+        reader_config = self._reader_config(max_codepoints)
+        if fingerprint(reader_config) != task.get("reader_config_hash"):
+            _fail("STALE_PLAN", "reader configuration changed after exact batch planning")
+        observed = self.measure_reading_window(
+            task["target_refs"], registry_revision, planned["unitset_revisions"],
+            reader_config, actor=actor)
+        if observed != planned:
+            _fail("STALE_PLAN", "reading-window measurement changed after batch planning")
+        if not observed["fits"]:
+            _fail(str(observed["blocking_code"]), "planned reading window no longer fits")
+        return observed
 
     def prepare_batch(self, batch_id: str, actor: str, registry_revision: int,
                       max_codepoints: int | None = None) -> dict[str, Any]:
@@ -399,6 +596,8 @@ class FileKnowledgeBuildService:
                     results.append({"task_id": task_id, "status": task["status"], "prepared": False})
                     continue
                 try:
+                    measurement = self._verify_planned_measurement(
+                        task, actor, registry_revision, max_codepoints)
                     if task["status"] == "pending":
                         task = self.claim_task(task_id, actor, task["revision"])["task"]
                     elif task["status"] != "running" or task["actor"] != actor:
@@ -410,7 +609,8 @@ class FileKnowledgeBuildService:
                             task_id, actor, registry_revision, max_codepoints)["package"]
                     results.append({"task_id": task_id, "status": "running", "prepared": True,
                                     "created": created, "reading_package_id": package["package_id"],
-                                    "total_codepoints": package["total_codepoints"]})
+                                    "total_codepoints": package["total_codepoints"],
+                                    "measurement": measurement})
                 except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
                     failures.append(self._failure("prepare", task_id, exc))
                     results.append({"task_id": task_id, "status": "error", "prepared": False})
@@ -488,34 +688,18 @@ class FileKnowledgeBuildService:
         task = self._task(task_id)
         if task["status"] != "running" or task["actor"] != actor:
             _fail("ACCESS_DENIED", "task must be claimed by the reading actor")
-        maximum = int(max_codepoints or self.source.config["reading"]["max_codepoints"])
-        result = self.source.context({"core_refs": task["target_refs"],
-                                     "access": {"actor": actor, "purpose": "construction",
-                                                "registry_revision": registry_revision},
-                                     "max_codepoints": maximum})
-        context_refs = [item["source_ref"] for item in result["context"]]
-        payload = {"core_refs": task["target_refs"], "context_refs": context_refs,
-                   "context_header": " | ".join(dict.fromkeys(
-                       " / ".join(item.get("heading_path", []))
-                       for item in [*result["core"], *result["context"]]
-                       if item.get("heading_path"))),
-                   "omitted_refs": result["omitted_refs"], "truncated": result["truncated"],
-                   "reason": result["reason"], "max_codepoints": maximum}
-        window = {"contract": "hermes-reading-window/v1",
-                  "window_id": fingerprint(payload), **payload}
-        validate_record("reading_window", window)
-        materials = []
-        for role, values in (("core", result["core"]), ("context", result["context"])):
-            for item in values:
-                selected = item["core_text"]
-                materials.append({
-                    "role": role, "source_ref": item["source_ref"],
-                    "unit_content_sha256": item["content_sha256"],
-                    "selected_sha256": _sha(selected.encode("utf-8")) if selected is not None else None,
-                    "core_text": selected, "asset_refs": item["asset_refs"],
-                    "quality_refs": item["quality_refs"], "section_id": item["section_id"],
-                    "heading_path": item["heading_path"],
-                })
+        reader_config = self._reader_config(max_codepoints)
+        assembled = self._assemble_reading(
+            list(task["target_refs"]), actor, registry_revision, reader_config)
+        window, materials = assembled["window"], assembled["materials"]
+        measurement = assembled["measurement"]
+        if not measurement["fits"]:
+            _fail(str(measurement["blocking_code"]),
+                  f"serialized reading window uses {measurement['serialized_codepoints']} "
+                  f"of {measurement['limit']} codepoints")
+        planned = task.get("reading_measurement")
+        if planned is not None and measurement != planned:
+            _fail("STALE_PLAN", "reading-window measurement differs from the exact plan")
         package = {
             "contract": "hermes-reading-package/v1", "task_id": task_id,
             "task_revision": task["revision"], "actor": actor,
@@ -531,8 +715,8 @@ class FileKnowledgeBuildService:
         if not target.exists():
             _write_atomic(target, _json_bytes(package))
         return {"ok": True, "task_id": task_id, "task_revision": task["revision"],
-                "package": package, "window": window,
-                "core": result["core"], "context": result["context"]}
+                "package": package, "window": window, "measurement": measurement,
+                "core": assembled["core"], "context": assembled["context"]}
 
     def record_pass(self, request: Mapping[str, Any]) -> dict[str, Any]:
         task_id, actor = str(request["task_id"]), str(request["actor"])

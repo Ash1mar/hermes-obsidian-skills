@@ -41,3 +41,5 @@ controlled-ingest 继续负责来源准备、Unit 发布、阅读任务、候选
 2026-09-16 P4 实现补充：`FileVaultFinalizeService` 与独立 `hermes-obsidian-knowledge-finalize` Skill 提供 plan/apply/validate/status。计划钉住 build、identity registry、UnitSet current pointer、页面与 source changes；贡献分为 active/stale/withdrawn，页面分为 current/review_required/blocked。页面移动只在旧内容可验证时生成 redirect；导航投影验证死链、歧义、反向链接与目录。Apply 重算计划并最后写 release manifest，不调用 Provider，也不把 unassessed/draft 页面提升为可索引。
 
 2026-09-20 批次执行补充：P3 增加附加式 `hermes-knowledge-build-batch/v1` 调度账本和 batch plan/adopt/prepare/pass/reduce/validate/finalize 命令。UnitSet、artifact 与治理读取在单次批次命令内按文件签名缓存；计划只扫描一次活动/已完成任务索引。批次不替换原 task/reading/Pass/run/page 契约：模型仍在有界 reading package 上判断，Reduce 全批协调 identity/path，Build Finalize 在共享锁内逐 run 幂等提交。旧计划通过只读 adopt 接入，因此无需迁移或重写既有产物。
+
+2026-09-21 精确读取预算补充：batch measure/plan/prepare 共享 canonical `window + materials` 构造与序列化路径。预算同时覆盖 core、ancestor、context 和引用/标题/哈希等 metadata；计划把 measurement、reader-config hash、UnitSet revision 与输入指纹钉入 task ledger，prepare 在 claim 前重算，任何漂移均停止为 `STALE_PLAN`。不可分割的 whole-asset 超限保持显式 blocker，不截断规避。

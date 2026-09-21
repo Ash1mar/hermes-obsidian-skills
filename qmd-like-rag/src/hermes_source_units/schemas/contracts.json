@@ -853,6 +853,43 @@
       ],
       "additionalProperties": false
     },
+    "reading_window_measurement": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-reading-window-measurement/v1"},
+        "core_codepoints": {"type": "integer", "minimum": 0},
+        "ancestor_codepoints": {"type": "integer", "minimum": 0},
+        "context_codepoints": {"type": "integer", "minimum": 0},
+        "metadata_codepoints": {"type": "integer", "minimum": 0},
+        "serialized_codepoints": {"type": "integer", "minimum": 1},
+        "limit": {"type": "integer", "minimum": 1},
+        "fits": {"type": "boolean"},
+        "input_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "reader_config_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "unitset_revisions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "resource_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+              "unit_set_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+              "revision": {"type": "integer", "minimum": 1}
+            },
+            "required": ["resource_id", "unit_set_id", "revision"],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "blocking_code": {
+          "anyOf": [
+            {"enum": ["WHOLE_ASSET_OVERSIZE", "READING_WINDOW_OVERSIZE"]},
+            {"type": "null"}
+          ]
+        }
+      },
+      "required": ["contract", "core_codepoints", "ancestor_codepoints", "context_codepoints", "metadata_codepoints", "serialized_codepoints", "limit", "fits", "input_fingerprint", "reader_config_hash", "unitset_revisions", "blocking_code"],
+      "additionalProperties": false
+    },
     "reading_window": {
       "type": "object",
       "properties": {
@@ -1148,6 +1185,13 @@
         },
         "reason": {
           "type": "string"
+        },
+        "reading_measurement": {
+          "$ref": "#/$defs/reading_window_measurement"
+        },
+        "reader_config_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
         }
       },
       "required": [

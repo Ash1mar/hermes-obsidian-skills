@@ -21,12 +21,17 @@ def run(args):
         method = {"plan": service.plan_task, "pass": service.record_pass,
                   "reduce": service.reduce, "finalize": service.finalize}[args.command]
         return method(load(args.request))
+    if args.command == "batch-measure":
+        return service.measure_batch(load(args.request))
     if args.command in ("batch-plan", "batch-adopt", "batch-set-state", "batch-pass", "batch-reduce", "batch-finalize"):
         method = {"batch-plan": service.plan_batch, "batch-adopt": service.adopt_batch,
                   "batch-set-state": service.set_task_state_batch,
                   "batch-pass": service.record_pass_batch, "batch-reduce": service.reduce_batch,
                   "batch-finalize": service.finalize_batch}[args.command]
-        return method(load(args.request))
+        request = load(args.request)
+        if args.command == "batch-plan" and args.exact_reading_budget:
+            request["exact_reading_budget"] = True
+        return method(request)
     if args.command == "claim":
         return service.claim_task(args.task_id, args.actor, args.expected_revision)
     if args.command == "read":
@@ -44,7 +49,7 @@ def run(args):
     if args.command == "batch-validate":
         return service.validate_batch(args.batch_id)
     if args.command == "batch-status":
-        return service.batch_status(args.batch_id)
+        return service.batch_status(args.batch_id, args.compact)
     if args.command == "batch-resume":
         return service.resume_batch(args.batch_id)
     return {"ok": True, "registry": service.list_identities()}
@@ -60,9 +65,13 @@ def main() -> int:
     for name in ("plan", "pass", "reduce", "finalize"):
         command = sub.add_parser(name)
         command.add_argument("--request", required=True, help="JSON request file")
+    measure = sub.add_parser("batch-measure")
+    measure.add_argument("--request", required=True, help="JSON batch request file")
     for name in ("batch-plan", "batch-adopt", "batch-set-state", "batch-pass", "batch-reduce", "batch-finalize"):
         command = sub.add_parser(name)
         command.add_argument("--request", required=True, help="JSON batch request file")
+        if name == "batch-plan":
+            command.add_argument("--exact-reading-budget", action="store_true")
     claim = sub.add_parser("claim")
     claim.add_argument("--task-id", required=True)
     claim.add_argument("--actor", required=True)
@@ -89,6 +98,8 @@ def main() -> int:
     for name in ("batch-validate", "batch-status", "batch-resume"):
         command = sub.add_parser(name)
         command.add_argument("--batch-id", required=True)
+        if name == "batch-status":
+            command.add_argument("--compact", action="store_true")
     sub.add_parser("identities")
     args = parser.parse_args()
     try:
