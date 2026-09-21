@@ -50,7 +50,7 @@ python3 "<ingest-skill-root>/scripts/manage_knowledge_build.py" --vault "/path/t
 
 多任务路径使用附加的 `batch-measure`、`batch-plan --exact-reading-budget`、
 `batch-adopt`、`batch-set-state`、`batch-next-slice`、`slice-heartbeat`、
-`slice-complete`、`slice-fail`、`batch-reclaim-expired`、`batch-cancel`、
+`slice-complete`、`slice-fail`、`slice-reconcile`、`batch-reclaim-expired`、`batch-cancel`、
 `batch-prepare`、`batch-pass`、`batch-reduce`、`batch-validate` 和
 `batch-finalize`。这些命令只增加 `_system/ledgers/knowledge-build-batches/`
 调度账本；原有 task、reading、Pass、run 和页面 revision 契约保持不变。
@@ -64,6 +64,12 @@ Pass 调度切片持久化在每个批次的 `slices/` 目录；默认并发数 
 最多尝试 3 次。领取、续租、完成、失败、过期回收和取消都在批次锁内按 revision
 转换；完成切片保持完成，批次取消只终止尚未完成的切片。切片是可恢复调度状态，
 不会替代 task、reading package、Pass 或 Build Finalize 的领域事实。
+批量 Pass 记录以 batch、task、sequence、reading-package fingerprint 和模板 hash
+生成稳定幂等键：同键同内容复用，同键异内容停止为 `IDEMPOTENCY_CONFLICT`，
+revision 或输入指纹漂移停止为 `STALE_INPUT`。限流、超时和异常退出按
+60/180/600 秒退避；429 同时设置批次冷却。无效模型 JSON 保存原始失败输出且
+最多重试两次；budget 漂移只能通过 `slice-reconcile` 重测并替换一次，whole-asset、
+合同和 provenance 错误保持 blocked，人工检查点保持 awaiting approval。
 
 P4 由独立 Skill 执行，不让 ingest 隐式完成全库收尾：
 

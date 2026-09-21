@@ -248,6 +248,11 @@ then obtain Pass work through `batch-next-slice`, maintain the lease with
 command. Reclaim expired leases before retrying abandoned work, and use `batch-cancel`
 for an explicit terminal stop. Keep each model reading window bounded and preserve both
 human checkpoints; slice completion never substitutes for recording the ordinary Pass.
+For `batch-pass`, provide the claimed `slice_id` and `worker_id`; do not change the
+slice-pinned template hash. Classify worker failures through `slice-fail`, including the
+raw failed output for invalid model JSON. Only call `slice-reconcile` for its single
+permitted reading-budget reslice; never auto-bypass stale input, provenance failures,
+whole-asset blockers or an awaiting human checkpoint.
 
 Honor `manifest.quality.review_required`. Extract readable formulas, table rows and figure observations
 with explicit QA notes when deterministic/page verification is unavailable; write them as attributed

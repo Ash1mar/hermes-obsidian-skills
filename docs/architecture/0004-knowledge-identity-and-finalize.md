@@ -45,3 +45,5 @@ controlled-ingest 继续负责来源准备、Unit 发布、阅读任务、候选
 2026-09-21 精确读取预算补充：batch measure/plan/prepare 共享 canonical `window + materials` 构造与序列化路径。预算同时覆盖 core、ancestor、context 和引用/标题/哈希等 metadata；计划把 measurement、reader-config hash、UnitSet revision 与输入指纹钉入 task ledger，prepare 在 claim 前重算，任何漂移均停止为 `STALE_PLAN`。不可分割的 whole-asset 超限保持显式 blocker，不截断规避。
 
 2026-09-21 可恢复切片补充：批次在首次领取时按稳定任务顺序和精确输入指纹生成有界 `hermes-knowledge-build-slice/v1` 账本。默认同时租出 2 片，每片最多 3 个任务或 30000 输入 codepoints；租约、心跳、重试等待、最大尝试、过期回收和批次取消均在批次锁内以 revision 转换。完成片不可被取消或回收，过期 worker 不得迟交；切片只作为 Pass worker 的持久调度控制面，不改变 task、reading、Pass、Reduce 与 Finalize 的权威边界。
+
+2026-09-21 Pass 幂等与失败分类补充：批量 Pass 以 batch/task/sequence、经重算验证的 reading-package fingerprint 和 slice 模板 hash 形成幂等键；同键同内容复用，同键异内容冲突，旧 revision/input 在新写入前停止。调度错误由 Python 分类：临时错误指数退避，429 设置批次冷却，无效 JSON 留存原始输出且最多重试两次，输入漂移进入 reconcile，budget 漂移仅允许一次重测重分片，whole-asset、合同与 provenance 错误永久 blocked，人工检查点进入 awaiting approval。领域 Pass 先持久化、slice 后完成，因此 worker 在二者之间退出时可安全重放而不复制 Pass。

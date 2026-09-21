@@ -145,6 +145,24 @@ batch ledger only records orchestration state under
   cancelled leases cannot publish late results. Retryable failures enter
   `retry_wait`, then become ready when due; exhausted or non-retryable failures
   become blocked.
+- `batch-pass` derives a stable idempotency key from batch ID, task ID, Pass
+  sequence, verified reading-package fingerprint and the slice-pinned template
+  hash. An exact replay returns the existing Pass, while different content under
+  the same key fails with `IDEMPOTENCY_CONFLICT`. A changed task revision,
+  package fingerprint, registry pin, slice assignment or template hash fails as
+  `STALE_INPUT`. Include `slice_id` and `worker_id` so a worker-owned lease is
+  verified before new semantic output is accepted.
+- `slice-fail` classifies rather than blindly trusting a retry flag. Rate limits,
+  timeouts and process exits use 60/180/600-second exponential backoff; rate
+  limits also pause new leases with a batch-level cooldown. Invalid model JSON
+  requires `failed_output`, stores it under the batch failure directory and gets
+  at most two retries. Stale input enters `reconcile_required`; whole-asset,
+  contract and provenance failures block; checkpoint failures enter
+  `awaiting_approval` without retry.
+- `slice-reconcile` is restricted to the batch actor and a revision-pinned
+  reading-budget failure. It remeasures through the canonical reading path,
+  cancels the superseded slice and creates deterministic replacements. A
+  replacement carries `reslice_count: 1`; another budget failure blocks it.
 - `batch-reclaim-expired` returns expired leases to ready or blocks them after
   the final attempt. `batch-cancel` preserves completed slices and atomically
   cancels every unfinished slice. Cancellation is terminal in this contract.
