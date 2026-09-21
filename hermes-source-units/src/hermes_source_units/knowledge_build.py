@@ -29,6 +29,8 @@ DEFAULT_SLICE_CONFIG = {
     "heartbeat_seconds": 60,
     "max_attempts": 3,
 }
+PASS_TEMPLATE_ID = "knowledge-pass/v1"
+TRANSIENT_BACKOFF_SECONDS = (60, 180, 600)
 _BATCH_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 _SLICE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 
@@ -61,6 +63,37 @@ def _parse_utc(value: str) -> datetime:
     if moment.tzinfo is None:
         _fail("INVALID_SCHEMA", "stored timestamp must carry a timezone")
     return moment.astimezone(timezone.utc)
+
+
+def _pass_template_hash() -> str:
+    return fingerprint({"template_id": PASS_TEMPLATE_ID,
+                        "task_contract": KNOWLEDGE_CONTRACT})
+
+
+def _failure_class(code: str) -> str:
+    normalized = re.sub(r"[^A-Z0-9]+", "_", code.upper()).strip("_")
+    if normalized in {"429", "HTTP_429", "RATE_LIMIT", "RATE_LIMITED", "TOO_MANY_REQUESTS"}:
+        return "rate_limited"
+    if normalized in {"TIMEOUT", "MODEL_TIMEOUT", "PROCESS_EXIT", "PROCESS_ERROR",
+                      "PROCESS_ABNORMAL_EXIT", "WORKER_EXIT"}:
+        return "transient"
+    if normalized in {"INVALID_MODEL_JSON", "MODEL_JSON_INVALID", "MALFORMED_MODEL_JSON"}:
+        return "invalid_model_output"
+    if normalized in {"STALE_INPUT", "STALE_PLAN", "REVISION_CONFLICT",
+                      "INPUT_HASH_CHANGED", "SOURCE_CHANGED"}:
+        return "stale_input"
+    if normalized in {"READING_BUDGET_MISMATCH", "READING_WINDOW_OVERSIZE"}:
+        return "reading_budget"
+    if normalized == "WHOLE_ASSET_OVERSIZE":
+        return "whole_asset_oversize"
+    if normalized in {"AWAITING_APPROVAL", "CHECKPOINT_REQUIRED", "CHECKPOINT_1",
+                      "CHECKPOINT_2"}:
+        return "awaiting_approval"
+    if normalized in {"INVALID_SCHEMA", "INVALID_PASS", "PROVENANCE_ERROR",
+                      "OUTSIDE_READING_PACKAGE", "TASK_WINDOW_MISMATCH",
+                      "UNRESOLVED_REFERENCE", "IDENTITY_MISMATCH"}:
+        return "contract"
+    return "permanent"
 
 
 def _same_ref(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
@@ -416,7 +449,8 @@ class FileKnowledgeBuildService:
                  "origin": dict(origin), "task_ids": task_ids, "run_ids": [],
                  "state": "planned", "last_operation": "plan", "failures": [],
                  "slices_initialized": False, "slice_ids": [], "slice_config": None,
-                 "cancel_requested": False}
+                 "cancel_requested": False, "cooldown_until": None,
+                 "cooldown_reason": None}
         validate_record("knowledge_batch", batch)
         return batch
 
@@ -563,13 +597,14 @@ class FileKnowledgeBuildService:
         validate_record("knowledge_slice_config", config)
         return config
 
-    def _slice_task_input(self, batch: Mapping[str, Any], task: Mapping[str, Any]) -> dict[str, Any]:
+    def _slice_task_input(self, batch: Mapping[str, Any], task: Mapping[str, Any], *,
+                          remeasure: bool = False) -> dict[str, Any]:
         measurement = task.get("reading_measurement")
-        if measurement is not None:
+        if measurement is not None and not remeasure:
             return {"codepoints": int(measurement["serialized_codepoints"]),
                     "fingerprint": str(measurement["input_fingerprint"]),
                     "blocking_code": measurement.get("blocking_code")}
-        package = self._existing_reading_package(
+        package = None if remeasure else self._existing_reading_package(
             task, str(batch["actor"]), int(batch["document_registry_revision"]))
         if package is not None:
             projection = self._reading_projection(package["window"], package["materials"])
@@ -587,16 +622,17 @@ class FileKnowledgeBuildService:
 
     def _ensure_slices(self, batch: Mapping[str, Any],
                        requested_config: Mapping[str, Any] | None = None,
-                       template_id: str = "knowledge-pass/v1",
+                       template_id: str = PASS_TEMPLATE_ID,
                        template_hash: str | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         configured = self._slice_config(requested_config)
         if batch.get("slices_initialized"):
             if batch.get("slice_config") != configured:
                 _fail("STALE_PLAN", "slice configuration differs from the initialized batch")
             slices = self._slices(str(batch["batch_id"]))
-            if [item["slice_id"] for item in slices] != list(batch.get("slice_ids", [])):
+            by_id = {item["slice_id"]: item for item in slices}
+            if set(by_id) != set(batch.get("slice_ids", [])):
                 _fail("SOURCE_CHANGED", "slice ledger set differs from the batch control record")
-            return dict(batch), slices
+            return dict(batch), [by_id[slice_id] for slice_id in batch.get("slice_ids", [])]
 
         maximum_tasks = configured["slice_max_tasks"]
         maximum_input = configured["slice_max_input_codepoints"]
@@ -627,8 +663,7 @@ class FileKnowledgeBuildService:
         if current:
             groups.append(current)
 
-        actual_template_hash = template_hash or fingerprint(
-            {"template_id": template_id, "task_contract": KNOWLEDGE_CONTRACT})
+        actual_template_hash = template_hash or _pass_template_hash()
         slices = []
         for ordinal, group in enumerate(groups, 1):
             task_ids = [item["task_id"] for item in group]
@@ -655,7 +690,10 @@ class FileKnowledgeBuildService:
                           "heartbeat_at": None, "expires_at": None},
                 "retry_at": None, "result_refs": [],
                 "last_error": ({"code": blocking, "message": "slice input cannot fit configured bound",
-                                "retryable": False, "at": None} if blocking else None),
+                                "retryable": False, "at": None,
+                                "classification": _failure_class(str(blocking)),
+                                "action": "blocked", "output_ref": None} if blocking else None),
+                "reslice_count": 0,
                 "revision": 1,
             }
             path = self._slice_path(str(batch["batch_id"]), slice_id)
@@ -694,6 +732,17 @@ class FileKnowledgeBuildService:
             batch = self._batch(batch_id)
             if batch.get("cancel_requested"):
                 return {"ok": True, "leased": False, "reason": "batch_cancelled", "slice": None}
+            cooldown_until = batch.get("cooldown_until")
+            if cooldown_until is not None and _parse_utc(str(cooldown_until)) > moment:
+                return {"ok": True, "leased": False, "reason": "batch_cooldown",
+                        "cooldown_until": cooldown_until, "slice": None}
+            if cooldown_until is not None:
+                batch = copy.deepcopy(batch)
+                batch.update({"cooldown_until": None, "cooldown_reason": None,
+                              "revision": int(batch["revision"]) + 1,
+                              "last_operation": "slice"})
+                validate_record("knowledge_batch", batch)
+                _write_atomic(self._batch_path(batch_id), _json_bytes(batch))
             effective_config = (batch.get("slice_config") if batch.get("slices_initialized")
                                 and config is None else config)
             batch, slices = self._ensure_slices(batch, effective_config)
@@ -797,22 +846,168 @@ class FileKnowledgeBuildService:
                 _fail("ACCESS_DENIED", "slice is not leased by this worker")
             if _parse_utc(value["lease"]["expires_at"]) <= moment:
                 _fail("LEASE_EXPIRED", "slice lease expired before failure recording")
-            retryable = bool(request.get("retryable", True))
-            retry = retryable and int(value["attempt"]) < int(batch["slice_config"]["max_attempts"])
-            retry_after = int(request.get("retry_after_seconds", 60))
-            if retry and retry_after < 1:
-                _fail("INVALID_SCHEMA", "retry_after_seconds must be positive")
+            code = str(request["code"])
+            classification = _failure_class(code)
+            attempt = int(value["attempt"])
+            configured_attempts = int(batch["slice_config"]["max_attempts"])
+            retry_limit = min(configured_attempts, 3) if classification == "invalid_model_output" else configured_attempts
+            retry = classification in ("rate_limited", "transient", "invalid_model_output") \
+                and attempt < retry_limit
+            retry_after = TRANSIENT_BACKOFF_SECONDS[min(max(attempt - 1, 0),
+                                                          len(TRANSIENT_BACKOFF_SECONDS) - 1)]
+            output_ref = None
+            if classification == "invalid_model_output":
+                if "failed_output" not in request:
+                    _fail("INVALID_SCHEMA", "invalid model JSON requires failed_output for audit",
+                          "$.failed_output")
+                output = str(request["failed_output"])
+                output_path = self._slice_root(batch_id).parent / "failures" / (
+                    f"{slice_id}-attempt-{attempt:04d}.txt")
+                encoded = output.encode("utf-8")
+                if output_path.exists() and output_path.read_bytes() != encoded:
+                    _fail("IDEMPOTENCY_CONFLICT", "failed model output differs for the same attempt")
+                if not output_path.exists():
+                    _write_atomic(output_path, encoded)
+                output_ref = output_path.relative_to(self.vault).as_posix()
+
+            reslice_count = int(value.get("reslice_count", 0))
+            if retry:
+                state, action = "retry_wait", "retry"
+            elif classification == "stale_input":
+                state, action = "reconcile_required", "reconcile"
+            elif classification == "reading_budget" and reslice_count < 1:
+                state, action = "reconcile_required", "remeasure_and_reslice"
+                reslice_count += 1
+            elif classification == "awaiting_approval":
+                state, action = "awaiting_approval", "await_approval"
+            else:
+                state, action = "blocked", "blocked"
             updated = copy.deepcopy(value)
-            updated.update({"state": "retry_wait" if retry else "blocked",
+            updated.update({"state": state,
                             "retry_at": ((moment + timedelta(seconds=retry_after))
                                          .isoformat().replace("+00:00", "Z") if retry else None),
-                            "last_error": {"code": str(request["code"]),
+                            "last_error": {"code": code,
                                            "message": str(request["message"]),
-                                           "retryable": retryable, "at": stamp},
+                                           "retryable": retry, "at": stamp,
+                                           "classification": classification,
+                                           "action": action, "output_ref": output_ref},
+                            "reslice_count": reslice_count,
                             "revision": int(updated["revision"]) + 1})
             self._clear_lease(updated)
             self._write_slice(updated)
-            return {"ok": True, "slice": updated}
+            updated_batch = batch
+            if classification == "rate_limited":
+                updated_batch = copy.deepcopy(batch)
+                updated_batch.update({
+                    "cooldown_until": (moment + timedelta(seconds=retry_after)
+                                       ).isoformat().replace("+00:00", "Z"),
+                    "cooldown_reason": code,
+                    "last_operation": "slice",
+                    "revision": int(updated_batch["revision"]) + 1,
+                })
+                validate_record("knowledge_batch", updated_batch)
+                _write_atomic(self._batch_path(batch_id), _json_bytes(updated_batch))
+            return {"ok": True, "slice": updated, "batch": updated_batch}
+
+    def reconcile_slice_inputs(self, batch_id: str, slice_id: str, actor: str,
+                               expected_revision: int) -> dict[str, Any]:
+        """Remeasure and replace one budget-stale slice; replacements cannot reslice again."""
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            if batch.get("cancel_requested"):
+                _fail("CANCELLED", "slice reconciliation rejected after batch cancellation")
+            if batch["actor"] != actor:
+                _fail("ACCESS_DENIED", "only the batch actor can reconcile slice inputs")
+            value = self._slice(batch_id, slice_id)
+            if value["revision"] != expected_revision:
+                _fail("REVISION_CONFLICT", "slice revision changed", "$.expected_revision")
+            if (value["state"] != "reconcile_required"
+                    or (value.get("last_error") or {}).get("classification") != "reading_budget"
+                    or int(value.get("reslice_count", 0)) != 1):
+                _fail("INVALID_STATE", "slice is not eligible for its one budget reslice")
+
+            config = batch.get("slice_config")
+            if config is None:
+                _fail("INVALID_STATE", "slice configuration is unavailable")
+            items = []
+            for task_id in value["task_ids"]:
+                task = self._task(task_id)
+                measured = self._slice_task_input(batch, task, remeasure=True)
+                items.append({"task_id": task_id, **measured})
+            groups, current, current_input = [], [], 0
+            for item in items:
+                if current and (len(current) >= int(config["slice_max_tasks"])
+                                or current_input + int(item["codepoints"])
+                                > int(config["slice_max_input_codepoints"])):
+                    groups.append(current)
+                    current, current_input = [], 0
+                current.append(item)
+                current_input += int(item["codepoints"])
+                if int(item["codepoints"]) > int(config["slice_max_input_codepoints"]):
+                    groups.append(current)
+                    current, current_input = [], 0
+            if current:
+                groups.append(current)
+
+            replacements = []
+            for ordinal, group in enumerate(groups, 1):
+                input_codepoints = sum(int(item["codepoints"]) for item in group)
+                input_fingerprint = "sha256:" + fingerprint({
+                    "batch_id": batch_id, "supersedes": slice_id,
+                    "reslice_count": 1,
+                    "task_inputs": [{"task_id": item["task_id"],
+                                     "fingerprint": item["fingerprint"]}
+                                    for item in group],
+                    "slice_config": config, "template_id": value["template_id"],
+                    "template_hash": value["template_hash"],
+                })
+                replacement_id = f"pass-r1-{ordinal:04d}-{input_fingerprint[-12:]}"
+                blocking = next((item["blocking_code"] for item in group
+                                 if item["blocking_code"]), None)
+                if input_codepoints > int(config["slice_max_input_codepoints"]) and blocking is None:
+                    blocking = "SLICE_INPUT_OVERSIZE"
+                replacement = {
+                    "contract": SLICE_CONTRACT, "slice_id": replacement_id,
+                    "batch_id": batch_id,
+                    "task_ids": [item["task_id"] for item in group],
+                    "input_codepoints": input_codepoints,
+                    "input_fingerprint": input_fingerprint,
+                    "template_id": value["template_id"],
+                    "template_hash": value["template_hash"],
+                    "state": "blocked" if blocking else "ready", "attempt": 0,
+                    "lease": {"worker_id": None, "claimed_at": None,
+                              "heartbeat_at": None, "expires_at": None},
+                    "retry_at": None, "result_refs": [], "reslice_count": 1,
+                    "last_error": ({"code": str(blocking),
+                                    "message": "remeasured slice input cannot fit configured bound",
+                                    "retryable": False, "at": None,
+                                    "classification": _failure_class(str(blocking)),
+                                    "action": "blocked", "output_ref": None}
+                                   if blocking else None),
+                    "revision": 1,
+                }
+                path = self._slice_path(batch_id, replacement_id)
+                if path.exists() and self._slice(batch_id, replacement_id) != replacement:
+                    _fail("IDEMPOTENCY_CONFLICT", "replacement slice id has different content")
+                if not path.exists():
+                    self._write_slice(replacement)
+                replacements.append(replacement)
+
+            superseded = copy.deepcopy(value)
+            superseded.update({"state": "cancelled", "retry_at": None,
+                               "revision": int(superseded["revision"]) + 1})
+            self._clear_lease(superseded)
+            self._write_slice(superseded)
+            slice_ids = list(batch["slice_ids"])
+            position = slice_ids.index(slice_id)
+            slice_ids[position + 1:position + 1] = [item["slice_id"] for item in replacements]
+            updated_batch = copy.deepcopy(batch)
+            updated_batch.update({"slice_ids": slice_ids, "last_operation": "slice",
+                                  "revision": int(updated_batch["revision"]) + 1})
+            validate_record("knowledge_batch", updated_batch)
+            _write_atomic(self._batch_path(batch_id), _json_bytes(updated_batch))
+            return {"ok": True, "batch": updated_batch, "superseded": superseded,
+                    "replacements": replacements}
 
     def reclaim_expired_slices(self, batch_id: str,
                                now: datetime | str | None = None) -> dict[str, Any]:
@@ -895,13 +1090,21 @@ class FileKnowledgeBuildService:
                            if task["status"] not in ("blocked", "failed", "skipped")
                            and task["task_id"] not in covered)
         next_actions = []
-        if not batch.get("cancel_requested") and (not batch.get("slices_initialized") or any(
+        if not batch.get("cancel_requested") and batch.get("cooldown_until") is not None:
+            next_actions.append("wait-batch-cooldown")
+        elif not batch.get("cancel_requested") and (not batch.get("slices_initialized") or any(
                 item["state"] in ("ready", "retry_wait") for item in slices)):
             next_actions.append("batch-next-slice")
         if not batch.get("cancel_requested") and any(item["state"] == "leased" for item in slices):
             next_actions.append("slice-heartbeat-or-complete")
         if not batch.get("cancel_requested") and any(item["state"] == "blocked" for item in slices):
             next_actions.append("inspect-blocked-slices")
+        if not batch.get("cancel_requested") and any(
+                item["state"] == "reconcile_required" for item in slices):
+            next_actions.append("reconcile-slice-inputs")
+        if not batch.get("cancel_requested") and any(
+                item["state"] == "awaiting_approval" for item in slices):
+            next_actions.append("await-human-approval")
         if not batch.get("cancel_requested"):
             if any(item["status"] == "pending" or (item["status"] == "running" and not item["reading_packages"])
                    for item in task_details):
@@ -1110,7 +1313,23 @@ class FileKnowledgeBuildService:
                 "package": package, "window": window, "measurement": measurement,
                 "core": assembled["core"], "context": assembled["context"]}
 
-    def record_pass(self, request: Mapping[str, Any]) -> dict[str, Any]:
+    @staticmethod
+    def _reading_package_fingerprint(package: Mapping[str, Any], package_id: str) -> str:
+        unsigned = copy.deepcopy(dict(package))
+        stored_id = str(unsigned.pop("package_id", ""))
+        if stored_id != package_id or fingerprint(unsigned) != stored_id:
+            _fail("STALE_INPUT", "reading package fingerprint no longer matches its content")
+        return "sha256:" + stored_id
+
+    @staticmethod
+    def _same_pass_payload(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+        fields = ("contract", "task_id", "task_revision", "pass_kind", "sequence",
+                  "reading_window_id", "reading_package_id", "inspections", "candidates",
+                  "empty_reason", "actor")
+        return all(left.get(field) == right.get(field) for field in fields)
+
+    def record_pass(self, request: Mapping[str, Any], *, batch_id: str | None = None,
+                    template_hash: str | None = None) -> dict[str, Any]:
         task_id, actor = str(request["task_id"]), str(request["actor"])
         task = self._task(task_id)
         expected_revision = int(request["expected_revision"])
@@ -1118,33 +1337,62 @@ class FileKnowledgeBuildService:
         package_path = _vault_path(self.vault, f"{BUILD_ROOT}/task-{task_id}/readings/{package_id}.json")
         package = _load_json(package_path)
         validate_record("reading_package", package)
+        package_fingerprint = self._reading_package_fingerprint(package, package_id)
         window = package["window"]
         if window["core_refs"] != task["target_refs"]:
-            _fail("TASK_WINDOW_MISMATCH", "reading window does not belong to current task")
+            _fail("STALE_INPUT", "reading window does not belong to the current task")
         body = {"contract": "hermes-knowledge-pass/v1", "task_id": task_id,
                 "task_revision": expected_revision, "pass_kind": str(request["pass_kind"]),
                 "sequence": int(request["sequence"]), "reading_window_id": window["window_id"],
                 "reading_package_id": package_id,
                 "inspections": list(request["inspections"]), "candidates": list(request["candidates"]),
                 "empty_reason": str(request.get("empty_reason", "")), "actor": actor}
+        if batch_id is not None:
+            actual_template_hash = str(template_hash or _pass_template_hash())
+            if not re.fullmatch(r"[0-9a-f]{64}", actual_template_hash):
+                _fail("INVALID_SCHEMA", "template_hash must be a sha256 hex digest",
+                      "$.template_hash")
+            body.update({
+                "batch_id": batch_id,
+                "reading_package_fingerprint": package_fingerprint,
+                "template_hash": actual_template_hash,
+                "idempotency_key": "sha256:" + fingerprint({
+                    "batch_id": batch_id, "task_id": task_id,
+                    "pass_sequence": body["sequence"],
+                    "reading_package_fingerprint": package_fingerprint,
+                    "template_hash": actual_template_hash,
+                }),
+            })
         body["pass_id"] = fingerprint(body)
         validate_record("knowledge_pass", body)
         pass_root = _vault_path(self.vault, f"{BUILD_ROOT}/task-{task_id}/passes")
         path = pass_root / f"{body['sequence']:04d}-{body['pass_id']}.json"
         existing_sequence = list(pass_root.glob(f"{body['sequence']:04d}-*.json")) if pass_root.exists() else []
         if existing_sequence:
-            if len(existing_sequence) == 1 and existing_sequence[0] == path and _load_json(path) == body:
-                return {"ok": True, "created": False, "pass": body, "task": task,
-                        "path": path.relative_to(self.vault).as_posix()}
+            if len(existing_sequence) != 1:
+                _fail("DUPLICATE", "pass sequence contains multiple records", "$.sequence")
+            existing_path = existing_sequence[0]
+            existing = _load_json(existing_path)
+            validate_record("knowledge_pass", existing)
+            if existing == body or (existing.get("idempotency_key") is None
+                                    and self._same_pass_payload(existing, body)):
+                return {"ok": True, "created": False, "pass": existing, "task": task,
+                        "idempotency_key": body.get("idempotency_key"),
+                        "path": existing_path.relative_to(self.vault).as_posix()}
+            if (body.get("idempotency_key") is not None
+                    and existing.get("idempotency_key") == body["idempotency_key"]):
+                _fail("IDEMPOTENCY_CONFLICT",
+                      "same Pass idempotency key has different content", "$.idempotency_key")
             _fail("DUPLICATE", "pass sequence already contains different content", "$.sequence")
         if task["revision"] != expected_revision:
-            _fail("REVISION_CONFLICT", "task revision changed", "$.expected_revision")
+            _fail("STALE_INPUT", "task revision changed", "$.expected_revision")
         if task["status"] != "running" or task["actor"] != actor:
             _fail("ACCESS_DENIED", "pass actor must own the running task")
         if package["task_id"] != task_id or package["actor"] != actor:
-            _fail("TASK_WINDOW_MISMATCH", "reading package belongs to another task or actor")
+            _fail("STALE_INPUT", "reading package belongs to another task or actor")
         if int(request["registry_revision"]) != package["document_registry_revision"]:
-            _fail("REVISION_CONFLICT", "pass must use the document registry revision observed by its reading package")
+            _fail("STALE_INPUT",
+                  "pass must use the registry revision observed by its reading package")
         existing_passes = sorted(pass_root.glob("*.json")) if pass_root.exists() else []
         sequences = [int(item.name.split("-", 1)[0]) for item in existing_passes]
         expected_sequence = 0 if not sequences else max(sequences) + 1
@@ -1170,6 +1418,7 @@ class FileKnowledgeBuildService:
         validate_references("work", task, units)
         _write_atomic(self._task_path(task_id), _json_bytes(task))
         return {"ok": True, "created": True, "pass": body, "task": task,
+                "idempotency_key": body.get("idempotency_key"),
                 "path": path.relative_to(self.vault).as_posix()}
 
     def record_pass_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -1184,13 +1433,37 @@ class FileKnowledgeBuildService:
                 if str(item.get("task_id", "")) not in allowed:
                     _fail("ACCESS_DENIED", "pass request is outside the batch", "$.passes")
             results, failures = [], []
+            slices = self._slices(batch_id) if batch.get("slices_initialized") else []
             for item in pass_requests:
                 task_id = str(item["task_id"])
                 try:
-                    recorded = self.record_pass(item)
+                    matches = [value for value in slices
+                               if task_id in value["task_ids"] and value["state"] != "cancelled"]
+                    if len(matches) > 1:
+                        _fail("STALE_INPUT", "task is assigned to multiple Pass slices")
+                    selected = matches[0] if matches else None
+                    requested_slice = item.get("slice_id", request.get("slice_id"))
+                    if requested_slice is not None and (
+                            selected is None or selected["slice_id"] != str(requested_slice)):
+                        _fail("STALE_INPUT", "Pass request names a different slice")
+                    requested_template = item.get("template_hash", request.get("template_hash"))
+                    if selected is not None and requested_template is not None \
+                            and str(requested_template) != selected["template_hash"]:
+                        _fail("STALE_INPUT", "Pass template hash differs from the slice")
+                    worker_id = item.get("worker_id", request.get("worker_id"))
+                    if selected is not None and worker_id is not None and (
+                            selected["state"] != "leased"
+                            or selected["lease"]["worker_id"] != str(worker_id)):
+                        _fail("ACCESS_DENIED", "Pass worker does not own the slice lease")
+                    recorded = self.record_pass(
+                        item, batch_id=batch_id,
+                        template_hash=(selected["template_hash"] if selected is not None
+                                       else str(requested_template or _pass_template_hash())))
                     results.append({"task_id": task_id, "created": recorded["created"],
                                     "pass_id": recorded["pass"]["pass_id"],
                                     "sequence": recorded["pass"]["sequence"],
+                                    "idempotency_key": recorded["idempotency_key"],
+                                    "path": recorded["path"],
                                     "task_revision": recorded["task"]["revision"]})
                 except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
                     failures.append(self._failure("pass", task_id, exc))

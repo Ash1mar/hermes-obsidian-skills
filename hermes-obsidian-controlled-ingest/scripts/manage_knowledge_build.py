@@ -34,6 +34,9 @@ def run(args):
         return service.slice_complete(load(args.request))
     if args.command == "slice-fail":
         return service.slice_fail(load(args.request))
+    if args.command == "slice-reconcile":
+        return service.reconcile_slice_inputs(
+            args.batch_id, args.slice_id, args.actor, args.expected_revision)
     if args.command == "batch-reclaim-expired":
         return service.reclaim_expired_slices(args.batch_id)
     if args.command == "batch-cancel":
@@ -95,6 +98,11 @@ def main() -> int:
     for name in ("slice-complete", "slice-fail"):
         command = sub.add_parser(name)
         command.add_argument("--request", required=True, help="JSON slice mutation request")
+    reconcile = sub.add_parser("slice-reconcile")
+    reconcile.add_argument("--batch-id", required=True)
+    reconcile.add_argument("--slice-id", required=True)
+    reconcile.add_argument("--actor", required=True)
+    reconcile.add_argument("--expected-revision", required=True, type=int)
     reclaim = sub.add_parser("batch-reclaim-expired")
     reclaim.add_argument("--batch-id", required=True)
     cancel = sub.add_parser("batch-cancel")

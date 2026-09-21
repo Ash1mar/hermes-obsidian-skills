@@ -591,6 +591,160 @@ def test_slice_retry_wait_and_batch_cancel_preserve_completed_work(vault: Path):
         })
 
 
+def test_batch_pass_idempotency_survives_worker_restart_and_rejects_key_conflict(vault: Path):
+    service = plan_sliced_batch(vault, 1, "idempotent-pass")
+    prepared = service.prepare_batch("idempotent-pass", "agent", 1)
+    package_id = prepared["results"][0]["reading_package_id"]
+    leased = service.batch_next_slice(
+        "idempotent-pass", "worker-a", now="2026-09-21T00:00:00Z")["slice"]
+    task_id = leased["task_ids"][0]
+    task = service._task(task_id)
+    ref = task["target_refs"][0]
+    pass_request = {
+        "task_id": task_id, "actor": "agent", "expected_revision": task["revision"],
+        "reading_package_id": package_id, "registry_revision": 1,
+        "pass_kind": "candidate", "sequence": 0,
+        "inspections": [{"source_ref": ref, "finding": "bounded inspection",
+                         "qa": "usable", "qa_note": ""}],
+        "candidates": [], "empty_reason": "No reusable candidate",
+    }
+    batch_request = {"batch_id": "idempotent-pass", "slice_id": leased["slice_id"],
+                     "worker_id": "worker-a", "passes": [pass_request]}
+    first = service.record_pass_batch(batch_request)
+    assert first["ok"] and first["results"][0]["created"] is True
+    assert first["results"][0]["idempotency_key"].startswith("sha256:")
+    stored_path = vault / first["results"][0]["path"]
+    stored_hash = hashlib.sha256(stored_path.read_bytes()).hexdigest()
+
+    retried = service.record_pass_batch(batch_request)
+    assert retried["ok"] and retried["results"][0]["created"] is False
+    assert retried["results"][0]["pass_id"] == first["results"][0]["pass_id"]
+    assert hashlib.sha256(stored_path.read_bytes()).hexdigest() == stored_hash
+
+    conflicting = json.loads(json.dumps(batch_request))
+    conflicting["passes"][0]["empty_reason"] = "Different semantic result"
+    conflict = service.record_pass_batch(conflicting)
+    assert conflict["ok"] is False
+    assert conflict["failures"][0]["code"] == "IDEMPOTENCY_CONFLICT"
+    completed = service.slice_complete({
+        "batch_id": "idempotent-pass", "slice_id": leased["slice_id"],
+        "worker_id": "worker-a", "expected_revision": leased["revision"],
+        "result_refs": [retried["results"][0]["path"]],
+    }, now="2026-09-21T00:00:10Z")
+    assert completed["slice"]["state"] == "completed"
+
+
+def test_batch_pass_rejects_stale_revision_before_writing(vault: Path):
+    service = plan_sliced_batch(vault, 1, "stale-pass")
+    prepared = service.prepare_batch("stale-pass", "agent", 1)
+    leased = service.batch_next_slice(
+        "stale-pass", "worker-a", now="2026-09-21T00:00:00Z")["slice"]
+    task_id = leased["task_ids"][0]
+    task = service._task(task_id)
+    result = service.record_pass_batch({
+        "batch_id": "stale-pass", "slice_id": leased["slice_id"],
+        "worker_id": "worker-a", "passes": [{
+            "task_id": task_id, "actor": "agent",
+            "expected_revision": task["revision"] - 1,
+            "reading_package_id": prepared["results"][0]["reading_package_id"],
+            "registry_revision": 1, "pass_kind": "candidate", "sequence": 0,
+            "inspections": [{"source_ref": task["target_refs"][0],
+                             "finding": "stale inspection", "qa": "usable",
+                             "qa_note": ""}],
+            "candidates": [], "empty_reason": "No candidate",
+        }],
+    })
+    assert result["ok"] is False and result["failures"][0]["code"] == "STALE_INPUT"
+    assert not (vault / f"_system/knowledge-builds/task-{task_id}/passes").exists()
+
+
+def test_slice_failure_policy_persists_output_and_applies_batch_cooldown(vault: Path):
+    service = plan_sliced_batch(vault, 2, "failure-policy")
+    config = {"pass_worker_concurrency": 2, "slice_max_tasks": 1,
+              "slice_max_input_codepoints": 30000, "lease_seconds": 1800,
+              "heartbeat_seconds": 60, "max_attempts": 3}
+    rate_limited = service.batch_next_slice(
+        "failure-policy", "worker-a", config=config,
+        now="2026-09-21T00:00:00Z")["slice"]
+    failed = service.slice_fail({
+        "batch_id": "failure-policy", "slice_id": rate_limited["slice_id"],
+        "worker_id": "worker-a", "expected_revision": rate_limited["revision"],
+        "code": "HTTP_429", "message": "provider rate limit",
+    }, now="2026-09-21T00:00:01Z")
+    assert failed["slice"]["state"] == "retry_wait"
+    assert failed["slice"]["retry_at"] == "2026-09-21T00:01:01Z"
+    assert failed["batch"]["cooldown_until"] == "2026-09-21T00:01:01Z"
+    cooled = service.batch_next_slice(
+        "failure-policy", "worker-b", now="2026-09-21T00:00:30Z")
+    assert cooled["reason"] == "batch_cooldown"
+
+    invalid = service.batch_next_slice(
+        "failure-policy", "worker-b", now="2026-09-21T00:01:02Z")["slice"]
+    invalid_result = service.slice_fail({
+        "batch_id": "failure-policy", "slice_id": invalid["slice_id"],
+        "worker_id": "worker-b", "expected_revision": invalid["revision"],
+        "code": "INVALID_MODEL_JSON", "message": "trailing prose",
+        "failed_output": "{not-json}\nmodel explanation",
+    }, now="2026-09-21T00:01:03Z")["slice"]
+    assert invalid_result["state"] == "retry_wait"
+    output_ref = invalid_result["last_error"]["output_ref"]
+    assert (vault / output_ref).read_text(encoding="utf-8") == "{not-json}\nmodel explanation"
+
+
+def test_slice_failure_policy_routes_stale_budget_and_checkpoint_states(vault: Path):
+    cases = [
+        ("STALE_INPUT", "reconcile_required", "reconcile", 0),
+        ("READING_BUDGET_MISMATCH", "reconcile_required", "remeasure_and_reslice", 1),
+        ("WHOLE_ASSET_OVERSIZE", "blocked", "blocked", 0),
+        ("PROVENANCE_ERROR", "blocked", "blocked", 0),
+        ("AWAITING_APPROVAL", "awaiting_approval", "await_approval", 0),
+    ]
+    service = plan_sliced_batch(vault, len(cases), "failure-classes")
+    config = {"pass_worker_concurrency": 1, "slice_max_tasks": 1,
+              "slice_max_input_codepoints": 30000, "lease_seconds": 1800,
+              "heartbeat_seconds": 60, "max_attempts": 3}
+    for index, (code, state, action, reslice_count) in enumerate(cases, 1):
+        leased = service.batch_next_slice(
+            "failure-classes", f"worker-{index}", config=config if index == 1 else None,
+            now="2026-09-21T00:00:00Z")["slice"]
+        result = service.slice_fail({
+            "batch_id": "failure-classes", "slice_id": leased["slice_id"],
+            "worker_id": f"worker-{index}", "expected_revision": leased["revision"],
+            "code": code, "message": "classified failure",
+        }, now="2026-09-21T00:00:01Z")["slice"]
+        assert result["state"] == state
+        assert result["last_error"]["action"] == action
+        assert result["reslice_count"] == reslice_count
+
+
+def test_reading_budget_failure_allows_exactly_one_deterministic_reslice(vault: Path):
+    service = plan_sliced_batch(vault, 1, "reslice-once")
+    first = service.batch_next_slice(
+        "reslice-once", "worker-a", now="2026-09-21T00:00:00Z")["slice"]
+    failed = service.slice_fail({
+        "batch_id": "reslice-once", "slice_id": first["slice_id"],
+        "worker_id": "worker-a", "expected_revision": first["revision"],
+        "code": "READING_BUDGET_MISMATCH", "message": "measured input drifted",
+    }, now="2026-09-21T00:00:01Z")["slice"]
+    reconciled = service.reconcile_slice_inputs(
+        "reslice-once", first["slice_id"], "agent", failed["revision"])
+    assert reconciled["superseded"]["state"] == "cancelled"
+    assert len(reconciled["replacements"]) == 1
+    replacement = reconciled["replacements"][0]
+    assert replacement["state"] == "ready" and replacement["reslice_count"] == 1
+    assert replacement["slice_id"] != first["slice_id"]
+
+    leased_again = service.batch_next_slice(
+        "reslice-once", "worker-b", now="2026-09-21T00:00:02Z")["slice"]
+    exhausted = service.slice_fail({
+        "batch_id": "reslice-once", "slice_id": leased_again["slice_id"],
+        "worker_id": "worker-b", "expected_revision": leased_again["revision"],
+        "code": "READING_BUDGET_MISMATCH", "message": "still too large",
+    }, now="2026-09-21T00:00:03Z")["slice"]
+    assert exhausted["state"] == "blocked"
+    assert exhausted["reslice_count"] == 1
+
+
 def test_p3_cli_runs_from_embedded_skill_runtime(vault: Path):
     result = subprocess.run([sys.executable, "-I", "-S", str(KNOWLEDGE_CLI),
                              "--vault", str(vault), "identities"],
