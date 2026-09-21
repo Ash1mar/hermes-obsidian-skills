@@ -120,15 +120,25 @@ the task, reading-package, Pass, build-run and page-revision contracts above; th
 batch ledger only records orchestration state under
 `_system/ledgers/knowledge-build-batches/<batch-id>.json`.
 
-- `batch-plan --request <json>` validates all UnitRefs and active-task overlaps
-  once before creating the ordinary task ledgers.
+- `batch-measure --request <json>` performs a read-only preview of each task's
+  exact canonical reading projection. It reports core, ancestor, context,
+  metadata and serialized codepoints plus pinned input/config fingerprints.
+- `batch-plan --request <json> --exact-reading-budget` validates all UnitRefs,
+  active-task overlaps and exact reading budgets once before creating ordinary
+  task ledgers. Only fitting tasks are written; indivisible text assets report
+  `WHOLE_ASSET_OVERSIZE` instead of being truncated.
 - `batch-adopt --request <json>` attaches an existing plan after read-only task,
   origin-hash and SourceUnit validation. It never rewrites an adopted artifact.
 - `batch-set-state --request <json>` preflights explicit actor/revision-pinned
   blocked/failed/skipped transitions, including superseded active plans.
 - `batch-status` and `batch-resume` report the authoritative recovery point.
+  Use `batch-status --compact` for aggregate counts and next actions without a
+  task-by-task payload.
 - `batch-prepare` claims pending tasks and persists one bounded reading package
-  per task. Repeated calls reuse a matching package.
+  per task. For exact plans it first reruns the same measurement and returns
+  `STALE_PLAN` before claiming when the reader configuration, pinned UnitSet
+  revisions or serialized projection changed. Repeated calls reuse a matching
+  package.
 - `batch-pass --request <json>` records model-produced Pass requests in task
   sequence. It schedules semantic work; it does not replace evidence judgment.
 - `batch-reduce --request <json>` writes ordinary draft runs after rejecting
