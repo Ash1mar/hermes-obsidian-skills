@@ -112,3 +112,35 @@ Zero-candidate work still records Pass 0, complete inspections and a substantive
 Reduce reason; it can Finalize with no page or identity. A committed page remains
 `business_status: unassessed` and `visibility: draft`; QA is independently
 `usable` or `qa_required`. P4 Vault Finalize will determine release projections.
+
+### Batch orchestration
+
+For more than one bounded task, prefer the additive batch commands. They retain
+the task, reading-package, Pass, build-run and page-revision contracts above; the
+batch ledger only records orchestration state under
+`_system/ledgers/knowledge-build-batches/<batch-id>.json`.
+
+- `batch-plan --request <json>` validates all UnitRefs and active-task overlaps
+  once before creating the ordinary task ledgers.
+- `batch-adopt --request <json>` attaches an existing plan after read-only task,
+  origin-hash and SourceUnit validation. It never rewrites an adopted artifact.
+- `batch-set-state --request <json>` preflights explicit actor/revision-pinned
+  blocked/failed/skipped transitions, including superseded active plans.
+- `batch-status` and `batch-resume` report the authoritative recovery point.
+- `batch-prepare` claims pending tasks and persists one bounded reading package
+  per task. Repeated calls reuse a matching package.
+- `batch-pass --request <json>` records model-produced Pass requests in task
+  sequence. It schedules semantic work; it does not replace evidence judgment.
+- `batch-reduce --request <json>` writes ordinary draft runs after rejecting
+  duplicate task ownership, output paths and stable identities across the batch.
+- `batch-validate` requires every non-blocked task to belong to exactly one
+  validated run before setting checkpoint 1.
+- `batch-finalize --request <json>` preflights all explicitly approved runs and
+  commits them serially under the existing global Finalize lock. Each legacy run
+  remains independently idempotent and recoverable.
+
+Use one model reading context per bounded task or small related group. Batch does
+not mean concatenating every reading package into one prompt. For cross-source
+knowledge, perform local candidate work first and provide globally reconciled
+identity/path decisions to `batch-reduce`. Never cross a human checkpoint merely
+because a batch command can continue.

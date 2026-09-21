@@ -240,6 +240,10 @@ revision, unit/section counts, token-audit status, diagnostics and
 validation result. An oversized protected structure is an explicit diagnostic requiring
 review, not permission to truncate it or claim every consumer can fit it.
 
+For multi-task knowledge construction, use the batch orchestration documented in
+`references/source-units.md` instead of generating ad-hoc shell/Python loops. Existing plans may
+be adopted read-only; keep each model reading window bounded and preserve both human checkpoints.
+
 Honor `manifest.quality.review_required`. Extract readable formulas, table rows and figure observations
 with explicit QA notes when deterministic/page verification is unavailable; write them as attributed
 draft knowledge. Only claim verified or authoritative rules after the required evidence check.

@@ -192,6 +192,29 @@ class FileSourceUnitService:
         if not isinstance(source_units, Mapping) or source_units != declaration(self.config):
             _fail("INVALID_SCHEMA", "Vault does not declare the current source-reader capability")
         self.engine = SharedChunkEngine(token_counter)
+        self._session_cache_enabled = False
+        self._unit_set_cache: dict[tuple[str, str], tuple[tuple[tuple[int, int], ...],
+                                                         tuple[dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]]] = {}
+        self._artifact_cache: dict[Path, tuple[tuple[tuple[Path, int, int], ...],
+                                                tuple[dict[str, Any], str, Any]]] = {}
+        self._governance_cache: dict[Path, tuple[tuple[int, int], dict[str, Any]]] = {}
+
+    def enable_session_cache(self) -> None:
+        """Cache verified immutable repositories for one bounded batch invocation.
+
+        Cache hits still compare file size and nanosecond modification time, so a
+        concurrent change invalidates the cached verification rather than being
+        silently accepted.  Ordinary one-shot reads keep the original behavior.
+        """
+        self._session_cache_enabled = True
+
+    @staticmethod
+    def _file_signature(path: Path) -> tuple[int, int]:
+        try:
+            stat = path.stat()
+        except OSError as exc:
+            _fail("SOURCE_UNAVAILABLE", f"cannot stat repository file {path}: {exc}")
+        return stat.st_size, stat.st_mtime_ns
 
     @property
     def vault_id(self) -> str:
@@ -285,6 +308,13 @@ class FileSourceUnitService:
         return path
 
     def _verify_artifact(self, path: Path, manifest: Mapping[str, Any] | None = None) -> tuple[dict[str, Any], str, Any]:
+        cached = self._artifact_cache.get(path) if self._session_cache_enabled else None
+        if cached is not None:
+            signatures, result = cached
+            if all(self._file_signature(item_path) == (size, modified)
+                   for item_path, size, modified in signatures):
+                if manifest is None or dict(manifest) == result[0]:
+                    return result
         value = dict(manifest or _load_json(path))
         validate_record("artifact", value)
         if value["identity"]["vault_id"] != self.vault_id:
@@ -309,7 +339,13 @@ class FileSourceUnitService:
         if fingerprint(_artifact_payload(value["source_sha256"], value["document_sha256"],
                                          value["outline_sha256"], value["assets"])) != value["artifact_revision"]:
             _fail("SOURCE_CHANGED", "artifact revision fingerprint mismatch")
-        return value, text, outline
+        result = (value, text, outline)
+        if self._session_cache_enabled:
+            paths = [path, document, outline_path,
+                     *[_child_path(root, asset["path"], self.vault) for asset in value["assets"]]]
+            signatures = tuple((item, *self._file_signature(item)) for item in paths)
+            self._artifact_cache[path] = (signatures, result)
+        return result
 
     def _generate(self, artifact_manifest: str, expected_revision: int) -> dict[str, Any]:
         artifact_path = self._artifact_path(artifact_manifest)
@@ -517,18 +553,26 @@ class FileSourceUnitService:
         if not re.fullmatch(r"[0-9a-f]{64}", selected):
             _fail("INVALID_SCHEMA", "invalid unit-set id")
         root = _vault_path(self.vault, f"{UNIT_ROOT}/{resource_id}/{selected}")
-        manifest = _load_json(root / "manifest.json")
+        files = (root / "manifest.json", root / "units.jsonl", root / "sections.json")
+        signatures = tuple(self._file_signature(path) for path in files)
+        cached = self._unit_set_cache.get((resource_id, selected)) if self._session_cache_enabled else None
+        if cached is not None and cached[0] == signatures:
+            manifest, units, sections = cached[1]
+        else:
+            manifest = _load_json(files[0])
+            sections = _load_json(files[2])
+            try:
+                units = [json.loads(line) for line in files[1].read_text(encoding="utf-8").splitlines() if line]
+            except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+                _fail("SOURCE_UNAVAILABLE", f"cannot read unit records: {exc}")
+            if self._session_cache_enabled:
+                self._unit_set_cache[(resource_id, selected)] = (signatures, (manifest, units, sections))
         if (manifest.get("unit_set_id") != selected
                 or manifest.get("identity", {}).get("resource_id") != resource_id):
             _fail("UNIT_SET_MISMATCH", "unit-set repository path and manifest identity disagree")
         if current and (current.get("artifact_revision") != manifest.get("artifact_revision")
                         or current.get("revision") != manifest.get("revision")):
             _fail("SOURCE_CHANGED", "current pointer and immutable unit-set manifest disagree")
-        sections = _load_json(root / "sections.json")
-        try:
-            units = [json.loads(line) for line in (root / "units.jsonl").read_text(encoding="utf-8").splitlines() if line]
-        except (OSError, UnicodeError, json.JSONDecodeError) as exc:
-            _fail("SOURCE_UNAVAILABLE", f"cannot read unit records: {exc}")
         return manifest, units, sections
 
     def validate(self, resource_id: str, unit_set_id: str | None = None) -> dict[str, Any]:
@@ -619,7 +663,15 @@ class FileSourceUnitService:
         if not isinstance(governance, Mapping):
             _fail("ACCESS_DENIED", "Vault has no governance repository")
         registry_path = str(governance.get("repository", {}).get("registry_path", ""))
-        registry = _load_json(_vault_path(self.vault, registry_path))
+        resolved_registry = _vault_path(self.vault, registry_path)
+        signature = self._file_signature(resolved_registry)
+        cached = self._governance_cache.get(resolved_registry) if self._session_cache_enabled else None
+        if cached is not None and cached[0] == signature:
+            registry = cached[1]
+        else:
+            registry = _load_json(resolved_registry)
+            if self._session_cache_enabled:
+                self._governance_cache[resolved_registry] = (signature, registry)
         revision = registry.get("registry_revision")
         if type(revision) is not int:
             _fail("INVALID_SCHEMA", "document registry revision is invalid")
@@ -695,6 +747,53 @@ class FileSourceUnitService:
                 "quality_refs": unit["quality_refs"], "registry_revision": registry_revision,
                 "section_id": unit["section_id"], "heading_path": unit["heading_path"],
                 "locator": locator}
+
+    def resolve_many(self, refs: list[Mapping[str, Any]], access: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Validate many SourceRefs while loading each immutable UnitSet once.
+
+        This is the construction-side equivalent of repeated ``get`` calls when
+        callers only need validated Unit records, not materialized text.  It
+        preserves governance, artifact and span checks without turning a large
+        batch plan into one full UnitSet read per reference.
+        """
+        if (not isinstance(access, Mapping)
+                or not isinstance(access.get("actor"), str) or not access["actor"].strip()
+                or access.get("purpose") not in ("construction", "query", "qa")
+                or type(access.get("registry_revision")) is not int):
+            _fail("INVALID_SCHEMA", "a complete source-read access context is required")
+        groups: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
+        for source_ref in refs:
+            unit_ref = source_ref["unit_ref"]
+            if unit_ref.get("vault_id") != self.vault_id:
+                _fail("ACCESS_DENIED", "unit reference belongs to a different Vault")
+            groups.setdefault((str(unit_ref["resource_id"]), str(unit_ref["unit_set_id"])), []).append(source_ref)
+
+        resolved: list[dict[str, Any]] = []
+        for (resource_id, unit_set_id), source_refs in groups.items():
+            self.validate(resource_id, unit_set_id)
+            manifest, units, _ = self._load_set(resource_id, unit_set_id)
+            validate_references("unit_set", manifest, units)
+            artifact_path = _vault_path(
+                self.vault, f"{ARTIFACT_ROOT}/{resource_id}/{manifest['artifact_revision']}/manifest.json")
+            artifact, _, _ = self._verify_artifact(artifact_path)
+            self._verify_governance(artifact, access)
+            by_ref = {canonical_json(unit["ref"]): unit for unit in units}
+            for source_ref in source_refs:
+                unit = by_ref.get(canonical_json(source_ref["unit_ref"]))
+                if unit is None:
+                    _fail("UNRESOLVED_REFERENCE", "exact full unit_ref is not present")
+                locator = unit["locator"]
+                selected = source_ref.get("span")
+                if locator["kind"] == "asset":
+                    if selected is not None:
+                        _fail("INVALID_RANGE", "whole-asset reference cannot have a text span")
+                elif selected is not None:
+                    core = locator["span"]
+                    if (selected["start"] < core["start"] or selected["end"] > core["end"]
+                            or selected["start"] >= selected["end"]):
+                        _fail("OUTSIDE_UNIT", "requested span exceeds source unit core")
+            resolved.extend(units)
+        return resolved
 
     def context(self, request: Mapping[str, Any]) -> dict[str, Any]:
         core_refs = list(request["core_refs"])

@@ -39,3 +39,5 @@ controlled-ingest 继续负责来源准备、Unit 发布、阅读任务、候选
 2026-09-16 实现补充：P3 使用 `FileKnowledgeBuildService` 和文件式 repository，发布持久化 reading package、连续 Pass 记录、identity registry、page revision sidecar 与 build run。Build Finalize 在写入前完成 review、parent hash、UnitRef、task revision 和 identity/path 冲突检查，run manifest 最后写入以支持幂等恢复。页面提交、QA、业务资格和可见性分别记录；P3 不发布 Vault release。
 
 2026-09-16 P4 实现补充：`FileVaultFinalizeService` 与独立 `hermes-obsidian-knowledge-finalize` Skill 提供 plan/apply/validate/status。计划钉住 build、identity registry、UnitSet current pointer、页面与 source changes；贡献分为 active/stale/withdrawn，页面分为 current/review_required/blocked。页面移动只在旧内容可验证时生成 redirect；导航投影验证死链、歧义、反向链接与目录。Apply 重算计划并最后写 release manifest，不调用 Provider，也不把 unassessed/draft 页面提升为可索引。
+
+2026-09-20 批次执行补充：P3 增加附加式 `hermes-knowledge-build-batch/v1` 调度账本和 batch plan/adopt/prepare/pass/reduce/validate/finalize 命令。UnitSet、artifact 与治理读取在单次批次命令内按文件签名缓存；计划只扫描一次活动/已完成任务索引。批次不替换原 task/reading/Pass/run/page 契约：模型仍在有界 reading package 上判断，Reduce 全批协调 identity/path，Build Finalize 在共享锁内逐 run 幂等提交。旧计划通过只读 adopt 接入，因此无需迁移或重写既有产物。

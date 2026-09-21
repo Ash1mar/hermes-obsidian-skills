@@ -1518,6 +1518,45 @@
       "required": ["contract", "run_id", "revision", "state", "actor", "identity_registry_revision", "tasks", "decisions", "page_revisions", "reviews", "reason"],
       "additionalProperties": false
     },
+    "knowledge_batch_origin": {
+      "type": "object",
+      "properties": {
+        "kind": {"enum": ["generated", "adopted"]},
+        "path": {"anyOf": [{"type": "string", "minLength": 1, "format": "vault-relative-path"}, {"type": "null"}]},
+        "sha256": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]}
+      },
+      "required": ["kind", "path", "sha256"],
+      "additionalProperties": false
+    },
+    "knowledge_batch_failure": {
+      "type": "object",
+      "properties": {
+        "stage": {"enum": ["prepare", "pass", "reduce", "validate", "finalize"]},
+        "item_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "code": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "message": {"type": "string", "minLength": 1, "pattern": "\\S"}
+      },
+      "required": ["stage", "item_id", "code", "message"],
+      "additionalProperties": false
+    },
+    "knowledge_batch": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-build-batch/v1"},
+        "batch_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "revision": {"type": "integer", "minimum": 1},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "document_registry_revision": {"type": "integer", "minimum": 0},
+        "origin": {"$ref": "#/$defs/knowledge_batch_origin"},
+        "task_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 1, "uniqueItems": true},
+        "run_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 0, "uniqueItems": true},
+        "state": {"enum": ["planned", "analyzing", "checkpoint_1", "finalizing", "completed", "blocked"]},
+        "last_operation": {"enum": ["plan", "adopt", "prepare", "pass", "reduce", "validate", "finalize"]},
+        "failures": {"type": "array", "items": {"$ref": "#/$defs/knowledge_batch_failure"}, "minItems": 0}
+      },
+      "required": ["contract", "batch_id", "revision", "actor", "document_registry_revision", "origin", "task_ids", "run_ids", "state", "last_operation", "failures"],
+      "additionalProperties": false
+    },
     "source_change": {
       "type": "object",
       "properties": {
