@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 from pathlib import Path
+import re
 from typing import Any, Iterable, Mapping
 
 from .source_units import (FileSourceUnitService, _json_bytes, _load_json,
@@ -11,9 +12,11 @@ from .validation import (ContractError, canonical_json, fingerprint,
                          validate_record, validate_references)
 
 WORK_ROOT = "_system/ledgers/unit-work"
+BATCH_ROOT = "_system/ledgers/knowledge-build-batches"
 BUILD_ROOT = "_system/knowledge-builds"
 IDENTITY_PATH = "_system/metadata/knowledge-identities.json"
 KNOWLEDGE_CONTRACT = "hermes-knowledge-build-run/v1"
+_BATCH_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 
 
 def _fail(code: str, message: str, path: str = "$") -> None:
@@ -71,6 +74,16 @@ class FileKnowledgeBuildService:
     def _run_path(self, run_id: str) -> Path:
         return _vault_path(self.vault, f"{BUILD_ROOT}/{run_id}/manifest.json")
 
+    def _batch_path(self, batch_id: str) -> Path:
+        if not _BATCH_ID.fullmatch(batch_id):
+            _fail("INVALID_SCHEMA", "invalid knowledge-build batch id", "$.batch_id")
+        return _vault_path(self.vault, f"{BATCH_ROOT}/{batch_id}.json")
+
+    def _batch_lock_path(self, batch_id: str) -> Path:
+        if not _BATCH_ID.fullmatch(batch_id):
+            _fail("INVALID_SCHEMA", "invalid knowledge-build batch id", "$.batch_id")
+        return _vault_path(self.vault, f"{BATCH_ROOT}/.locks/{batch_id}.lock")
+
     def _task(self, task_id: str) -> dict[str, Any]:
         value = _load_json(self._task_path(task_id))
         validate_record("work", value)
@@ -81,20 +94,52 @@ class FileKnowledgeBuildService:
         validate_record("identity_registry", value)
         return value
 
+    def _batch(self, batch_id: str) -> dict[str, Any]:
+        value = _load_json(self._batch_path(batch_id))
+        validate_record("knowledge_batch", value)
+        return value
+
+    def _store_batch(self, batch: Mapping[str, Any], *, state: str | None = None,
+                     operation: str | None = None, run_ids: Iterable[str] | None = None,
+                     failures: Iterable[Mapping[str, Any]] | None = None) -> dict[str, Any]:
+        updated = copy.deepcopy(dict(batch))
+        updated["revision"] = int(updated["revision"]) + 1
+        if state is not None:
+            updated["state"] = state
+        if operation is not None:
+            updated["last_operation"] = operation
+        if run_ids is not None:
+            updated["run_ids"] = list(dict.fromkeys(str(item) for item in run_ids))
+        if failures is not None:
+            updated["failures"] = [dict(item) for item in failures]
+        validate_record("knowledge_batch", updated)
+        _write_atomic(self._batch_path(str(updated["batch_id"])), _json_bytes(updated))
+        return updated
+
     def _live_units(self, refs: Iterable[Mapping[str, Any]], actor: str,
                     registry_revision: int) -> list[dict[str, Any]]:
         refs = list(refs)
-        groups: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
-        for ref in refs:
-            unit = ref["unit_ref"]
-            groups.setdefault((unit["resource_id"], unit["unit_set_id"]), []).append(ref)
-            self.source.get({"source_ref": ref, "access": {"actor": actor,
-                            "purpose": "construction", "registry_revision": registry_revision}})
-        units: list[dict[str, Any]] = []
-        for resource_id, unit_set_id in groups:
-            self.source.validate(resource_id, unit_set_id)
-            units.extend(self.source.list(resource_id, unit_set_id))
-        return units
+        if not refs:
+            return []
+        return self.source.resolve_many(refs, {"actor": actor, "purpose": "construction",
+                                               "registry_revision": registry_revision})
+
+    @staticmethod
+    def _ref_key(source_ref: Mapping[str, Any]) -> bytes:
+        return canonical_json(source_ref["unit_ref"])
+
+    def _task_ref_index(self, statuses: set[str], excluded: set[str] | None = None) -> dict[bytes, set[str]]:
+        excluded = excluded or set()
+        index: dict[bytes, set[str]] = {}
+        root = _vault_path(self.vault, WORK_ROOT)
+        for path in sorted(root.glob("*.json")) if root.exists() else []:
+            task = _load_json(path)
+            task_id = task.get("task_id")
+            if task_id in excluded or task.get("status") not in statuses:
+                continue
+            for ref in task.get("target_refs", []):
+                index.setdefault(self._ref_key(ref), set()).add(str(task_id))
+        return index
 
     def plan_task(self, request: Mapping[str, Any]) -> dict[str, Any]:
         task_id, actor = str(request["task_id"]), str(request["actor"])
@@ -126,6 +171,251 @@ class FileKnowledgeBuildService:
         _write_atomic(path, _json_bytes(task))
         return {"ok": True, "created": True, "task": task,
                 "overlapping_tasks": sorted(item for item in overlaps if isinstance(item, str))}
+
+    def _batch_origin(self, request: Mapping[str, Any], default_kind: str) -> dict[str, Any]:
+        raw = request.get("origin", {})
+        if not isinstance(raw, Mapping):
+            _fail("INVALID_SCHEMA", "batch origin must be an object", "$.origin")
+        origin = {"kind": str(raw.get("kind", default_kind)),
+                  "path": raw.get("path"), "sha256": raw.get("sha256")}
+        if origin["path"] is not None:
+            path = _vault_path(self.vault, str(origin["path"]))
+            if not path.is_file():
+                _fail("SOURCE_UNAVAILABLE", "batch origin file does not exist", "$.origin.path")
+            observed = _sha(path.read_bytes())
+            if origin["sha256"] is not None and origin["sha256"] != observed:
+                _fail("SOURCE_CHANGED", "batch origin hash changed", "$.origin.sha256")
+            origin["sha256"] = observed
+        elif origin["sha256"] is not None:
+            _fail("INVALID_SCHEMA", "batch origin hash requires a path", "$.origin.sha256")
+        return origin
+
+    def _new_batch(self, batch_id: str, actor: str, registry_revision: int,
+                   task_ids: list[str], origin: Mapping[str, Any]) -> dict[str, Any]:
+        batch = {"contract": "hermes-knowledge-build-batch/v1", "batch_id": batch_id,
+                 "revision": 1, "actor": actor,
+                 "document_registry_revision": registry_revision,
+                 "origin": dict(origin), "task_ids": task_ids, "run_ids": [],
+                 "state": "planned", "last_operation": "plan", "failures": []}
+        validate_record("knowledge_batch", batch)
+        return batch
+
+    def plan_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Create a complete task batch with one SourceUnit and overlap preflight."""
+        self.source.enable_session_cache()
+        batch_id, actor = str(request["batch_id"]), str(request["actor"])
+        registry_revision = int(request["registry_revision"])
+        task_requests = list(request["tasks"])
+        if not task_requests:
+            _fail("INVALID_SCHEMA", "batch plan requires at least one task", "$.tasks")
+        task_ids = [str(item["task_id"]) for item in task_requests]
+        if len(set(task_ids)) != len(task_ids):
+            _fail("DUPLICATE", "batch contains duplicate task ids", "$.tasks")
+        all_refs: list[Mapping[str, Any]] = []
+        ref_owners: dict[bytes, str] = {}
+        for item in task_requests:
+            refs = list(item["target_refs"])
+            if not refs:
+                _fail("INVALID_SCHEMA", "batch task target_refs cannot be empty", "$.tasks")
+            for ref in refs:
+                key = self._ref_key(ref)
+                if key in ref_owners:
+                    _fail("DUPLICATE", f"UnitRef is assigned to both {ref_owners[key]} and {item['task_id']}",
+                          "$.tasks")
+                ref_owners[key] = str(item["task_id"])
+            all_refs.extend(refs)
+        origin = self._batch_origin(request, "generated")
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch_path = self._batch_path(batch_id)
+            if batch_path.exists():
+                existing_batch = self._batch(batch_id)
+                if (existing_batch["actor"] != actor or existing_batch["task_ids"] != task_ids
+                        or existing_batch["document_registry_revision"] != registry_revision):
+                    _fail("DUPLICATE", "batch_id already identifies a different task set", "$.batch_id")
+                return {"ok": True, "created": False, "batch": existing_batch,
+                        "created_tasks": 0, "existing_tasks": len(task_ids)}
+            units = self._live_units(all_refs, actor, registry_revision)
+            active = self._task_ref_index({"pending", "running"}, set(task_ids))
+            completed = self._task_ref_index({"completed"}, set(task_ids))
+            active_conflicts = sorted({task_id for key in ref_owners for task_id in active.get(key, set())})
+            completed_conflicts = sorted({task_id for key in ref_owners for task_id in completed.get(key, set())})
+            if active_conflicts:
+                _fail("DUPLICATE", "batch overlaps active tasks: " + ", ".join(active_conflicts), "$.tasks")
+            if completed_conflicts:
+                _fail("DUPLICATE", "batch overlaps completed tasks: " + ", ".join(completed_conflicts), "$.tasks")
+            prepared: list[tuple[Path, dict[str, Any], bool]] = []
+            for raw in task_requests:
+                task_id, refs = str(raw["task_id"]), list(raw["target_refs"])
+                if int(raw.get("expected_revision", 0)) != 0:
+                    _fail("REVISION_CONFLICT", "new batch task requires expected_revision 0", "$.tasks")
+                path = self._task_path(task_id)
+                task = {"contract": "hermes-unit-work-ledger/v1", "task_id": task_id,
+                        "task_type": "knowledge_build", "task_contract": KNOWLEDGE_CONTRACT,
+                        "revision": 1, "attempt": 1, "actor": actor, "status": "pending",
+                        "target_refs": refs, "inspections": [], "deferred": [],
+                        "outputs": [], "reason": ""}
+                validate_references("work", task, units)
+                if path.exists():
+                    existing = self._task(task_id)
+                    if existing != task:
+                        _fail("DUPLICATE", "task_id already identifies different work", "$.tasks")
+                    prepared.append((path, existing, False))
+                else:
+                    prepared.append((path, task, True))
+            batch = self._new_batch(batch_id, actor, registry_revision, task_ids, origin)
+            for path, task, created in prepared:
+                if created:
+                    _write_atomic(path, _json_bytes(task))
+            _write_atomic(batch_path, _json_bytes(batch))
+            return {"ok": True, "created": True, "batch": batch,
+                    "created_tasks": sum(created for _, _, created in prepared),
+                    "existing_tasks": sum(not created for _, _, created in prepared)}
+
+    def adopt_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Attach an existing immutable task plan without rewriting its artifacts."""
+        self.source.enable_session_cache()
+        batch_id, actor = str(request["batch_id"]), str(request["actor"])
+        registry_revision = int(request["registry_revision"])
+        task_ids = [str(item) for item in request["task_ids"]]
+        if not task_ids or len(set(task_ids)) != len(task_ids):
+            _fail("INVALID_SCHEMA", "adopt requires unique task ids", "$.task_ids")
+        origin = self._batch_origin(request, "adopted")
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            tasks = [self._task(task_id) for task_id in task_ids]
+            if any(task["task_type"] != "knowledge_build" for task in tasks):
+                _fail("TASK_CONTRACT_MISMATCH", "batch can adopt only knowledge-build tasks")
+            if any(task["actor"] != actor for task in tasks):
+                _fail("ACCESS_DENIED", "adopt actor must match every task actor")
+            all_refs = [ref for task in tasks for ref in task["target_refs"]]
+            keys = [self._ref_key(ref) for ref in all_refs]
+            if len(set(keys)) != len(keys):
+                _fail("DUPLICATE", "adopted tasks contain duplicate core UnitRefs", "$.task_ids")
+            active = self._task_ref_index({"pending", "running"}, set(task_ids))
+            completed = self._task_ref_index({"completed"}, set(task_ids))
+            external = sorted({task_id for key in keys for task_id in active.get(key, set())
+                               | completed.get(key, set())})
+            if external:
+                _fail("DUPLICATE", "adopted tasks overlap external active/completed tasks: "
+                      + ", ".join(external), "$.task_ids")
+            self._live_units(all_refs, actor, registry_revision)
+            path = self._batch_path(batch_id)
+            batch = self._new_batch(batch_id, actor, registry_revision, task_ids, origin)
+            batch["last_operation"] = "adopt"
+            if path.exists():
+                existing = self._batch(batch_id)
+                if existing["actor"] != actor or existing["task_ids"] != task_ids:
+                    _fail("DUPLICATE", "batch_id already identifies a different task set", "$.batch_id")
+                return {"ok": True, "created": False, "batch": existing}
+            _write_atomic(path, _json_bytes(batch))
+            return {"ok": True, "created": True, "batch": batch}
+
+    @staticmethod
+    def _failure(stage: str, item_id: str, exc: Exception) -> dict[str, str]:
+        return {"stage": stage, "item_id": item_id,
+                "code": exc.code if isinstance(exc, ContractError) else type(exc).__name__,
+                "message": str(exc)}
+
+    def batch_status(self, batch_id: str) -> dict[str, Any]:
+        batch = self._batch(batch_id)
+        tasks = [self._task(task_id) for task_id in batch["task_ids"]]
+        task_counts: dict[str, int] = {}
+        task_details = []
+        for task in tasks:
+            task_counts[task["status"]] = task_counts.get(task["status"], 0) + 1
+            task_root = _vault_path(self.vault, f"{BUILD_ROOT}/task-{task['task_id']}")
+            readings = sorted((task_root / "readings").glob("*.json")) if (task_root / "readings").exists() else []
+            passes = sorted((task_root / "passes").glob("*.json")) if (task_root / "passes").exists() else []
+            task_details.append({"task_id": task["task_id"], "revision": task["revision"],
+                                 "status": task["status"], "reading_packages": len(readings),
+                                 "passes": len(passes)})
+        run_details = []
+        covered: dict[str, list[str]] = {}
+        for run_id in batch["run_ids"]:
+            path = self._run_path(run_id)
+            if not path.is_file():
+                run_details.append({"run_id": run_id, "state": "missing", "revision": None})
+                continue
+            run = _load_json(path)
+            validate_record("build_run", run)
+            run_details.append({"run_id": run_id, "state": run["state"], "revision": run["revision"]})
+            for snapshot in run["tasks"]:
+                covered.setdefault(snapshot["task_id"], []).append(run_id)
+        duplicate_task_runs = sorted(task_id for task_id, values in covered.items() if len(values) > 1)
+        uncovered = sorted(task["task_id"] for task in tasks
+                           if task["status"] not in ("blocked", "failed", "skipped")
+                           and task["task_id"] not in covered)
+        next_actions = []
+        if any(item["status"] == "pending" or (item["status"] == "running" and not item["reading_packages"])
+               for item in task_details):
+            next_actions.append("batch-prepare")
+        if any(item["status"] == "running" and item["reading_packages"] and not item["passes"]
+               for item in task_details):
+            next_actions.append("batch-pass")
+        if any(item["status"] == "running" and item["passes"] and item["task_id"] in uncovered
+               for item in task_details):
+            next_actions.append("batch-reduce")
+        if batch["run_ids"]:
+            next_actions.append("batch-validate")
+        if any(item["state"] == "draft" for item in run_details):
+            next_actions.append("human-checkpoint-1-then-batch-finalize")
+        if run_details and all(item["state"] == "completed" for item in run_details):
+            next_actions.append("vault-finalize-plan")
+        return {"ok": True, "batch": batch, "task_counts": task_counts,
+                "tasks": task_details, "runs": run_details,
+                "uncovered_task_ids": uncovered,
+                "duplicate_task_run_ids": duplicate_task_runs,
+                "next_actions": list(dict.fromkeys(next_actions))}
+
+    def resume_batch(self, batch_id: str) -> dict[str, Any]:
+        """Return the authoritative recovery point; stage commands are idempotent."""
+        return self.batch_status(batch_id)
+
+    def _existing_reading_package(self, task: Mapping[str, Any], actor: str,
+                                  registry_revision: int) -> dict[str, Any] | None:
+        root = _vault_path(self.vault, f"{BUILD_ROOT}/task-{task['task_id']}/readings")
+        for path in reversed(sorted(root.glob("*.json"))) if root.exists() else []:
+            package = _load_json(path)
+            validate_record("reading_package", package)
+            if (package["task_id"] == task["task_id"] and package["actor"] == actor
+                    and package["document_registry_revision"] == registry_revision
+                    and package["window"]["core_refs"] == task["target_refs"]):
+                return package
+        return None
+
+    def prepare_batch(self, batch_id: str, actor: str, registry_revision: int,
+                      max_codepoints: int | None = None) -> dict[str, Any]:
+        """Claim ready tasks and persist bounded reading packages in one invocation."""
+        self.source.enable_session_cache()
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            if batch["actor"] != actor:
+                _fail("ACCESS_DENIED", "batch prepare actor does not own the batch")
+            if batch["document_registry_revision"] != registry_revision:
+                _fail("REVISION_CONFLICT", "batch prepare must use the pinned document registry revision")
+            results, failures = [], []
+            for task_id in batch["task_ids"]:
+                task = self._task(task_id)
+                if task["status"] in ("blocked", "failed", "skipped", "completed"):
+                    results.append({"task_id": task_id, "status": task["status"], "prepared": False})
+                    continue
+                try:
+                    if task["status"] == "pending":
+                        task = self.claim_task(task_id, actor, task["revision"])["task"]
+                    elif task["status"] != "running" or task["actor"] != actor:
+                        _fail("ACCESS_DENIED", "batch task is not claimable by the batch actor")
+                    package = self._existing_reading_package(task, actor, registry_revision)
+                    created = package is None
+                    if package is None:
+                        package = self.reading_material(
+                            task_id, actor, registry_revision, max_codepoints)["package"]
+                    results.append({"task_id": task_id, "status": "running", "prepared": True,
+                                    "created": created, "reading_package_id": package["package_id"],
+                                    "total_codepoints": package["total_codepoints"]})
+                except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
+                    failures.append(self._failure("prepare", task_id, exc))
+                    results.append({"task_id": task_id, "status": "error", "prepared": False})
+            updated = self._store_batch(batch, state="analyzing", operation="prepare", failures=failures)
+            return {"ok": not failures, "batch": updated, "results": results, "failures": failures}
 
     def claim_task(self, task_id: str, actor: str, expected_revision: int) -> dict[str, Any]:
         task = self._task(task_id)
@@ -168,6 +458,30 @@ class FileKnowledgeBuildService:
         validate_references("work", task, units)
         _write_atomic(self._task_path(task_id), _json_bytes(task))
         return {"ok": True, "task": task}
+
+    def set_task_state_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Apply explicit terminal/blocked transitions without ad-hoc task loops."""
+        operation_id = str(request["operation_id"])
+        actor = str(request["actor"])
+        transitions = list(request["transitions"])
+        task_ids = [str(item["task_id"]) for item in transitions]
+        if not transitions or len(set(task_ids)) != len(task_ids):
+            _fail("INVALID_SCHEMA", "batch state update requires unique tasks", "$.transitions")
+        with _exclusive_lock(self._batch_lock_path(operation_id)):
+            for item in transitions:
+                task = self._task(str(item["task_id"]))
+                if task["actor"] != actor or task["revision"] != int(item["expected_revision"]):
+                    _fail("REVISION_CONFLICT", "batch state preflight found actor/revision drift",
+                          "$.transitions")
+            results = []
+            for item in transitions:
+                result = self.set_task_state(
+                    str(item["task_id"]), actor, int(item["expected_revision"]),
+                    str(item["status"]), str(item["reason"]), item.get("deferred", []))
+                results.append({"task_id": result["task"]["task_id"],
+                                "status": result["task"]["status"],
+                                "revision": result["task"]["revision"]})
+            return {"ok": True, "operation_id": operation_id, "results": results}
 
     def reading_material(self, task_id: str, actor: str, registry_revision: int,
                          max_codepoints: int | None = None) -> dict[str, Any]:
@@ -281,6 +595,31 @@ class FileKnowledgeBuildService:
         _write_atomic(self._task_path(task_id), _json_bytes(task))
         return {"ok": True, "created": True, "pass": body, "task": task,
                 "path": path.relative_to(self.vault).as_posix()}
+
+    def record_pass_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Persist model-produced Pass records for a batch with per-task recovery."""
+        self.source.enable_session_cache()
+        batch_id = str(request["batch_id"])
+        pass_requests = list(request["passes"])
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            allowed = set(batch["task_ids"])
+            for item in pass_requests:
+                if str(item.get("task_id", "")) not in allowed:
+                    _fail("ACCESS_DENIED", "pass request is outside the batch", "$.passes")
+            results, failures = [], []
+            for item in pass_requests:
+                task_id = str(item["task_id"])
+                try:
+                    recorded = self.record_pass(item)
+                    results.append({"task_id": task_id, "created": recorded["created"],
+                                    "pass_id": recorded["pass"]["pass_id"],
+                                    "sequence": recorded["pass"]["sequence"],
+                                    "task_revision": recorded["task"]["revision"]})
+                except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
+                    failures.append(self._failure("pass", task_id, exc))
+            updated = self._store_batch(batch, state="analyzing", operation="pass", failures=failures)
+            return {"ok": not failures, "batch": updated, "results": results, "failures": failures}
 
     def _pass_index(self, task_ids: Iterable[str]) -> tuple[
             dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]],
@@ -441,6 +780,56 @@ class FileKnowledgeBuildService:
             _write_atomic(draft, content.encode("utf-8"))
         _write_atomic(path, _json_bytes(record))
         return {"ok": True, "created": True, "run": record}
+
+    def reduce_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Create non-conflicting draft runs while retaining legacy run artifacts."""
+        self.source.enable_session_cache()
+        batch_id = str(request["batch_id"])
+        reduce_requests = list(request["runs"])
+        run_ids = [str(item["run_id"]) for item in reduce_requests]
+        if len(set(run_ids)) != len(run_ids):
+            _fail("DUPLICATE", "batch reduce contains duplicate run ids", "$.runs")
+        used_tasks: dict[str, str] = {}
+        used_paths: dict[str, str] = {}
+        used_identities: dict[tuple[str, str], str] = {}
+        for item in reduce_requests:
+            run_id = str(item["run_id"])
+            for snapshot in item["tasks"]:
+                task_id = str(snapshot["task_id"])
+                if task_id in used_tasks:
+                    _fail("DUPLICATE", f"task {task_id} is assigned to runs {used_tasks[task_id]} and {run_id}",
+                          "$.runs")
+                used_tasks[task_id] = run_id
+            for decision in item["decisions"]:
+                path = str(decision["path"])
+                identity = decision["identity"]
+                key = (str(identity["kind"]), str(identity["identity_key"]))
+                if path in used_paths:
+                    _fail("DUPLICATE", f"path {path} is proposed by multiple runs", "$.runs")
+                if key in used_identities:
+                    _fail("DUPLICATE", "one stable identity is proposed by multiple runs; merge it before Reduce",
+                          "$.runs")
+                used_paths[path], used_identities[key] = run_id, run_id
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            allowed = set(batch["task_ids"])
+            if not set(used_tasks).issubset(allowed):
+                _fail("ACCESS_DENIED", "Reduce request contains tasks outside the batch", "$.runs")
+            results, failures = [], []
+            successful = list(batch["run_ids"])
+            for item in reduce_requests:
+                run_id = str(item["run_id"])
+                try:
+                    reduced = self.reduce(item)
+                    successful.append(run_id)
+                    results.append({"run_id": run_id, "created": reduced["created"],
+                                    "revision": reduced["run"]["revision"],
+                                    "page_count": len(reduced["run"]["page_revisions"])})
+                except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
+                    failures.append(self._failure("reduce", run_id, exc))
+            updated = self._store_batch(batch, state="analyzing", operation="reduce",
+                                        run_ids=successful, failures=failures)
+            return {"ok": not failures, "batch": updated, "results": results, "failures": failures}
 
     def finalize(self, request: Mapping[str, Any]) -> dict[str, Any]:
         lock = _vault_path(self.vault, f"{BUILD_ROOT}/.finalize.lock")
@@ -608,6 +997,119 @@ class FileKnowledgeBuildService:
                         _fail("SOURCE_CHANGED", "current committed knowledge page changed")
         return {"ok": True, "run_id": run_id, "state": run["state"],
                 "revision": run["revision"], "page_count": len(run["page_revisions"])}
+
+    def validate_batch(self, batch_id: str) -> dict[str, Any]:
+        """Validate draft/completed runs and enforce batch task coverage."""
+        self.source.enable_session_cache()
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            results, failures = [], []
+            covered: dict[str, list[str]] = {}
+            for run_id in batch["run_ids"]:
+                try:
+                    result = self.validate_run(run_id)
+                    run = _load_json(self._run_path(run_id))
+                    snapshot_ids = []
+                    for snapshot in run["tasks"]:
+                        task = self._task(snapshot["task_id"])
+                        if run["state"] == "draft":
+                            if (task["revision"] != snapshot["revision"] or task["status"] != "running"
+                                    or task["actor"] != run["actor"]):
+                                _fail("REVISION_CONFLICT", "draft run task changed after Reduce")
+                        elif not (task["status"] == "completed"
+                                  and task["revision"] == snapshot["revision"] + 1
+                                  and task["reason"] == f"completed by build {run_id}"):
+                            _fail("REVISION_CONFLICT", "completed run task state no longer matches its snapshot")
+                        snapshot_ids.append(snapshot["task_id"])
+                    for task_id in snapshot_ids:
+                        covered.setdefault(task_id, []).append(run_id)
+                    results.append(result)
+                except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
+                    failures.append(self._failure("validate", run_id, exc))
+            duplicate = sorted(task_id for task_id, values in covered.items() if len(values) > 1)
+            tasks = [self._task(task_id) for task_id in batch["task_ids"]]
+            outside = sorted(task_id for task_id in covered if task_id not in set(batch["task_ids"]))
+            uncovered = sorted(task["task_id"] for task in tasks
+                               if task["status"] not in ("blocked", "failed", "skipped")
+                               and task["task_id"] not in covered)
+            ready = not failures and not duplicate and not outside and not uncovered
+            state = "checkpoint_1" if ready else "analyzing"
+            updated = self._store_batch(batch, state=state, operation="validate", failures=failures)
+            return {"ok": ready, "batch": updated, "runs": results, "failures": failures,
+                    "uncovered_task_ids": uncovered, "duplicate_task_run_ids": duplicate,
+                    "outside_batch_task_ids": outside,
+                    "terminal_exceptions": sorted(task["task_id"] for task in tasks
+                                                  if task["status"] in ("blocked", "failed", "skipped"))}
+
+    def finalize_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Finalize approved runs under one lock, committing each legacy run idempotently."""
+        self.source.enable_session_cache()
+        batch_id, actor = str(request["batch_id"]), str(request["actor"])
+        finalizations = list(request["finalizations"])
+        run_ids = [str(item["run_id"]) for item in finalizations]
+        if len(set(run_ids)) != len(run_ids):
+            _fail("DUPLICATE", "batch finalize contains duplicate run ids", "$.finalizations")
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            if batch["actor"] != actor:
+                _fail("ACCESS_DENIED", "batch finalize actor does not own the batch")
+            if not set(run_ids).issubset(set(batch["run_ids"])):
+                _fail("ACCESS_DENIED", "batch finalize contains a run outside the batch")
+
+            used_subjects: dict[str, str] = {}
+            used_paths: dict[str, str] = {}
+            for item in finalizations:
+                run_id = str(item["run_id"])
+                run = _load_json(self._run_path(run_id))
+                validate_record("build_run", run)
+                if run["state"] == "completed":
+                    continue
+                if run["actor"] != actor or run["revision"] != int(item["expected_revision"]):
+                    _fail("REVISION_CONFLICT", "approved run actor or revision changed", "$.finalizations")
+                reviews = list(item["reviews"])
+                by_page = {review["page_id"]: review for review in reviews}
+                pages = {page["page_id"]: page for page in run["page_revisions"]}
+                if len(by_page) != len(reviews) or set(by_page) != set(pages):
+                    _fail("REVIEW_REQUIRED", "every approved page needs exactly one review", "$.finalizations")
+                for page_id, page in pages.items():
+                    review = by_page[page_id]
+                    if review["authored_sha256"] != page["authored_sha256"]:
+                        _fail("SOURCE_CHANGED", "approved draft hash changed", "$.finalizations")
+                    if page["subject_id"] in used_subjects:
+                        _fail("DUPLICATE", "one subject is finalized by multiple runs in the batch",
+                              "$.finalizations")
+                    if page["path"] in used_paths:
+                        _fail("DUPLICATE", "one output path is finalized by multiple runs in the batch",
+                              "$.finalizations")
+                    used_subjects[page["subject_id"]] = run_id
+                    used_paths[page["path"]] = run_id
+
+            results, failures = [], []
+            finalize_lock = _vault_path(self.vault, f"{BUILD_ROOT}/.finalize.lock")
+            with _exclusive_lock(finalize_lock):
+                for item in finalizations:
+                    run_id = str(item["run_id"])
+                    try:
+                        finalized = self._finalize_locked(item)
+                        results.append({"run_id": run_id, "committed": finalized["committed"],
+                                        "revision": finalized["run"]["revision"],
+                                        "page_count": len(finalized["run"]["page_revisions"])})
+                    except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
+                        failures.append(self._failure("finalize", run_id, exc))
+                        break
+            run_states = []
+            for run_id in batch["run_ids"]:
+                path = self._run_path(run_id)
+                run_states.append(_load_json(path).get("state") if path.is_file() else "missing")
+            all_runs_completed = bool(run_states) and all(state == "completed" for state in run_states)
+            task_states = [self._task(task_id)["status"] for task_id in batch["task_ids"]]
+            completed = all_runs_completed and all(state in ("completed", "skipped") for state in task_states)
+            blocked = bool(failures) or any(state in ("blocked", "failed") for state in task_states)
+            state = "completed" if completed else ("blocked" if blocked else "finalizing")
+            updated = self._store_batch(batch, state=state, operation="finalize", failures=failures)
+            return {"ok": not failures, "batch": updated, "results": results,
+                    "failures": failures, "all_runs_completed": all_runs_completed,
+                    "batch_completed": completed}
 
     def list_identities(self) -> dict[str, Any]:
         """Return exact identities for semantic comparison; never fuzzy-merge names."""

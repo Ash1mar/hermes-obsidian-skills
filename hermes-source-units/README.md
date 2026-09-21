@@ -48,6 +48,13 @@ python3 "<ingest-skill-root>/scripts/manage_knowledge_build.py" --vault "/path/t
 python3 "<ingest-skill-root>/scripts/manage_knowledge_build.py" --vault "/path/to/vault" finalize --request finalize.json
 ```
 
+多任务路径使用附加的 `batch-plan`、`batch-adopt`、`batch-set-state`、
+`batch-prepare`、`batch-pass`、`batch-reduce`、`batch-validate` 和
+`batch-finalize`。这些命令只增加 `_system/ledgers/knowledge-build-batches/`
+调度账本；原有 task、reading、Pass、run 和页面 revision 契约保持不变。
+`batch-resume` 是只读恢复入口，语义 Pass 仍由模型在有界 reading package
+上生成，Build Finalize 对外批量但在共享 registry 锁下串行提交。
+
 P4 由独立 Skill 执行，不让 ingest 隐式完成全库收尾：
 
 ```bash
@@ -151,6 +158,7 @@ P2 实现对象由调用方传入显式 vault_root。接口原型在 interfaces.
 | plan/claim/read/pass | UnitRefs、任务 revision、actor、阅读预算和显式判断 | 可重试工作账本、持久化阅读材料包、候选/引用 Pass；context 不冒充 target coverage |
 | reduce | 当前任务 snapshots、citation candidates、身份判断和页面正文 | 稳定 subject/page ID、跨来源支持并集及 draft 页面修订 |
 | finalize | build revision、每页内容 hash、parent hash 与 review | 校验完再提交页面、revision sidecar、identity registry 和任务终态；中断可幂等恢复 |
+| batch orchestration | 精确 task/run 清单、pinned revision、模型生成的 Pass/Reduce/finalize requests | 一次调度、逐 task/run 恢复；只读接管旧计划，不重写旧产物，不跨人工检查点 |
 | release plan/apply/validate | completed builds、source changes、release state revision | 影响集合、贡献 disposition、导航/重定向、索引资格及最后提交的 release manifest |
 
 P0 已实现错误包括 INVALID_SCHEMA、INVALID_RANGE、UNRESOLVED_REFERENCE、OUTSIDE_UNIT、UNIT_SET_MISMATCH、INCOMPLETE_COVERAGE、UNINSPECTED_SUPPORT、PROVENANCE_MISMATCH、QA_REQUIRES_DRAFT、INVALID_BUDGET 等，均为 `ContractError(code, path, message)`。
