@@ -11,15 +11,18 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "hermes-source-units/src"))
+sys.path.insert(0, str(ROOT / "hermes-obsidian-controlled-ingest/lib"))
 
 from hermes_source_units import (ContractError, FileIngestWorkflowService,
                                  FileKnowledgeBuildService, FileSourceUnitService,
                                  mutation_digest)
+from ingest_kanban import IngestKanbanAdapter, KanbanCLI, desired_graph
 
 BOOTSTRAP = ROOT / "hermes-obsidian-vault-bootstrap/scripts/init_obsidian_vault.py"
 LINT = ROOT / "hermes-obsidian-vault-lint/scripts/lint_vault.py"
 KNOWLEDGE_CLI = ROOT / "hermes-obsidian-controlled-ingest/scripts/manage_knowledge_build.py"
 WORKFLOW_CLI = ROOT / "hermes-obsidian-controlled-ingest/scripts/manage_ingest_workflow.py"
+DISPATCH_CLI = ROOT / "hermes-obsidian-controlled-ingest/scripts/dispatch_ingest_workflow.py"
 
 
 @pytest.fixture
@@ -720,6 +723,250 @@ def test_workflow_cli_start_digest_and_compact_status(vault: Path, tmp_path: Pat
     assert status.returncode == 0, status.stderr
     assert json.loads(status.stdout)["state"] == "created"
     assert "artifacts" not in json.loads(status.stdout)
+
+
+class FakeKanban:
+    def __init__(self, available: bool):
+        self.available = available
+        self.boards = set()
+        self.tasks = {}
+        self.completed = set()
+
+    def dispatcher_available(self):
+        return self.available
+
+    def ensure_board(self, slug):
+        self.boards.add(slug)
+
+    def create_node(self, slug, node, key, parent_ids, body, *, enable_workers):
+        if key not in self.tasks:
+            self.tasks[key] = {"id": f"task-{len(self.tasks) + 1}", "node": node.name,
+                               "parents": parent_ids, "gate": node.gate,
+                               "enabled": enable_workers, "body": json.loads(body)}
+        return self.tasks[key]["id"]
+
+    def complete(self, slug, task_id, result):
+        self.completed.add(task_id)
+
+    def wait(self, slug, task_id, state, reason):
+        return None
+
+    def unblock(self, slug, task_id):
+        return None
+
+
+def test_kanban_adapter_reports_gateway_absence_then_rebuilds_dag(vault: Path):
+    plan_sliced_batch(vault, 4, "dispatch-batch")
+    fake = FakeKanban(False)
+    adapter = IngestKanbanAdapter(vault, fake)
+    start = workflow_request(
+        workflow_id="ingest-dispatch", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": [],
+                                    "knowledge_selector": "all-current"},
+        batch_id="dispatch-batch")
+    unavailable = adapter.start(start)
+    assert unavailable == {"workflow_id": "ingest-dispatch", "workflow_created": True,
+                           "state": "dispatcher_unavailable", "background_dispatch": False,
+                           "board_id": None}
+    assert fake.tasks == {}
+    assert adapter.workflow.knowledge._batch("dispatch-batch")["slices_initialized"]
+    fake.available = True
+    projected = adapter.sync(workflow_request(
+        workflow_id="ingest-dispatch", actor="agent", expected_revision=1))
+    assert projected["background_dispatch"] is False
+    assert projected["task_count"] >= 12
+    assert all(not task["enabled"] for task in fake.tasks.values())
+    assert fake.boards == {projected["board_id"]}
+    pass_item = next(item for item in adapter.workflow.status("ingest-dispatch")["kanban"]["task_map"]
+                     if item["node"].startswith("pass-slice:"))
+    with pytest.raises(ContractError, match="WORKER_CONTRACT_UNAVAILABLE"):
+        adapter.worker_begin({"workflow_id": "ingest-dispatch", "node": pass_item["node"],
+                              "task_id": pass_item["task_id"], "worker_id": "worker"})
+    nodes = desired_graph(adapter.workflow, adapter.workflow.status("ingest-dispatch"))
+    assert [item.name for item in nodes if item.kind == "pass-slice"]
+    global_task = next(task for task in fake.tasks.values()
+                       if task["node"] == "global-reduce")
+    assert len(global_task["parents"]) == 4
+    assert all(task["gate"] for task in fake.tasks.values()
+               if task["node"] in ("checkpoint-1-gate", "checkpoint-2-gate"))
+    by_name = {task["node"]: task for task in fake.tasks.values()}
+    assert by_name["build-finalize"]["parents"] == [by_name["checkpoint-1-gate"]["id"]]
+    assert by_name["release-apply"]["parents"] == [by_name["checkpoint-2-gate"]["id"]]
+    first_count = len(fake.tasks)
+    again = adapter.sync(workflow_request(
+        workflow_id="ingest-dispatch", actor="agent", expected_revision=2))
+    assert again["task_count"] == projected["task_count"]
+    assert len(fake.tasks) == first_count
+    fake.tasks.clear()  # Kanban data plane deleted; Vault remains authoritative.
+    rebuilt = adapter.sync(workflow_request(
+        workflow_id="ingest-dispatch", actor="agent", expected_revision=3))
+    assert len(fake.tasks) == rebuilt["task_count"]
+
+
+def test_exact_slice_claim_respects_batch_concurrency_and_replay(vault: Path):
+    batch = plan_sliced_batch(vault, 7, "exact-claim-batch")
+    initialized = batch.initialize_slices(
+        "exact-claim-batch", "agent", batch._batch("exact-claim-batch")["revision"])
+    ids = initialized["slice_ids"]
+    assert len(ids) == 3
+    second = batch.batch_next_slice("exact-claim-batch", "worker-b",
+                                    slice_id=ids[1], now="2026-09-21T00:00:00Z")
+    assert second["slice"]["slice_id"] == ids[1]
+    first = batch.batch_next_slice("exact-claim-batch", "worker-a",
+                                   slice_id=ids[0], now="2026-09-21T00:00:00Z")
+    assert first["leased"]
+    replay = batch.batch_next_slice("exact-claim-batch", "worker-b",
+                                    slice_id=ids[1], now="2026-09-21T00:00:01Z")
+    assert replay["reason"] == "existing_lease"
+    assert replay["slice"]["revision"] == second["slice"]["revision"]
+    limited = batch.batch_next_slice("exact-claim-batch", "worker-c",
+                                     slice_id=ids[2], now="2026-09-21T00:00:01Z")
+    assert limited["reason"] == "concurrency_limit"
+
+
+def test_retry_window_refresh_reopens_scheduled_slice(vault: Path):
+    batch = plan_sliced_batch(vault, 1, "retry-refresh-batch")
+    claimed = batch.batch_next_slice("retry-refresh-batch", "worker-a",
+                                     now="2026-09-21T00:00:00Z")["slice"]
+    failed = batch.slice_fail({
+        "batch_id": "retry-refresh-batch", "slice_id": claimed["slice_id"],
+        "worker_id": "worker-a", "expected_revision": claimed["revision"],
+        "code": "HTTP_429", "message": "rate limited",
+    }, now="2026-09-21T00:00:01Z")["slice"]
+    assert failed["state"] == "retry_wait"
+    early = batch.refresh_ready_slices("retry-refresh-batch", "agent",
+                                       now="2026-09-21T00:00:30Z")
+    assert early["ready_slice_ids"] == []
+    ready = batch.refresh_ready_slices("retry-refresh-batch", "agent",
+                                       now="2026-09-21T00:01:02Z")
+    assert ready["ready_slice_ids"] == [claimed["slice_id"]]
+    assert ready["batch"]["cooldown_until"] is None
+    assert batch._slice("retry-refresh-batch", claimed["slice_id"])["state"] == "ready"
+
+
+def test_dispatcher_probe_rejects_disabled_gateway_dispatch(tmp_path: Path):
+    config = tmp_path / "config.yaml"
+    config.write_text("kanban:\n  dispatch_in_gateway: false\n", encoding="utf-8")
+
+    def invoke(argv):
+        output = "Gateway is running\n" if argv[-1] == "status" else str(config)
+        return subprocess.CompletedProcess(argv, 0, output, "")
+
+    kanban = KanbanCLI(invoke)
+    assert not kanban.dispatcher_available()
+    config.write_text("kanban:\n  dispatch_in_gateway: true\n", encoding="utf-8")
+    assert kanban.dispatcher_available()
+
+
+def test_kanban_worker_must_hold_exact_slice_lease(vault: Path):
+    plan_sliced_batch(vault, 1, "worker-batch")
+    fake = FakeKanban(True)
+    adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
+    adapter.start(workflow_request(
+        workflow_id="ingest-worker", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": [],
+                                    "knowledge_selector": "all-current"},
+        batch_id="worker-batch"))
+    item = next(item for item in adapter.workflow.status("ingest-worker")["kanban"]["task_map"]
+                if item["node"].startswith("pass-slice:"))
+    request = {"workflow_id": "ingest-worker", "node": item["node"],
+               "task_id": item["task_id"], "worker_id": "worker-one"}
+    begun = adapter.worker_begin(request)
+    assert begun["leased"]
+    assert adapter.worker_begin(request)["leased"]
+    with pytest.raises(ContractError, match="ACCESS_DENIED"):
+        adapter.worker_begin({**request, "task_id": "other-task"})
+    with pytest.raises(ContractError, match="STALE_INPUT"):
+        adapter.worker_check({**request, "expected_revision": begun["slice"]["revision"],
+                              "template_hash": "0" * 64})
+    cancelled = adapter.cancel(workflow_request(
+        workflow_id="ingest-worker", actor="agent", expected_revision=2))
+    assert cancelled["state"] == "cancelled"
+    assert adapter.workflow.knowledge._batch("worker-batch")["cancel_requested"]
+    with pytest.raises(ContractError, match="WORKFLOW_STOPPED"):
+        adapter.worker_begin(request)
+    resumed = adapter.resume(workflow_request(
+        workflow_id="ingest-worker", actor="agent", expected_revision=3))
+    assert resumed["state"] == "analyzing"
+    assert not adapter.workflow.knowledge._batch("worker-batch")["cancel_requested"]
+    assert adapter.workflow.knowledge._slice(
+        "worker-batch", item["node"].partition(":")[2])["state"] == "ready"
+
+
+def test_dispatch_cli_creates_workflow_without_false_background_claim(vault: Path,
+                                                                     tmp_path: Path):
+    request = workflow_request(
+        workflow_id="ingest-no-dispatcher", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": [],
+                                    "knowledge_selector": "all-current"})
+    path = tmp_path / "start.json"
+    path.write_text(json.dumps(request), encoding="utf-8")
+    result = subprocess.run([sys.executable, str(DISPATCH_CLI), "--vault", str(vault),
+                             "start", "--request", str(path)], capture_output=True,
+                            text=True, encoding="utf-8")
+    assert result.returncode == 0, result.stderr
+    outcome = json.loads(result.stdout)
+    assert outcome["state"] == "dispatcher_unavailable"
+    assert outcome["workflow_created"] and not outcome["background_dispatch"]
+    assert FileIngestWorkflowService(vault).status("ingest-no-dispatcher")["state"] == "created"
+
+
+def test_kanban_worker_recovers_after_domain_completion_before_board_ack(vault: Path):
+    batch = plan_sliced_batch(vault, 1, "worker-recovery-batch")
+    fake = FakeKanban(True)
+    adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
+    adapter.start(workflow_request(
+        workflow_id="ingest-recovery", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": [],
+                                    "knowledge_selector": "all-current"},
+        batch_id="worker-recovery-batch"))
+    item = next(item for item in adapter.workflow.status("ingest-recovery")["kanban"]["task_map"]
+                if item["node"].startswith("pass-slice:"))
+    worker = {"workflow_id": "ingest-recovery", "node": item["node"],
+              "task_id": item["task_id"], "worker_id": "worker-one"}
+    begun = adapter.worker_begin(worker)["slice"]
+    assert adapter.worker_check({**worker, "expected_revision": begun["revision"],
+                                 "template_hash": begun["template_hash"]})["ok"]
+    prepared = batch.prepare_batch("worker-recovery-batch", "agent", 1)
+    assert prepared["ok"]
+    task_id = begun["task_ids"][0]
+    task = batch._task(task_id)
+    ref = task["target_refs"][0]
+    common = {"task_id": task_id, "actor": "agent",
+              "reading_package_id": prepared["results"][0]["reading_package_id"],
+              "registry_revision": 1, "slice_id": begun["slice_id"],
+              "worker_id": "worker-one", "template_hash": begun["template_hash"],
+              "inspections": [{"source_ref": ref, "finding": "inspected",
+                               "qa": "usable", "qa_note": ""}],
+              "candidates": [{"candidate_id": "one", "name": "Source One",
+                              "kind": "entity", "identity_rationale": "source evidence",
+                              "finding": "found", "applicability": "Project A",
+                              "conditions": [], "exceptions": [], "support_refs": [ref]}],
+              "empty_reason": ""}
+    batch.record_pass_batch({"batch_id": "worker-recovery-batch", "passes": [{
+        **common, "expected_revision": task["revision"],
+        "pass_kind": "candidate", "sequence": 0,
+    }]})
+    batch.record_pass_batch({"batch_id": "worker-recovery-batch", "passes": [{
+        **common, "expected_revision": batch._task(task_id)["revision"],
+        "pass_kind": "citation", "sequence": 1,
+    }]})
+    original_complete = fake.complete
+    failures = [True]
+
+    def fail_once(slug, task_id, result):
+        if failures and failures.pop():
+            raise OSError("simulated Kanban ack loss")
+        original_complete(slug, task_id, result)
+
+    fake.complete = fail_once
+    complete_request = {**worker, "expected_revision": begun["revision"],
+                        "template_hash": begun["template_hash"]}
+    with pytest.raises(OSError, match="ack loss"):
+        adapter.worker_complete(complete_request)
+    assert batch._slice("worker-recovery-batch", begun["slice_id"])["state"] == "completed"
+    recovered = adapter.worker_complete(complete_request)
+    assert recovered["ok"] and item["task_id"] in fake.completed
 
 
 def test_slice_leases_are_deterministic_bounded_and_worker_exclusive(vault: Path):

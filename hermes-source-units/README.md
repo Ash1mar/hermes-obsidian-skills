@@ -214,6 +214,10 @@ P0 的通过只表示契约实践通过，不代表已经完成 bootstrap、知�
 actor、expected_revision 和完整请求的 input_digest。参见
 `hermes-obsidian-controlled-ingest/references/workflow-ledger.md`。
 
+阶段 6 增加可重建 Hermes Kanban 投影和精确 slice lease 入口。Gateway 不可用时
+workflow 仍被创建，但明确报告后台调度未运行；阶段 7 模板安装前，投影任务保持
+blocked。操作合同见 `hermes-obsidian-controlled-ingest/references/kanban-adapter.md`。
+
 ### P1/P2 distribution and configuration
 
 Run `python3 tools/sync_skill_runtime.py` from this package directory after a

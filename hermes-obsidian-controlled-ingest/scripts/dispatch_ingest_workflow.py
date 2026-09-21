@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Manage the Vault-authoritative ingest workflow ledger (no dispatch)."""
+"""Project Vault ingest workflow nodes onto Hermes Kanban (phase-6 adapter)."""
 from __future__ import annotations
 
 import argparse
@@ -8,8 +8,8 @@ from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-from hermes_source_units import (ContractError, FileIngestWorkflowService,
-                                 mutation_digest)
+from hermes_source_units import ContractError
+from ingest_kanban import IngestKanbanAdapter
 
 
 def main() -> int:
@@ -19,22 +19,14 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vault", required=True)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("start", "resume", "approve", "cancel", "reconcile", "rebuild-kanban", "bind-kanban", "digest"):
+    for name in ("start", "sync", "cancel", "resume", "worker-begin", "worker-check",
+                 "worker-heartbeat", "worker-complete", "worker-fail"):
         sub.add_parser(name).add_argument("--request", required=True)
-    status = sub.add_parser("status")
-    status.add_argument("--workflow-id", required=True)
-    status.add_argument("--compact", action="store_true")
     args = parser.parse_args()
     try:
-        if args.command == "status":
-            result = FileIngestWorkflowService(args.vault).status(args.workflow_id, args.compact)
-        else:
-            request = json.loads(Path(args.request).read_text(encoding="utf-8-sig"))
-            if args.command == "digest":
-                result = {"input_digest": mutation_digest(request)}
-            else:
-                service = FileIngestWorkflowService(args.vault)
-                result = getattr(service, args.command.replace("-", "_"))(request)
+        request = json.loads(Path(args.request).read_text(encoding="utf-8-sig"))
+        adapter = IngestKanbanAdapter(args.vault)
+        result = getattr(adapter, args.command.replace("-", "_"))(request)
     except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
         detail = {"ok": False, "error": str(exc)}
         if isinstance(exc, ContractError):

@@ -765,7 +765,8 @@ class FileKnowledgeBuildService:
     def batch_next_slice(self, batch_id: str, worker_id: str,
                          config: Mapping[str, Any] | None = None,
                          lease_seconds: int | None = None,
-                         now: datetime | str | None = None) -> dict[str, Any]:
+                         now: datetime | str | None = None,
+                         slice_id: str | None = None) -> dict[str, Any]:
         if not worker_id.strip():
             _fail("INVALID_SCHEMA", "worker_id is required", "$.worker_id")
         moment, stamp = _utc(now)
@@ -800,12 +801,25 @@ class FileKnowledgeBuildService:
                 by_id = {item["slice_id"]: item for item in slices}
                 by_id.update({item["slice_id"]: item for item in changed})
                 slices = [by_id[slice_id] for slice_id in batch["slice_ids"]]
+            selected = (next((item for item in slices if item["slice_id"] == slice_id), None)
+                        if slice_id is not None else None)
+            if slice_id is not None and selected is None:
+                _fail("INVALID_SCHEMA", "slice is not part of batch", "$.slice_id")
+            if selected is not None and selected["state"] == "leased":
+                if (selected["lease"]["worker_id"] == worker_id
+                        and _parse_utc(selected["lease"]["expires_at"]) > moment):
+                    return {"ok": True, "leased": True, "reason": "existing_lease",
+                            "slice": selected}
+                return {"ok": True, "leased": False, "reason": "slice_leased", "slice": None}
             leased_count = sum(item["state"] == "leased" for item in slices)
             if leased_count >= int(batch["slice_config"]["pass_worker_concurrency"]):
                 return {"ok": True, "leased": False, "reason": "concurrency_limit", "slice": None}
-            selected = next((item for item in slices if item["state"] == "ready"), None)
+            if slice_id is None:
+                selected = next((item for item in slices if item["state"] == "ready"), None)
             if selected is None:
                 return {"ok": True, "leased": False, "reason": "no_ready_slice", "slice": None}
+            if selected["state"] != "ready":
+                return {"ok": True, "leased": False, "reason": "slice_not_ready", "slice": None}
             duration = int(batch["slice_config"]["lease_seconds"]
                            if lease_seconds is None else lease_seconds)
             if duration < 1:
@@ -818,6 +832,55 @@ class FileKnowledgeBuildService:
                                  "expires_at": (moment + timedelta(seconds=duration)).isoformat().replace("+00:00", "Z")}
             self._write_slice(selected)
             return {"ok": True, "leased": True, "reason": "", "slice": selected}
+
+    def initialize_slices(self, batch_id: str, actor: str,
+                          expected_revision: int,
+                          config: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        """Create deterministic slice records without issuing any worker lease."""
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            if batch["actor"] != actor:
+                _fail("ACCESS_DENIED", "batch actor differs", "$.actor")
+            if batch["revision"] != expected_revision:
+                _fail("REVISION_CONFLICT", "batch revision changed", "$.expected_revision")
+            if batch.get("cancel_requested"):
+                _fail("CANCELLED", "batch is cancelled")
+            effective_config = (batch.get("slice_config") if config is None
+                                and batch.get("slices_initialized") else config)
+            updated, slices = self._ensure_slices(batch, effective_config)
+            return {"ok": True, "batch": updated,
+                    "slice_ids": [item["slice_id"] for item in slices]}
+
+    def refresh_ready_slices(self, batch_id: str, actor: str,
+                             now: datetime | str | None = None) -> dict[str, Any]:
+        """Make elapsed retry/cooldown windows visible to an external scheduler."""
+        moment, _ = _utc(now)
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            if batch["actor"] != actor:
+                _fail("ACCESS_DENIED", "batch actor differs")
+            if batch.get("cancel_requested"):
+                return {"ok": True, "batch": batch, "ready_slice_ids": []}
+            cooldown = batch.get("cooldown_until")
+            if cooldown is not None and _parse_utc(cooldown) > moment:
+                return {"ok": True, "batch": batch, "ready_slice_ids": []}
+            ready = []
+            for value in self._slices(batch_id):
+                if (value["state"] == "retry_wait" and value["retry_at"] is not None
+                        and _parse_utc(value["retry_at"]) <= moment):
+                    updated = copy.deepcopy(value)
+                    updated.update({"state": "ready", "retry_at": None,
+                                    "revision": int(updated["revision"]) + 1})
+                    self._write_slice(updated)
+                    ready.append(updated["slice_id"])
+            if cooldown is not None:
+                batch = copy.deepcopy(batch)
+                batch.update({"cooldown_until": None, "cooldown_reason": None,
+                              "revision": int(batch["revision"]) + 1,
+                              "last_operation": "slice"})
+                validate_record("knowledge_batch", batch)
+                _write_atomic(self._batch_path(batch_id), _json_bytes(batch))
+            return {"ok": True, "batch": batch, "ready_slice_ids": ready}
 
     def slice_heartbeat(self, batch_id: str, slice_id: str, worker_id: str,
                         expected_revision: int,
@@ -1096,6 +1159,35 @@ class FileKnowledgeBuildService:
             validate_record("knowledge_batch", updated_batch)
             _write_atomic(self._batch_path(batch_id), _json_bytes(updated_batch))
             return {"ok": True, "batch": updated_batch, "cancelled_slice_ids": cancelled}
+
+    def resume_cancelled_batch(self, batch_id: str, actor: str,
+                               expected_revision: int) -> dict[str, Any]:
+        """Reopen cancelled slices; worker admission still checks pinned inputs."""
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            if batch["actor"] != actor:
+                _fail("ACCESS_DENIED", "only the batch actor can resume it")
+            if batch["revision"] != expected_revision:
+                _fail("REVISION_CONFLICT", "batch revision changed", "$.expected_revision")
+            if not batch.get("cancel_requested") or batch["state"] != "cancelled":
+                _fail("INVALID_STATE", "batch is not cancelled")
+            reopened = []
+            for value in self._slices(batch_id):
+                if value["state"] != "cancelled":
+                    continue
+                updated = copy.deepcopy(value)
+                updated.update({"state": "ready", "retry_at": None,
+                                "revision": int(updated["revision"]) + 1})
+                self._clear_lease(updated)
+                self._write_slice(updated)
+                reopened.append(updated["slice_id"])
+            updated_batch = copy.deepcopy(batch)
+            updated_batch.update({"cancel_requested": False, "state": "analyzing",
+                                  "last_operation": "slice",
+                                  "revision": int(updated_batch["revision"]) + 1})
+            validate_record("knowledge_batch", updated_batch)
+            _write_atomic(self._batch_path(batch_id), _json_bytes(updated_batch))
+            return {"ok": True, "batch": updated_batch, "reopened_slice_ids": reopened}
 
     def batch_status(self, batch_id: str, compact: bool = False) -> dict[str, Any]:
         batch = self._batch(batch_id)

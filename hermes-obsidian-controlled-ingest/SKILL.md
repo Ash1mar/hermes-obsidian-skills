@@ -30,6 +30,9 @@ only for Vaults that do not declare the source-unit knowledge-build capability.
 For the phase-5 Vault workflow ledger and explicit checkpoint commands, read
 `references/workflow-ledger.md`. The ledger manager does not start background
 dispatch; do not describe its `rebuild-kanban` output as a running Kanban board.
+For the phase-6 Hermes Kanban projection and worker lease handshake, read
+`references/kanban-adapter.md`. Phase 6 does not activate worker cards before
+the fixed templates in phase 7 are installed.
 
 Report separate completion dimensions: source preservation; registration; conversion/processing;
 section processing (status counts); knowledge construction (inspected scope, decisions and outputs);
