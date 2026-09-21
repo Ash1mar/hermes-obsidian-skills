@@ -26,7 +26,11 @@ def run(args):
     if args.command == "batch-next-slice":
         return service.batch_next_slice(args.batch_id, args.worker_id,
                                         load(args.config) if args.config else None,
-                                        args.lease_seconds)
+                                        args.lease_seconds, slice_id=args.slice_id)
+    if args.command == "batch-initialize-slices":
+        return service.initialize_slices(args.batch_id, args.actor,
+                                         args.expected_revision,
+                                         load(args.config) if args.config else None)
     if args.command == "slice-heartbeat":
         return service.slice_heartbeat(args.batch_id, args.slice_id, args.worker_id,
                                        args.expected_revision)
@@ -41,6 +45,9 @@ def run(args):
         return service.reclaim_expired_slices(args.batch_id)
     if args.command == "batch-cancel":
         return service.cancel_batch(args.batch_id, args.actor, args.expected_revision)
+    if args.command == "batch-resume-cancelled":
+        return service.resume_cancelled_batch(args.batch_id, args.actor,
+                                              args.expected_revision)
     if args.command == "batch-resource-reduce":
         return service.reduce_resource(load(args.request))
     if args.command == "batch-global-reduce":
@@ -94,6 +101,12 @@ def main() -> int:
     next_slice.add_argument("--worker-id", required=True)
     next_slice.add_argument("--config", help="optional JSON slice configuration")
     next_slice.add_argument("--lease-seconds", type=int)
+    next_slice.add_argument("--slice-id", help="claim this exact slice for a Kanban worker")
+    initialize = sub.add_parser("batch-initialize-slices")
+    initialize.add_argument("--batch-id", required=True)
+    initialize.add_argument("--actor", required=True)
+    initialize.add_argument("--expected-revision", required=True, type=int)
+    initialize.add_argument("--config", help="optional JSON slice configuration")
     heartbeat = sub.add_parser("slice-heartbeat")
     heartbeat.add_argument("--batch-id", required=True)
     heartbeat.add_argument("--slice-id", required=True)
@@ -113,6 +126,10 @@ def main() -> int:
     cancel.add_argument("--batch-id", required=True)
     cancel.add_argument("--actor", required=True)
     cancel.add_argument("--expected-revision", required=True, type=int)
+    resume_cancelled = sub.add_parser("batch-resume-cancelled")
+    resume_cancelled.add_argument("--batch-id", required=True)
+    resume_cancelled.add_argument("--actor", required=True)
+    resume_cancelled.add_argument("--expected-revision", required=True, type=int)
     for name in ("batch-plan", "batch-adopt", "batch-set-state", "batch-pass", "batch-reduce", "batch-finalize"):
         command = sub.add_parser(name)
         command.add_argument("--request", required=True, help="JSON batch request file")

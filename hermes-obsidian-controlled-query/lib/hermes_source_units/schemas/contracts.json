@@ -1742,7 +1742,8 @@
       "type": "object",
       "properties": {
         "source_paths": {"type": "array", "items": {"type": "string", "minLength": 1, "format": "vault-relative-path"}, "minItems": 0, "uniqueItems": true},
-        "knowledge_selector": {"type": "string", "minLength": 1, "pattern": "\\S"}
+        "knowledge_selector": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "provider": {"enum": ["skip", "sync"]}
       },
       "required": ["source_paths", "knowledge_selector"],
       "additionalProperties": false
@@ -1761,7 +1762,8 @@
       "type": "object",
       "properties": {
         "node": {"type": "string", "minLength": 1},
-        "idempotency_key": {"type": "string", "minLength": 1}
+        "idempotency_key": {"type": "string", "minLength": 1},
+        "task_id": {"type": "string", "minLength": 1}
       },
       "required": ["node", "idempotency_key"],
       "additionalProperties": false

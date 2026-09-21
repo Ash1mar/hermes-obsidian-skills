@@ -230,7 +230,36 @@ class FileIngestWorkflowService:
                         key = f"pass-slice:{item['slice_id']}"
                         task_map.append({"node": key, "idempotency_key":
                             "ingest:" + value["workflow_id"] + ":" + key + ":" + item["input_fingerprint"]})
+            existing = {item["node"]: item for item in value["kanban"]["task_map"]}
+            for item in task_map:
+                prior = existing.get(item["node"])
+                if prior and prior["idempotency_key"] == item["idempotency_key"]:
+                    item.update({k: prior[k] for k in ("task_id",) if k in prior})
+            task_map.extend(item for item in value["kanban"]["task_map"]
+                            if not item["node"].startswith("pass-slice:"))
             value["kanban"] = {"board_id": value["kanban"]["board_id"], "task_map": task_map}
+            value["revision"] += 1
+            self._write(value)
+            return value
+
+    def bind_kanban(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Record replaceable Kanban identities after idempotent CLI creation."""
+        with _exclusive_lock(self._lock(str(request["workflow_id"]))):
+            value = self._mutation(request)
+            if value["cancel_requested"]:
+                _fail("WORKFLOW_STOPPED", "cancelled workflow cannot bind Kanban")
+            board_id = str(request["board_id"])
+            if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", board_id):
+                _fail("INVALID_SCHEMA", "invalid Kanban board slug")
+            if value["kanban"]["board_id"] not in (None, board_id):
+                _fail("IDEMPOTENCY_CONFLICT", "workflow already bound to another board")
+            task_map = list(request["task_map"])
+            nodes = [item["node"] for item in task_map]
+            if len(nodes) != len(set(nodes)) or any(
+                    not item["idempotency_key"].startswith(
+                        f"ingest:{value['workflow_id']}:") for item in task_map):
+                _fail("INVALID_SCHEMA", "invalid workflow Kanban task map")
+            value["kanban"] = {"board_id": board_id, "task_map": task_map}
             value["revision"] += 1
             self._write(value)
             return value
