@@ -23,6 +23,21 @@ def run(args):
         return method(load(args.request))
     if args.command == "batch-measure":
         return service.measure_batch(load(args.request))
+    if args.command == "batch-next-slice":
+        return service.batch_next_slice(args.batch_id, args.worker_id,
+                                        load(args.config) if args.config else None,
+                                        args.lease_seconds)
+    if args.command == "slice-heartbeat":
+        return service.slice_heartbeat(args.batch_id, args.slice_id, args.worker_id,
+                                       args.expected_revision)
+    if args.command == "slice-complete":
+        return service.slice_complete(load(args.request))
+    if args.command == "slice-fail":
+        return service.slice_fail(load(args.request))
+    if args.command == "batch-reclaim-expired":
+        return service.reclaim_expired_slices(args.batch_id)
+    if args.command == "batch-cancel":
+        return service.cancel_batch(args.batch_id, args.actor, args.expected_revision)
     if args.command in ("batch-plan", "batch-adopt", "batch-set-state", "batch-pass", "batch-reduce", "batch-finalize"):
         method = {"batch-plan": service.plan_batch, "batch-adopt": service.adopt_batch,
                   "batch-set-state": service.set_task_state_batch,
@@ -67,6 +82,25 @@ def main() -> int:
         command.add_argument("--request", required=True, help="JSON request file")
     measure = sub.add_parser("batch-measure")
     measure.add_argument("--request", required=True, help="JSON batch request file")
+    next_slice = sub.add_parser("batch-next-slice")
+    next_slice.add_argument("--batch-id", required=True)
+    next_slice.add_argument("--worker-id", required=True)
+    next_slice.add_argument("--config", help="optional JSON slice configuration")
+    next_slice.add_argument("--lease-seconds", type=int)
+    heartbeat = sub.add_parser("slice-heartbeat")
+    heartbeat.add_argument("--batch-id", required=True)
+    heartbeat.add_argument("--slice-id", required=True)
+    heartbeat.add_argument("--worker-id", required=True)
+    heartbeat.add_argument("--expected-revision", required=True, type=int)
+    for name in ("slice-complete", "slice-fail"):
+        command = sub.add_parser(name)
+        command.add_argument("--request", required=True, help="JSON slice mutation request")
+    reclaim = sub.add_parser("batch-reclaim-expired")
+    reclaim.add_argument("--batch-id", required=True)
+    cancel = sub.add_parser("batch-cancel")
+    cancel.add_argument("--batch-id", required=True)
+    cancel.add_argument("--actor", required=True)
+    cancel.add_argument("--expected-revision", required=True, type=int)
     for name in ("batch-plan", "batch-adopt", "batch-set-state", "batch-pass", "batch-reduce", "batch-finalize"):
         command = sub.add_parser(name)
         command.add_argument("--request", required=True, help="JSON batch request file")

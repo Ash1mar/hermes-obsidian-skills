@@ -133,7 +133,21 @@ batch ledger only records orchestration state under
   blocked/failed/skipped transitions, including superseded active plans.
 - `batch-status` and `batch-resume` report the authoritative recovery point.
   Use `batch-status --compact` for aggregate counts and next actions without a
-  task-by-task payload.
+  task-by-task payload. Slice counts and completed/total slice coverage are
+  included in the compact result.
+- `batch-next-slice --batch-id <id> --worker-id <id>` initializes deterministic
+  Pass slices when needed and atomically leases one ready slice. The defaults are
+  concurrency 2, at most 3 tasks and 30000 serialized input codepoints per slice,
+  a 1800-second lease, a 60-second heartbeat cadence and 3 attempts. An optional
+  config JSON pins different values when the first slice is initialized.
+- `slice-heartbeat` extends a live worker-owned lease. `slice-complete` and
+  `slice-fail` consume revision-pinned JSON requests; stale, expired, foreign or
+  cancelled leases cannot publish late results. Retryable failures enter
+  `retry_wait`, then become ready when due; exhausted or non-retryable failures
+  become blocked.
+- `batch-reclaim-expired` returns expired leases to ready or blocks them after
+  the final attempt. `batch-cancel` preserves completed slices and atomically
+  cancels every unfinished slice. Cancellation is terminal in this contract.
 - `batch-prepare` claims pending tasks and persists one bounded reading package
   per task. For exact plans it first reruns the same measurement and returns
   `STALE_PLAN` before claiming when the reader configuration, pinned UnitSet
@@ -154,3 +168,11 @@ not mean concatenating every reading package into one prompt. For cross-source
 knowledge, perform local candidate work first and provide globally reconciled
 identity/path decisions to `batch-reduce`. Never cross a human checkpoint merely
 because a batch command can continue.
+
+Slice ledgers live at
+`_system/ledgers/knowledge-build-batches/<batch-id>/slices/<slice-id>.json` and
+are the authoritative scheduling records for Pass workers. They pin task IDs,
+input/template fingerprints, attempt, revision, lease timestamps, results and
+last error. Ordinary task, reading-package and Pass records remain the
+authoritative knowledge-build records; a completed slice result reference does
+not itself create or validate a Pass.

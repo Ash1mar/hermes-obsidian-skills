@@ -49,7 +49,8 @@ python3 "<ingest-skill-root>/scripts/manage_knowledge_build.py" --vault "/path/t
 ```
 
 多任务路径使用附加的 `batch-measure`、`batch-plan --exact-reading-budget`、
-`batch-adopt`、`batch-set-state`、
+`batch-adopt`、`batch-set-state`、`batch-next-slice`、`slice-heartbeat`、
+`slice-complete`、`slice-fail`、`batch-reclaim-expired`、`batch-cancel`、
 `batch-prepare`、`batch-pass`、`batch-reduce`、`batch-validate` 和
 `batch-finalize`。这些命令只增加 `_system/ledgers/knowledge-build-batches/`
 调度账本；原有 task、reading、Pass、run 和页面 revision 契约保持不变。
@@ -58,6 +59,11 @@ python3 "<ingest-skill-root>/scripts/manage_knowledge_build.py" --vault "/path/t
 精确计划按实际 canonical `window + materials` 序列化结果计费，将正文、祖先、
 上下文、引用、标题、哈希及 JSON 元数据纳入同一上限；prepare 使用相同算法复核，
 漂移时停止为 `STALE_PLAN`。`batch-status --compact` 只返回汇总计数与下一步动作。
+Pass 调度切片持久化在每个批次的 `slices/` 目录；默认并发数 2、每片最多
+3 个任务或 30000 个输入 codepoints、租约 1800 秒、心跳建议间隔 60 秒、
+最多尝试 3 次。领取、续租、完成、失败、过期回收和取消都在批次锁内按 revision
+转换；完成切片保持完成，批次取消只终止尚未完成的切片。切片是可恢复调度状态，
+不会替代 task、reading package、Pass 或 Build Finalize 的领域事实。
 
 P4 由独立 Skill 执行，不让 ingest 隐式完成全库收尾：
 

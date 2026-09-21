@@ -477,6 +477,120 @@ def test_whole_asset_oversize_remains_an_explicit_blocker(vault: Path):
     assert not (vault / "_system/ledgers/unit-work/whole-asset-task.json").exists()
 
 
+def plan_sliced_batch(vault: Path, count: int, batch_id: str = "slice-batch") -> FileKnowledgeBuildService:
+    refs = publish_sources(vault, [f"# Slice {index}\nEvidence {index}.\n" for index in range(count)])
+    service = FileKnowledgeBuildService(vault)
+    service.plan_batch({
+        "batch_id": batch_id, "actor": "agent", "registry_revision": 1,
+        "exact_reading_budget": True,
+        "tasks": [{"task_id": f"{batch_id}-task-{index:03d}", "target_refs": [ref]}
+                  for index, ref in enumerate(refs, 1)],
+    })
+    return service
+
+
+def test_slice_leases_are_deterministic_bounded_and_worker_exclusive(vault: Path):
+    service = plan_sliced_batch(vault, 7)
+    now = "2026-09-21T00:00:00Z"
+    first = service.batch_next_slice("slice-batch", "worker-a", now=now)
+    second = service.batch_next_slice("slice-batch", "worker-b", now=now)
+    limited = service.batch_next_slice("slice-batch", "worker-c", now=now)
+    assert first["leased"] and second["leased"]
+    assert first["slice"]["slice_id"] != second["slice"]["slice_id"]
+    assert len(first["slice"]["task_ids"]) == 3
+    assert len(second["slice"]["task_ids"]) == 3
+    assert limited == {"ok": True, "leased": False,
+                       "reason": "concurrency_limit", "slice": None}
+
+    heartbeat = service.slice_heartbeat(
+        "slice-batch", first["slice"]["slice_id"], "worker-a",
+        first["slice"]["revision"], now="2026-09-21T00:10:00Z")
+    assert heartbeat["slice"]["lease"]["expires_at"] == "2026-09-21T00:40:00Z"
+    with pytest.raises(ContractError, match="requires at least one result reference"):
+        service.slice_complete({
+            "batch_id": "slice-batch", "slice_id": first["slice"]["slice_id"],
+            "worker_id": "worker-a", "expected_revision": heartbeat["slice"]["revision"],
+            "result_refs": [],
+        }, now="2026-09-21T00:10:01Z")
+    completed = service.slice_complete({
+        "batch_id": "slice-batch", "slice_id": first["slice"]["slice_id"],
+        "worker_id": "worker-a", "expected_revision": heartbeat["slice"]["revision"],
+        "result_refs": ["_system/knowledge-builds/task-result/pass.json"],
+    }, now="2026-09-21T00:10:01Z")
+    assert completed["slice"]["state"] == "completed"
+    third = service.batch_next_slice("slice-batch", "worker-c", now=now)
+    assert third["leased"] and len(third["slice"]["task_ids"]) == 1
+    status = service.batch_status("slice-batch", compact=True)
+    assert status["slice_counts"] == {"completed": 1, "leased": 2}
+    assert status["coverage"]["total_slices"] == 3
+    assert "slices" not in status
+
+
+def test_expired_slice_lease_is_reclaimed_and_max_attempts_block(vault: Path):
+    service = plan_sliced_batch(vault, 1, "expiry-batch")
+    config = {"pass_worker_concurrency": 1, "slice_max_tasks": 1,
+              "slice_max_input_codepoints": 30000, "lease_seconds": 10,
+              "heartbeat_seconds": 5, "max_attempts": 2}
+    first = service.batch_next_slice(
+        "expiry-batch", "worker-a", config=config, now="2026-09-21T00:00:00Z")["slice"]
+    with pytest.raises(ContractError, match="LEASE_EXPIRED"):
+        service.slice_complete({
+            "batch_id": "expiry-batch", "slice_id": first["slice_id"],
+            "worker_id": "worker-a", "expected_revision": first["revision"],
+            "result_refs": ["late-pass-result"],
+        }, now="2026-09-21T00:00:11Z")
+    reclaimed = service.reclaim_expired_slices("expiry-batch", now="2026-09-21T00:00:11Z")
+    assert reclaimed["reclaimed"] == 1
+    assert reclaimed["slices"][0]["state"] == "ready"
+    second = service.batch_next_slice(
+        "expiry-batch", "worker-b", now="2026-09-21T00:00:12Z")["slice"]
+    assert second["slice_id"] == first["slice_id"] and second["attempt"] == 2
+    exhausted = service.reclaim_expired_slices("expiry-batch", now="2026-09-21T00:00:23Z")
+    assert exhausted["slices"][0]["state"] == "blocked"
+    assert exhausted["slices"][0]["last_error"]["code"] == "LEASE_EXPIRED"
+
+
+def test_slice_retry_wait_and_batch_cancel_preserve_completed_work(vault: Path):
+    service = plan_sliced_batch(vault, 2, "cancel-batch")
+    config = {"pass_worker_concurrency": 1, "slice_max_tasks": 1,
+              "slice_max_input_codepoints": 30000, "lease_seconds": 1800,
+              "heartbeat_seconds": 60, "max_attempts": 3}
+    first = service.batch_next_slice(
+        "cancel-batch", "worker-a", config=config, now="2026-09-21T00:00:00Z")["slice"]
+    failed = service.slice_fail({
+        "batch_id": "cancel-batch", "slice_id": first["slice_id"],
+        "worker_id": "worker-a", "expected_revision": first["revision"],
+        "code": "TIMEOUT", "message": "model timed out", "retryable": True,
+        "retry_after_seconds": 60,
+    }, now="2026-09-21T00:00:10Z")["slice"]
+    assert failed["state"] == "retry_wait" and failed["retry_at"] == "2026-09-21T00:01:10Z"
+    before_retry = service.batch_next_slice(
+        "cancel-batch", "worker-b", now="2026-09-21T00:00:40Z")["slice"]
+    assert before_retry["slice_id"] != first["slice_id"]
+    completed = service.slice_complete({
+        "batch_id": "cancel-batch", "slice_id": before_retry["slice_id"],
+        "worker_id": "worker-b", "expected_revision": before_retry["revision"],
+        "result_refs": ["pass-existing"],
+    }, now="2026-09-21T00:00:41Z")["slice"]
+    retry = service.batch_next_slice(
+        "cancel-batch", "worker-c", now="2026-09-21T00:01:11Z")["slice"]
+    assert retry["slice_id"] == first["slice_id"] and retry["attempt"] == 2
+    batch_revision = service.batch_status("cancel-batch", compact=True)["batch"]["revision"]
+    cancelled = service.cancel_batch("cancel-batch", "agent", batch_revision)
+    assert cancelled["batch"]["state"] == "cancelled"
+    assert cancelled["cancelled_slice_ids"] == [retry["slice_id"]]
+    assert service._slice("cancel-batch", completed["slice_id"])["state"] == "completed"
+    assert service.batch_next_slice("cancel-batch", "worker-d")["reason"] == "batch_cancelled"
+    status = service.batch_status("cancel-batch", compact=True)
+    assert status["next_actions"] == []
+    with pytest.raises(ContractError, match="CANCELLED"):
+        service.slice_fail({
+            "batch_id": "cancel-batch", "slice_id": retry["slice_id"],
+            "worker_id": "worker-c", "expected_revision": retry["revision"] + 1,
+            "code": "LATE", "message": "late worker response",
+        })
+
+
 def test_p3_cli_runs_from_embedded_skill_runtime(vault: Path):
     result = subprocess.run([sys.executable, "-I", "-S", str(KNOWLEDGE_CLI),
                              "--vault", str(vault), "identities"],
@@ -511,6 +625,31 @@ def test_p3_cli_runs_from_embedded_skill_runtime(vault: Path):
     assert json.loads(status.stdout)["task_counts"] == {"pending": 1}
     assert "tasks" not in json.loads(status.stdout)
     assert json.loads(status.stdout)["coverage"]["total_tasks"] == 1
+    leased = subprocess.run([sys.executable, "-I", "-S", str(KNOWLEDGE_CLI),
+                             "--vault", str(vault), "batch-next-slice",
+                             "--batch-id", "cli-batch", "--worker-id", "cli-worker"],
+                            capture_output=True, text=True, encoding="utf-8")
+    assert leased.returncode == 0, leased.stdout + leased.stderr
+    leased_slice = json.loads(leased.stdout)["slice"]
+    heartbeat = subprocess.run([
+        sys.executable, "-I", "-S", str(KNOWLEDGE_CLI), "--vault", str(vault),
+        "slice-heartbeat", "--batch-id", "cli-batch", "--slice-id", leased_slice["slice_id"],
+        "--worker-id", "cli-worker", "--expected-revision", str(leased_slice["revision"]),
+    ], capture_output=True, text=True, encoding="utf-8")
+    assert heartbeat.returncode == 0, heartbeat.stdout + heartbeat.stderr
+    heartbeat_slice = json.loads(heartbeat.stdout)["slice"]
+    complete_request = vault / "_system/reports/cli-slice-complete.json"
+    complete_request.write_text(json.dumps({
+        "batch_id": "cli-batch", "slice_id": leased_slice["slice_id"],
+        "worker_id": "cli-worker", "expected_revision": heartbeat_slice["revision"],
+        "result_refs": ["cli-pass-result"],
+    }), encoding="utf-8")
+    completed = subprocess.run([
+        sys.executable, "-I", "-S", str(KNOWLEDGE_CLI), "--vault", str(vault),
+        "slice-complete", "--request", str(complete_request),
+    ], capture_output=True, text=True, encoding="utf-8")
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+    assert json.loads(completed.stdout)["slice"]["state"] == "completed"
 
 
 def test_reduce_rejects_pass0_as_final_citation(vault: Path):
