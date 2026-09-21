@@ -1738,6 +1738,67 @@
       "required": ["contract", "slice_id", "batch_id", "task_ids", "input_codepoints", "input_fingerprint", "template_id", "template_hash", "state", "attempt", "lease", "retry_at", "result_refs", "last_error", "revision"],
       "additionalProperties": false
     },
+    "ingest_workflow_scope": {
+      "type": "object",
+      "properties": {
+        "source_paths": {"type": "array", "items": {"type": "string", "minLength": 1, "format": "vault-relative-path"}, "minItems": 0, "uniqueItems": true},
+        "knowledge_selector": {"type": "string", "minLength": 1, "pattern": "\\S"}
+      },
+      "required": ["source_paths", "knowledge_selector"],
+      "additionalProperties": false
+    },
+    "ingest_workflow_checkpoint": {
+      "type": "object",
+      "properties": {
+        "state": {"enum": ["pending", "approved"]},
+        "approval_digest": {"anyOf": [{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, {"type": "null"}]},
+        "approved_by": {"anyOf": [{"type": "string", "minLength": 1, "pattern": "\\S"}, {"type": "null"}]}
+      },
+      "required": ["state", "approval_digest", "approved_by"],
+      "additionalProperties": false
+    },
+    "ingest_workflow_task": {
+      "type": "object",
+      "properties": {
+        "node": {"type": "string", "minLength": 1},
+        "idempotency_key": {"type": "string", "minLength": 1}
+      },
+      "required": ["node", "idempotency_key"],
+      "additionalProperties": false
+    },
+    "ingest_workflow_artifact": {
+      "type": "object",
+      "properties": {
+        "stage": {"type": "string", "minLength": 1},
+        "refs": {"type": "array", "items": {"type": "string", "minLength": 1, "format": "vault-relative-path"}, "minItems": 0, "uniqueItems": true}
+      },
+      "required": ["stage", "refs"],
+      "additionalProperties": false
+    },
+    "ingest_workflow": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-ingest-workflow/v1"},
+        "workflow_id": {"type": "string", "minLength": 8, "maxLength": 160, "pattern": "^ingest-[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "schema_version": {"const": 1},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "profile": {"enum": ["compact-3", "diagnostic-6"]},
+        "scope": {"$ref": "#/$defs/ingest_workflow_scope"},
+        "state": {"enum": ["created", "source_preparing", "planning", "analyzing", "reducing", "checkpoint_1", "build_finalizing", "release_planning", "checkpoint_2", "applying", "indexing", "validating", "completed", "partial", "failed", "cancelled"]},
+        "current_stage": {"enum": ["created", "source_preparing", "planning", "analyzing", "reducing", "checkpoint_1", "build_finalizing", "release_planning", "checkpoint_2", "applying", "indexing", "validating", "completed"]},
+        "batch_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, {"type": "null"}]},
+        "pinned_inputs": {"type": "object", "properties": {"batch_id": {"type": "string", "minLength": 1}, "document_registry_revision": {"type": "integer", "minimum": 0}, "task_ids_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}, "additionalProperties": false},
+        "kanban": {"type": "object", "properties": {"board_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}, "task_map": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_task"}, "minItems": 0}}, "required": ["board_id", "task_map"], "additionalProperties": false},
+        "checkpoints": {"type": "object", "properties": {"checkpoint_1": {"$ref": "#/$defs/ingest_workflow_checkpoint"}, "checkpoint_2": {"$ref": "#/$defs/ingest_workflow_checkpoint"}}, "required": ["checkpoint_1", "checkpoint_2"], "additionalProperties": false},
+        "artifacts": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_artifact"}, "minItems": 0},
+        "cancel_requested": {"type": "boolean"},
+        "resume_stage": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "revision": {"type": "integer", "minimum": 1},
+        "start_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      },
+      "required": ["contract", "workflow_id", "schema_version", "actor", "profile", "scope", "state", "current_stage", "batch_id", "pinned_inputs", "kanban", "checkpoints", "artifacts", "cancel_requested", "resume_stage", "revision", "start_digest"],
+      "additionalProperties": false
+    },
     "knowledge_batch": {
       "type": "object",
       "properties": {
