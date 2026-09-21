@@ -30,9 +30,14 @@ DEFAULT_SLICE_CONFIG = {
     "max_attempts": 3,
 }
 PASS_TEMPLATE_ID = "knowledge-pass/v1"
+RESOURCE_REDUCE_TEMPLATE_ID = "knowledge-resource-reduce/v1"
+GLOBAL_REDUCE_TEMPLATE_ID = "knowledge-global-reduce/v1"
 TRANSIENT_BACKOFF_SECONDS = (60, 180, 600)
+DEFAULT_REDUCTION_CONFIG = {"resource_reducer_concurrency": 2,
+                            "global_reducer_concurrency": 1}
 _BATCH_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 _SLICE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
+_REDUCTION_ID = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _fail(code: str, message: str, path: str = "$") -> None:
@@ -67,6 +72,11 @@ def _parse_utc(value: str) -> datetime:
 
 def _pass_template_hash() -> str:
     return fingerprint({"template_id": PASS_TEMPLATE_ID,
+                        "task_contract": KNOWLEDGE_CONTRACT})
+
+
+def _reducer_template_hash(template_id: str) -> str:
+    return fingerprint({"template_id": template_id,
                         "task_contract": KNOWLEDGE_CONTRACT})
 
 
@@ -165,6 +175,35 @@ class FileKnowledgeBuildService:
         if not _SLICE_ID.fullmatch(slice_id):
             _fail("INVALID_SCHEMA", "invalid knowledge-build slice id", "$.slice_id")
         return self._slice_root(batch_id) / f"{slice_id}.json"
+
+    def _resource_reduction_path(self, batch_id: str, reduction_id: str) -> Path:
+        if not _REDUCTION_ID.fullmatch(reduction_id):
+            _fail("INVALID_SCHEMA", "invalid resource reduction id", "$.reduction_id")
+        return _vault_path(
+            self.vault, f"{BATCH_ROOT}/{batch_id}/reductions/resources/{reduction_id}.json")
+
+    def _global_reduction_path(self, batch_id: str, coordination_id: str) -> Path:
+        if not _REDUCTION_ID.fullmatch(coordination_id):
+            _fail("INVALID_SCHEMA", "invalid global coordination id", "$.coordination_id")
+        return _vault_path(
+            self.vault, f"{BATCH_ROOT}/{batch_id}/reductions/global/{coordination_id}.json")
+
+    def _global_reduction_lock_path(self, batch_id: str) -> Path:
+        return _vault_path(self.vault, f"{BATCH_ROOT}/{batch_id}/reductions/.global.lock")
+
+    def _resource_reduction(self, batch_id: str, reduction_id: str) -> dict[str, Any]:
+        value = _load_json(self._resource_reduction_path(batch_id, reduction_id))
+        validate_record("resource_reduction", value)
+        if value["batch_id"] != batch_id:
+            _fail("INVALID_SCHEMA", "resource reduction belongs to a different batch")
+        return value
+
+    def _global_reduction(self, batch_id: str, coordination_id: str) -> dict[str, Any]:
+        value = _load_json(self._global_reduction_path(batch_id, coordination_id))
+        validate_record("global_reduction", value)
+        if value["batch_id"] != batch_id:
+            _fail("INVALID_SCHEMA", "global reduction belongs to a different batch")
+        return value
 
     def _slice(self, batch_id: str, slice_id: str) -> dict[str, Any]:
         value = _load_json(self._slice_path(batch_id, slice_id))
@@ -450,7 +489,9 @@ class FileKnowledgeBuildService:
                  "state": "planned", "last_operation": "plan", "failures": [],
                  "slices_initialized": False, "slice_ids": [], "slice_config": None,
                  "cancel_requested": False, "cooldown_until": None,
-                 "cooldown_reason": None}
+                 "cooldown_reason": None,
+                 "reduction_config": dict(DEFAULT_REDUCTION_CONFIG),
+                 "resource_reduction_ids": [], "global_reduction_id": None}
         validate_record("knowledge_batch", batch)
         return batch
 
@@ -1060,6 +1101,10 @@ class FileKnowledgeBuildService:
         batch = self._batch(batch_id)
         tasks = [self._task(task_id) for task_id in batch["task_ids"]]
         slices = self._slices(batch_id)
+        resource_reductions = [self._resource_reduction(batch_id, reduction_id)
+                               for reduction_id in batch.get("resource_reduction_ids", [])]
+        global_reduction = (self._global_reduction(batch_id, batch["global_reduction_id"])
+                            if batch.get("global_reduction_id") is not None else None)
         slice_counts: dict[str, int] = {}
         for item in slices:
             slice_counts[item["state"]] = slice_counts.get(item["state"], 0) + 1
@@ -1112,9 +1157,18 @@ class FileKnowledgeBuildService:
             if any(item["status"] == "running" and item["reading_packages"] and not item["passes"]
                    for item in task_details):
                 next_actions.append("batch-pass")
-            if any(item["status"] == "running" and item["passes"] and item["task_id"] in uncovered
-                   for item in task_details):
-                next_actions.append("batch-reduce")
+            reducible = {item["task_id"] for item in task_details
+                         if item["status"] == "running" and item["passes"]
+                         and item["task_id"] in uncovered}
+            resource_covered = {snapshot["task_id"] for reduction in resource_reductions
+                                for snapshot in reduction["tasks"]}
+            if reducible - resource_covered:
+                next_actions.append("batch-resource-reduce")
+            elif (reducible and global_reduction is None
+                  and not any(item["status"] == "pending" or
+                              (item["status"] == "running" and not item["passes"])
+                              for item in task_details)):
+                next_actions.append("batch-global-reduce")
             if batch["run_ids"]:
                 next_actions.append("batch-validate")
             if any(item["state"] == "draft" for item in run_details):
@@ -1132,11 +1186,19 @@ class FileKnowledgeBuildService:
                                   "passes": sum(item["passes"] for item in task_details),
                                   "uncovered_tasks": len(uncovered),
                                   "total_slices": len(slices),
-                                  "completed_slices": slice_counts.get("completed", 0)}
+                                  "completed_slices": slice_counts.get("completed", 0),
+                                  "resource_reductions": len(resource_reductions),
+                                  "global_reduction_complete": global_reduction is not None}
             status["failure_count"] = len(batch["failures"])
         else:
             status["tasks"] = task_details
             status["slices"] = slices
+            status["resource_reductions"] = [{
+                "reduction_id": item["reduction_id"], "resource_id": item["resource_id"],
+                "task_count": len(item["tasks"]), "proposal_count": len(item["proposals"]),
+                "output_fingerprint": item["output_fingerprint"],
+            } for item in resource_reductions]
+            status["global_reduction"] = global_reduction
             status["uncovered_task_ids"] = uncovered
         return status
 
@@ -1629,6 +1691,308 @@ class FileKnowledgeBuildService:
             _write_atomic(draft, content.encode("utf-8"))
         _write_atomic(path, _json_bytes(record))
         return {"ok": True, "created": True, "run": record}
+
+    @staticmethod
+    def _candidate_ref_key(value: Mapping[str, Any]) -> tuple[str, str]:
+        return str(value["pass_id"]), str(value["candidate_id"])
+
+    def reduce_resource(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Persist one resource-local proposal set without reading raw packages."""
+        batch_id = str(request["batch_id"])
+        with _exclusive_lock(self._global_reduction_lock_path(batch_id)):
+            return self._reduce_resource_locked(request)
+
+    def _reduce_resource_locked(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        self.source.enable_session_cache()
+        batch_id, resource_id = str(request["batch_id"]), str(request["resource_id"])
+        actor = str(request["actor"])
+        snapshots = [dict(item) for item in request["tasks"]]
+        task_ids = [str(item["task_id"]) for item in snapshots]
+        if not task_ids or len(set(task_ids)) != len(task_ids):
+            _fail("INVALID_SCHEMA", "resource reducer requires unique tasks", "$.tasks")
+        template_id = str(request.get("template_id", RESOURCE_REDUCE_TEMPLATE_ID))
+        template_hash = str(request.get("template_hash") or _reducer_template_hash(template_id))
+        if not re.fullmatch(r"[0-9a-f]{64}", template_hash):
+            _fail("INVALID_SCHEMA", "resource reducer template hash must be sha256 hex")
+
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            if batch["actor"] != actor:
+                _fail("ACCESS_DENIED", "resource reducer actor must own the batch")
+            if not set(task_ids).issubset(set(batch["task_ids"])):
+                _fail("ACCESS_DENIED", "resource reduction contains tasks outside the batch")
+            tasks = [self._task(task_id) for task_id in task_ids]
+            for snapshot, task in zip(snapshots, tasks):
+                if task["actor"] != actor:
+                    _fail("ACCESS_DENIED", "resource reducer actor must own every task")
+                resources = {str(ref["unit_ref"]["resource_id"]) for ref in task["target_refs"]}
+                if resources != {resource_id}:
+                    _fail("INVALID_SCOPE", "resource reducer task crosses resource boundaries")
+
+            candidates, passes_by_task = self._pass_index(task_ids)
+            pass_refs = []
+            available: set[tuple[str, str]] = set()
+            for task_id in task_ids:
+                passes = passes_by_task.get(task_id, [])
+                if not passes or passes[0]["sequence"] != 0 or passes[0]["pass_kind"] != "candidate":
+                    _fail("INCOMPLETE_PASSES", "resource reducer requires Pass 0 for every task")
+                if [item["sequence"] for item in passes] != list(range(len(passes))):
+                    _fail("INCOMPLETE_PASSES", "resource reducer found a Pass sequence gap")
+                for item in passes:
+                    candidate_ids = [str(candidate["candidate_id"]) for candidate in item["candidates"]]
+                    pass_refs.append({"pass_id": item["pass_id"], "task_id": task_id,
+                                      "sequence": item["sequence"],
+                                      "pass_kind": item["pass_kind"],
+                                      "candidate_ids": candidate_ids})
+                    if item["pass_kind"] == "citation":
+                        available.update((item["pass_id"], candidate_id)
+                                         for candidate_id in candidate_ids)
+
+            proposals = [dict(item) for item in request.get("proposals", [])]
+            proposal_ids = [str(item.get("proposal_id", "")) for item in proposals]
+            if len(set(proposal_ids)) != len(proposal_ids):
+                _fail("DUPLICATE", "resource reduction has duplicate proposal ids")
+            proposed: set[tuple[str, str]] = set()
+            for proposal in proposals:
+                for candidate_ref in proposal["candidate_refs"]:
+                    key = self._candidate_ref_key(candidate_ref)
+                    if key not in available or key not in candidates:
+                        _fail("UNRESOLVED_REFERENCE",
+                              "resource proposal references a non-citation candidate")
+                    if key in proposed:
+                        _fail("DUPLICATE", "citation candidate appears in multiple proposals")
+                    proposed.add(key)
+            omitted_refs = [dict(item) for item in request.get("omitted_candidate_refs", [])]
+            omitted = {self._candidate_ref_key(item) for item in omitted_refs}
+            if len(omitted) != len(omitted_refs) or proposed & omitted:
+                _fail("DUPLICATE", "candidate cannot be proposed and omitted")
+            if proposed | omitted != available:
+                _fail("INCOMPLETE_COVERAGE",
+                      "resource reduction must propose or explicitly omit every citation candidate")
+
+            input_fingerprint = "sha256:" + fingerprint({
+                "batch_id": batch_id, "resource_id": resource_id,
+                "tasks": snapshots, "passes": pass_refs,
+                "template_id": template_id, "template_hash": template_hash,
+            })
+            reduction_id = fingerprint({"batch_id": batch_id, "resource_id": resource_id,
+                                        "input_fingerprint": input_fingerprint,
+                                        "template_hash": template_hash})
+            output_fingerprint = "sha256:" + fingerprint({
+                "proposals": proposals, "omitted_candidate_refs": omitted_refs,
+                "reason": str(request.get("reason", "")),
+            })
+            record = {
+                "contract": "hermes-resource-reduction/v1", "reduction_id": reduction_id,
+                "idempotency_key": "sha256:" + reduction_id,
+                "batch_id": batch_id, "resource_id": resource_id, "actor": actor,
+                "tasks": snapshots, "pass_refs": pass_refs,
+                "input_fingerprint": input_fingerprint,
+                "template_id": template_id, "template_hash": template_hash,
+                "proposals": proposals, "omitted_candidate_refs": omitted_refs,
+                "output_fingerprint": output_fingerprint,
+                "state": "completed", "revision": 1,
+                "reason": str(request.get("reason", "")),
+            }
+            validate_record("resource_reduction", record)
+            for existing_id in batch.get("resource_reduction_ids", []):
+                existing_record = self._resource_reduction(batch_id, existing_id)
+                if (existing_record["resource_id"] == resource_id
+                        and existing_id != reduction_id):
+                    _fail("STALE_INPUT",
+                          "resource already has a reduction pinned to different Pass inputs")
+            path = self._resource_reduction_path(batch_id, reduction_id)
+            created = not path.exists()
+            if not created and _load_json(path) != record:
+                _fail("IDEMPOTENCY_CONFLICT",
+                      "same resource reduction input has different output")
+            if not created and reduction_id in batch.get("resource_reduction_ids", []):
+                return {"ok": True, "created": False, "reduction": record,
+                        "batch": batch}
+            if batch.get("cancel_requested"):
+                _fail("CANCELLED", "resource reduction rejected after batch cancellation")
+            if batch.get("global_reduction_id") is not None:
+                _fail("INVALID_STATE", "resource reductions are closed after global coordination")
+            for snapshot, task in zip(snapshots, tasks):
+                if task["revision"] != int(snapshot["revision"]) or task["status"] != "running":
+                    _fail("STALE_INPUT", "resource reducer requires current running task revisions")
+            if created:
+                _write_atomic(path, _json_bytes(record))
+            updated_batch = copy.deepcopy(batch)
+            updated_batch.update({
+                "state": "analyzing", "last_operation": "resource_reduce",
+                "resource_reduction_ids": sorted(set(
+                    [*batch.get("resource_reduction_ids", []), reduction_id])),
+                "reduction_config": dict(batch.get("reduction_config") or DEFAULT_REDUCTION_CONFIG),
+                "revision": int(batch["revision"]) + 1,
+            })
+            validate_record("knowledge_batch", updated_batch)
+            _write_atomic(self._batch_path(batch_id), _json_bytes(updated_batch))
+            return {"ok": True, "created": created, "reduction": record,
+                    "batch": updated_batch}
+
+    def reduce_global(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Coordinate resource proposals once, then materialize ordinary draft runs."""
+        self.source.enable_session_cache()
+        batch_id, actor = str(request["batch_id"]), str(request["actor"])
+        reduction_ids = sorted(str(item) for item in request["resource_reduction_ids"])
+        if not reduction_ids or len(set(reduction_ids)) != len(reduction_ids):
+            _fail("INVALID_SCHEMA", "global reducer requires unique resource reductions")
+        template_id = str(request.get("template_id", GLOBAL_REDUCE_TEMPLATE_ID))
+        template_hash = str(request.get("template_hash") or _reducer_template_hash(template_id))
+        if not re.fullmatch(r"[0-9a-f]{64}", template_hash):
+            _fail("INVALID_SCHEMA", "global reducer template hash must be sha256 hex")
+        runs = [dict(item) for item in request["runs"]]
+        omitted_refs = [dict(item) for item in request.get("omitted_candidate_refs", [])]
+        reductions = [self._resource_reduction(batch_id, item) for item in reduction_ids]
+        input_fingerprint = "sha256:" + fingerprint({
+            "batch_id": batch_id,
+            "resource_reductions": [{"reduction_id": item["reduction_id"],
+                                     "output_fingerprint": item["output_fingerprint"]}
+                                    for item in reductions],
+            "template_id": template_id, "template_hash": template_hash,
+        })
+        coordination_id = fingerprint({"batch_id": batch_id,
+                                       "input_fingerprint": input_fingerprint,
+                                       "template_hash": template_hash})
+        output_fingerprint = "sha256:" + fingerprint({
+            "runs": runs, "omitted_candidate_refs": omitted_refs,
+            "reason": str(request.get("reason", "")),
+        })
+        record = {
+            "contract": "hermes-global-reduction/v1",
+            "coordination_id": coordination_id,
+            "idempotency_key": "sha256:" + coordination_id,
+            "batch_id": batch_id, "actor": actor,
+            "resource_reduction_ids": reduction_ids,
+            "input_fingerprint": input_fingerprint,
+            "template_id": template_id, "template_hash": template_hash,
+            "run_ids": [str(item["run_id"]) for item in runs],
+            "omitted_candidate_refs": omitted_refs,
+            "output_fingerprint": output_fingerprint,
+            "state": "completed", "revision": 1,
+            "reason": str(request.get("reason", "")),
+        }
+        validate_record("global_reduction", record)
+
+        with _exclusive_lock(self._global_reduction_lock_path(batch_id)):
+            path = self._global_reduction_path(batch_id, coordination_id)
+            if path.exists():
+                existing = self._global_reduction(batch_id, coordination_id)
+                if existing != record:
+                    _fail("IDEMPOTENCY_CONFLICT",
+                          "same global reduction input has different output")
+                with _exclusive_lock(self._batch_lock_path(batch_id)):
+                    current = self._batch(batch_id)
+                    existing_global = current.get("global_reduction_id")
+                    if existing_global not in (None, coordination_id):
+                        _fail("IDEMPOTENCY_CONFLICT",
+                              "batch already has a different global reduction")
+                    if existing_global is None:
+                        current = copy.deepcopy(current)
+                        current.update({"global_reduction_id": coordination_id,
+                                        "reduction_config": dict(
+                                            current.get("reduction_config")
+                                            or DEFAULT_REDUCTION_CONFIG),
+                                        "last_operation": "global_reduce",
+                                        "revision": int(current["revision"]) + 1})
+                        validate_record("knowledge_batch", current)
+                        _write_atomic(self._batch_path(batch_id), _json_bytes(current))
+                return {"ok": True, "created": False, "coordination": existing,
+                        "runs": [{"run_id": run_id, "created": False}
+                                 for run_id in existing["run_ids"]], "batch": current}
+
+            batch = self._batch(batch_id)
+            if batch.get("cancel_requested"):
+                _fail("CANCELLED", "global reduction rejected after batch cancellation")
+            if batch["actor"] != actor:
+                _fail("ACCESS_DENIED", "global reducer actor must own the batch")
+            configured = batch.get("reduction_config") or DEFAULT_REDUCTION_CONFIG
+            if int(configured["global_reducer_concurrency"]) != 1:
+                _fail("INVALID_SCHEMA", "global reducer concurrency must remain 1")
+            if set(reduction_ids) != set(batch.get("resource_reduction_ids", [])):
+                _fail("STALE_INPUT", "global reducer does not pin the complete resource reduction set")
+            if batch.get("global_reduction_id") not in (None, coordination_id):
+                _fail("IDEMPOTENCY_CONFLICT", "batch already has a different global reduction")
+            if any(item["actor"] != actor for item in reductions):
+                _fail("ACCESS_DENIED", "resource reduction actor differs from global actor")
+
+            task_owners: dict[str, str] = {}
+            proposed: set[tuple[str, str]] = set()
+            for reduction in reductions:
+                for snapshot in reduction["tasks"]:
+                    task_id = str(snapshot["task_id"])
+                    if task_id in task_owners:
+                        _fail("DUPLICATE", "task appears in multiple resource reductions")
+                    task = self._task(task_id)
+                    if (task["revision"] != int(snapshot["revision"])
+                            or task["status"] != "running"):
+                        _fail("STALE_INPUT", "resource task revision changed before global Reduce")
+                    current_passes = self._pass_index([task_id])[1].get(task_id, [])
+                    pinned_passes = [item for item in reduction["pass_refs"]
+                                     if item["task_id"] == task_id]
+                    observed_passes = [{"pass_id": item["pass_id"], "task_id": task_id,
+                                        "sequence": item["sequence"],
+                                        "pass_kind": item["pass_kind"],
+                                        "candidate_ids": [str(candidate["candidate_id"])
+                                                          for candidate in item["candidates"]]}
+                                       for item in current_passes]
+                    if pinned_passes != observed_passes:
+                        _fail("STALE_INPUT", "resource Pass set changed before global Reduce")
+                    task_owners[task_id] = reduction["reduction_id"]
+                for proposal in reduction["proposals"]:
+                    proposed.update(self._candidate_ref_key(item)
+                                    for item in proposal["candidate_refs"])
+            eligible = {task_id for task_id in batch["task_ids"]
+                        if self._task(task_id)["status"] not in ("blocked", "failed", "skipped")}
+            if set(task_owners) != eligible:
+                _fail("INCOMPLETE_COVERAGE",
+                      "resource reductions must cover every eligible batch task exactly once")
+
+            run_task_owners: dict[str, str] = {}
+            used_refs: list[tuple[str, str]] = []
+            for run in runs:
+                run_id = str(run["run_id"])
+                for snapshot in run["tasks"]:
+                    task_id = str(snapshot["task_id"])
+                    if task_id in run_task_owners:
+                        _fail("DUPLICATE", "task is assigned to multiple draft runs")
+                    run_task_owners[task_id] = run_id
+                for decision in run["decisions"]:
+                    used_refs.extend(self._candidate_ref_key(item)
+                                     for item in decision["candidate_refs"])
+            if set(run_task_owners) != eligible:
+                _fail("INCOMPLETE_COVERAGE",
+                      "global reducer must assign every eligible task to one draft run")
+            if len(set(used_refs)) != len(used_refs):
+                _fail("DUPLICATE", "citation candidate is assigned to multiple decisions")
+            used = set(used_refs)
+            omitted = {self._candidate_ref_key(item) for item in omitted_refs}
+            if len(omitted) != len(omitted_refs) or used & omitted:
+                _fail("DUPLICATE", "global candidate cannot be used and omitted")
+            if used | omitted != proposed:
+                _fail("INCOMPLETE_COVERAGE",
+                      "global reducer must use or omit every resource proposal candidate")
+
+            reduced = self.reduce_batch({"batch_id": batch_id, "runs": runs})
+            if not reduced["ok"]:
+                return {"ok": False, "created": False, "coordination": None,
+                        "runs": reduced["results"], "failures": reduced["failures"]}
+            _write_atomic(path, _json_bytes(record))
+            with _exclusive_lock(self._batch_lock_path(batch_id)):
+                current = self._batch(batch_id)
+                existing_global = current.get("global_reduction_id")
+                if existing_global not in (None, coordination_id):
+                    _fail("IDEMPOTENCY_CONFLICT", "batch already has a different global reduction")
+                current = copy.deepcopy(current)
+                current.update({"global_reduction_id": coordination_id,
+                                "reduction_config": dict(configured),
+                                "last_operation": "global_reduce",
+                                "revision": int(current["revision"]) + 1})
+                validate_record("knowledge_batch", current)
+                _write_atomic(self._batch_path(batch_id), _json_bytes(current))
+            return {"ok": True, "created": True, "coordination": record,
+                    "runs": reduced["results"], "batch": current}
 
     def reduce_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Create non-conflicting draft runs while retaining legacy run artifacts."""
