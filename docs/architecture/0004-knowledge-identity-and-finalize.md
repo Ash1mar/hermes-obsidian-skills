@@ -43,3 +43,5 @@ controlled-ingest 继续负责来源准备、Unit 发布、阅读任务、候选
 2026-09-20 批次执行补充：P3 增加附加式 `hermes-knowledge-build-batch/v1` 调度账本和 batch plan/adopt/prepare/pass/reduce/validate/finalize 命令。UnitSet、artifact 与治理读取在单次批次命令内按文件签名缓存；计划只扫描一次活动/已完成任务索引。批次不替换原 task/reading/Pass/run/page 契约：模型仍在有界 reading package 上判断，Reduce 全批协调 identity/path，Build Finalize 在共享锁内逐 run 幂等提交。旧计划通过只读 adopt 接入，因此无需迁移或重写既有产物。
 
 2026-09-21 精确读取预算补充：batch measure/plan/prepare 共享 canonical `window + materials` 构造与序列化路径。预算同时覆盖 core、ancestor、context 和引用/标题/哈希等 metadata；计划把 measurement、reader-config hash、UnitSet revision 与输入指纹钉入 task ledger，prepare 在 claim 前重算，任何漂移均停止为 `STALE_PLAN`。不可分割的 whole-asset 超限保持显式 blocker，不截断规避。
+
+2026-09-21 可恢复切片补充：批次在首次领取时按稳定任务顺序和精确输入指纹生成有界 `hermes-knowledge-build-slice/v1` 账本。默认同时租出 2 片，每片最多 3 个任务或 30000 输入 codepoints；租约、心跳、重试等待、最大尝试、过期回收和批次取消均在批次锁内以 revision 转换。完成片不可被取消或回收，过期 worker 不得迟交；切片只作为 Pass worker 的持久调度控制面，不改变 task、reading、Pass、Reduce 与 Finalize 的权威边界。

@@ -1583,6 +1583,63 @@
       "required": ["stage", "item_id", "code", "message"],
       "additionalProperties": false
     },
+    "knowledge_slice_config": {
+      "type": "object",
+      "properties": {
+        "pass_worker_concurrency": {"type": "integer", "minimum": 1},
+        "slice_max_tasks": {"type": "integer", "minimum": 1},
+        "slice_max_input_codepoints": {"type": "integer", "minimum": 1},
+        "lease_seconds": {"type": "integer", "minimum": 1},
+        "heartbeat_seconds": {"type": "integer", "minimum": 1},
+        "max_attempts": {"type": "integer", "minimum": 1}
+      },
+      "required": ["pass_worker_concurrency", "slice_max_tasks", "slice_max_input_codepoints", "lease_seconds", "heartbeat_seconds", "max_attempts"],
+      "additionalProperties": false
+    },
+    "knowledge_slice_lease": {
+      "type": "object",
+      "properties": {
+        "worker_id": {"anyOf": [{"type": "string", "minLength": 1, "pattern": "\\S"}, {"type": "null"}]},
+        "claimed_at": {"anyOf": [{"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T.*Z$"}, {"type": "null"}]},
+        "heartbeat_at": {"anyOf": [{"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T.*Z$"}, {"type": "null"}]},
+        "expires_at": {"anyOf": [{"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T.*Z$"}, {"type": "null"}]}
+      },
+      "required": ["worker_id", "claimed_at", "heartbeat_at", "expires_at"],
+      "additionalProperties": false
+    },
+    "knowledge_slice_error": {
+      "type": "object",
+      "properties": {
+        "code": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "message": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "retryable": {"type": "boolean"},
+        "at": {"anyOf": [{"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T.*Z$"}, {"type": "null"}]}
+      },
+      "required": ["code", "message", "retryable", "at"],
+      "additionalProperties": false
+    },
+    "knowledge_slice": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-knowledge-build-slice/v1"},
+        "slice_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "batch_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "task_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 1, "uniqueItems": true},
+        "input_codepoints": {"type": "integer", "minimum": 0},
+        "input_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "template_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "template_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "state": {"enum": ["ready", "leased", "retry_wait", "completed", "blocked", "cancelled"]},
+        "attempt": {"type": "integer", "minimum": 0},
+        "lease": {"$ref": "#/$defs/knowledge_slice_lease"},
+        "retry_at": {"anyOf": [{"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T.*Z$"}, {"type": "null"}]},
+        "result_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true},
+        "last_error": {"anyOf": [{"$ref": "#/$defs/knowledge_slice_error"}, {"type": "null"}]},
+        "revision": {"type": "integer", "minimum": 1}
+      },
+      "required": ["contract", "slice_id", "batch_id", "task_ids", "input_codepoints", "input_fingerprint", "template_id", "template_hash", "state", "attempt", "lease", "retry_at", "result_refs", "last_error", "revision"],
+      "additionalProperties": false
+    },
     "knowledge_batch": {
       "type": "object",
       "properties": {
@@ -1594,9 +1651,13 @@
         "origin": {"$ref": "#/$defs/knowledge_batch_origin"},
         "task_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 1, "uniqueItems": true},
         "run_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 0, "uniqueItems": true},
-        "state": {"enum": ["planned", "analyzing", "checkpoint_1", "finalizing", "completed", "blocked"]},
-        "last_operation": {"enum": ["plan", "adopt", "prepare", "pass", "reduce", "validate", "finalize"]},
-        "failures": {"type": "array", "items": {"$ref": "#/$defs/knowledge_batch_failure"}, "minItems": 0}
+        "state": {"enum": ["planned", "analyzing", "checkpoint_1", "finalizing", "completed", "blocked", "cancelled"]},
+        "last_operation": {"enum": ["plan", "adopt", "prepare", "pass", "reduce", "validate", "finalize", "slice", "cancel"]},
+        "failures": {"type": "array", "items": {"$ref": "#/$defs/knowledge_batch_failure"}, "minItems": 0},
+        "slices_initialized": {"type": "boolean"},
+        "slice_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 0, "uniqueItems": true},
+        "slice_config": {"anyOf": [{"$ref": "#/$defs/knowledge_slice_config"}, {"type": "null"}]},
+        "cancel_requested": {"type": "boolean"}
       },
       "required": ["contract", "batch_id", "revision", "actor", "document_registry_revision", "origin", "task_ids", "run_ids", "state", "last_operation", "failures"],
       "additionalProperties": false

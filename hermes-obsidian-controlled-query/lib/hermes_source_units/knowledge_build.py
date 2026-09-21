@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import re
 from typing import Any, Iterable, Mapping
@@ -19,11 +20,47 @@ KNOWLEDGE_CONTRACT = "hermes-knowledge-build-run/v1"
 READING_MEASUREMENT_CONTRACT = "hermes-reading-window-measurement/v1"
 READING_SERIALIZATION = "canonical-json-window-materials/v1"
 READING_CONTEXT_SELECTION = "source-context-trimmed-to-serialized-budget/v1"
+SLICE_CONTRACT = "hermes-knowledge-build-slice/v1"
+DEFAULT_SLICE_CONFIG = {
+    "pass_worker_concurrency": 2,
+    "slice_max_tasks": 3,
+    "slice_max_input_codepoints": 30000,
+    "lease_seconds": 1800,
+    "heartbeat_seconds": 60,
+    "max_attempts": 3,
+}
 _BATCH_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
+_SLICE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,159}$")
 
 
 def _fail(code: str, message: str, path: str = "$") -> None:
     raise ContractError(code, path, message)
+
+
+def _utc(value: datetime | str | None = None) -> tuple[datetime, str]:
+    if value is None:
+        moment = datetime.now(timezone.utc)
+    elif isinstance(value, str):
+        try:
+            moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ContractError("INVALID_SCHEMA", "$.now", "invalid UTC timestamp") from exc
+    else:
+        moment = value
+    if moment.tzinfo is None:
+        _fail("INVALID_SCHEMA", "timestamp must carry a timezone", "$.now")
+    moment = moment.astimezone(timezone.utc).replace(microsecond=0)
+    return moment, moment.isoformat().replace("+00:00", "Z")
+
+
+def _parse_utc(value: str) -> datetime:
+    try:
+        moment = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ContractError("INVALID_SCHEMA", "$", "invalid stored UTC timestamp") from exc
+    if moment.tzinfo is None:
+        _fail("INVALID_SCHEMA", "stored timestamp must carry a timezone")
+    return moment.astimezone(timezone.utc)
 
 
 def _same_ref(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
@@ -86,6 +123,38 @@ class FileKnowledgeBuildService:
         if not _BATCH_ID.fullmatch(batch_id):
             _fail("INVALID_SCHEMA", "invalid knowledge-build batch id", "$.batch_id")
         return _vault_path(self.vault, f"{BATCH_ROOT}/.locks/{batch_id}.lock")
+
+    def _slice_root(self, batch_id: str) -> Path:
+        self._batch_path(batch_id)
+        return _vault_path(self.vault, f"{BATCH_ROOT}/{batch_id}/slices")
+
+    def _slice_path(self, batch_id: str, slice_id: str) -> Path:
+        if not _SLICE_ID.fullmatch(slice_id):
+            _fail("INVALID_SCHEMA", "invalid knowledge-build slice id", "$.slice_id")
+        return self._slice_root(batch_id) / f"{slice_id}.json"
+
+    def _slice(self, batch_id: str, slice_id: str) -> dict[str, Any]:
+        value = _load_json(self._slice_path(batch_id, slice_id))
+        validate_record("knowledge_slice", value)
+        if value["batch_id"] != batch_id:
+            _fail("INVALID_SCHEMA", "slice belongs to a different batch")
+        return value
+
+    def _slices(self, batch_id: str) -> list[dict[str, Any]]:
+        root = self._slice_root(batch_id)
+        values = []
+        for path in sorted(root.glob("*.json")) if root.exists() else []:
+            value = _load_json(path)
+            validate_record("knowledge_slice", value)
+            if value["batch_id"] != batch_id:
+                _fail("INVALID_SCHEMA", "slice directory contains a foreign batch")
+            values.append(value)
+        return values
+
+    def _write_slice(self, value: Mapping[str, Any]) -> None:
+        validate_record("knowledge_slice", value)
+        _write_atomic(self._slice_path(str(value["batch_id"]), str(value["slice_id"])),
+                      _json_bytes(value))
 
     def _task(self, task_id: str) -> dict[str, Any]:
         value = _load_json(self._task_path(task_id))
@@ -345,7 +414,9 @@ class FileKnowledgeBuildService:
                  "revision": 1, "actor": actor,
                  "document_registry_revision": registry_revision,
                  "origin": dict(origin), "task_ids": task_ids, "run_ids": [],
-                 "state": "planned", "last_operation": "plan", "failures": []}
+                 "state": "planned", "last_operation": "plan", "failures": [],
+                 "slices_initialized": False, "slice_ids": [], "slice_config": None,
+                 "cancel_requested": False}
         validate_record("knowledge_batch", batch)
         return batch
 
@@ -485,9 +556,318 @@ class FileKnowledgeBuildService:
                 "code": exc.code if isinstance(exc, ContractError) else type(exc).__name__,
                 "message": str(exc)}
 
+    @staticmethod
+    def _slice_config(value: Mapping[str, Any] | None = None) -> dict[str, int]:
+        raw = dict(value or {})
+        config = {key: int(raw.get(key, default)) for key, default in DEFAULT_SLICE_CONFIG.items()}
+        validate_record("knowledge_slice_config", config)
+        return config
+
+    def _slice_task_input(self, batch: Mapping[str, Any], task: Mapping[str, Any]) -> dict[str, Any]:
+        measurement = task.get("reading_measurement")
+        if measurement is not None:
+            return {"codepoints": int(measurement["serialized_codepoints"]),
+                    "fingerprint": str(measurement["input_fingerprint"]),
+                    "blocking_code": measurement.get("blocking_code")}
+        package = self._existing_reading_package(
+            task, str(batch["actor"]), int(batch["document_registry_revision"]))
+        if package is not None:
+            projection = self._reading_projection(package["window"], package["materials"])
+            return {"codepoints": len(canonical_json(projection).decode("utf-8")),
+                    "fingerprint": "sha256:" + fingerprint({"package_id": package["package_id"]}),
+                    "blocking_code": None}
+        reader_config = self._reader_config()
+        observed = self.measure_reading_window(
+            task["target_refs"], int(batch["document_registry_revision"]),
+            self._unitset_revisions(task["target_refs"]), reader_config,
+            actor=str(batch["actor"]))
+        return {"codepoints": int(observed["serialized_codepoints"]),
+                "fingerprint": str(observed["input_fingerprint"]),
+                "blocking_code": observed.get("blocking_code")}
+
+    def _ensure_slices(self, batch: Mapping[str, Any],
+                       requested_config: Mapping[str, Any] | None = None,
+                       template_id: str = "knowledge-pass/v1",
+                       template_hash: str | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        configured = self._slice_config(requested_config)
+        if batch.get("slices_initialized"):
+            if batch.get("slice_config") != configured:
+                _fail("STALE_PLAN", "slice configuration differs from the initialized batch")
+            slices = self._slices(str(batch["batch_id"]))
+            if [item["slice_id"] for item in slices] != list(batch.get("slice_ids", [])):
+                _fail("SOURCE_CHANGED", "slice ledger set differs from the batch control record")
+            return dict(batch), slices
+
+        maximum_tasks = configured["slice_max_tasks"]
+        maximum_input = configured["slice_max_input_codepoints"]
+        candidates: list[dict[str, Any]] = []
+        for task_id in batch["task_ids"]:
+            task = self._task(task_id)
+            if task["status"] in ("blocked", "failed", "skipped", "completed"):
+                continue
+            pass_root = _vault_path(self.vault, f"{BUILD_ROOT}/task-{task_id}/passes")
+            if pass_root.exists() and any(pass_root.glob("*.json")):
+                continue
+            item = self._slice_task_input(batch, task)
+            candidates.append({"task_id": task_id, **item})
+
+        groups: list[list[dict[str, Any]]] = []
+        current: list[dict[str, Any]] = []
+        current_input = 0
+        for item in candidates:
+            if current and (len(current) >= maximum_tasks
+                            or current_input + item["codepoints"] > maximum_input):
+                groups.append(current)
+                current, current_input = [], 0
+            current.append(item)
+            current_input += item["codepoints"]
+            if item["codepoints"] > maximum_input:
+                groups.append(current)
+                current, current_input = [], 0
+        if current:
+            groups.append(current)
+
+        actual_template_hash = template_hash or fingerprint(
+            {"template_id": template_id, "task_contract": KNOWLEDGE_CONTRACT})
+        slices = []
+        for ordinal, group in enumerate(groups, 1):
+            task_ids = [item["task_id"] for item in group]
+            input_codepoints = sum(int(item["codepoints"]) for item in group)
+            input_fingerprint = "sha256:" + fingerprint({
+                "batch_id": batch["batch_id"], "task_inputs": [
+                    {"task_id": item["task_id"], "fingerprint": item["fingerprint"]}
+                    for item in group],
+                "slice_config": configured, "template_id": template_id,
+                "template_hash": actual_template_hash,
+            })
+            slice_id = f"pass-{ordinal:04d}-{input_fingerprint[-12:]}"
+            blocking = next((item["blocking_code"] for item in group if item["blocking_code"]), None)
+            if input_codepoints > maximum_input and blocking is None:
+                blocking = "SLICE_INPUT_OVERSIZE"
+            value = {
+                "contract": SLICE_CONTRACT, "slice_id": slice_id,
+                "batch_id": batch["batch_id"], "task_ids": task_ids,
+                "input_codepoints": input_codepoints,
+                "input_fingerprint": input_fingerprint,
+                "template_id": template_id, "template_hash": actual_template_hash,
+                "state": "blocked" if blocking else "ready", "attempt": 0,
+                "lease": {"worker_id": None, "claimed_at": None,
+                          "heartbeat_at": None, "expires_at": None},
+                "retry_at": None, "result_refs": [],
+                "last_error": ({"code": blocking, "message": "slice input cannot fit configured bound",
+                                "retryable": False, "at": None} if blocking else None),
+                "revision": 1,
+            }
+            path = self._slice_path(str(batch["batch_id"]), slice_id)
+            if path.exists():
+                existing = self._slice(str(batch["batch_id"]), slice_id)
+                if existing != value:
+                    _fail("IDEMPOTENCY_CONFLICT", "deterministic slice id has different content")
+            else:
+                self._write_slice(value)
+            slices.append(value)
+
+        updated = copy.deepcopy(dict(batch))
+        updated.update({"revision": int(updated["revision"]) + 1,
+                        "slices_initialized": True,
+                        "slice_ids": [item["slice_id"] for item in slices],
+                        "slice_config": configured,
+                        "cancel_requested": bool(updated.get("cancel_requested", False)),
+                        "last_operation": "slice"})
+        validate_record("knowledge_batch", updated)
+        _write_atomic(self._batch_path(str(updated["batch_id"])), _json_bytes(updated))
+        return updated, slices
+
+    @staticmethod
+    def _clear_lease(value: dict[str, Any]) -> None:
+        value["lease"] = {"worker_id": None, "claimed_at": None,
+                          "heartbeat_at": None, "expires_at": None}
+
+    def batch_next_slice(self, batch_id: str, worker_id: str,
+                         config: Mapping[str, Any] | None = None,
+                         lease_seconds: int | None = None,
+                         now: datetime | str | None = None) -> dict[str, Any]:
+        if not worker_id.strip():
+            _fail("INVALID_SCHEMA", "worker_id is required", "$.worker_id")
+        moment, stamp = _utc(now)
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            if batch.get("cancel_requested"):
+                return {"ok": True, "leased": False, "reason": "batch_cancelled", "slice": None}
+            effective_config = (batch.get("slice_config") if batch.get("slices_initialized")
+                                and config is None else config)
+            batch, slices = self._ensure_slices(batch, effective_config)
+            changed = []
+            for item in slices:
+                if (item["state"] == "retry_wait" and item["retry_at"] is not None
+                        and _parse_utc(item["retry_at"]) <= moment):
+                    item = copy.deepcopy(item)
+                    item.update({"state": "ready", "retry_at": None,
+                                 "revision": int(item["revision"]) + 1})
+                    self._write_slice(item)
+                    changed.append(item)
+            if changed:
+                by_id = {item["slice_id"]: item for item in slices}
+                by_id.update({item["slice_id"]: item for item in changed})
+                slices = [by_id[slice_id] for slice_id in batch["slice_ids"]]
+            leased_count = sum(item["state"] == "leased" for item in slices)
+            if leased_count >= int(batch["slice_config"]["pass_worker_concurrency"]):
+                return {"ok": True, "leased": False, "reason": "concurrency_limit", "slice": None}
+            selected = next((item for item in slices if item["state"] == "ready"), None)
+            if selected is None:
+                return {"ok": True, "leased": False, "reason": "no_ready_slice", "slice": None}
+            duration = int(batch["slice_config"]["lease_seconds"]
+                           if lease_seconds is None else lease_seconds)
+            if duration < 1:
+                _fail("INVALID_SCHEMA", "lease_seconds must be positive", "$.lease_seconds")
+            selected = copy.deepcopy(selected)
+            selected.update({"state": "leased", "attempt": int(selected["attempt"]) + 1,
+                             "retry_at": None, "revision": int(selected["revision"]) + 1})
+            selected["lease"] = {"worker_id": worker_id, "claimed_at": stamp,
+                                 "heartbeat_at": stamp,
+                                 "expires_at": (moment + timedelta(seconds=duration)).isoformat().replace("+00:00", "Z")}
+            self._write_slice(selected)
+            return {"ok": True, "leased": True, "reason": "", "slice": selected}
+
+    def slice_heartbeat(self, batch_id: str, slice_id: str, worker_id: str,
+                        expected_revision: int,
+                        now: datetime | str | None = None) -> dict[str, Any]:
+        moment, stamp = _utc(now)
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            value = self._slice(batch_id, slice_id)
+            if batch.get("cancel_requested") or value["state"] == "cancelled":
+                _fail("CANCELLED", "slice heartbeat rejected after batch cancellation")
+            if value["revision"] != expected_revision:
+                _fail("REVISION_CONFLICT", "slice revision changed", "$.expected_revision")
+            if value["state"] != "leased" or value["lease"]["worker_id"] != worker_id:
+                _fail("ACCESS_DENIED", "slice is not leased by this worker")
+            if _parse_utc(value["lease"]["expires_at"]) <= moment:
+                _fail("LEASE_EXPIRED", "slice lease expired before heartbeat")
+            updated = copy.deepcopy(value)
+            updated["lease"]["heartbeat_at"] = stamp
+            updated["lease"]["expires_at"] = (
+                moment + timedelta(seconds=int(batch["slice_config"]["lease_seconds"])
+                                   )).isoformat().replace("+00:00", "Z")
+            updated["revision"] += 1
+            self._write_slice(updated)
+            return {"ok": True, "slice": updated}
+
+    def slice_complete(self, request: Mapping[str, Any],
+                       now: datetime | str | None = None) -> dict[str, Any]:
+        batch_id, slice_id = str(request["batch_id"]), str(request["slice_id"])
+        worker_id, expected = str(request["worker_id"]), int(request["expected_revision"])
+        result_refs = [str(item) for item in request.get("result_refs", [])]
+        if not result_refs:
+            _fail("INVALID_SCHEMA", "completed slice requires at least one result reference",
+                  "$.result_refs")
+        moment, _ = _utc(now)
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            value = self._slice(batch_id, slice_id)
+            if batch.get("cancel_requested") or value["state"] == "cancelled":
+                _fail("CANCELLED", "slice completion rejected after batch cancellation")
+            if value["revision"] != expected:
+                _fail("REVISION_CONFLICT", "slice revision changed", "$.expected_revision")
+            if value["state"] != "leased" or value["lease"]["worker_id"] != worker_id:
+                _fail("ACCESS_DENIED", "slice is not leased by this worker")
+            if _parse_utc(value["lease"]["expires_at"]) <= moment:
+                _fail("LEASE_EXPIRED", "slice lease expired before completion")
+            updated = copy.deepcopy(value)
+            updated.update({"state": "completed", "result_refs": result_refs,
+                            "retry_at": None, "last_error": None,
+                            "revision": int(updated["revision"]) + 1})
+            self._clear_lease(updated)
+            self._write_slice(updated)
+            return {"ok": True, "slice": updated}
+
+    def slice_fail(self, request: Mapping[str, Any],
+                   now: datetime | str | None = None) -> dict[str, Any]:
+        batch_id, slice_id = str(request["batch_id"]), str(request["slice_id"])
+        worker_id, expected = str(request["worker_id"]), int(request["expected_revision"])
+        moment, stamp = _utc(now)
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            value = self._slice(batch_id, slice_id)
+            if batch.get("cancel_requested") or value["state"] == "cancelled":
+                _fail("CANCELLED", "slice failure rejected after batch cancellation")
+            if value["revision"] != expected:
+                _fail("REVISION_CONFLICT", "slice revision changed", "$.expected_revision")
+            if value["state"] != "leased" or value["lease"]["worker_id"] != worker_id:
+                _fail("ACCESS_DENIED", "slice is not leased by this worker")
+            if _parse_utc(value["lease"]["expires_at"]) <= moment:
+                _fail("LEASE_EXPIRED", "slice lease expired before failure recording")
+            retryable = bool(request.get("retryable", True))
+            retry = retryable and int(value["attempt"]) < int(batch["slice_config"]["max_attempts"])
+            retry_after = int(request.get("retry_after_seconds", 60))
+            if retry and retry_after < 1:
+                _fail("INVALID_SCHEMA", "retry_after_seconds must be positive")
+            updated = copy.deepcopy(value)
+            updated.update({"state": "retry_wait" if retry else "blocked",
+                            "retry_at": ((moment + timedelta(seconds=retry_after))
+                                         .isoformat().replace("+00:00", "Z") if retry else None),
+                            "last_error": {"code": str(request["code"]),
+                                           "message": str(request["message"]),
+                                           "retryable": retryable, "at": stamp},
+                            "revision": int(updated["revision"]) + 1})
+            self._clear_lease(updated)
+            self._write_slice(updated)
+            return {"ok": True, "slice": updated}
+
+    def reclaim_expired_slices(self, batch_id: str,
+                               now: datetime | str | None = None) -> dict[str, Any]:
+        moment, stamp = _utc(now)
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            reclaimed = []
+            for value in self._slices(batch_id):
+                if (value["state"] != "leased" or value["lease"]["expires_at"] is None
+                        or _parse_utc(value["lease"]["expires_at"]) > moment):
+                    continue
+                updated = copy.deepcopy(value)
+                retry = int(updated["attempt"]) < int(batch["slice_config"]["max_attempts"])
+                updated.update({"state": "ready" if retry else "blocked", "retry_at": None,
+                                "last_error": {"code": "LEASE_EXPIRED",
+                                               "message": "worker lease expired",
+                                               "retryable": retry, "at": stamp},
+                                "revision": int(updated["revision"]) + 1})
+                self._clear_lease(updated)
+                self._write_slice(updated)
+                reclaimed.append(updated)
+            return {"ok": True, "reclaimed": len(reclaimed), "slices": reclaimed}
+
+    def cancel_batch(self, batch_id: str, actor: str, expected_revision: int) -> dict[str, Any]:
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch = self._batch(batch_id)
+            if batch["actor"] != actor:
+                _fail("ACCESS_DENIED", "only the batch actor can cancel it")
+            if batch["revision"] != expected_revision:
+                _fail("REVISION_CONFLICT", "batch revision changed", "$.expected_revision")
+            cancelled = []
+            for value in self._slices(batch_id):
+                if value["state"] in ("completed", "cancelled"):
+                    continue
+                updated = copy.deepcopy(value)
+                updated.update({"state": "cancelled", "retry_at": None,
+                                "revision": int(updated["revision"]) + 1})
+                self._clear_lease(updated)
+                self._write_slice(updated)
+                cancelled.append(updated["slice_id"])
+            updated_batch = copy.deepcopy(batch)
+            updated_batch.update({"cancel_requested": True, "state": "cancelled",
+                                  "last_operation": "cancel",
+                                  "revision": int(updated_batch["revision"]) + 1})
+            validate_record("knowledge_batch", updated_batch)
+            _write_atomic(self._batch_path(batch_id), _json_bytes(updated_batch))
+            return {"ok": True, "batch": updated_batch, "cancelled_slice_ids": cancelled}
+
     def batch_status(self, batch_id: str, compact: bool = False) -> dict[str, Any]:
         batch = self._batch(batch_id)
         tasks = [self._task(task_id) for task_id in batch["task_ids"]]
+        slices = self._slices(batch_id)
+        slice_counts: dict[str, int] = {}
+        for item in slices:
+            slice_counts[item["state"]] = slice_counts.get(item["state"], 0) + 1
         task_counts: dict[str, int] = {}
         task_details = []
         for task in tasks:
@@ -515,22 +895,31 @@ class FileKnowledgeBuildService:
                            if task["status"] not in ("blocked", "failed", "skipped")
                            and task["task_id"] not in covered)
         next_actions = []
-        if any(item["status"] == "pending" or (item["status"] == "running" and not item["reading_packages"])
-               for item in task_details):
-            next_actions.append("batch-prepare")
-        if any(item["status"] == "running" and item["reading_packages"] and not item["passes"]
-               for item in task_details):
-            next_actions.append("batch-pass")
-        if any(item["status"] == "running" and item["passes"] and item["task_id"] in uncovered
-               for item in task_details):
-            next_actions.append("batch-reduce")
-        if batch["run_ids"]:
-            next_actions.append("batch-validate")
-        if any(item["state"] == "draft" for item in run_details):
-            next_actions.append("human-checkpoint-1-then-batch-finalize")
-        if run_details and all(item["state"] == "completed" for item in run_details):
-            next_actions.append("vault-finalize-plan")
+        if not batch.get("cancel_requested") and (not batch.get("slices_initialized") or any(
+                item["state"] in ("ready", "retry_wait") for item in slices)):
+            next_actions.append("batch-next-slice")
+        if not batch.get("cancel_requested") and any(item["state"] == "leased" for item in slices):
+            next_actions.append("slice-heartbeat-or-complete")
+        if not batch.get("cancel_requested") and any(item["state"] == "blocked" for item in slices):
+            next_actions.append("inspect-blocked-slices")
+        if not batch.get("cancel_requested"):
+            if any(item["status"] == "pending" or (item["status"] == "running" and not item["reading_packages"])
+                   for item in task_details):
+                next_actions.append("batch-prepare")
+            if any(item["status"] == "running" and item["reading_packages"] and not item["passes"]
+                   for item in task_details):
+                next_actions.append("batch-pass")
+            if any(item["status"] == "running" and item["passes"] and item["task_id"] in uncovered
+                   for item in task_details):
+                next_actions.append("batch-reduce")
+            if batch["run_ids"]:
+                next_actions.append("batch-validate")
+            if any(item["state"] == "draft" for item in run_details):
+                next_actions.append("human-checkpoint-1-then-batch-finalize")
+            if run_details and all(item["state"] == "completed" for item in run_details):
+                next_actions.append("vault-finalize-plan")
         status = {"ok": True, "batch": batch, "task_counts": task_counts,
+                  "slice_counts": slice_counts,
                   "runs": run_details,
                   "duplicate_task_run_ids": duplicate_task_runs,
                   "next_actions": list(dict.fromkeys(next_actions))}
@@ -538,10 +927,13 @@ class FileKnowledgeBuildService:
             status["coverage"] = {"total_tasks": len(tasks),
                                   "reading_packages": sum(item["reading_packages"] for item in task_details),
                                   "passes": sum(item["passes"] for item in task_details),
-                                  "uncovered_tasks": len(uncovered)}
+                                  "uncovered_tasks": len(uncovered),
+                                  "total_slices": len(slices),
+                                  "completed_slices": slice_counts.get("completed", 0)}
             status["failure_count"] = len(batch["failures"])
         else:
             status["tasks"] = task_details
+            status["slices"] = slices
             status["uncovered_task_ids"] = uncovered
         return status
 
