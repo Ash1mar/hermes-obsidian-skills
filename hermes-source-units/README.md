@@ -207,6 +207,13 @@ P5 同时更新生产者、CLI/HTTP 传输与消费者，删除 Provider 独立 
 
 P0 的通过只表示契约实践通过，不代表已经完成 bootstrap、知识生成、检索或正式新库验收。
 
+阶段 5 增加 Vault 权威的 `hermes-ingest-workflow/v1` 工作流 ledger 和
+`hermes-obsidian-controlled-ingest/scripts/manage_ingest_workflow.py` 管理器。
+它提供 start/status/resume/approve/cancel/reconcile/rebuild-kanban；
+`rebuild-kanban` 仅生成期望节点，不调用 Kanban 调度器。所有 mutation 均校验
+actor、expected_revision 和完整请求的 input_digest。参见
+`hermes-obsidian-controlled-ingest/references/workflow-ledger.md`。
+
 ### P1/P2 distribution and configuration
 
 Run `python3 tools/sync_skill_runtime.py` from this package directory after a

@@ -12,11 +12,14 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "hermes-source-units/src"))
 
-from hermes_source_units import ContractError, FileKnowledgeBuildService, FileSourceUnitService
+from hermes_source_units import (ContractError, FileIngestWorkflowService,
+                                 FileKnowledgeBuildService, FileSourceUnitService,
+                                 mutation_digest)
 
 BOOTSTRAP = ROOT / "hermes-obsidian-vault-bootstrap/scripts/init_obsidian_vault.py"
 LINT = ROOT / "hermes-obsidian-vault-lint/scripts/lint_vault.py"
 KNOWLEDGE_CLI = ROOT / "hermes-obsidian-controlled-ingest/scripts/manage_knowledge_build.py"
+WORKFLOW_CLI = ROOT / "hermes-obsidian-controlled-ingest/scripts/manage_ingest_workflow.py"
 
 
 @pytest.fixture
@@ -555,6 +558,168 @@ def resource_reduce_requests(batch_id: str, citation_ids: dict[str, str],
             "omitted_candidate_refs": [], "reason": "Resource-local candidate reduction",
         })
     return requests
+
+
+def workflow_request(**fields: object) -> dict:
+    request = dict(fields)
+    request["input_digest"] = mutation_digest(request)
+    return request
+
+
+def test_workflow_ledger_adopts_batch_and_rebuilds_desired_nodes(vault: Path):
+    batch = plan_sliced_batch(vault, 4, "workflow-batch")
+    workflow = FileIngestWorkflowService(vault)
+    start = workflow_request(
+        workflow_id="ingest-workflow-batch", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": [], "knowledge_selector": "all-current"},
+        batch_id="workflow-batch")
+    created = workflow.start(start)
+    assert created["state"] == "analyzing" and created["revision"] == 1
+    assert workflow.start(start) == created
+    with pytest.raises(ContractError, match="IDEMPOTENCY_CONFLICT"):
+        workflow.start(workflow_request(**{**start, "profile": "diagnostic-6"}))
+    assert workflow.status("ingest-workflow-batch", compact=True)["batch_id"] == "workflow-batch"
+    assert workflow.resume(workflow_request(
+        workflow_id="ingest-workflow-batch", actor="agent", expected_revision=1)) == created
+    batch.batch_next_slice("workflow-batch", "worker-a", now="2026-09-21T00:00:00Z")
+    rebuilt = workflow.rebuild_kanban(workflow_request(
+        workflow_id="ingest-workflow-batch", actor="agent", expected_revision=1))
+    assert rebuilt["kanban"]["board_id"] is None
+    assert len(rebuilt["kanban"]["task_map"]) == 2
+    assert all(item["idempotency_key"].startswith("ingest:ingest-workflow-batch:pass-slice:")
+               for item in rebuilt["kanban"]["task_map"])
+    with pytest.raises(ContractError, match="REVISION_CONFLICT"):
+        workflow.cancel(workflow_request(
+            workflow_id="ingest-workflow-batch", actor="agent", expected_revision=1))
+    cancelled = workflow.cancel(workflow_request(
+        workflow_id="ingest-workflow-batch", actor="agent", expected_revision=2))
+    assert cancelled["cancel_requested"] and cancelled["state"] == "cancelled"
+    with pytest.raises(ContractError, match="WORKFLOW_STOPPED"):
+        workflow.rebuild_kanban(workflow_request(
+            workflow_id="ingest-workflow-batch", actor="agent", expected_revision=3))
+    resumed = workflow.resume(workflow_request(
+        workflow_id="ingest-workflow-batch", actor="agent", expected_revision=3))
+    assert resumed["state"] == "analyzing" and not resumed["cancel_requested"]
+    assert batch._batch("workflow-batch")["task_ids"]
+
+
+def test_workflow_mutation_digest_and_checkpoint_gate(vault: Path):
+    workflow = FileIngestWorkflowService(vault)
+    created = workflow.start(workflow_request(
+        workflow_id="ingest-gate", actor="agent", expected_revision=0,
+        profile="diagnostic-6", scope={"source_paths": [],
+                                        "knowledge_selector": "all-current"}))
+    assert created["state"] == "created"
+    with pytest.raises(ContractError, match="INPUT_DIGEST_MISMATCH"):
+        workflow.reconcile({"workflow_id": "ingest-gate", "actor": "agent",
+                            "expected_revision": 1, "target_stage": "source_preparing",
+                            "input_digest": "sha256:" + "0" * 64})
+    with pytest.raises(ContractError, match="INVALID_TRANSITION"):
+        workflow.reconcile(workflow_request(
+            workflow_id="ingest-gate", actor="agent", expected_revision=1,
+            target_stage="applying"))
+    advanced = workflow.reconcile(workflow_request(
+        workflow_id="ingest-gate", actor="agent", expected_revision=1,
+        target_stage="source_preparing"))
+    assert advanced["revision"] == 2
+    with pytest.raises(ContractError, match="INVALID_TRANSITION"):
+        workflow.approve(workflow_request(
+            workflow_id="ingest-gate", actor="agent", expected_revision=2,
+            checkpoint="checkpoint_1", approval_digest="sha256:" + "0" * 64))
+    planned = workflow.reconcile(workflow_request(
+        workflow_id="ingest-gate", actor="agent", expected_revision=2,
+        target_stage="planning"))
+    assert planned["revision"] == 3
+    with pytest.raises(ContractError, match="INVALID_SCHEMA"):
+        workflow.reconcile(workflow_request(
+            workflow_id="ingest-gate", actor="agent", expected_revision=3,
+            target_stage="analyzing"))
+    plan_sliced_batch(vault, 1, "fresh-workflow-batch")
+    analyzing = workflow.reconcile(workflow_request(
+        workflow_id="ingest-gate", actor="agent", expected_revision=3,
+        target_stage="analyzing", batch_id="fresh-workflow-batch"))
+    assert analyzing["batch_id"] == "fresh-workflow-batch"
+
+
+def test_workflow_checkpoint_one_requires_validated_batch_and_explicit_digest(vault: Path):
+    batch_id = "workflow-checkpoint"
+    batch, _, citations, snapshots = prepare_layered_reduce_batch(vault, batch_id)
+    workflow = FileIngestWorkflowService(vault)
+    started = workflow.start(workflow_request(
+        workflow_id="ingest-checkpoint", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": [],
+                                    "knowledge_selector": "all-current"},
+        batch_id=batch_id))
+    assert started["current_stage"] == "analyzing"
+    reduced = workflow.reconcile(workflow_request(
+        workflow_id="ingest-checkpoint", actor="agent", expected_revision=1,
+        target_stage="reducing"))
+    assert reduced["revision"] == 2
+    with pytest.raises(ContractError, match="INCOMPLETE_COVERAGE"):
+        workflow.reconcile(workflow_request(
+            workflow_id="ingest-checkpoint", actor="agent", expected_revision=2,
+            target_stage="checkpoint_1"))
+    requests = resource_reduce_requests(batch_id, citations, snapshots)
+    reductions = [batch.reduce_resource(item)["reduction"] for item in requests]
+    candidate_refs = [item["proposals"][0]["candidate_refs"][0] for item in requests]
+    batch.reduce_global({
+        "batch_id": batch_id, "actor": "agent",
+        "resource_reduction_ids": [item["reduction_id"] for item in reductions],
+        "runs": [{"run_id": "workflow-checkpoint-run", "actor": "agent",
+                  "tasks": snapshots, "expected_registry_revision": 0,
+                  "document_registry_revision": 1,
+                  "decisions": [{"candidate_refs": candidate_refs,
+                                 "identity": {"kind": "entity", "identity_key": "project-a:pump-x",
+                                              "canonical_name": "Pump X", "aliases": []},
+                                 "action": "create", "path": "30_Cards/workflow-pump-x.md",
+                                 "content": "# Pump X\n\nTransfers coolant.\n"}],
+                  "reason": "Global identity coordination"}],
+        "omitted_candidate_refs": [], "reason": "Global coordination",
+    })
+    assert batch.validate_batch(batch_id)["ok"]
+    checkpoint = workflow.reconcile(workflow_request(
+        workflow_id="ingest-checkpoint", actor="agent", expected_revision=2,
+        target_stage="checkpoint_1"))
+    digest = checkpoint["checkpoints"]["checkpoint_1"]["approval_digest"]
+    with pytest.raises(ContractError, match="AWAITING_APPROVAL"):
+        workflow.reconcile(workflow_request(
+            workflow_id="ingest-checkpoint", actor="agent", expected_revision=3,
+            target_stage="build_finalizing"))
+    with pytest.raises(ContractError, match="APPROVAL_DIGEST_MISMATCH"):
+        workflow.approve(workflow_request(
+            workflow_id="ingest-checkpoint", actor="agent", expected_revision=3,
+            checkpoint="checkpoint_1", approval_digest="sha256:" + "0" * 64))
+    approved = workflow.approve(workflow_request(
+        workflow_id="ingest-checkpoint", actor="agent", expected_revision=3,
+        checkpoint="checkpoint_1", approval_digest=digest))
+    assert approved["checkpoints"]["checkpoint_1"]["state"] == "approved"
+    assert workflow.reconcile(workflow_request(
+        workflow_id="ingest-checkpoint", actor="agent", expected_revision=4,
+        target_stage="build_finalizing"))["state"] == "build_finalizing"
+
+
+def test_workflow_cli_start_digest_and_compact_status(vault: Path, tmp_path: Path):
+    request = {"workflow_id": "ingest-cli", "actor": "agent", "expected_revision": 0,
+               "profile": "compact-3", "scope": {"source_paths": [],
+                                               "knowledge_selector": "all-current"}}
+    path = tmp_path / "workflow-request.json"
+    path.write_text(json.dumps(request), encoding="utf-8")
+    digest = subprocess.run([sys.executable, str(WORKFLOW_CLI), "--vault", str(vault),
+                             "digest", "--request", str(path)], capture_output=True,
+                            text=True, encoding="utf-8")
+    assert digest.returncode == 0, digest.stderr
+    request.update(json.loads(digest.stdout))
+    path.write_text(json.dumps(request), encoding="utf-8")
+    started = subprocess.run([sys.executable, str(WORKFLOW_CLI), "--vault", str(vault),
+                              "start", "--request", str(path)], capture_output=True,
+                             text=True, encoding="utf-8")
+    assert started.returncode == 0, started.stderr
+    status = subprocess.run([sys.executable, str(WORKFLOW_CLI), "--vault", str(vault),
+                             "status", "--workflow-id", "ingest-cli", "--compact"],
+                            capture_output=True, text=True, encoding="utf-8")
+    assert status.returncode == 0, status.stderr
+    assert json.loads(status.stdout)["state"] == "created"
+    assert "artifacts" not in json.loads(status.stdout)
 
 
 def test_slice_leases_are_deterministic_bounded_and_worker_exclusive(vault: Path):

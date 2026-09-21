@@ -27,6 +27,9 @@ An empty build record, query-index generation, Provider sync or gap query cannot
 For a P4 source-unit Vault, use the UnitSet-native route in `references/source-units.md`.
 The older line/ledger build record in `references/knowledge-construction.md` remains
 only for Vaults that do not declare the source-unit knowledge-build capability.
+For the phase-5 Vault workflow ledger and explicit checkpoint commands, read
+`references/workflow-ledger.md`. The ledger manager does not start background
+dispatch; do not describe its `rebuild-kanban` output as a running Kanban board.
 
 Report separate completion dimensions: source preservation; registration; conversion/processing;
 section processing (status counts); knowledge construction (inspected scope, decisions and outputs);
