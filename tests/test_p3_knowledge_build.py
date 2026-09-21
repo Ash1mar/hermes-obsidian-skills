@@ -489,6 +489,74 @@ def plan_sliced_batch(vault: Path, count: int, batch_id: str = "slice-batch") ->
     return service
 
 
+def prepare_layered_reduce_batch(vault: Path, batch_id: str = "layered-reduce") -> tuple[
+        FileKnowledgeBuildService, list[dict], dict[str, str], list[dict]]:
+    refs = publish_sources(vault, [
+        "# Pump X\nPump X transfers coolant.\n",
+        "# Pump X constraint\nPump X requires filtered fluid.\n",
+    ])
+    service = FileKnowledgeBuildService(vault)
+    service.plan_batch({
+        "batch_id": batch_id, "actor": "agent", "registry_revision": 1,
+        "exact_reading_budget": True,
+        "tasks": [{"task_id": f"{batch_id}-task-{index}", "target_refs": [ref]}
+                  for index, ref in enumerate(refs, 1)],
+    })
+    prepared = service.prepare_batch(batch_id, "agent", 1)
+    packages = {item["task_id"]: item["reading_package_id"] for item in prepared["results"]}
+    citation_ids = {}
+    for index, ref in enumerate(refs, 1):
+        task_id = f"{batch_id}-task-{index}"
+        task = service._task(task_id)
+        common = {
+            "task_id": task_id, "actor": "agent", "expected_revision": task["revision"],
+            "reading_package_id": packages[task_id], "registry_revision": 1,
+            "inspections": [{"source_ref": ref, "finding": f"resource {index} inspected",
+                             "qa": "usable", "qa_note": ""}],
+            "candidates": [{"candidate_id": f"pump-{index}", "name": "Pump X",
+                            "kind": "entity", "identity_rationale": "same project pump",
+                            "finding": f"resource {index} evidence", "applicability": "Project A",
+                            "conditions": [], "exceptions": [], "support_refs": [ref]}],
+            "empty_reason": "",
+        }
+        candidate = service.record_pass_batch({
+            "batch_id": batch_id,
+            "passes": [{**common, "pass_kind": "candidate", "sequence": 0}],
+        })
+        assert candidate["ok"]
+        citation = service.record_pass_batch({
+            "batch_id": batch_id,
+            "passes": [{**common, "expected_revision": service._task(task_id)["revision"],
+                        "pass_kind": "citation", "sequence": 1}],
+        })
+        assert citation["ok"]
+        citation_ids[task_id] = citation["results"][0]["pass_id"]
+    snapshots = [{"task_id": task_id, "revision": service._task(task_id)["revision"]}
+                 for task_id in sorted(packages)]
+    return service, refs, citation_ids, snapshots
+
+
+def resource_reduce_requests(batch_id: str, citation_ids: dict[str, str],
+                             snapshots: list[dict]) -> list[dict]:
+    requests = []
+    for index, snapshot in enumerate(snapshots, 1):
+        candidate_ref = {"pass_id": citation_ids[snapshot["task_id"]],
+                         "candidate_id": f"pump-{index}"}
+        requests.append({
+            "batch_id": batch_id, "resource_id": f"resource-{index}", "actor": "agent",
+            "tasks": [snapshot],
+            "proposals": [{
+                "proposal_id": f"resource-{index}-pump", "candidate_refs": [candidate_ref],
+                "summary": f"Resource {index} proposes the Project A pump identity",
+                "identity_hints": [{"kind": "entity", "identity_key": "project-a:pump-x",
+                                    "canonical_name": "Pump X", "aliases": []}],
+                "path_hints": ["30_Cards/layered-pump-x.md"],
+            }],
+            "omitted_candidate_refs": [], "reason": "Resource-local candidate reduction",
+        })
+    return requests
+
+
 def test_slice_leases_are_deterministic_bounded_and_worker_exclusive(vault: Path):
     service = plan_sliced_batch(vault, 7)
     now = "2026-09-21T00:00:00Z"
@@ -743,6 +811,98 @@ def test_reading_budget_failure_allows_exactly_one_deterministic_reslice(vault: 
     }, now="2026-09-21T00:00:03Z")["slice"]
     assert exhausted["state"] == "blocked"
     assert exhausted["reslice_count"] == 1
+
+
+def test_layered_reduce_is_idempotent_and_materializes_global_draft(vault: Path):
+    batch_id = "layered-reduce"
+    service, refs, citation_ids, snapshots = prepare_layered_reduce_batch(vault, batch_id)
+    requests = resource_reduce_requests(batch_id, citation_ids, snapshots)
+    reductions = [service.reduce_resource(request) for request in requests]
+    assert all(item["created"] for item in reductions)
+    first_record = reductions[0]["reduction"]
+    assert "reading_package" not in json.dumps(first_record)
+    assert first_record["pass_refs"][0]["task_id"] == snapshots[0]["task_id"]
+    assert service.reduce_resource(requests[0])["created"] is False
+    changed = json.loads(json.dumps(requests[0]))
+    changed["proposals"][0]["summary"] = "Conflicting reducer output"
+    with pytest.raises(ContractError, match="IDEMPOTENCY_CONFLICT"):
+        service.reduce_resource(changed)
+
+    candidate_refs = [request["proposals"][0]["candidate_refs"][0] for request in requests]
+    global_request = {
+        "batch_id": batch_id, "actor": "agent",
+        "resource_reduction_ids": [item["reduction"]["reduction_id"] for item in reductions],
+        "runs": [{
+            "run_id": "layered-run", "actor": "agent", "tasks": snapshots,
+            "expected_registry_revision": 0, "document_registry_revision": 1,
+            "decisions": [{
+                "candidate_refs": candidate_refs,
+                "identity": {"kind": "entity", "identity_key": "project-a:pump-x",
+                             "canonical_name": "Pump X", "aliases": []},
+                "action": "create", "path": "30_Cards/layered-pump-x.md",
+                "content": "# Pump X\n\nTransfers coolant and requires filtered fluid.\n",
+            }], "reason": "Global identity and path coordination",
+        }],
+        "omitted_candidate_refs": [], "reason": "Coordinated both resource proposals",
+    }
+    coordinated = service.reduce_global(global_request)
+    assert coordinated["created"] is True
+    assert coordinated["coordination"]["run_ids"] == ["layered-run"]
+    assert (vault / "_system/knowledge-builds/layered-run/manifest.json").is_file()
+    assert service.reduce_global(global_request)["created"] is False
+    status = service.batch_status(batch_id, compact=True)
+    assert status["coverage"]["resource_reductions"] == 2
+    assert status["coverage"]["global_reduction_complete"] is True
+
+
+def test_global_reduce_rejects_unproposed_candidates_and_duplicate_task_ownership(vault: Path):
+    batch_id = "layered-guards"
+    service, _, citation_ids, snapshots = prepare_layered_reduce_batch(vault, batch_id)
+    requests = resource_reduce_requests(batch_id, citation_ids, snapshots)
+    reductions = [service.reduce_resource(request) for request in requests]
+    candidate_refs = [request["proposals"][0]["candidate_refs"][0] for request in requests]
+    base = {
+        "batch_id": batch_id, "actor": "agent",
+        "resource_reduction_ids": [item["reduction"]["reduction_id"] for item in reductions],
+        "runs": [{
+            "run_id": "guard-run-a", "actor": "agent", "tasks": snapshots,
+            "expected_registry_revision": 0, "document_registry_revision": 1,
+            "decisions": [{
+                "candidate_refs": candidate_refs,
+                "identity": {"kind": "entity", "identity_key": "project-a:pump-x",
+                             "canonical_name": "Pump X", "aliases": []},
+                "action": "create", "path": "30_Cards/guard-pump-x.md",
+                "content": "# Pump X\n\nGuarded global output.\n",
+            }], "reason": "Guard test",
+        }], "omitted_candidate_refs": [], "reason": "Guard coordination",
+    }
+    outside = json.loads(json.dumps(base))
+    outside["runs"][0]["decisions"][0]["candidate_refs"][0]["candidate_id"] = "not-proposed"
+    with pytest.raises(ContractError, match="use or omit every resource proposal candidate"):
+        service.reduce_global(outside)
+
+    duplicate = json.loads(json.dumps(base))
+    duplicate["runs"].append({**duplicate["runs"][0], "run_id": "guard-run-b",
+                              "decisions": []})
+    with pytest.raises(ContractError, match="multiple draft runs"):
+        service.reduce_global(duplicate)
+
+    conflicting = json.loads(json.dumps(base))
+    conflicting["runs"] = []
+    for index, snapshot in enumerate(snapshots):
+        conflicting["runs"].append({
+            "run_id": f"conflict-run-{index + 1}", "actor": "agent", "tasks": [snapshot],
+            "expected_registry_revision": 0, "document_registry_revision": 1,
+            "decisions": [{
+                "candidate_refs": [candidate_refs[index]],
+                "identity": {"kind": "entity", "identity_key": "project-a:pump-x",
+                             "canonical_name": "Pump X", "aliases": []},
+                "action": "create", "path": "30_Cards/conflicting-pump.md",
+                "content": "# Pump X\n\nConflicting ownership.\n",
+            }], "reason": "Conflict guard",
+        })
+    with pytest.raises(ContractError, match="path .*multiple runs"):
+        service.reduce_global(conflicting)
 
 
 def test_p3_cli_runs_from_embedded_skill_runtime(vault: Path):

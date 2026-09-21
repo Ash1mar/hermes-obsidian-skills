@@ -47,3 +47,5 @@ controlled-ingest 继续负责来源准备、Unit 发布、阅读任务、候选
 2026-09-21 可恢复切片补充：批次在首次领取时按稳定任务顺序和精确输入指纹生成有界 `hermes-knowledge-build-slice/v1` 账本。默认同时租出 2 片，每片最多 3 个任务或 30000 输入 codepoints；租约、心跳、重试等待、最大尝试、过期回收和批次取消均在批次锁内以 revision 转换。完成片不可被取消或回收，过期 worker 不得迟交；切片只作为 Pass worker 的持久调度控制面，不改变 task、reading、Pass、Reduce 与 Finalize 的权威边界。
 
 2026-09-21 Pass 幂等与失败分类补充：批量 Pass 以 batch/task/sequence、经重算验证的 reading-package fingerprint 和 slice 模板 hash 形成幂等键；同键同内容复用，同键异内容冲突，旧 revision/input 在新写入前停止。调度错误由 Python 分类：临时错误指数退避，429 设置批次冷却，无效 JSON 留存原始输出且最多重试两次，输入漂移进入 reconcile，budget 漂移仅允许一次重测重分片，whole-asset、合同与 provenance 错误永久 blocked，人工检查点进入 awaiting approval。领域 Pass 先持久化、slice 后完成，因此 worker 在二者之间退出时可安全重放而不复制 Pass。
+
+2026-09-21 分层 Reduce 补充：每个 resource reducer 仅消费本 resource 的 task revision 与 Pass/candidate 引用，输出带模板 hash、输入/输出 fingerprint 和幂等键的局部 proposal；默认可并发 2。全局 coordinator 固定并发 1，只消费完整 resource proposal 集并统一裁决 stable identity、输出路径和 draft-run 归属，不把全部 reading package 重新装入模型上下文。全局层强制每个 eligible task 恰好属于一个 run、每个 citation candidate 只有一个决策归属、每个 identity/path 只有一个 run 所有者；最终仍生成既有 `hermes-knowledge-build-run/v1`，因此验证、人工检查点和 Build Finalize 契约不变。

@@ -173,8 +173,20 @@ batch ledger only records orchestration state under
   package.
 - `batch-pass --request <json>` records model-produced Pass requests in task
   sequence. It schedules semantic work; it does not replace evidence judgment.
-- `batch-reduce --request <json>` writes ordinary draft runs after rejecting
-  duplicate task ownership, output paths and stable identities across the batch.
+- `batch-resource-reduce --request <json>` persists one resource-local proposal
+  set. It accepts only current tasks whose target UnitRefs belong to that resource,
+  verifies contiguous Pass records, and requires every citation candidate to be
+  proposed or explicitly omitted. Its deterministic ID pins task revisions, Pass
+  IDs, template hash and input/output fingerprints. The record contains no reading
+  package text. Default resource-reducer concurrency is 2.
+- `batch-global-reduce --request <json>` consumes the complete pinned set of
+  resource reductions under a single global lock. It requires exact eligible-task
+  coverage, one draft run per task, and explicit use or omission of every proposed
+  citation candidate. It globally rejects duplicate candidate ownership, stable
+  identity ownership and output paths, then materializes ordinary draft runs
+  through the existing verified Reduce contract. Global concurrency is fixed at 1.
+- `batch-reduce --request <json>` remains a compatibility entry point for direct
+  draft-run materialization. New orchestrated batches use the two layered commands.
 - `batch-validate` requires every non-blocked task to belong to exactly one
   validated run before setting checkpoint 1.
 - `batch-finalize --request <json>` preflights all explicitly approved runs and
@@ -184,7 +196,7 @@ batch ledger only records orchestration state under
 Use one model reading context per bounded task or small related group. Batch does
 not mean concatenating every reading package into one prompt. For cross-source
 knowledge, perform local candidate work first and provide globally reconciled
-identity/path decisions to `batch-reduce`. Never cross a human checkpoint merely
+identity/path decisions to `batch-global-reduce`. Never cross a human checkpoint merely
 because a batch command can continue.
 
 Slice ledgers live at
@@ -194,3 +206,11 @@ input/template fingerprints, attempt, revision, lease timestamps, results and
 last error. Ordinary task, reading-package and Pass records remain the
 authoritative knowledge-build records; a completed slice result reference does
 not itself create or validate a Pass.
+
+Layered Reduce records live below
+`_system/ledgers/knowledge-build-batches/<batch-id>/reductions/`. Resource records
+are auditable semantic proposals, while the global record pins the exact resource
+output fingerprints and resulting run IDs. Both layers are idempotent: the same
+input/output returns the existing record and different output under the same input
+key fails with `IDEMPOTENCY_CONFLICT`. The ordinary build-run manifests remain the
+authoritative drafts consumed by validation and Build Finalize.

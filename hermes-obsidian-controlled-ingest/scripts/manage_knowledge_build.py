@@ -41,6 +41,10 @@ def run(args):
         return service.reclaim_expired_slices(args.batch_id)
     if args.command == "batch-cancel":
         return service.cancel_batch(args.batch_id, args.actor, args.expected_revision)
+    if args.command == "batch-resource-reduce":
+        return service.reduce_resource(load(args.request))
+    if args.command == "batch-global-reduce":
+        return service.reduce_global(load(args.request))
     if args.command in ("batch-plan", "batch-adopt", "batch-set-state", "batch-pass", "batch-reduce", "batch-finalize"):
         method = {"batch-plan": service.plan_batch, "batch-adopt": service.adopt_batch,
                   "batch-set-state": service.set_task_state_batch,
@@ -114,6 +118,9 @@ def main() -> int:
         command.add_argument("--request", required=True, help="JSON batch request file")
         if name == "batch-plan":
             command.add_argument("--exact-reading-budget", action="store_true")
+    for name in ("batch-resource-reduce", "batch-global-reduce"):
+        command = sub.add_parser(name)
+        command.add_argument("--request", required=True, help="JSON layered Reduce request file")
     claim = sub.add_parser("claim")
     claim.add_argument("--task-id", required=True)
     claim.add_argument("--actor", required=True)

@@ -51,7 +51,8 @@ python3 "<ingest-skill-root>/scripts/manage_knowledge_build.py" --vault "/path/t
 多任务路径使用附加的 `batch-measure`、`batch-plan --exact-reading-budget`、
 `batch-adopt`、`batch-set-state`、`batch-next-slice`、`slice-heartbeat`、
 `slice-complete`、`slice-fail`、`slice-reconcile`、`batch-reclaim-expired`、`batch-cancel`、
-`batch-prepare`、`batch-pass`、`batch-reduce`、`batch-validate` 和
+`batch-prepare`、`batch-pass`、`batch-resource-reduce`、`batch-global-reduce`、
+兼容用 `batch-reduce`、`batch-validate` 和
 `batch-finalize`。这些命令只增加 `_system/ledgers/knowledge-build-batches/`
 调度账本；原有 task、reading、Pass、run 和页面 revision 契约保持不变。
 `batch-resume` 是只读恢复入口，语义 Pass 仍由模型在有界 reading package
@@ -70,6 +71,11 @@ revision 或输入指纹漂移停止为 `STALE_INPUT`。限流、超时和异常
 60/180/600 秒退避；429 同时设置批次冷却。无效模型 JSON 保存原始失败输出且
 最多重试两次；budget 漂移只能通过 `slice-reconcile` 重测并替换一次，whole-asset、
 合同和 provenance 错误保持 blocked，人工检查点保持 awaiting approval。
+分层 Reduce 默认允许 2 个 resource reducer 独立生成局部 proposal，并用固定并发 1
+的 global coordinator 统一决定 stable identity、输出路径和 draft run 归属。resource
+记录只钉住 task/Pass/candidate 引用、输入/输出 fingerprint 和模板 hash；global 只消费
+这些 proposal，不把全部 reading package 重新送入模型。每个 task 必须且只能进入一个
+draft run，每个 candidate、stable identity 和输出路径也只能有一个最终所有者。
 
 P4 由独立 Skill 执行，不让 ingest 隐式完成全库收尾：
 

@@ -1579,12 +1579,102 @@
     "knowledge_batch_failure": {
       "type": "object",
       "properties": {
-        "stage": {"enum": ["prepare", "pass", "reduce", "validate", "finalize"]},
+        "stage": {"enum": ["prepare", "pass", "resource_reduce", "global_reduce", "reduce", "validate", "finalize"]},
         "item_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
         "code": {"type": "string", "minLength": 1, "pattern": "\\S"},
         "message": {"type": "string", "minLength": 1, "pattern": "\\S"}
       },
       "required": ["stage", "item_id", "code", "message"],
+      "additionalProperties": false
+    },
+    "knowledge_reduction_config": {
+      "type": "object",
+      "properties": {
+        "resource_reducer_concurrency": {"type": "integer", "minimum": 1},
+        "global_reducer_concurrency": {"const": 1}
+      },
+      "required": ["resource_reducer_concurrency", "global_reducer_concurrency"],
+      "additionalProperties": false
+    },
+    "resource_pass_ref": {
+      "type": "object",
+      "properties": {
+        "pass_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "task_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "sequence": {"type": "integer", "minimum": 0},
+        "pass_kind": {"enum": ["candidate", "citation"]},
+        "candidate_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 0, "uniqueItems": true}
+      },
+      "required": ["pass_id", "task_id", "sequence", "pass_kind", "candidate_ids"],
+      "additionalProperties": false
+    },
+    "resource_identity_hint": {
+      "type": "object",
+      "properties": {
+        "kind": {"enum": ["entity", "concept", "requirement", "fact", "analysis"]},
+        "identity_key": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "canonical_name": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "aliases": {"type": "array", "items": {"type": "string", "minLength": 1, "pattern": "\\S"}, "minItems": 0, "uniqueItems": true}
+      },
+      "required": ["kind", "identity_key", "canonical_name", "aliases"],
+      "additionalProperties": false
+    },
+    "resource_proposal": {
+      "type": "object",
+      "properties": {
+        "proposal_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "candidate_refs": {"type": "array", "items": {"$ref": "#/$defs/pass_candidate_ref"}, "minItems": 1, "uniqueItems": true},
+        "summary": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "identity_hints": {"type": "array", "items": {"$ref": "#/$defs/resource_identity_hint"}, "minItems": 0},
+        "path_hints": {"type": "array", "items": {"type": "string", "minLength": 1, "format": "vault-relative-path"}, "minItems": 0, "uniqueItems": true}
+      },
+      "required": ["proposal_id", "candidate_refs", "summary", "identity_hints", "path_hints"],
+      "additionalProperties": false
+    },
+    "resource_reduction": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-resource-reduction/v1"},
+        "reduction_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "idempotency_key": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "batch_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "resource_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "tasks": {"type": "array", "items": {"$ref": "#/$defs/task_snapshot"}, "minItems": 1, "uniqueItems": true},
+        "pass_refs": {"type": "array", "items": {"$ref": "#/$defs/resource_pass_ref"}, "minItems": 1},
+        "input_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "template_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "template_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "proposals": {"type": "array", "items": {"$ref": "#/$defs/resource_proposal"}, "minItems": 0},
+        "omitted_candidate_refs": {"type": "array", "items": {"$ref": "#/$defs/pass_candidate_ref"}, "minItems": 0, "uniqueItems": true},
+        "output_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "state": {"const": "completed"},
+        "revision": {"const": 1},
+        "reason": {"type": "string"}
+      },
+      "required": ["contract", "reduction_id", "idempotency_key", "batch_id", "resource_id", "actor", "tasks", "pass_refs", "input_fingerprint", "template_id", "template_hash", "proposals", "omitted_candidate_refs", "output_fingerprint", "state", "revision", "reason"],
+      "additionalProperties": false
+    },
+    "global_reduction": {
+      "type": "object",
+      "properties": {
+        "contract": {"const": "hermes-global-reduction/v1"},
+        "coordination_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "idempotency_key": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "batch_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
+        "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "resource_reduction_ids": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "minItems": 1, "uniqueItems": true},
+        "input_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "template_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "template_hash": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "run_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 1, "uniqueItems": true},
+        "omitted_candidate_refs": {"type": "array", "items": {"$ref": "#/$defs/pass_candidate_ref"}, "minItems": 0, "uniqueItems": true},
+        "output_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "state": {"const": "completed"},
+        "revision": {"const": 1},
+        "reason": {"type": "string"}
+      },
+      "required": ["contract", "coordination_id", "idempotency_key", "batch_id", "actor", "resource_reduction_ids", "input_fingerprint", "template_id", "template_hash", "run_ids", "omitted_candidate_refs", "output_fingerprint", "state", "revision", "reason"],
       "additionalProperties": false
     },
     "knowledge_slice_config": {
@@ -1660,14 +1750,17 @@
         "task_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 1, "uniqueItems": true},
         "run_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 0, "uniqueItems": true},
         "state": {"enum": ["planned", "analyzing", "checkpoint_1", "finalizing", "completed", "blocked", "cancelled"]},
-        "last_operation": {"enum": ["plan", "adopt", "prepare", "pass", "reduce", "validate", "finalize", "slice", "cancel"]},
+        "last_operation": {"enum": ["plan", "adopt", "prepare", "pass", "resource_reduce", "global_reduce", "reduce", "validate", "finalize", "slice", "cancel"]},
         "failures": {"type": "array", "items": {"$ref": "#/$defs/knowledge_batch_failure"}, "minItems": 0},
         "slices_initialized": {"type": "boolean"},
         "slice_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 0, "uniqueItems": true},
         "slice_config": {"anyOf": [{"$ref": "#/$defs/knowledge_slice_config"}, {"type": "null"}]},
         "cancel_requested": {"type": "boolean"},
         "cooldown_until": {"anyOf": [{"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}T.*Z$"}, {"type": "null"}]},
-        "cooldown_reason": {"anyOf": [{"type": "string", "minLength": 1, "pattern": "\\S"}, {"type": "null"}]}
+        "cooldown_reason": {"anyOf": [{"type": "string", "minLength": 1, "pattern": "\\S"}, {"type": "null"}]},
+        "reduction_config": {"$ref": "#/$defs/knowledge_reduction_config"},
+        "resource_reduction_ids": {"type": "array", "items": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "minItems": 0, "uniqueItems": true},
+        "global_reduction_id": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]}
       },
       "required": ["contract", "batch_id", "revision", "actor", "document_registry_revision", "origin", "task_ids", "run_ids", "state", "last_operation", "failures"],
       "additionalProperties": false

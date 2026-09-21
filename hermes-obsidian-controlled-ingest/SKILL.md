@@ -254,6 +254,13 @@ raw failed output for invalid model JSON. Only call `slice-reconcile` for its si
 permitted reading-budget reslice; never auto-bypass stale input, provenance failures,
 whole-asset blockers or an awaiting human checkpoint.
 
+After Pass coverage converges, reduce per resource with `batch-resource-reduce`.
+Give each reducer only its resource's task snapshots and Pass/candidate references;
+never concatenate reading packages for Reduce. Once every eligible task has exactly
+one resource reduction, call `batch-global-reduce` once with those reduction IDs.
+The global request alone owns stable identity, output path and draft-run assignment.
+Use direct `batch-reduce` only for compatibility with an existing plan.
+
 Honor `manifest.quality.review_required`. Extract readable formulas, table rows and figure observations
 with explicit QA notes when deterministic/page verification is unavailable; write them as attributed
 draft knowledge. Only claim verified or authoritative rules after the required evidence check.
