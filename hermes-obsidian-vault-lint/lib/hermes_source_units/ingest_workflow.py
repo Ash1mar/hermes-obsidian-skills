@@ -1,6 +1,7 @@
 """Vault-authoritative ingest workflow ledger; dispatch is a separate adapter."""
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -16,6 +17,12 @@ STAGES = ("created", "source_preparing", "planning", "analyzing", "reducing",
           "checkpoint_1", "build_finalizing", "release_planning", "checkpoint_2",
           "applying", "indexing", "validating", "completed")
 TERMINAL = {"completed", "partial", "failed", "cancelled"}
+WORKER_KINDS = (
+    "source-prepare", "exact-plan", "pass-slice", "resource-reduce",
+    "global-reduce", "checkpoint-1-validate", "build-finalize",
+    "vault-finalize-plan", "checkpoint-2-validate", "release-apply",
+    "provider-sync", "acceptance",
+)
 _ID = re.compile(r"^ingest-[A-Za-z0-9][A-Za-z0-9_.:-]{0,152}$")
 
 
@@ -104,7 +111,7 @@ class FileIngestWorkflowService:
             "checkpoints": {name: {"state": "pending", "approval_digest": None,
                                    "approved_by": None} for name in ("checkpoint_1", "checkpoint_2")},
             "artifacts": [], "cancel_requested": False,
-            "resume_stage": None, "revision": 1,
+            "resume_stage": None, "revision": 1, "template_pins": [],
             "start_digest": request["input_digest"],
         }
         validate_record("ingest_workflow", value)
@@ -263,3 +270,63 @@ class FileIngestWorkflowService:
             value["revision"] += 1
             self._write(value)
             return value
+
+    def pin_templates(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Snapshot a complete immutable worker pack before Kanban activation."""
+        with _exclusive_lock(self._lock(str(request["workflow_id"]))):
+            value = self._mutation(request)
+            raw = list(request["templates"])
+            kinds = [item["kind"] for item in raw]
+            if sorted(kinds) != sorted(WORKER_KINDS):
+                _fail("INVALID_SCHEMA", "worker template pack must contain each kind once")
+            pins = []
+            payloads = []
+            for item in sorted(raw, key=lambda part: part["kind"]):
+                kind, template_id, content = item["kind"], item["template_id"], item["content"]
+                if (not isinstance(template_id, str) or not template_id.strip()
+                        or not isinstance(content, str) or not content.strip()):
+                    _fail("INVALID_SCHEMA", "worker template content and id are required")
+                data = content.encode("utf-8")
+                digest = hashlib.sha256(data).hexdigest()
+                path = f"{WORKFLOW_ROOT}/{value['workflow_id']}/templates/{kind}-{digest}.md"
+                pins.append({"kind": kind, "template_id": template_id,
+                             "template_hash": f"sha256:{digest}", "path": path})
+                payloads.append((path, data))
+            if value.get("template_pins"):
+                if value["template_pins"] != pins:
+                    _fail("IDEMPOTENCY_CONFLICT", "workflow templates are already pinned")
+                self.pinned_templates(value)
+                return value
+            for path, data in payloads:
+                destination = _vault_path(self.vault, path)
+                if destination.exists() and destination.read_bytes() != data:
+                    _fail("IDEMPOTENCY_CONFLICT", "template snapshot path has other content")
+                if not destination.exists():
+                    _write_atomic(destination, data)
+            value["template_pins"] = pins
+            value["revision"] += 1
+            self._write(value)
+            return value
+
+    def pinned_templates(self, value: Mapping[str, Any]) -> dict[str, str]:
+        """Verify every pinned byte before returning content for worker cards."""
+        pins = value.get("template_pins", [])
+        if sorted(item["kind"] for item in pins) != sorted(WORKER_KINDS):
+            _fail("TEMPLATE_UNAVAILABLE", "workflow lacks a complete worker template pack")
+        result = {}
+        prefix = f"{WORKFLOW_ROOT}/{value['workflow_id']}/templates/"
+        for item in pins:
+            path = item["path"]
+            if not path.startswith(prefix):
+                _fail("TEMPLATE_UNAVAILABLE", "template snapshot is outside workflow")
+            try:
+                data = _vault_path(self.vault, path).read_bytes()
+            except OSError as exc:
+                _fail("TEMPLATE_UNAVAILABLE", f"pinned worker template is unavailable: {exc}")
+            if "sha256:" + hashlib.sha256(data).hexdigest() != item["template_hash"]:
+                _fail("TEMPLATE_CHANGED", "pinned worker template content changed")
+            try:
+                result[item["kind"]] = data.decode("utf-8")
+            except UnicodeError:
+                _fail("TEMPLATE_CHANGED", "pinned worker template is not UTF-8")
+        return result

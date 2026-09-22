@@ -12,17 +12,21 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "hermes-source-units/src"))
 sys.path.insert(0, str(ROOT / "hermes-obsidian-controlled-ingest/lib"))
+sys.path.insert(0, str(ROOT / "hermes-obsidian-governed-ingest-orchestrator/lib"))
 
 from hermes_source_units import (ContractError, FileIngestWorkflowService,
                                  FileKnowledgeBuildService, FileSourceUnitService,
                                  mutation_digest)
+from hermes_source_units.ingest_workflow import WORKER_KINDS
 from ingest_kanban import IngestKanbanAdapter, KanbanCLI, desired_graph
+from orchestration import start_and_pin, worker_pack
 
 BOOTSTRAP = ROOT / "hermes-obsidian-vault-bootstrap/scripts/init_obsidian_vault.py"
 LINT = ROOT / "hermes-obsidian-vault-lint/scripts/lint_vault.py"
 KNOWLEDGE_CLI = ROOT / "hermes-obsidian-controlled-ingest/scripts/manage_knowledge_build.py"
 WORKFLOW_CLI = ROOT / "hermes-obsidian-controlled-ingest/scripts/manage_ingest_workflow.py"
 DISPATCH_CLI = ROOT / "hermes-obsidian-controlled-ingest/scripts/dispatch_ingest_workflow.py"
+ORCHESTRATOR_CLI = ROOT / "hermes-obsidian-governed-ingest-orchestrator/scripts/dispatch_ingest_workflow.py"
 
 
 @pytest.fixture
@@ -569,6 +573,66 @@ def workflow_request(**fields: object) -> dict:
     return request
 
 
+def start_pinned_worker(adapter: IngestKanbanAdapter, request: dict) -> dict:
+    created = adapter.workflow.start(request)
+    templates = [{"kind": kind, "template_id": f"test/v1/{kind}",
+                  "content": f"test worker contract for {kind}\n"}
+                 for kind in WORKER_KINDS]
+    pinned = adapter.workflow.pin_templates(workflow_request(
+        workflow_id=created["workflow_id"], actor=created["actor"],
+        expected_revision=created["revision"], templates=templates))
+    return adapter.sync(workflow_request(
+        workflow_id=pinned["workflow_id"], actor=pinned["actor"],
+        expected_revision=pinned["revision"]))
+
+
+def test_orchestrator_pins_complete_pack_and_detects_tampering(vault: Path):
+    assert sorted(item["kind"] for item in worker_pack()) == sorted(WORKER_KINDS)
+    request = workflow_request(
+        workflow_id="ingest-template-pin", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": [],
+                                      "knowledge_selector": "all-current"})
+    value = start_and_pin(vault, request)
+    service = FileIngestWorkflowService(vault)
+    assert value["revision"] == 2
+    assert service.pinned_templates(value)["pass-slice"] == next(
+        item["content"] for item in worker_pack() if item["kind"] == "pass-slice")
+    assert start_and_pin(vault, request) == value
+    with pytest.raises(ContractError, match="IDEMPOTENCY_CONFLICT"):
+        service.pin_templates(workflow_request(
+            workflow_id=value["workflow_id"], actor=value["actor"],
+            expected_revision=value["revision"], templates=[
+                {**item, "content": "changed"} if item["kind"] == "pass-slice" else item
+                for item in worker_pack()]))
+    pin = next(item for item in value["template_pins"] if item["kind"] == "pass-slice")
+    (vault / pin["path"]).write_text("tampered", encoding="utf-8")
+    with pytest.raises(ContractError, match="TEMPLATE_CHANGED"):
+        service.pinned_templates(value)
+    with pytest.raises(ContractError, match="TEMPLATE_CHANGED"):
+        IngestKanbanAdapter(vault, FakeKanban(True), enable_workers=True).sync(
+            workflow_request(workflow_id=value["workflow_id"], actor=value["actor"],
+                             expected_revision=value["revision"]))
+
+
+def test_orchestrator_cli_start_is_one_recoverable_request(vault: Path, tmp_path: Path):
+    request = workflow_request(
+        workflow_id="ingest-orchestrator-cli", actor="agent", expected_revision=0,
+        profile="diagnostic-6", scope={"source_paths": [],
+                                        "knowledge_selector": "all-current"})
+    path = tmp_path / "orchestrator-start.json"
+    path.write_text(json.dumps(request), encoding="utf-8")
+    command = [sys.executable, str(ORCHESTRATOR_CLI), "--vault", str(vault),
+               "start", "--request", str(path)]
+    for _ in range(2):
+        completed = subprocess.run(command, capture_output=True, text=True, encoding="utf-8")
+        assert completed.returncode == 0, completed.stderr
+        result = json.loads(completed.stdout)
+        assert result["state"] == "dispatcher_unavailable"
+        assert result["workflow_created"] and not result["background_dispatch"]
+    record = FileIngestWorkflowService(vault).status("ingest-orchestrator-cli")
+    assert record["revision"] == 2 and len(record["template_pins"]) == 12
+
+
 def test_workflow_ledger_adopts_batch_and_rebuilds_desired_nodes(vault: Path):
     batch = plan_sliced_batch(vault, 4, "workflow-batch")
     workflow = FileIngestWorkflowService(vault)
@@ -862,13 +926,20 @@ def test_kanban_worker_must_hold_exact_slice_lease(vault: Path):
     plan_sliced_batch(vault, 1, "worker-batch")
     fake = FakeKanban(True)
     adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
-    adapter.start(workflow_request(
+    start_pinned_worker(adapter, workflow_request(
         workflow_id="ingest-worker", actor="agent", expected_revision=0,
         profile="compact-3", scope={"source_paths": [],
                                     "knowledge_selector": "all-current"},
         batch_id="worker-batch"))
     item = next(item for item in adapter.workflow.status("ingest-worker")["kanban"]["task_map"]
                 if item["node"].startswith("pass-slice:"))
+    body = next(task["body"] for task in fake.tasks.values()
+                if task["id"] == item["task_id"])
+    assert body["worker_contract"] == "pinned-v1"
+    assert body["worker_template_hash"].startswith("sha256:")
+    assert body["slice_template_hash"] == adapter.workflow.knowledge._slice(
+        "worker-batch", item["node"].partition(":")[2])["template_hash"]
+    assert "pass-slice" in body["instructions"]
     request = {"workflow_id": "ingest-worker", "node": item["node"],
                "task_id": item["task_id"], "worker_id": "worker-one"}
     begun = adapter.worker_begin(request)
@@ -880,13 +951,13 @@ def test_kanban_worker_must_hold_exact_slice_lease(vault: Path):
         adapter.worker_check({**request, "expected_revision": begun["slice"]["revision"],
                               "template_hash": "0" * 64})
     cancelled = adapter.cancel(workflow_request(
-        workflow_id="ingest-worker", actor="agent", expected_revision=2))
+        workflow_id="ingest-worker", actor="agent", expected_revision=3))
     assert cancelled["state"] == "cancelled"
     assert adapter.workflow.knowledge._batch("worker-batch")["cancel_requested"]
     with pytest.raises(ContractError, match="WORKFLOW_STOPPED"):
         adapter.worker_begin(request)
     resumed = adapter.resume(workflow_request(
-        workflow_id="ingest-worker", actor="agent", expected_revision=3))
+        workflow_id="ingest-worker", actor="agent", expected_revision=4))
     assert resumed["state"] == "analyzing"
     assert not adapter.workflow.knowledge._batch("worker-batch")["cancel_requested"]
     assert adapter.workflow.knowledge._slice(
@@ -915,7 +986,7 @@ def test_kanban_worker_recovers_after_domain_completion_before_board_ack(vault: 
     batch = plan_sliced_batch(vault, 1, "worker-recovery-batch")
     fake = FakeKanban(True)
     adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
-    adapter.start(workflow_request(
+    start_pinned_worker(adapter, workflow_request(
         workflow_id="ingest-recovery", actor="agent", expected_revision=0,
         profile="compact-3", scope={"source_paths": [],
                                     "knowledge_selector": "all-current"},

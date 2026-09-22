@@ -1,0 +1,6 @@
+{
+  "contract": "hermes-governed-ingest-orchestration/v1",
+  "template_version": "v1",
+  "worker_dispatch_enabled": false,
+  "activation_note": "Keep workers blocked until stage-11 canary validates every worker command and checkpoint. Template snapshots are pinned now."
+}

@@ -11,6 +11,9 @@ Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): impl
 
 ## Skills
 
+- `hermes-obsidian-governed-ingest-orchestrator/`
+  - Thin persistent ingest entry point: one start request, Vault-pinned versioned worker templates, recoverable Kanban projection and two human checkpoints. Autonomous worker dispatch remains disabled until canary validation.
+
 - `hermes-obsidian-controlled-ingest/`
   - Governed Obsidian ingestion workflow.
   - Protects `10_Raw/` as raw source.
@@ -76,7 +79,7 @@ Hermes normalizes bundle names to lowercase slugs, so use the lowercase forms ab
 
 ## Representative Package Layout
 
-The compact tree below illustrates the shared package shape with two representative Skills; it is not an exhaustive inventory. The current five-Skill, Provider, bundle, test, and documentation map is maintained in [`DOCUMENTATION.md`](DOCUMENTATION.md).
+The compact tree below illustrates the shared package shape with two representative Skills; it is not an exhaustive inventory. The Skill, Provider, bundle, test, and documentation map is maintained in [`DOCUMENTATION.md`](DOCUMENTATION.md).
 
 ```text
 hermes-obsidian-skills/
