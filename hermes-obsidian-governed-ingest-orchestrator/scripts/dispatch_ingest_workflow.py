@@ -20,7 +20,8 @@ def main() -> int:
     parser.add_argument("--vault", required=True)
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("start", "sync", "cancel", "resume", "worker-begin", "worker-check",
-                 "worker-heartbeat", "worker-complete", "worker-fail"):
+                 "worker-heartbeat", "worker-complete", "worker-fail", "arm-canary",
+                 "disarm-canary"):
         sub.add_parser(name).add_argument("--request", required=True)
     args = parser.parse_args()
     try:

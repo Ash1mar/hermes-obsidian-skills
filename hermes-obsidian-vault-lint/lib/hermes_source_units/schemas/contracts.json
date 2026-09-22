@@ -1788,6 +1788,16 @@
       "required": ["kind", "template_id", "template_hash", "path"],
       "additionalProperties": false
     },
+    "ingest_workflow_dispatch_policy": {
+      "type": "object",
+      "properties": {
+        "mode": {"enum": ["disabled", "canary"]},
+        "slice_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 0, "uniqueItems": true},
+        "selection_digest": {"anyOf": [{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, {"type": "null"}]}
+      },
+      "required": ["mode", "slice_ids", "selection_digest"],
+      "additionalProperties": false
+    },
     "ingest_workflow": {
       "type": "object",
       "properties": {
@@ -1801,6 +1811,7 @@
         "current_stage": {"enum": ["created", "source_preparing", "planning", "analyzing", "reducing", "checkpoint_1", "build_finalizing", "release_planning", "checkpoint_2", "applying", "indexing", "validating", "completed"]},
         "batch_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, {"type": "null"}]},
         "pinned_inputs": {"type": "object", "properties": {"batch_id": {"type": "string", "minLength": 1}, "document_registry_revision": {"type": "integer", "minimum": 0}, "task_ids_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}, "additionalProperties": false},
+        "dispatch_policy": {"$ref": "#/$defs/ingest_workflow_dispatch_policy"},
         "kanban": {"type": "object", "properties": {"board_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}, "task_map": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_task"}, "minItems": 0}}, "required": ["board_id", "task_map"], "additionalProperties": false},
         "checkpoints": {"type": "object", "properties": {"checkpoint_1": {"$ref": "#/$defs/ingest_workflow_checkpoint"}, "checkpoint_2": {"$ref": "#/$defs/ingest_workflow_checkpoint"}}, "required": ["checkpoint_1", "checkpoint_2"], "additionalProperties": false},
         "artifacts": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_artifact"}, "minItems": 0},

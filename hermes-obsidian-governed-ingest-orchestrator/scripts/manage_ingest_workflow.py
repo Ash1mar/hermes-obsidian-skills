@@ -19,16 +19,21 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vault", required=True)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("start", "resume", "approve", "cancel", "reconcile", "rebuild-kanban", "bind-kanban", "pin-templates", "digest"):
+    for name in ("start", "resume", "approve", "cancel", "reconcile", "rebuild-kanban", "bind-kanban", "pin-templates", "arm-canary", "disarm-canary", "digest"):
         sub.add_parser(name).add_argument("--request", required=True)
     status = sub.add_parser("status")
     status.add_argument("--workflow-id", required=True)
     status.add_argument("--compact", action="store_true")
+    preview = sub.add_parser("canary-preview")
+    preview.add_argument("--workflow-id", required=True)
+    preview.add_argument("--limit", type=int, default=8)
     args = parser.parse_args()
     try:
         service = FileIngestWorkflowService(args.vault)
         if args.command == "status":
             result = service.status(args.workflow_id, args.compact)
+        elif args.command == "canary-preview":
+            result = service.canary_preview(args.workflow_id, args.limit)
         else:
             request = json.loads(Path(args.request).read_text(encoding="utf-8-sig"))
             if args.command == "start":

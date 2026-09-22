@@ -258,6 +258,12 @@ class IngestKanbanAdapter:
         self.kanban = kanban or KanbanCLI()
         self.enable_workers = enable_workers
 
+    @staticmethod
+    def _canary_allows(workflow: Mapping[str, Any], node: Node) -> bool:
+        policy = workflow.get("dispatch_policy", {})
+        return (policy.get("mode") == "canary" and node.kind == "pass-slice"
+                and node.name.partition(":")[2] in policy.get("slice_ids", []))
+
     def start(self, request: Mapping[str, Any]) -> dict[str, Any]:
         created = self.workflow.start(request)
         followup = {"workflow_id": created["workflow_id"],
@@ -288,6 +294,20 @@ class IngestKanbanAdapter:
             if batch.get("cancel_requested"):
                 self.workflow.knowledge.resume_cancelled_batch(
                     value["batch_id"], value["actor"], batch["revision"])
+        followup = {"workflow_id": value["workflow_id"], "actor": value["actor"],
+                    "expected_revision": value["revision"]}
+        followup["input_digest"] = mutation_digest(followup)
+        return self.sync(followup)
+
+    def arm_canary(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        value = self.workflow.arm_canary(request)
+        followup = {"workflow_id": value["workflow_id"], "actor": value["actor"],
+                    "expected_revision": value["revision"]}
+        followup["input_digest"] = mutation_digest(followup)
+        return self.sync(followup)
+
+    def disarm_canary(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        value = self.workflow.disarm_canary(request)
         followup = {"workflow_id": value["workflow_id"], "actor": value["actor"],
                     "expected_revision": value["revision"]}
         followup["input_digest"] = mutation_digest(followup)
@@ -328,6 +348,7 @@ class IngestKanbanAdapter:
         ids: dict[str, str] = {}
         task_map: list[dict[str, str]] = []
         for node in nodes:
+            worker_enabled = self.enable_workers and self._canary_allows(value, node)
             key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
             pin = next((item for item in value.get("template_pins", [])
                         if item["kind"] == node.kind), None)
@@ -346,7 +367,7 @@ class IngestKanbanAdapter:
                               ensure_ascii=False, sort_keys=True)
             task_id = self.kanban.create_node(
                 slug, node, key, [ids[parent] for parent in node.parents], body,
-                enable_workers=self.enable_workers)
+                enable_workers=worker_enabled)
             ids[node.name] = task_id
             task_map.append({"node": node.name, "idempotency_key": key,
                              "task_id": task_id})
@@ -371,9 +392,9 @@ class IngestKanbanAdapter:
             if domain_completed(self.workflow, updated, node):
                 self.kanban.complete(slug, ids[node.name],
                                      "Authoritative Vault outcome already committed")
-            elif node.gate or not self.enable_workers:
+            elif node.gate or not (self.enable_workers and self._canary_allows(updated, node)):
                 self.kanban.wait(slug, ids[node.name], "blocked",
-                                 "Human checkpoint or worker contract unavailable")
+                                 "Human checkpoint or outside armed canary")
             elif node.kind == "pass-slice":
                 slice_id = node.name.partition(":")[2]
                 state = self.workflow.knowledge._slice(updated["batch_id"], slice_id)["state"]
@@ -384,8 +405,13 @@ class IngestKanbanAdapter:
                     self.kanban.wait(slug, ids[node.name], "blocked", "Vault worker gate")
                 elif state == "ready":
                     self.kanban.unblock(slug, ids[node.name])
+        active_canary = (self.enable_workers and any(
+            self._canary_allows(updated, node)
+            and self.workflow.knowledge._slice(
+                updated["batch_id"], node.name.partition(":")[2])["state"]
+            in ("ready", "leased") for node in nodes if node.kind == "pass-slice"))
         return {"workflow_id": workflow_id, "workflow_created": True,
-                "state": updated["state"], "background_dispatch": self.enable_workers,
+                "state": updated["state"], "background_dispatch": active_canary,
                 "board_id": slug, "task_count": len(task_map)}
 
     def _slice_worker(self, workflow_id: str, node_name: str,
@@ -394,6 +420,10 @@ class IngestKanbanAdapter:
             _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
         workflow = self.workflow.status(workflow_id)
         self.workflow.pinned_templates(workflow)
+        policy = workflow.get("dispatch_policy", {})
+        if (policy.get("mode") != "canary" or not node_name.startswith("pass-slice:")
+                or node_name.partition(":")[2] not in policy.get("slice_ids", [])):
+            _fail("ACCESS_DENIED", "Pass slice is outside the armed canary")
         if workflow["cancel_requested"] or workflow["current_stage"] != "analyzing":
             _fail("WORKFLOW_STOPPED", "Pass work is outside the active analyzing stage")
         matching = [item for item in workflow["kanban"]["task_map"]

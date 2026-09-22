@@ -28,6 +28,7 @@ KNOWLEDGE_CLI = ROOT / "hermes-obsidian-controlled-ingest/scripts/manage_knowled
 WORKFLOW_CLI = ROOT / "hermes-obsidian-controlled-ingest/scripts/manage_ingest_workflow.py"
 DISPATCH_CLI = ROOT / "hermes-obsidian-controlled-ingest/scripts/dispatch_ingest_workflow.py"
 ORCHESTRATOR_CLI = ROOT / "hermes-obsidian-governed-ingest-orchestrator/scripts/dispatch_ingest_workflow.py"
+ORCHESTRATOR_MANAGE_CLI = ROOT / "hermes-obsidian-governed-ingest-orchestrator/scripts/manage_ingest_workflow.py"
 
 
 @pytest.fixture
@@ -582,9 +583,16 @@ def start_pinned_worker(adapter: IngestKanbanAdapter, request: dict) -> dict:
     pinned = adapter.workflow.pin_templates(workflow_request(
         workflow_id=created["workflow_id"], actor=created["actor"],
         expected_revision=created["revision"], templates=templates))
-    return adapter.sync(workflow_request(
+    adapter.sync(workflow_request(
         workflow_id=pinned["workflow_id"], actor=pinned["actor"],
         expected_revision=pinned["revision"]))
+    preview = adapter.workflow.canary_preview(pinned["workflow_id"], 1)
+    current = adapter.workflow.status(pinned["workflow_id"])
+    return adapter.arm_canary(workflow_request(
+        workflow_id=pinned["workflow_id"], actor=pinned["actor"],
+        expected_revision=current["revision"],
+        slice_ids=[item["slice_id"] for item in preview["slices"]],
+        selection_digest=preview["selection_digest"]))
 
 
 def test_orchestrator_pins_complete_pack_and_detects_tampering(vault: Path):
@@ -824,6 +832,8 @@ class FakeKanban:
         self.boards = set()
         self.tasks = {}
         self.completed = set()
+        self.unblocked = set()
+        self.waited = {}
 
     def dispatcher_available(self):
         return self.available
@@ -842,10 +852,147 @@ class FakeKanban:
         self.completed.add(task_id)
 
     def wait(self, slug, task_id, state, reason):
+        self.waited[task_id] = state
+        self.unblocked.discard(task_id)
         return None
 
     def unblock(self, slug, task_id):
+        self.unblocked.add(task_id)
+        self.waited.pop(task_id, None)
         return None
+
+
+def test_canary_allows_only_eight_slices_and_survives_dispatcher_restart(vault: Path):
+    plan_sliced_batch(vault, 27, "canary-batch")
+    created = start_and_pin(vault, workflow_request(
+        workflow_id="ingest-canary", actor="agent", expected_revision=0,
+        profile="diagnostic-6", scope={"source_paths": [],
+                                         "knowledge_selector": "all-current"},
+        batch_id="canary-batch"))
+    fake = FakeKanban(True)
+    adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
+    unarmed = adapter.sync(workflow_request(
+        workflow_id="ingest-canary", actor="agent",
+        expected_revision=created["revision"]))
+    assert unarmed["background_dispatch"] is False
+    assert not fake.unblocked
+    preview = adapter.workflow.canary_preview("ingest-canary", 8)
+    assert len(preview["slices"]) == 8
+    assert len(adapter.workflow.knowledge._slices("canary-batch")) == 9
+    selection = [item["slice_id"] for item in preview["slices"]]
+    current = adapter.workflow.status("ingest-canary")
+    with pytest.raises(ContractError, match="STALE_INPUT"):
+        adapter.workflow.arm_canary(workflow_request(
+            workflow_id="ingest-canary", actor="agent",
+            expected_revision=current["revision"], slice_ids=selection,
+            selection_digest="sha256:" + "0" * 64))
+    with pytest.raises(ContractError, match="INVALID_SCHEMA"):
+        adapter.workflow.arm_canary(workflow_request(
+            workflow_id="ingest-canary", actor="agent",
+            expected_revision=current["revision"],
+            slice_ids=selection + ["ninth"],
+            selection_digest=preview["selection_digest"]))
+    armed = adapter.arm_canary(workflow_request(
+        workflow_id="ingest-canary", actor="agent",
+        expected_revision=current["revision"], slice_ids=selection,
+        selection_digest=preview["selection_digest"]))
+    assert armed["background_dispatch"] is True
+    task_map = adapter.workflow.status("ingest-canary")["kanban"]["task_map"]
+    allowed_cards = {item["task_id"] for item in task_map
+                     if item["node"] in {f"pass-slice:{slice_id}" for slice_id in selection}}
+    assert fake.unblocked == allowed_cards and len(allowed_cards) == 8
+    outside = next(item for item in task_map
+                   if item["node"].startswith("pass-slice:")
+                   and item["task_id"] not in allowed_cards)
+    with pytest.raises(ContractError, match="ACCESS_DENIED"):
+        adapter.worker_begin({"workflow_id": "ingest-canary", "node": outside["node"],
+                              "task_id": outside["task_id"], "worker_id": "worker-x"})
+    inside = next(item for item in task_map if item["task_id"] in allowed_cards)
+    leased = adapter.worker_begin({"workflow_id": "ingest-canary", "node": inside["node"],
+                                   "task_id": inside["task_id"], "worker_id": "worker-a"})["slice"]
+    current = adapter.workflow.status("ingest-canary")
+    stopped = adapter.disarm_canary(workflow_request(
+        workflow_id="ingest-canary", actor="agent",
+        expected_revision=current["revision"]))
+    assert stopped["background_dispatch"] is False and not fake.unblocked
+    with pytest.raises(ContractError, match="ACCESS_DENIED"):
+        adapter.worker_check({"workflow_id": "ingest-canary", "node": inside["node"],
+                              "task_id": inside["task_id"], "worker_id": "worker-a",
+                              "expected_revision": leased["revision"],
+                              "template_hash": leased["template_hash"]})
+    fake.available = False
+    current = adapter.workflow.status("ingest-canary")
+    assert adapter.sync(workflow_request(
+        workflow_id="ingest-canary", actor="agent",
+        expected_revision=current["revision"]))["background_dispatch"] is False
+    fake.available = True
+    current = adapter.workflow.status("ingest-canary")
+    assert adapter.sync(workflow_request(
+        workflow_id="ingest-canary", actor="agent",
+        expected_revision=current["revision"]))["background_dispatch"] is False
+    assert not fake.unblocked
+    current = adapter.workflow.status("ingest-canary")
+    with pytest.raises(ContractError, match="STALE_INPUT"):
+        adapter.workflow.arm_canary(workflow_request(
+            workflow_id="ingest-canary", actor="agent",
+            expected_revision=current["revision"],
+            slice_ids=selection[1:] + [outside["node"].partition(":")[2]],
+            selection_digest=preview["selection_digest"]))
+    resumed = adapter.arm_canary(workflow_request(
+        workflow_id="ingest-canary", actor="agent",
+        expected_revision=current["revision"], slice_ids=selection,
+        selection_digest=preview["selection_digest"]))
+    assert resumed["background_dispatch"] is True
+    assert adapter.worker_check({"workflow_id": "ingest-canary", "node": inside["node"],
+                                 "task_id": inside["task_id"], "worker_id": "worker-a",
+                                 "expected_revision": leased["revision"],
+                                 "template_hash": leased["template_hash"]})["ok"]
+
+
+def test_compact_batch_status_omits_task_id_array(vault: Path):
+    service = plan_sliced_batch(vault, 27, "compact-large-batch")
+    compact = service.batch_status("compact-large-batch", compact=True)
+    assert compact["coverage"]["total_tasks"] == 27
+    assert "task_ids" not in compact["batch"]
+    assert "tasks" not in compact and "uncovered_task_ids" not in compact
+    assert len(json.dumps(compact)) < 2500
+
+
+def test_canary_cli_preview_and_arm_remain_non_dispatching_by_default(
+        vault: Path, tmp_path: Path):
+    plan_sliced_batch(vault, 3, "canary-cli-batch")
+    value = start_and_pin(vault, workflow_request(
+        workflow_id="ingest-canary-cli", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": [],
+                                    "knowledge_selector": "all-current"},
+        batch_id="canary-cli-batch"))
+    adapter = IngestKanbanAdapter(vault, FakeKanban(False))
+    adapter.sync(workflow_request(
+        workflow_id=value["workflow_id"], actor="agent",
+        expected_revision=value["revision"]))
+    preview_command = [sys.executable, str(ORCHESTRATOR_MANAGE_CLI),
+                       "--vault", str(vault), "canary-preview", "--workflow-id",
+                       "ingest-canary-cli", "--limit", "1"]
+    preview_run = subprocess.run(preview_command, capture_output=True, text=True,
+                                 encoding="utf-8")
+    assert preview_run.returncode == 0, preview_run.stderr
+    preview = json.loads(preview_run.stdout)
+    assert len(preview["slices"]) == 1
+    assert FileIngestWorkflowService(vault).status("ingest-canary-cli")["revision"] == 2
+    request = workflow_request(
+        workflow_id="ingest-canary-cli", actor="agent", expected_revision=2,
+        slice_ids=[preview["slices"][0]["slice_id"]],
+        selection_digest=preview["selection_digest"])
+    path = tmp_path / "arm.json"
+    path.write_text(json.dumps(request), encoding="utf-8")
+    armed = subprocess.run([sys.executable, str(ORCHESTRATOR_CLI), "--vault", str(vault),
+                            "arm-canary", "--request", str(path)], capture_output=True,
+                           text=True, encoding="utf-8")
+    assert armed.returncode == 0, armed.stderr
+    assert json.loads(armed.stdout)["background_dispatch"] is False
+    policy = FileIngestWorkflowService(vault).status("ingest-canary-cli")["dispatch_policy"]
+    assert policy["mode"] == "canary"
+    assert policy["slice_ids"] == request["slice_ids"]
 
 
 def test_kanban_adapter_reports_gateway_absence_then_rebuilds_dag(vault: Path):
@@ -980,17 +1127,46 @@ def test_kanban_worker_must_hold_exact_slice_lease(vault: Path):
         adapter.worker_check({**request, "expected_revision": begun["slice"]["revision"],
                               "template_hash": "0" * 64})
     cancelled = adapter.cancel(workflow_request(
-        workflow_id="ingest-worker", actor="agent", expected_revision=3))
+        workflow_id="ingest-worker", actor="agent", expected_revision=5))
     assert cancelled["state"] == "cancelled"
     assert adapter.workflow.knowledge._batch("worker-batch")["cancel_requested"]
     with pytest.raises(ContractError, match="WORKFLOW_STOPPED"):
         adapter.worker_begin(request)
     resumed = adapter.resume(workflow_request(
-        workflow_id="ingest-worker", actor="agent", expected_revision=4))
+        workflow_id="ingest-worker", actor="agent", expected_revision=6))
     assert resumed["state"] == "analyzing"
     assert not adapter.workflow.knowledge._batch("worker-batch")["cancel_requested"]
     assert adapter.workflow.knowledge._slice(
         "worker-batch", item["node"].partition(":")[2])["state"] == "ready"
+
+
+def test_canary_accepts_prepared_batch_without_planned_reading_measurement(vault: Path):
+    ref = publish_sources(vault, ["# Existing source\nUsable evidence.\n"])[0]
+    service = FileKnowledgeBuildService(vault)
+    service.plan_batch({
+        "batch_id": "prepared-batch", "actor": "agent", "registry_revision": 1,
+        "tasks": [{"task_id": "prepared-task", "target_refs": [ref]}],
+    })
+    prepared = service.prepare_batch("prepared-batch", "agent", 1)
+    assert prepared["ok"]
+    task = service._task("prepared-task")
+    assert "reading_measurement" not in task
+    package_id = prepared["results"][0]["reading_package_id"]
+    package_path = (vault / "_system/knowledge-builds/task-prepared-task/readings"
+                    / f"{package_id}.json")
+    original_package = package_path.read_bytes()
+    adapter = IngestKanbanAdapter(vault, FakeKanban(True), enable_workers=True)
+    start_pinned_worker(adapter, workflow_request(
+        workflow_id="ingest-prepared", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": [],
+                                    "knowledge_selector": "all-current"},
+        batch_id="prepared-batch"))
+    item = next(item for item in adapter.workflow.status("ingest-prepared")["kanban"]["task_map"]
+                if item["node"].startswith("pass-slice:"))
+    begun = adapter.worker_begin({"workflow_id": "ingest-prepared", "node": item["node"],
+                                  "task_id": item["task_id"], "worker_id": "worker-a"})
+    assert begun["leased"]
+    assert package_path.read_bytes() == original_package
 
 
 def test_dispatch_cli_creates_workflow_without_false_background_claim(vault: Path,

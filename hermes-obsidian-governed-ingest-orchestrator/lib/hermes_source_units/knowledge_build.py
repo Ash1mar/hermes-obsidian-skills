@@ -645,9 +645,22 @@ class FileKnowledgeBuildService:
             return {"codepoints": int(measurement["serialized_codepoints"]),
                     "fingerprint": str(measurement["input_fingerprint"]),
                     "blocking_code": measurement.get("blocking_code")}
-        package = None if remeasure else self._existing_reading_package(
+        package = self._existing_reading_package(
             task, str(batch["actor"]), int(batch["document_registry_revision"]))
         if package is not None:
+            self._reading_package_fingerprint(package, str(package["package_id"]))
+            if remeasure:
+                assembled = self._assemble_reading(
+                    list(task["target_refs"]), str(batch["actor"]),
+                    int(batch["document_registry_revision"]), self._reader_config())
+                if (assembled["window"] != package["window"]
+                        or assembled["materials"] != package["materials"]):
+                    _fail("STALE_INPUT", "existing reading package differs from current source")
+                if measurement is not None:
+                    observed = assembled["measurement"]
+                    return {"codepoints": int(observed["serialized_codepoints"]),
+                            "fingerprint": str(observed["input_fingerprint"]),
+                            "blocking_code": observed.get("blocking_code")}
             projection = self._reading_projection(package["window"], package["materials"])
             return {"codepoints": len(canonical_json(projection).decode("utf-8")),
                     "fingerprint": "sha256:" + fingerprint({"package_id": package["package_id"]}),
@@ -1267,12 +1280,18 @@ class FileKnowledgeBuildService:
                 next_actions.append("human-checkpoint-1-then-batch-finalize")
             if run_details and all(item["state"] == "completed" for item in run_details):
                 next_actions.append("vault-finalize-plan")
-        status = {"ok": True, "batch": batch, "task_counts": task_counts,
+        compact_batch = {key: batch[key] for key in (
+            "batch_id", "actor", "state", "revision", "document_registry_revision",
+            "last_operation")}
+        compact_batch["cancel_requested"] = batch.get("cancel_requested", False)
+        compact_batch["cooldown_until"] = batch.get("cooldown_until")
+        status = {"ok": True, "batch": compact_batch if compact else batch,
+                  "task_counts": task_counts,
                   "slice_counts": slice_counts,
                   "runs": run_details,
-                  "duplicate_task_run_ids": duplicate_task_runs,
                   "next_actions": list(dict.fromkeys(next_actions))}
         if compact:
+            status["duplicate_task_run_count"] = len(duplicate_task_runs)
             status["coverage"] = {"total_tasks": len(tasks),
                                   "reading_packages": sum(item["reading_packages"] for item in task_details),
                                   "passes": sum(item["passes"] for item in task_details),
@@ -1283,6 +1302,7 @@ class FileKnowledgeBuildService:
                                   "global_reduction_complete": global_reduction is not None}
             status["failure_count"] = len(batch["failures"])
         else:
+            status["duplicate_task_run_ids"] = duplicate_task_runs
             status["tasks"] = task_details
             status["slices"] = slices
             status["resource_reductions"] = [{
