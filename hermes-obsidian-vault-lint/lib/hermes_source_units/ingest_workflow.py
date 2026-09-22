@@ -138,6 +138,8 @@ class FileIngestWorkflowService:
             "state": "analyzing" if batch_id is not None else "created",
             "current_stage": "analyzing" if batch_id is not None else "created",
             "batch_id": batch_id, "pinned_inputs": pinned,
+            "dispatch_policy": {"mode": "disabled", "slice_ids": [],
+                                "selection_digest": None},
             "kanban": {"board_id": None, "task_map": []},
             "checkpoints": {name: {"state": "pending", "approval_digest": None,
                                    "approved_by": None} for name in ("checkpoint_1", "checkpoint_2")},
@@ -162,7 +164,93 @@ class FileIngestWorkflowService:
         result = {key: value[key] for key in ("workflow_id", "revision", "state",
                   "current_stage", "batch_id", "profile", "cancel_requested", "checkpoints")}
         result["display"] = display_phase(value)
+        result["dispatch_policy"] = value.get("dispatch_policy", {
+            "mode": "disabled", "slice_ids": [], "selection_digest": None})
         return result
+
+    def canary_preview(self, workflow_id: str, limit: int = 8) -> dict[str, Any]:
+        """Read-only deterministic selection; no lease or worker activation."""
+        if type(limit) is not int or not 1 <= limit <= 8:
+            _fail("INVALID_SCHEMA", "canary limit must be between 1 and 8")
+        value = self.status(workflow_id)
+        if value["cancel_requested"] or value["current_stage"] != "analyzing":
+            _fail("WORKFLOW_STOPPED", "canary requires an active analyzing workflow")
+        if value["batch_id"] is None:
+            _fail("BATCH_REQUIRED", "canary requires an adopted batch")
+        self.pinned_templates(value)
+        batch = self.knowledge._batch(value["batch_id"])
+        if (batch["actor"] != value["actor"] or batch.get("cancel_requested")
+                or batch["document_registry_revision"] !=
+                value["pinned_inputs"].get("document_registry_revision")
+                or "sha256:" + fingerprint(batch["task_ids"]) !=
+                value["pinned_inputs"].get("task_ids_fingerprint")):
+            _fail("STALE_INPUT", "adopted batch identity or task set changed")
+        if not batch.get("slices_initialized"):
+            _fail("CANARY_UNAVAILABLE", "initialize slices before canary selection")
+        existing = value.get("dispatch_policy", {})
+        if existing.get("slice_ids"):
+            selected = [self.knowledge._slice(value["batch_id"], slice_id)
+                        for slice_id in existing["slice_ids"]]
+            digest = existing["selection_digest"]
+        else:
+            ready = [item for item in self.knowledge._slices(value["batch_id"])
+                     if item["state"] == "ready"]
+            if len(ready) < limit:
+                _fail("CANARY_UNAVAILABLE", "fewer ready slices than requested")
+            selected = ready[:limit]
+            digest = "sha256:" + fingerprint({
+                "workflow_id": workflow_id,
+                "slice_inputs": [{"slice_id": item["slice_id"],
+                                  "input_fingerprint": item["input_fingerprint"]}
+                                 for item in selected],
+            })
+        return {"workflow_id": workflow_id, "batch_id": value["batch_id"],
+                "revision": value["revision"], "mode": existing.get("mode", "disabled"),
+                "selection_digest": digest,
+                "slices": [{"slice_id": item["slice_id"], "state": item["state"],
+                            "task_ids": item["task_ids"],
+                            "input_fingerprint": item["input_fingerprint"]}
+                           for item in selected]}
+
+    def arm_canary(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Persist a one-time allowlist; never widen an existing canary."""
+        with _exclusive_lock(self._lock(str(request["workflow_id"]))):
+            value = self._mutation(request)
+            requested = list(request["slice_ids"])
+            if len(requested) != len(set(requested)) or not 1 <= len(requested) <= 8:
+                _fail("INVALID_SCHEMA", "canary requires 1 to 8 distinct slice IDs")
+            preview = self.canary_preview(value["workflow_id"], len(requested))
+            selected = [item["slice_id"] for item in preview["slices"]]
+            if (requested != selected or request.get("selection_digest") !=
+                    preview["selection_digest"]):
+                _fail("STALE_INPUT", "canary selection changed since preview")
+            policy = value.get("dispatch_policy", {"mode": "disabled", "slice_ids": [],
+                                                   "selection_digest": None})
+            if policy["mode"] == "canary":
+                return value
+            if policy["mode"] != "disabled":
+                _fail("INVALID_TRANSITION", "unsupported dispatch mode")
+            updated = dict(value)
+            updated["dispatch_policy"] = {"mode": "canary", "slice_ids": selected,
+                                          "selection_digest": preview["selection_digest"]}
+            updated["revision"] += 1
+            self._write(updated)
+            return updated
+
+    def disarm_canary(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        with _exclusive_lock(self._lock(str(request["workflow_id"]))):
+            value = self._mutation(request)
+            policy = value.get("dispatch_policy", {"mode": "disabled", "slice_ids": [],
+                                                   "selection_digest": None})
+            if policy["mode"] == "disabled":
+                return value
+            if policy["mode"] != "canary":
+                _fail("INVALID_TRANSITION", "unsupported dispatch mode")
+            updated = dict(value)
+            updated["dispatch_policy"] = {**policy, "mode": "disabled"}
+            updated["revision"] += 1
+            self._write(updated)
+            return updated
 
     def reconcile(self, request: Mapping[str, Any]) -> dict[str, Any]:
         with _exclusive_lock(self._lock(str(request["workflow_id"]))):
