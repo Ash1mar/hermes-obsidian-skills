@@ -7,3 +7,5 @@ For mutations, calculate `input_digest` as `sha256:` plus the canonical request 
 `template_pins` contains one entry per worker kind: `kind`, versioned `template_id`, `template_hash`, and Vault-relative snapshot path. Pinning stores the exact UTF-8 template bytes in the workflow's Vault directory. Once pinned, the set cannot be replaced. Dispatch verifies every snapshot hash before creating active cards; missing/changed content fails closed. Changing Skill files affects only new workflows. Kanban task idempotency keys also include the pinned template hash.
 
 The Vault owns source, batch, Pass, Reduce, release, checkpoint and final acceptance state. Kanban tasks are only rebuildable projections. A card reaching `done` does not prove that its domain operation succeeded; reconciliation checks Vault state.
+
+`profile` controls only the read-only `display` object returned by compact status: phase number, total, name and pending human checkpoint. It does not change transition order, worker graph, budgets, idempotency keys, approvals or authoritative stage. The mapping is documented in `compatibility-profiles.md`.

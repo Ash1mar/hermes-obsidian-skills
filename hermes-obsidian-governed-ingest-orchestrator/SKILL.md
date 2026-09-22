@@ -5,7 +5,7 @@ description: Start, resume, inspect, approve or cancel a persistent Vault-author
 
 # Governed ingest orchestration
 
-Use this Skill for one-request, recoverable ingest. For request fields and revisions read `references/workflow-contract.md`; for operator actions read `references/operations.md`; for node/worker boundaries read `references/worker-contracts.md`. Do not copy a six-part prompt into one conversation or use an interactive session as a background worker.
+Use this Skill for one-request, recoverable ingest. For request fields and revisions read `references/workflow-contract.md`; for operator actions read `references/operations.md`; for node/worker boundaries read `references/worker-contracts.md`. When a user brings an old three- or six-stage prompt, read `references/compatibility-profiles.md`. Do not copy a six-part prompt into one conversation or use an interactive session as a background worker.
 
 Call `python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" start --request "<json-file>"` once. The script creates the Vault workflow, pins all twelve versioned templates by SHA-256 and attempts Kanban projection. On retry, use the same request and workflow ID. `dispatcher_unavailable` means the workflow exists but background dispatch is false; report that honestly and resume when Hermes Gateway is available.
 

@@ -23,6 +23,25 @@ WORKER_KINDS = (
     "vault-finalize-plan", "checkpoint-2-validate", "release-apply",
     "provider-sync", "acceptance",
 )
+DISPLAY_PHASES = {
+    "compact-3": (
+        ("ingest_to_build_checkpoint", ("created", "source_preparing", "planning",
+                                        "analyzing", "reducing", "checkpoint_1")),
+        ("build_to_release_checkpoint", ("build_finalizing", "release_planning",
+                                           "checkpoint_2")),
+        ("release_and_acceptance", ("applying", "indexing", "validating",
+                                    "completed")),
+    ),
+    "diagnostic-6": (
+        ("source_preparation", ("created", "source_preparing")),
+        ("exact_plan", ("planning",)),
+        ("analysis_and_checkpoint_1", ("analyzing", "reducing", "checkpoint_1")),
+        ("build_finalize", ("build_finalizing",)),
+        ("release_plan_and_checkpoint_2", ("release_planning", "checkpoint_2")),
+        ("release_and_acceptance", ("applying", "indexing", "validating",
+                                    "completed")),
+    ),
+}
 _ID = re.compile(r"^ingest-[A-Za-z0-9][A-Za-z0-9_.:-]{0,152}$")
 
 
@@ -34,6 +53,18 @@ def mutation_digest(request: Mapping[str, Any]) -> str:
     """Digest of the complete mutation request except its digest field."""
     return "sha256:" + fingerprint({k: v for k, v in request.items()
                                     if k != "input_digest"})
+
+
+def display_phase(value: Mapping[str, Any]) -> dict[str, Any]:
+    """Read-only UI projection; never an input to transitions or the worker DAG."""
+    profile, stage = value["profile"], value["current_stage"]
+    for number, (name, stages) in enumerate(DISPLAY_PHASES[profile], 1):
+        if stage in stages:
+            checkpoint = (stage if stage in ("checkpoint_1", "checkpoint_2")
+                          and value["checkpoints"][stage]["state"] != "approved" else None)
+            return {"phase": number, "phase_count": len(DISPLAY_PHASES[profile]),
+                    "name": name, "awaiting_approval": checkpoint}
+    _fail("INVALID_SCHEMA", "workflow stage has no display phase")
 
 
 class FileIngestWorkflowService:
@@ -128,8 +159,10 @@ class FileIngestWorkflowService:
         value = self._load(workflow_id)
         if not compact:
             return value
-        return {key: value[key] for key in ("workflow_id", "revision", "state",
-                "current_stage", "batch_id", "profile", "cancel_requested", "checkpoints")}
+        result = {key: value[key] for key in ("workflow_id", "revision", "state",
+                  "current_stage", "batch_id", "profile", "cancel_requested", "checkpoints")}
+        result["display"] = display_phase(value)
+        return result
 
     def reconcile(self, request: Mapping[str, Any]) -> dict[str, Any]:
         with _exclusive_lock(self._lock(str(request["workflow_id"]))):
