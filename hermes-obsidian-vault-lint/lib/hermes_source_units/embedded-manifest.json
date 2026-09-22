@@ -12,7 +12,7 @@
   "chunk_engine/tokenization.py": "da8c87116a3a627b7b970679ed67c503b6e18efc401fd7a0e116d422f2dbdba4",
   "chunk_engine/validation.py": "35d6ab342f838fac18eb175f2ebdf45a70d04c63e9e0c94731928347f4cf8d36",
   "defaults/config.json": "1bf63565930370259243430afee19f89f26776ace4b055c728826b2e3aa024dd",
-  "ingest_workflow.py": "6694f484936827bfed867d043ed514b0cab991219cf971983fed8ec50de30edf",
+  "ingest_workflow.py": "bb15175ba4123cdc113f61fbc942a1e634bd4c9da1dd3e14489e7eff5afc10bd",
   "interfaces.py": "5d824d42fbea30efc0608260bbd21089d8b170816c85b43bb0dc6d45edb36373",
   "knowledge_build.py": "f35d971b4c7666a1a54e925fae49dee798494549002a641e1ef91b30a7112678",
   "py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",

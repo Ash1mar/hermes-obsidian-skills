@@ -17,7 +17,8 @@ sys.path.insert(0, str(ROOT / "hermes-obsidian-governed-ingest-orchestrator/lib"
 from hermes_source_units import (ContractError, FileIngestWorkflowService,
                                  FileKnowledgeBuildService, FileSourceUnitService,
                                  mutation_digest)
-from hermes_source_units.ingest_workflow import WORKER_KINDS
+from hermes_source_units.ingest_workflow import (DISPLAY_PHASES, STAGES,
+                                                WORKER_KINDS, display_phase)
 from ingest_kanban import IngestKanbanAdapter, KanbanCLI, desired_graph
 from orchestration import start_and_pin, worker_pack
 
@@ -668,6 +669,34 @@ def test_workflow_ledger_adopts_batch_and_rebuilds_desired_nodes(vault: Path):
         workflow_id="ingest-workflow-batch", actor="agent", expected_revision=3))
     assert resumed["state"] == "analyzing" and not resumed["cancel_requested"]
     assert batch._batch("workflow-batch")["task_ids"]
+
+
+def test_display_profiles_cover_same_stages_without_changing_worker_graph(vault: Path):
+    plan_sliced_batch(vault, 1, "display-batch")
+    service = FileIngestWorkflowService(vault)
+    workflow = service.start(workflow_request(
+        workflow_id="ingest-display", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": [],
+                                    "knowledge_selector": "all-current"},
+        batch_id="display-batch"))
+    compact_graph = desired_graph(service, workflow)
+    diagnostic = {**workflow, "profile": "diagnostic-6"}
+    assert desired_graph(service, diagnostic) == compact_graph
+    expected = {
+        "compact-3": (1, 1, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3),
+        "diagnostic-6": (1, 1, 2, 3, 3, 3, 4, 5, 5, 6, 6, 6, 6),
+    }
+    for profile, phases in expected.items():
+        assert set(stage for _, group in DISPLAY_PHASES[profile]
+                   for stage in group) == set(STAGES)
+        for stage, phase in zip(STAGES, phases):
+            projection = display_phase({**workflow, "profile": profile,
+                                        "current_stage": stage})
+            assert projection["phase"] == phase
+            assert projection["phase_count"] == (3 if profile == "compact-3" else 6)
+            assert projection["awaiting_approval"] == (
+                stage if stage in ("checkpoint_1", "checkpoint_2") else None)
+    assert service.status("ingest-display", compact=True)["display"]["phase"] == 1
 
 
 def test_workflow_mutation_digest_and_checkpoint_gate(vault: Path):

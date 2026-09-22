@@ -13,6 +13,7 @@ Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): impl
 
 - `hermes-obsidian-governed-ingest-orchestrator/`
   - Thin persistent ingest entry point: one start request, Vault-pinned versioned worker templates, recoverable Kanban projection and two human checkpoints. Autonomous worker dispatch remains disabled until canary validation.
+  - `compact-3` and `diagnostic-6` are read-only status views over the same workflow graph; older prompt-book stage files now point to this entry point.
 
 - `hermes-obsidian-controlled-ingest/`
   - Governed Obsidian ingestion workflow.
