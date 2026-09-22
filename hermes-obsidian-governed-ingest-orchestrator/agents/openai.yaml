@@ -1,0 +1,4 @@
+interface:
+  display_name: "Hermes Governed Ingest Orchestrator"
+  short_description: "持久化、可恢复的受控摄取工作流入口"
+  default_prompt: "使用 $hermes-obsidian-governed-ingest-orchestrator 启动或管理 Vault-authoritative ingest workflow，显示检查点和后台派发状态。"

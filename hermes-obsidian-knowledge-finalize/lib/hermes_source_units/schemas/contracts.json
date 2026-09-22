@@ -1777,6 +1777,17 @@
       "required": ["stage", "refs"],
       "additionalProperties": false
     },
+    "ingest_workflow_template_pin": {
+      "type": "object",
+      "properties": {
+        "kind": {"enum": ["source-prepare", "exact-plan", "pass-slice", "resource-reduce", "global-reduce", "checkpoint-1-validate", "build-finalize", "vault-finalize-plan", "checkpoint-2-validate", "release-apply", "provider-sync", "acceptance"]},
+        "template_id": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "template_hash": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "path": {"type": "string", "minLength": 1, "format": "vault-relative-path"}
+      },
+      "required": ["kind", "template_id", "template_hash", "path"],
+      "additionalProperties": false
+    },
     "ingest_workflow": {
       "type": "object",
       "properties": {
@@ -1796,7 +1807,8 @@
         "cancel_requested": {"type": "boolean"},
         "resume_stage": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
         "revision": {"type": "integer", "minimum": 1},
-        "start_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+        "start_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "template_pins": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_template_pin"}, "minItems": 0}
       },
       "required": ["contract", "workflow_id", "schema_version", "actor", "profile", "scope", "state", "current_stage", "batch_id", "pinned_inputs", "kanban", "checkpoints", "artifacts", "cancel_requested", "resume_stage", "revision", "start_digest"],
       "additionalProperties": false
