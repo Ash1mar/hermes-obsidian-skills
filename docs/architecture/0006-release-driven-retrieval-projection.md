@@ -1,6 +1,6 @@
 # ADR-0006：P5 Release 驱动的 SourceUnit 检索投影
 
-日期：2026-09-16，2026-09-17 实施更新。状态：接受；P5.1–P5.5 与自动化门禁已实现，P5.6 的真实部署拓扑验收待执行。关联：[SourceUnit 契约](0003-source-unit-contracts.md)、[显式 Finalize](0004-knowledge-identity-and-finalize.md)、[共享 Chunk Engine](0005-shared-chunk-engine.md)、[P5 验收](../SOURCE_UNITS_P5_ACCEPTANCE.md)和[演进计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)。
+日期：2026-09-16 接受，2026-09-23 状态校正。P5.1–P5.5、自动化门禁与 main WSL Provider 0.5 运行时部署已完成；真实 release generation、材料检索和 intranet 拓扑验收待执行。关联：[SourceUnit 契约](0003-source-unit-contracts.md)、[显式 Finalize](0004-knowledge-identity-and-finalize.md)、[共享 Chunk Engine](0005-shared-chunk-engine.md)和[演进计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)。P5 当时的验收快照保存在本地 `legacy docs/`。
 
 ## 背景
 

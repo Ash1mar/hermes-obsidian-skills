@@ -31,8 +31,9 @@ For the phase-5 Vault workflow ledger and explicit checkpoint commands, read
 `references/workflow-ledger.md`. The ledger manager does not start background
 dispatch; do not describe its `rebuild-kanban` output as a running Kanban board.
 For the phase-6 Hermes Kanban projection and worker lease handshake, read
-`references/kanban-adapter.md`. Phase 6 does not activate worker cards before
-the fixed templates in phase 7 are installed.
+`references/kanban-adapter.md`. The governed orchestrator now pins twelve versioned
+worker templates, but its host rollout switch still disables autonomous dispatch.
+Even after host activation, only explicitly armed Pass canary slices may run.
 
 Report separate completion dimensions: source preservation; registration; conversion/processing;
 section processing (status counts); knowledge construction (inspected scope, decisions and outputs);

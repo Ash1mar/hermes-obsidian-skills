@@ -1,6 +1,6 @@
 # ADR-0005：P2.1 共享 Chunk Engine 校正
 
-日期：2026-09-15。状态：接受；P2.1 已实现并通过验收。关联：[来源单元契约](0003-source-unit-contracts.md)、[知识身份与 Finalize](0004-knowledge-identity-and-finalize.md)、[P2.1 验收](../SOURCE_UNITS_P2_1_ACCEPTANCE.md)和[演进计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)。
+日期：2026-09-15。状态：接受；P2.1 已实现并通过验收。关联：[来源单元契约](0003-source-unit-contracts.md)、[知识身份与 Finalize](0004-knowledge-identity-and-finalize.md)和[演进计划](../SOURCE_UNITS_EVOLUTION_PLAN.md)。当时的 P2.1 验收快照保存在本地 `legacy docs/`。
 
 ## 背景
 

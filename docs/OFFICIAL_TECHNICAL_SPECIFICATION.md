@@ -5,10 +5,10 @@
 | 项目 | 内容 |
 | --- | --- |
 | 文档性质 | 项目级官方技术规范 |
-| 文档状态 | 工作树技术基线；合并到目标分支后对该分支生效 |
-| 基线日期 | 2026-09-16 |
+| 文档状态 | 当前分支的技术基线；部署状态另由运行环境与 Vault 记录证明 |
+| 基线日期 | 2026-09-23 |
 | 适用范围 | `hermes-obsidian-skills` 的 `main` 与 `intranet` 分支 |
-| 规范对象 | 五个 Skill、受治理 Vault、Bundle、控制面记录、Query Session、qmd-like-rag Provider 及其边界 |
+| 规范对象 | 六个 Skill、受治理 Vault、Bundle、摄取工作流、控制面记录、Query Session、qmd-like-rag Provider 及其边界 |
 | 不直接规范 | Hermes 上游产品功能、具体组织的权限系统、主机密钥、业务内容和人工审批制度 |
 
 本文档使用“必须”“不得”表示强制要求，使用“应”表示除非有明确理由否则需要遵守的要求，使用“可以”表示可选能力。
@@ -19,7 +19,7 @@
 
 - 系统由哪些组件组成，各自负责什么；
 - 原始证据、解析结果、治理知识、索引和审计记录分别存放在哪里；
-- Bootstrap、Ingest、Lint、Query 之间如何协作；
+- Bootstrap、Governed Ingest Orchestrator、Controlled Ingest、Knowledge Finalize、Lint、Query 之间如何协作；
 - 哪些数据结构和协议构成兼容性边界；
 - `main` 与 `intranet` 的部署差异如何表达；
 - 出现解析失败、证据缺口、Provider 不可用或并发状态冲突时如何降级；
@@ -84,6 +84,8 @@
 | Governed Artifact | `30_Cards/`、`40_Concepts/`、`50_Projects/` 等可长期维护的知识产物 |
 | Source Map | 面向人的来源、章节和处理状态控制页 |
 | Section Ledger | 面向程序的章节状态、修订、内容指纹和输出台账 |
+| Ingest Workflow Ledger | Vault 中持久化的单次摄取工作流、阶段、模板钉住、人工审批和调度策略记录 |
+| Kanban Projection | 从 Vault 事实重建的任务看板；任务完成须由 Vault 领域记录再确认 |
 | Query Index | 可重建的分层章节导航索引，不是事实证据 |
 | Query Trace | 一次受控查询的候选、读取、证据、Claim、计时和结论审计记录 |
 | Provider | 通过稳定协议提供候选召回的独立服务或命令；当前实现为 qmd-like-rag |
@@ -99,6 +101,7 @@ flowchart LR
     HERMES[Hermes Runtime]
 
     BOOT[Vault Bootstrap]
+    ORCH[Governed Ingest Orchestrator]
     INGEST[Controlled Ingest]
     FINALIZE[Knowledge Finalize]
     LINT[Vault Lint]
@@ -111,12 +114,16 @@ flowchart LR
 
     USER --> HERMES
     HERMES --> BOOT
+    HERMES --> ORCH
     HERMES --> INGEST
     HERMES --> FINALIZE
     HERMES --> LINT
     HERMES --> QUERY
 
     BOOT --> VAULT
+    ORCH --> INGEST
+    ORCH --> FINALIZE
+    ORCH --> VAULT
     INGEST --> CONVERT
     CONVERT --> INGEST
     INGEST --> VAULT
@@ -141,6 +148,7 @@ flowchart LR
 | 组件 | 核心职责 | 允许写入 | 禁止行为 |
 | --- | --- | --- | --- |
 | Vault Bootstrap | 创建标准目录、规则、模板、注册表、Dataview 和 setup report；engineering profile 创建 revision-0 JSON 文档治理控制面 | 新 Vault 的治理骨架 | 自动摄取业务原文；覆盖或升级已有治理控制面；把运行时 Skill 路径固化为可移植 Vault 内容 |
+| Governed Ingest Orchestrator | 一次请求建立持久摄取工作流，钉住十二类 worker 模板，维护两个审批点和可恢复 Kanban 投影；按受限 canary 策略调度 | Vault 工作流记录、模板快照、审批及调度策略；可重建的 Kanban 任务 | 把看板状态当领域事实；自行批准检查点；在主机开关关闭或 Vault allowlist 未武装时声称后台 worker 已运行 |
 | Controlled Ingest | 保存原件、转换、校验、管理 ledger、通过治理管理器登记文档/版本/来源；准备规范产物并发布 SourceUnit；记录 ingest/QA，不维护 Provider 索引 | `10_Raw/` 新原件、`10_Raw/converted/` 派生物、治理注册表、治理目录、`_system/sources/` 和 `_system/reports/` | 直接手改治理注册表；覆盖冲突原件；跳过 Bundle/来源单元门禁；把 QA 内容静默提升为权威事实；同步 Provider |
 | Knowledge Finalize | 在 Build Finalize 后计算受影响对象、维护 stale/withdrawn 贡献、验证导航并发布 knowledge release 与索引资格；apply 完成后可通过独立部署开关显式提交 release sync | `_system/knowledge-releases/`、`_system/navigation/`、release state、受控 redirect 和 retrieval manifest | 解析来源；批准业务版本；删除仍受支持页面；在 release 提交前同步 Provider |
 | Vault Lint | 按 profile 只读检查 Vault 健康、证据链、QA 边界及可选 engineering 治理不变量 | 无 | 自动修复 Vault 或改变业务状态 |
@@ -165,6 +173,8 @@ flowchart LR
     metadata/
     sources/                   # P2/P2.1 artifact/section/unit repositories
     ledgers/unit-work/         # P3 revisioned work tasks
+    ledgers/ingest-workflows/  # persistent workflow and pinned template snapshots
+    ledgers/knowledge-build-batches/ # exact plans and recoverable Pass slices
     knowledge-builds/          # P3 readings, passes, runs and page revisions
     knowledge-releases/        # P4 plans, versioned navigation and release manifests
     navigation/                # P4 current navigation projection
@@ -205,6 +215,7 @@ flowchart LR
 | Document governance | `1.0` / `hermes-governance/v1` | `_system/vault.json` 及其声明的 schema、机构表和 registry | 定义 Vault 隔离、文档/版本/资源身份、来源事件、状态和未来 SQL 映射 |
 | SourceUnit contracts | `hermes-normalized-artifact/v1`、`hermes-source-section/v1`、`hermes-source-unit/v1`、`hermes-source-unit-set/v2`、`hermes-source-unit-current/v1`、`hermes-chunk-engine-report/v1` | `_system/sources/artifacts/`、`_system/sources/units/` | 钉住规范产物、非重叠来源核心、精确坐标、资产、Chunk Engine 配置/诊断、确定性 Unit 身份和当前 revision 指针 |
 | Knowledge build contracts | `hermes-unit-work-ledger/v1`、`hermes-reading-package/v1`、`hermes-knowledge-pass/v1`、`hermes-knowledge-identity-registry/v1`、`hermes-knowledge-page-revision/v1`、`hermes-knowledge-build-run/v1` | `_system/ledgers/unit-work/`、`_system/knowledge-builds/`、`_system/metadata/knowledge-identities.json` | 记录任务领取与覆盖、阅读材料、Pass 引用、稳定 subject/page 身份、页面修订、review 和 Build Finalize |
+| Governed ingest workflow | `hermes-ingest-workflow/v1` 与版本化 worker 模板 | `_system/ledgers/ingest-workflows/` | 钉住请求、阶段、模板 SHA-256、审批摘要、canary allowlist 和可重建 Kanban 节点；实际 Pass/Reduce/Finalize 结果仍由各自领域记录证明 |
 | Knowledge release contracts | `hermes-vault-finalize-plan/v1`、`hermes-knowledge-navigation/v1`、`hermes-knowledge-release-state/v1`、`hermes-knowledge-release/v1` | `_system/knowledge-releases/`、`_system/navigation/`、`_system/metadata/knowledge-release-state.json` | 钉住增量影响集合、来源贡献状态、redirect/link/directory 投影、阻断项和 P5 索引资格 |
 | Coarse recall protocol | `hermes-coarse-recall/v1` | Provider 请求/响应 | 在 Skill 与 Provider 之间传递候选，不传递最终答案 |
 
@@ -222,6 +233,8 @@ P3 从 UnitRefs 建立任务、持久化阅读材料、执行 Pass 0/Pass 1..N�
 继续按本规范既有 ledger/query 合同运行；禁止把两条链路的 ID、状态或索引混写。新阶段定义见
 [ADR-0003](architecture/0003-source-unit-contracts.md)、[ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)和 [ADR-0006](architecture/0006-release-driven-retrieval-projection.md)
 和[演进计划](SOURCE_UNITS_EVOLUTION_PLAN.md)。
+
+当前批量构建先以实际序列化的 `window + materials` 测量精确阅读预算，再计划和准备批次；输入或预算漂移必须停止。Pass 按持久化 slice 执行，具有租约、心跳、幂等键、限时重试及明确失败记录。Reduce 先按 resource 生成局部 proposal，再由单一 global coordinator 决定稳定身份、页面路径和 draft run 归属。Governed Ingest Orchestrator 在此领域流程外提供持久阶段和 Kanban 投影，不能以卡片完成代替领域验收。当前主机配置关闭自动 worker 派发；即使将来启用，也须由 Vault 中不可变的至多八个 Pass slice allowlist 限定，其他节点保持阻断。两个人工检查点不可由 worker 自批。
 
 ## 9. Bundle 技术合同
 
@@ -293,7 +306,7 @@ stateDiagram-v2
 - 内容变化后，已完成或处理中 section 必须变为 `stale`，不得沿用旧结论；
 - 崩溃遗留的 `in_progress` 必须先核对日志，再完成或显式退回。
 
-## 11. 四条核心工作流
+## 11. 核心工作流
 
 ### 11.1 Bootstrap
 
@@ -309,7 +322,11 @@ Bootstrap 只建立空的治理结构。目标已存在时必须遵守覆盖保�
 `engineering` profile 创建 JSON repository 并标记 `readiness: draft`；Bootstrap 不登记业务文档，
 也不创建空置 SQLite/PostgreSQL。已有治理 JSON 即使在 `--force-empty` 下也不得覆盖。
 
-### 11.2 Controlled Ingest
+### 11.2 Governed Ingest Orchestrator
+
+一次 `start` 请求创建 Vault 权威工作流，钉住十二类 worker 模板的版本和 SHA-256，并尝试建立 Kanban 投影。相同工作流 ID 和请求摘要可安全重试；恢复、取消、批准都需最新 revision 和完整请求摘要。`compact-3` 与 `diagnostic-6` 只改变只读状态展示，不改变领域阶段或审批。Gateway 不可用时保留工作流并明确报告 `dispatcher_unavailable` 与 `background_dispatch: false`。模板或输入不匹配时停止派发。具体命令及 canary 规则见 [Orchestrator Skill](../hermes-obsidian-governed-ingest-orchestrator/SKILL.md)。
+
+### 11.3 Controlled Ingest
 
 ```text
 detect source state
@@ -327,7 +344,13 @@ detect source state
 
 摄取必须优先更新已有产物和关系，不得因为新来源出现就创建近似重复卡片或概念。Query 产生的 writeback candidate 只能作为新的摄取输入；Ingest 必须重新打开原始证据、查重并执行 QA。
 
-### 11.3 Vault Lint
+新 SourceUnit 路径按精确阅读预算建立批次，Pass slice 的领取、续租、完成、失败和过期回收都由 Vault 账本控制；同键不同内容报幂等冲突。分层 Reduce 的 resource proposal 不单独决定最终页面身份。人工检查点分别门禁 Build Finalize 和 release apply。旧 Vault 在其能力声明未切换前仍遵守旧 ledger 合同，不得把旧记录与新 UnitRef 混用。
+
+### 11.4 Knowledge Finalize
+
+在已完成的 Build Finalize 后显式执行 `plan → apply → validate`，发布不可变 knowledge release、导航和索引资格。只有 release 已提交后，独立的 `sync_release_index.py` 才可按部署开关同步 Provider；同步失败不回滚 release，但当前 release 的 `query_ready` 必须保持 false。摄取和 Query 都不能代替这个写入边界。
+
+### 11.5 Vault Lint
 
 Lint 始终只读。四个标准 profile 为：
 
@@ -344,7 +367,7 @@ Lint 始终只读。四个标准 profile 为：
 身份、内容哈希、存储 URI、状态词表、来源引用、单 active 版本和无环 supersedes 关系。缺少该文件的
 旧 Vault 进入 `legacy` 模式，不因此失败；`readiness: draft` 在 strict profile 中为错误，其余为警告。
 
-### 11.4 治理持久化演进
+### 11.6 治理持久化演进
 
 阶段 1 的权威后端为 JSON，但调用方应面向 `hermes-governance/v1` repository 合同，而不是把文件
 布局当业务 API。阶段 2 已由 Controlled Ingest 的治理管理器实现 revision 冲突检查、共享互斥锁、
@@ -354,7 +377,7 @@ Lint 始终只读。四个标准 profile 为：
 SQLite/PostgreSQL adapter，并通过 JSON export/import 切换唯一权威后端。
 禁止长期双写。数据库文件、连接凭据和迁移运行环境保存在 Vault 外。
 
-### 11.4 Controlled Query
+### 11.7 Controlled Query
 
 普通问题的当前主路径为：
 
@@ -464,10 +487,10 @@ Provider 的职责边界：
 
 ## 18. 版本与兼容性
 
-仓库 Git revision 是五个 Skill 与 Provider 源码的联合版本标识，但部署仍然分离。发布或部署记录应至少包含：
+仓库 Git revision 是六个 Skill 与 Provider 源码的联合版本标识，但部署仍然分离。发布或部署记录应至少包含：
 
 - Git branch、commit 或 tag；
-- 五个 Skill 的部署来源；
+- 六个 Skill 的部署来源及编排器主机开关状态；
 - qmd-like-rag 包版本与协议版本；
 - Bundle、ledger、trace、Lint 和 manifest schema 版本；
 - Provider 配置、模型 revision、embedding dimension 和指纹；
@@ -488,7 +511,8 @@ Provider 的职责边界：
 
 ### 19.1 源码与打包
 
-- 五个 Skill 必须通过 Skill 格式校验。
+- 六个 Skill 必须通过 Skill 格式校验。
+- 持久工作流须验证相同请求重试、模板指纹、两个审批点、Kanban 重建与 canary allowlist；禁用派发时不得声称 worker 已运行。
 - 所有 Skill `scripts/` 下的 Python/shell 入口必须保留 shebang，并以 Git `100755` 模式提交。
 - Skill 文档中的入口必须使用显式 `python3 "<skill-root>/scripts/<script>.py"`。
 - Python 入口必须通过语法检查。
@@ -546,6 +570,8 @@ cherry-pick 或并行 worktree 作为日常双分支同步方式。`intranet` �
 - [检索 Provider 运维说明](../RETRIEVAL_PROVIDER_OPERATIONS.md)
 - [MinerU WSL 环境运行手册](../MINERU_WSL_ENVIRONMENT_RUNBOOK.md)
 - [Controlled Ingest](../hermes-obsidian-controlled-ingest/SKILL.md)
+- [Governed Ingest Orchestrator](../hermes-obsidian-governed-ingest-orchestrator/SKILL.md)
+- [Knowledge Finalize](../hermes-obsidian-knowledge-finalize/SKILL.md)
 - [Controlled Query](../hermes-obsidian-controlled-query/SKILL.md)
 - [Vault Bootstrap](../hermes-obsidian-vault-bootstrap/SKILL.md)
 - [Vault Lint](../hermes-obsidian-vault-lint/SKILL.md)

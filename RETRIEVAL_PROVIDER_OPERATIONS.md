@@ -1,6 +1,6 @@
 # Release-driven retrieval Provider operations
 
-qmd-like-rag 0.5 is deployed separately from Hermes and the five Skills. The Vault contains
+qmd-like-rag 0.5 is deployed separately from Hermes and the six Skills. The Vault contains
 canonical SourceUnits, knowledge releases and a portable retrieval status record. Chroma, BM25,
 model/tokenizer assets, caches and generation locks stay on the Provider host.
 

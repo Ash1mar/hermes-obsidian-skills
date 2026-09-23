@@ -1,6 +1,6 @@
 # Hermes + Obsidian 受控知识流程图
 
-> 本文档已按 2026-09-17 的工作树技术基线复核。首张大图保留旧生产摄取细节作为 P7 重建前的现状说明；后面的目标链路已覆盖 P2/P2.1 来源内容层、P3 知识构建、P4 Vault Finalize 和 P5 release 驱动检索。Mermaid 图可在 Obsidian 阅读视图中直接渲染，在编辑视图中修改节点和连线。具体命令契约以当前分支的 `SKILL.md` 和直接 reference 为准。
+> 2026-09-23 技术基线。下方新增图表示当前 P5 SourceUnit 及持久化编排合同；原大图仅用于尚未正式重建的旧 Vault 操作背景。main WSL 的 Provider 0.5 运行时已部署，但尚无真实 release generation；自动 worker 派发默认关闭。Mermaid 图可在 Obsidian 阅读视图中渲染。命令合同以当前分支的 `SKILL.md` 和直接 reference 为准。
 
 ## 两个分支实际使用的环境
 
@@ -17,7 +17,30 @@
 | 领域短语触发配置 | 从 Query Skill 的 `config/domain-routing.json` 读取 | 从 Query Skill 的 `config/domain-routing.json` 与 `config/deployment.json` 读取；部署文件还保存固定 Vault 和 viewer 地址 |
 | Vault 中是否放 Skill 副本 | Bootstrap 保留可选的 `--copy-skill-note` 用法 | 运行时 Skill 始终位于 `/opt/data/skills/<skill-name>/`，不把 Skill 或安装路径复制进 Vault |
 
-`qmd-like-rag` 是独立安装的检索 Provider，不是第五个 Skill。Query adapter 控制只读粗召回；P5 的 release sync adapter 属于 Knowledge Finalize，Controlled Ingest 不再维护 Provider 索引。Vault 内只保存可审计的 release、检索配置和索引状态；可重建的向量、BM25 索引和模型文件保存在 Provider 主机上。
+`qmd-like-rag` 是独立安装的检索 Provider，不是第七个 Skill。Query adapter 控制只读粗召回；P5 的 release sync adapter 属于 Knowledge Finalize，Controlled Ingest 不再维护 Provider 索引。Vault 内只保存可审计的 release、检索配置和索引状态；可重建的向量、BM25 索引和模型文件保存在 Provider 主机上。
+
+## 当前受治理摄取与发布
+
+```mermaid
+flowchart TB
+    USER["一次摄取请求"] --> ORCH["Governed Ingest Orchestrator<br/>创建 Vault 工作流，钉住十二类 worker 模板及 SHA-256"]
+    ORCH --> LEDGER[("Vault 权威工作流 ledger")]
+    LEDGER --> BOARD["可重建 Kanban 投影<br/>卡片完成仍需核对领域记录"]
+    ORCH --> SOURCE["Controlled Ingest<br/>原件与 Bundle → canonical SourceUnits"]
+    SOURCE --> MEASURE["精确测量 window + materials<br/>批次计划及输入指纹"]
+    MEASURE --> PASS["有租约、心跳、幂等键的 Pass slices"]
+    PASS --> REDUCE["resource proposals → global Reduce"]
+    REDUCE --> GATE1{"人工检查点 1"}
+    GATE1 --> BUILD["Build Finalize"]
+    BUILD --> PLAN["Vault Finalize plan"]
+    PLAN --> GATE2{"人工检查点 2"}
+    GATE2 --> RELEASE["apply/validate → 不可变 knowledge release"]
+    RELEASE --> SYNC["可选显式 release sync<br/>唯一 Provider 写入口"]
+    SYNC --> PROVIDER[("Provider 主机上的可重建 generation")]
+    PROVIDER --> QUERY["Controlled Query 只读召回 + UnitRef 回读"]
+```
+
+工作流是 Vault 权威记录，Kanban 可以重建。主机 `worker_dispatch_enabled: false` 时不会启动自主 worker；将来启用后仍需 Vault 中明确武装的至多八个 Pass slice allowlist，Reduce、Finalize 等节点不在 canary 内。`compact-3` 和 `diagnostic-6` 只改变状态显示，两个人工检查点与领域阶段不变。Gateway 不可用时返回 `dispatcher_unavailable`，不能把已创建工作流说成后台正在运行。
 
 ## 从建库、摄取到查询的完整流程
 
@@ -313,11 +336,12 @@ flowchart TB
     TRACE -- "写 query trace，不改知识文档" --> LOGS
 ```
 
-## 五个 Skill 的具体输入与输出
+## 六个 Skill 的具体输入与输出
 
 | Skill | 输入 | 实际执行的事 | 输出 |
 | --- | --- | --- | --- |
 | `hermes-obsidian-vault-bootstrap` | Vault 路径或 intranet 固定路径；`general`/`meeting` profile | 创建目录，写入 AGENTS.md、prompts、metadata registry、templates、Dataview 页和 setup report | 一个空的、可执行摄取规则的 Vault |
+| `hermes-obsidian-governed-ingest-orchestrator` | 单次摄取请求、Vault、actor、profile、可选已有 batch | 创建持久工作流、钉住模板、投影 Kanban、维护双人工审批及受限 Pass canary | Vault 工作流、可重建任务投影、真实调度/阻断状态和恢复点 |
 | `hermes-obsidian-controlled-ingest` | 外部材料、Vault 中已有原文、Bundle 或 query-writeback candidate | 校验原文，转换并发布 artifact/SourceUnit，管理工作账本，核对 QA，创建知识构建输入；不维护 Provider 索引 | 原件、artifact、UnitSet、工作记录、构建输入和 ingest 审计 |
 | `hermes-obsidian-knowledge-finalize` | completed build runs、当前 UnitSet/identity repositories、显式 source changes | 计算受影响对象，区分 current/stale/withdrawn 支持，验证页面移动与 wikilinks，发布 navigation 和 release；部署开关启用时显式同步该 release | redirect、版本化导航、索引资格、blocked/review 清单、knowledge release manifest 和可审计 retrieval manifest |
 | `hermes-obsidian-vault-lint` | Vault 和检查 profile | 只读验证目录、Bundle、ledger、source map、frontmatter、证据引用和 QA 限制 | `pass`、`pass-with-warnings` 或包含具体文件/规则的 errors |
