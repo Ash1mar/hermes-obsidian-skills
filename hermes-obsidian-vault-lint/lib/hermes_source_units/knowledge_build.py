@@ -645,22 +645,9 @@ class FileKnowledgeBuildService:
             return {"codepoints": int(measurement["serialized_codepoints"]),
                     "fingerprint": str(measurement["input_fingerprint"]),
                     "blocking_code": measurement.get("blocking_code")}
-        package = self._existing_reading_package(
+        package = None if remeasure else self._existing_reading_package(
             task, str(batch["actor"]), int(batch["document_registry_revision"]))
         if package is not None:
-            self._reading_package_fingerprint(package, str(package["package_id"]))
-            if remeasure:
-                assembled = self._assemble_reading(
-                    list(task["target_refs"]), str(batch["actor"]),
-                    int(batch["document_registry_revision"]), self._reader_config())
-                if (assembled["window"] != package["window"]
-                        or assembled["materials"] != package["materials"]):
-                    _fail("STALE_INPUT", "existing reading package differs from current source")
-                if measurement is not None:
-                    observed = assembled["measurement"]
-                    return {"codepoints": int(observed["serialized_codepoints"]),
-                            "fingerprint": str(observed["input_fingerprint"]),
-                            "blocking_code": observed.get("blocking_code")}
             projection = self._reading_projection(package["window"], package["materials"])
             return {"codepoints": len(canonical_json(projection).decode("utf-8")),
                     "fingerprint": "sha256:" + fingerprint({"package_id": package["package_id"]}),
