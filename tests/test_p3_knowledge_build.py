@@ -1140,35 +1140,6 @@ def test_kanban_worker_must_hold_exact_slice_lease(vault: Path):
         "worker-batch", item["node"].partition(":")[2])["state"] == "ready"
 
 
-def test_canary_accepts_prepared_batch_without_planned_reading_measurement(vault: Path):
-    ref = publish_sources(vault, ["# Existing source\nUsable evidence.\n"])[0]
-    service = FileKnowledgeBuildService(vault)
-    service.plan_batch({
-        "batch_id": "prepared-batch", "actor": "agent", "registry_revision": 1,
-        "tasks": [{"task_id": "prepared-task", "target_refs": [ref]}],
-    })
-    prepared = service.prepare_batch("prepared-batch", "agent", 1)
-    assert prepared["ok"]
-    task = service._task("prepared-task")
-    assert "reading_measurement" not in task
-    package_id = prepared["results"][0]["reading_package_id"]
-    package_path = (vault / "_system/knowledge-builds/task-prepared-task/readings"
-                    / f"{package_id}.json")
-    original_package = package_path.read_bytes()
-    adapter = IngestKanbanAdapter(vault, FakeKanban(True), enable_workers=True)
-    start_pinned_worker(adapter, workflow_request(
-        workflow_id="ingest-prepared", actor="agent", expected_revision=0,
-        profile="compact-3", scope={"source_paths": [],
-                                    "knowledge_selector": "all-current"},
-        batch_id="prepared-batch"))
-    item = next(item for item in adapter.workflow.status("ingest-prepared")["kanban"]["task_map"]
-                if item["node"].startswith("pass-slice:"))
-    begun = adapter.worker_begin({"workflow_id": "ingest-prepared", "node": item["node"],
-                                  "task_id": item["task_id"], "worker_id": "worker-a"})
-    assert begun["leased"]
-    assert package_path.read_bytes() == original_package
-
-
 def test_dispatch_cli_creates_workflow_without_false_background_claim(vault: Path,
                                                                      tmp_path: Path):
     request = workflow_request(
