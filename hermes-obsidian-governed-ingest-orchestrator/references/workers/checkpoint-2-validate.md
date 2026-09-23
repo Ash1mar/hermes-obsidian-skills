@@ -9,3 +9,4 @@
 - Output JSON schema: `{"ok":boolean,"checkpoint":"checkpoint_2","evidence_refs":string[],"blocking_codes":string[],"error_code":string|null}`.
 - Complete when passing validation is durable and the workflow service has rechecked and recorded the decision. A failed validation blocks this card with a report.
 - Prohibited: constructing an approval digest, editing decision evidence, apply, Provider sync or ignoring lint failures. Manual-mode approval is separate.
+- Use post-ingest lint for release readiness. Query readiness without a Provider is a warning there; `query-ready` and `strict` profiles still treat it as an error. Any other post-ingest lint error blocks automatic continuation.
