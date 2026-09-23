@@ -1777,6 +1777,21 @@
       "required": ["stage", "refs"],
       "additionalProperties": false
     },
+    "ingest_workflow_source_outcome": {
+      "type": "object",
+      "properties": {
+        "path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "content_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "status": {"enum": ["ready", "failed"]},
+        "resource_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "unit_set_id": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
+        "error_code": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "reason": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
+        "artifact_refs": {"type": "array", "items": {"type": "string", "format": "vault-relative-path"}, "uniqueItems": true}
+      },
+      "required": ["path", "content_sha256", "status", "resource_id", "unit_set_id", "error_code", "reason", "artifact_refs"],
+      "additionalProperties": false
+    },
     "ingest_workflow_template_pin": {
       "type": "object",
       "properties": {
@@ -1815,6 +1830,7 @@
         "kanban": {"type": "object", "properties": {"board_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}, "task_map": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_task"}, "minItems": 0}}, "required": ["board_id", "task_map"], "additionalProperties": false},
         "checkpoints": {"type": "object", "properties": {"checkpoint_1": {"$ref": "#/$defs/ingest_workflow_checkpoint"}, "checkpoint_2": {"$ref": "#/$defs/ingest_workflow_checkpoint"}}, "required": ["checkpoint_1", "checkpoint_2"], "additionalProperties": false},
         "artifacts": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_artifact"}, "minItems": 0},
+        "source_outcomes": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_source_outcome"}, "minItems": 0},
         "cancel_requested": {"type": "boolean"},
         "resume_stage": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
         "revision": {"type": "integer", "minimum": 1},

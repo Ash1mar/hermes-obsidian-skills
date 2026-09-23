@@ -1,6 +1,6 @@
 {
   "contract": "hermes-governed-ingest-orchestration/v1",
   "template_version": "v1",
-  "worker_dispatch_enabled": false,
-  "activation_note": "Keep workers blocked until stage-11 canary validates every worker command and checkpoint. Template snapshots are pinned now."
+  "worker_dispatch_enabled": true,
+  "activation_note": "Dispatch scoped source preparation and exact plan after durable coverage checks. Pass remains limited to the armed slice canary; Reduce, Finalize and checkpoint nodes remain blocked."
 }

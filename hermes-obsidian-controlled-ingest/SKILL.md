@@ -150,7 +150,7 @@ When the source is outside the vault:
    mismatch aborts without changing the registry or manifest.
 8. Initialize the source map and section ledger only after the governed Bundle projection passes the
    registry consistency gate.
-9. Stop and report instead of substituting a weaker conversion when the required MinerU path is unavailable or Bundle validation fails.
+9. For a single source, stop and report instead of substituting a weaker conversion when the required MinerU path is unavailable or Bundle validation fails. In a multi-source request, record that source's failure and continue with every remaining source in scope. Report the failed source as an explicit coverage gap; do not claim the batch fully ingested.
 
 ## Recovery and Resume Rules
 
@@ -163,6 +163,7 @@ When the source is outside the vault:
   and do not promote them as authoritative facts. A QA flag limits confidence, not extraction.
 - If a Bundle is empty, missing required files, or fails validation, remove or replace only the derived bundle output, never the raw source, and retry once with a skill-supported MinerU parameter change such as `pipeline` backend or `txt` method when available.
 - If retry still fails, record the failed source, raw SHA, bundle path, command, validator output, and recommended manual check.
+- A source that cannot be decoded or validated is a failed source, not a reason to abandon the other sources in the requested batch. Keep its immutable raw copy and hash, record the typed failure, and attempt the next source. `skipped` in a section ledger applies only after a valid Bundle exists; do not fabricate a Bundle, SourceUnit or section-ledger skip for an unreadable PDF.
 - If a valid Bundle and ledger already exist, reconcile and resume; do not rebuild unless the user explicitly asks for fresh conversion.
 - If source ingestion is already complete, proceed to incremental reconciliation or batch synthesis rather than repeating section ingestion.
 

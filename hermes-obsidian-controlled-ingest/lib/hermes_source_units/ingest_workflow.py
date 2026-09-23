@@ -7,6 +7,7 @@ import re
 from typing import Any, Mapping
 
 from .knowledge_build import FileKnowledgeBuildService
+from .source_units import FileSourceUnitService
 from .source_units import (_exclusive_lock, _json_bytes, _load_json,
                            _vault_path, _write_atomic)
 from .validation import ContractError, fingerprint, validate_record
@@ -128,6 +129,8 @@ class FileIngestWorkflowService:
         if not isinstance(scope, dict):
             _fail("INVALID_SCHEMA", "scope must be an object")
         batch_id = request.get("batch_id")
+        if batch_id is not None and scope.get("source_paths"):
+            _fail("INVALID_SCHEMA", "adopted batches cannot bypass scoped source preparation")
         pinned: dict[str, Any] = {}
         if batch_id is not None:
             pinned = self._pin_batch(str(batch_id), str(request["actor"]))
@@ -143,7 +146,7 @@ class FileIngestWorkflowService:
             "kanban": {"board_id": None, "task_map": []},
             "checkpoints": {name: {"state": "pending", "approval_digest": None,
                                    "approved_by": None} for name in ("checkpoint_1", "checkpoint_2")},
-            "artifacts": [], "cancel_requested": False,
+            "artifacts": [], "source_outcomes": [], "cancel_requested": False,
             "resume_stage": None, "revision": 1, "template_pins": [],
             "start_digest": request["input_digest"],
         }
@@ -166,7 +169,75 @@ class FileIngestWorkflowService:
         result["display"] = display_phase(value)
         result["dispatch_policy"] = value.get("dispatch_policy", {
             "mode": "disabled", "slice_ids": [], "selection_digest": None})
+        result["source_coverage"] = self.source_coverage(value)
         return result
+
+    @staticmethod
+    def source_coverage(value: Mapping[str, Any]) -> dict[str, Any]:
+        paths = value["scope"]["source_paths"]
+        outcomes = {item["path"]: item for item in value.get("source_outcomes", [])}
+        return {"requested": len(paths),
+                "ready": [path for path in paths if outcomes.get(path, {}).get("status") == "ready"],
+                "failed": [path for path in paths if outcomes.get(path, {}).get("status") == "failed"],
+                "gaps": [{"path": path, "content_sha256": outcomes[path]["content_sha256"],
+                          "error_code": outcomes[path]["error_code"], "reason": outcomes[path]["reason"]}
+                         for path in paths if outcomes.get(path, {}).get("status") == "failed"],
+                "pending": [path for path in paths if path not in outcomes]}
+
+    def record_source_outcome(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Commit one source result; a failed source is a terminal coverage gap, not a batch abort."""
+        with _exclusive_lock(self._lock(str(request["workflow_id"]))):
+            value = self._mutation(request)
+            path = str(request["path"])
+            if path not in value["scope"]["source_paths"]:
+                _fail("ACCESS_DENIED", "source is outside workflow scope")
+            source = _vault_path(self.vault, path)
+            if not source.is_file():
+                _fail("SOURCE_UNAVAILABLE", "source file is missing")
+            content_sha = hashlib.sha256(source.read_bytes()).hexdigest()
+            if request.get("content_sha256") != content_sha:
+                _fail("SOURCE_CHANGED", "source content hash changed")
+            status = request.get("status")
+            if status not in ("ready", "failed"):
+                _fail("INVALID_SCHEMA", "source status must be ready or failed")
+            outcome = {"path": path, "content_sha256": content_sha, "status": status,
+                       "resource_id": None, "unit_set_id": None, "error_code": None,
+                       "reason": None, "artifact_refs": []}
+            if status == "ready":
+                resource_id, unit_set_id = str(request.get("resource_id", "")), str(request.get("unit_set_id", ""))
+                source_units = FileSourceUnitService(self.vault)
+                checked = source_units.validate(resource_id, unit_set_id)
+                current = source_units._current(resource_id)
+                _, units, _ = source_units._load_set(resource_id, unit_set_id)
+                if (checked["unit_set_id"] != unit_set_id or current is None or
+                        current["unit_set_id"] != unit_set_id or not units or
+                        any(unit["source_sha256"] != content_sha for unit in units)):
+                    _fail("STALE_INPUT", "ready source must name its current validated UnitSet")
+                outcome.update(resource_id=resource_id, unit_set_id=unit_set_id)
+            else:
+                code, reason = str(request.get("error_code", "")).strip(), str(request.get("reason", "")).strip()
+                if not code or not reason:
+                    _fail("INVALID_SCHEMA", "failed source requires an error code and reason")
+                outcome.update(error_code=code, reason=reason)
+            refs = list(request.get("artifact_refs", []))
+            if any(not isinstance(ref, str) or not _vault_path(self.vault, ref).is_file() for ref in refs):
+                _fail("ARTIFACT_REQUIRED", "source outcome references must exist in the Vault")
+            outcome["artifact_refs"] = refs
+            existing = {item["path"]: item for item in value.get("source_outcomes", [])}
+            if path in existing:
+                if existing[path] == outcome:
+                    return value
+                _fail("IDEMPOTENCY_CONFLICT", "source outcome is already recorded")
+            if value["cancel_requested"] or value["batch_id"] is not None or value["current_stage"] not in ("created", "source_preparing"):
+                _fail("INVALID_TRANSITION", "source outcomes require active source preparation")
+            existing[path] = outcome
+            value["source_outcomes"] = [existing[p] for p in value["scope"]["source_paths"] if p in existing]
+            coverage = self.source_coverage(value)
+            value["current_stage"] = "planning" if not coverage["pending"] and coverage["ready"] else "source_preparing"
+            value["state"] = value["current_stage"]
+            value["revision"] += 1
+            self._write(value)
+            return value
 
     def canary_preview(self, workflow_id: str, limit: int = 8) -> dict[str, Any]:
         """Read-only deterministic selection; no lease or worker activation."""
@@ -265,8 +336,38 @@ class FileIngestWorkflowService:
             next_stage = STAGES[STAGES.index(current) + 1] if current != "completed" else None
             if target not in (next_stage, "partial", "failed") or (target in ("partial", "failed") and current != "validating"):
                 _fail("INVALID_TRANSITION", "reconcile advances exactly one stage")
+            if target == "planning" and value["scope"]["source_paths"]:
+                coverage = self.source_coverage(value)
+                if coverage["pending"] or not coverage["ready"]:
+                    _fail("INCOMPLETE_COVERAGE", "planning requires every source outcome and at least one ready source")
+            if target == "completed" and self.source_coverage(value)["failed"]:
+                _fail("INCOMPLETE_COVERAGE", "record final workflow as partial while source gaps remain")
             if target == "analyzing" and value["batch_id"] is None:
                 batch_id = str(request.get("batch_id", ""))
+                coverage = self.source_coverage(value)
+                if value["scope"]["source_paths"] and (coverage["pending"] or not coverage["ready"]):
+                    _fail("INCOMPLETE_COVERAGE", "all scoped sources need outcomes and at least one ready source")
+                source_units = FileSourceUnitService(self.vault)
+                for outcome in value.get("source_outcomes", []):
+                    path = _vault_path(self.vault, outcome["path"])
+                    if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest() != outcome["content_sha256"]:
+                        _fail("SOURCE_CHANGED", "source bytes changed after preparation")
+                    if outcome["status"] == "ready":
+                        current_set = source_units._current(outcome["resource_id"])
+                        if current_set is None or current_set["unit_set_id"] != outcome["unit_set_id"]:
+                            _fail("STALE_INPUT", "ready source UnitSet is no longer current")
+                        source_units.validate(outcome["resource_id"], outcome["unit_set_id"])
+                ready = {item["resource_id"]: item["unit_set_id"]
+                         for item in value["source_outcomes"] if item["status"] == "ready"}
+                if len(ready) != len(coverage["ready"]):
+                    _fail("INCOMPLETE_COVERAGE", "ready sources cannot share a resource identity")
+                batch = self.knowledge._batch(batch_id)
+                observed = {(ref["unit_ref"]["resource_id"], ref["unit_ref"]["unit_set_id"])
+                            for task_id in batch["task_ids"]
+                            for ref in self.knowledge._task(task_id)["target_refs"]}
+                expected = set(ready.items())
+                if ready and ({resource for resource, _ in observed} != set(ready) or not observed <= expected):
+                    _fail("INCOMPLETE_COVERAGE", "batch must cover ready UnitSets and exclude failed sources")
                 value["pinned_inputs"] = self._pin_batch(batch_id, value["actor"])
                 value["batch_id"] = batch_id
             if target in ("analyzing", "reducing", "checkpoint_1", "build_finalizing"):
