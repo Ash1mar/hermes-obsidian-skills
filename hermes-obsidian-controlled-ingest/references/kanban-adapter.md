@@ -50,8 +50,11 @@ are written before Kanban completion so a crash is recoverable by `sync`.
 
 If the gateway is absent, `start` still creates the workflow and returns
 `state: dispatcher_unavailable`, `workflow_created: true`, and
-`background_dispatch: false`. In phase 6, fixed worker templates are not yet
-installed, so the production CLI creates all projected worker cards blocked
-even when the gateway is running and reports `background_dispatch: false`.
-Phase 7 supplies and hashes those templates before enabling execution. Do not
-run a long interactive fallback or claim that blocked cards are running.
+`background_dispatch: false`. The governed orchestrator now pins twelve
+versioned worker templates by SHA-256. Its host rollout switch currently keeps
+autonomous worker dispatch disabled. If that switch is enabled after canary
+validation, the Vault workflow must also hold an explicitly armed, immutable
+allowlist of at most eight Pass slice IDs; all other worker nodes remain blocked.
+See the orchestrator's `references/workflow-contract.md` and `references/operations.md`
+for the additional gate. Do not run a long interactive fallback or claim that
+blocked cards are running.

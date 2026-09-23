@@ -1,6 +1,6 @@
 # Hermes Source Units
 
-版本 `0.4.0`，运行时第三方依赖为零，仅使用 Python 3.11+ 标准库。P2.1 的共享 Chunk Engine 提供 canonical SourceUnit；P3 在同一 UnitRef 上实现任务领取、阅读材料包、Pass 0/Pass 1..N、稳定知识身份、Reduce 页面修订和 Build Finalize；P4 实现增量 Vault Finalize。Provider 属于 P5。
+版本 `0.4.0`，运行时第三方依赖为零，仅使用 Python 3.11+ 标准库。P2.1 的共享 Chunk Engine 提供 canonical SourceUnit；P3 在同一 UnitRef 上实现任务领取、精确测量的阅读材料包、可恢复 Pass slices、分层 Reduce、稳定知识身份及 Build Finalize；P4 实现增量 Vault Finalize；P5 Provider 独立发布。受治理编排由 Vault 工作流与独立 Orchestrator Skill 承担。
 
 ## 交付与运行
 
@@ -214,9 +214,13 @@ P0 的通过只表示契约实践通过，不代表已经完成 bootstrap、知�
 actor、expected_revision 和完整请求的 input_digest。参见
 `hermes-obsidian-controlled-ingest/references/workflow-ledger.md`。
 
-阶段 6 增加可重建 Hermes Kanban 投影和精确 slice lease 入口。Gateway 不可用时
-workflow 仍被创建，但明确报告后台调度未运行；阶段 7 模板安装前，投影任务保持
-blocked。操作合同见 `hermes-obsidian-controlled-ingest/references/kanban-adapter.md`。
+阶段 6 增加可重建 Hermes Kanban 投影和精确 slice lease 入口。阶段 7 的独立
+`hermes-obsidian-governed-ingest-orchestrator` 已提供十二类版本化 worker 模板，
+在每个工作流启动时保存快照并钉住 SHA-256。Gateway 不可用时 workflow 仍被创建，
+但明确报告后台调度未运行。主机 `worker_dispatch_enabled` 当前仍为 false；即使
+启用，也只允许 Vault 中明确武装的至多八个 Pass slice canary，其他节点保持 blocked。
+操作合同见 `hermes-obsidian-controlled-ingest/references/kanban-adapter.md` 和
+`hermes-obsidian-governed-ingest-orchestrator/SKILL.md`。
 
 ### P1/P2 distribution and configuration
 
@@ -224,7 +228,8 @@ Run `python3 tools/sync_skill_runtime.py` from this package directory after a
 canonical source change, then run it with `--check`. Generated copies are committed
 inside bootstrap/lint/controlled-ingest/knowledge-finalize; recipients only copy the complete Skill. Hashes describe
 UTF-8 text with normalized LF line endings to support Windows/Linux checkouts.
-Provider packaging remains P5 work. Runtime version is 0.4.0; existing record
+Provider 0.5 packaging and main WSL runtime deployment are complete; release generation
+and real-material sync/recall acceptance remain outstanding. Runtime version is 0.4.0; existing record
 contracts stay versioned independently, and the Vault declaration remains
 `hermes-source-unit-vault/v1`.
 

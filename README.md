@@ -1,6 +1,6 @@
 # Hermes Obsidian Skills
 
-This repository stores local skills and tool-integration notes for the Hermes + Obsidian knowledge workflow. It also maintains `qmd-like-rag/`, the independently installed coarse-recall Provider used by the ingest/query Skills; it is repository code, not a sixth Skill.
+This repository stores six local skills and tool-integration notes for the Hermes + Obsidian knowledge workflow. It also maintains `qmd-like-rag/`, the independently installed coarse-recall Provider used by the query and release-sync Skills; it is repository code, not a seventh Skill.
 
 The system-level architecture, data authority, interface, compatibility, and acceptance baseline is defined in [`docs/OFFICIAL_TECHNICAL_SPECIFICATION.md`](docs/OFFICIAL_TECHNICAL_SPECIFICATION.md).
 
@@ -24,13 +24,13 @@ Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): impl
   - Supports standalone image Bundle v2 for scanned pages, table screenshots, diagrams, and other image-only sources with OCR review controls.
   - Supports MarkItDown as an optional pre-ingestion conversion layer for non-PDF sources and simple fallback conversion.
   - Manages engineering document identity, source organizations, source occurrences, versions, status, and atomic activation through the `hermes-governance/v1` JSON repository.
-  - For P4 Vaults, publishes deterministic SourceUnits through the shared Chunk Engine, then runs UnitSet-native reading packages, Pass/Reduce and Build Finalize without a service or third-party runtime dependency.
+  - For P5 Vaults, publishes deterministic SourceUnits through the shared Chunk Engine, then uses exactly measured reading packages, recoverable Pass slices, layered resource/global Reduce and Build Finalize without a third-party runtime dependency.
 
 - `hermes-obsidian-knowledge-finalize/`
   - Plans, applies and validates incremental P4 knowledge releases after Build Finalize.
   - Tracks stale and withdrawn source contributions without deleting pages that retain current support.
   - Publishes safe redirects, link/backlink and directory navigation, plus explicit Provider index eligibility.
-  - Does not parse sources, approve business versions or invoke the retrieval Provider.
+  - Does not parse sources or approve business versions. Its explicit post-release sync command is the only Skill writer to the retrieval Provider.
 
 - `hermes-obsidian-controlled-query/`
   - Governed read-only query workflow for existing Hermes + Obsidian vaults.
@@ -114,10 +114,12 @@ Both maintained branches receive qmd-like-rag from `main` and retain the stable 
 Validate skills with:
 
 ```powershell
-python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest"
-python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-query"
-python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-bootstrap"
-python "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-lint"
+python -X utf8 "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-governed-ingest-orchestrator"
+python -X utf8 "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-ingest"
+python -X utf8 "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-knowledge-finalize"
+python -X utf8 "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-controlled-query"
+python -X utf8 "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-bootstrap"
+python -X utf8 "C:\Users\vimdr\.codex\skills\.system\skill-creator\scripts\quick_validate.py" "C:\Users\vimdr\Desktop\hermes-workspace\hermes-obsidian-skills\hermes-obsidian-vault-lint"
 ```
 
 Check helper script syntax with:

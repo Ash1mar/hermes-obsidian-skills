@@ -215,6 +215,5 @@ Do not create or update governed artifacts during query. Retain a compact intern
 - `references/evidence-levels.md`: evidence and QA restrictions.
 - `references/answer-format.md`: full user-facing response template.
 - `references/query-tracing.md`: trace schema, timing, grouped questions, and legacy commands.
-- `references/query-performance-optimization.md`: maintainer-only incident history, latency design, benchmarks, and intranet A/B acceptance; read only for performance work or debugging.
 - `references/coarse-retrieval.md`: Provider contract and main/intranet boundary.
 - `references/Hierarchical_search.md`: projection and hierarchical locator design.

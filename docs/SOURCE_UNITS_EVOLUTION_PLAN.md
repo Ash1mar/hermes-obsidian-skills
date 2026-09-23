@@ -1,7 +1,7 @@
 # 通用来源单元：全新建库设计与实施计划
 
-日期：2026-09-11，2026-09-17 校正。修订：R9，保留全新建库前提，完成 P5 仓库实现并把实际部署验收单列为 P5.6 门禁。
-状态：P0/P1/P2/P2.1/P3/P4 已完成；P5.1–P5.5 与自动化门禁已完成，P5.6 实际部署验收待执行；P6–P7 待实施，未执行正式库重建或 ingest。阶段重排见 [ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)，P2.1 决策见 [ADR-0005](architecture/0005-shared-chunk-engine.md)，P5 决策见 [ADR-0006](architecture/0006-release-driven-retrieval-projection.md)，实现入口见 [ADR-0003](architecture/0003-source-unit-contracts.md)、[共享包规范](../hermes-source-units/README.md)及 [P0](SOURCE_UNITS_P0_ACCEPTANCE.md)、[P1](SOURCE_UNITS_P1_ACCEPTANCE.md)、[P2](SOURCE_UNITS_P2_ACCEPTANCE.md)、[P2.1](SOURCE_UNITS_P2_1_ACCEPTANCE.md)、[P3](SOURCE_UNITS_P3_ACCEPTANCE.md)、[P4](SOURCE_UNITS_P4_ACCEPTANCE.md)、[P5](SOURCE_UNITS_P5_ACCEPTANCE.md)验收。
+日期：2026-09-11，2026-09-23 校正。修订：R10，保留全新建库前提，区分已交付的编排基础与尚未完成的端到端实践。
+状态：P0/P1/P2/P2.1/P3/P4 的仓库实现已完成；P5 代码与 main WSL Provider 0.5 运行时已部署，但当前仍无 P5 release generation。P6 所需的精确阅读预算、可恢复 Pass slice、分层 Reduce、Vault 工作流账本、Kanban 投影与 Governed Ingest Orchestrator 已在仓库实现；真实原件的完整文件式实践、worker canary 验收、main/intranet 拓扑联调及 P7 正式新库重建仍待执行。阶段重排见 [ADR-0004](architecture/0004-knowledge-identity-and-finalize.md)，P2.1 决策见 [ADR-0005](architecture/0005-shared-chunk-engine.md)，P5 决策见 [ADR-0006](architecture/0006-release-driven-retrieval-projection.md)，当前实现入口见 [ADR-0003](architecture/0003-source-unit-contracts.md)、[共享包规范](../hermes-source-units/README.md)和 [Governed Ingest Orchestrator](../hermes-obsidian-governed-ingest-orchestrator/SKILL.md)。阶段验收快照只保存在本地忽略目录 `legacy docs/`。
 
 ## 1. 本轮确定的前提
 
@@ -367,7 +367,7 @@ P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上�
 | P4.4 Release manifest | 钉住 unit sets、build runs、page revisions、QA/blocked 和索引资格 | 一次收尾范围及结果可审计，不能把局部成功冒充全库完成 |
 | P4.5 Finalize Skill | `hermes-obsidian-knowledge-finalize` 的 plan/apply/validate 与恢复入口 | 可独立重跑，不解析来源、不隐式同步 Provider、不批准业务版本 |
 
-### 11.9 P5：Provider 与查询细分（仓库实现已完成，部署验收待执行）
+### 11.9 P5：Provider 与查询细分（仓库实现与 main 运行时部署已完成，真实 generation 验收待执行）
 
 | 子任务 | 工作 | 可验收结果 |
 |---|---|---|
@@ -380,9 +380,11 @@ P5 默认把一个可索引 SourceUnit 渲染为一个索引输入；标题上�
 
 P5 首次部署必须创建新 index generation，不迁移当前 Provider 的旧 Markdown chunk。Provider 仍作为独立进程或容器发布；共享 SourceUnit 语义通过 release/UnitRef 契约交互，不把 Chroma、模型或 tokenizer 重依赖安装进 Hermes。完整决策和门禁见 [ADR-0006](architecture/0006-release-driven-retrieval-projection.md)。
 
-2026-09-17 实施状态：P5.1–P5.5 及可自动执行的 P5.6 故障/契约测试已完成，详见 [P5 验收](SOURCE_UNITS_P5_ACCEPTANCE.md)。main WSL 已部署 Provider 0.5、固定模型和两个真实 tokenizer；尚无 P5 release，因而未建立实际 generation，也未连接 intranet 模型服务。main 的真实 sync/recall 与 intranet 拓扑验收必须由 P6 实践补齐，不能由单元测试或空状态 readiness 替代。
+2026-09-23 实施状态：P5.1–P5.5 与可自动执行的 P5.6 故障/契约测试已完成。main WSL 已部署 Provider 0.5、固定模型和两个真实 tokenizer；尚无 P5 release，因而未建立实际 generation，也未连接 intranet 模型服务。main 的真实 sync/recall 与 intranet 拓扑验收仍须由 P6 实践补齐，不能由单元测试或空状态 readiness 替代。2026-09-17 的 P5 验收快照保存在本地 `legacy docs/`，不是现行操作入口。
 
 ### 11.10 P6/P7：完整实践与正式重建细分
+
+截至 2026-09-23，支持 P6 实践的编排实现已经提前交付：精确批次测量与计划、可恢复 Pass slice 和幂等重试、resource/global 两层 Reduce、Vault 权威工作流账本、Kanban 可重建投影、十二类钉住模板、三阶段/六阶段状态兼容视图及最多八个 Pass slice 的显式 canary allowlist。主机 `worker_dispatch_enabled` 仍为 false；这些代码能力不构成自动 worker、真实材料端到端运行或正式新库验收已经完成的证据。P6 的实践交付仍按下表执行。
 
 | 子任务 | 工作 | 可验收结果 |
 |---|---|---|
