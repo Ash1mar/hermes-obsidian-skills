@@ -862,6 +862,103 @@ class FakeKanban:
         return None
 
 
+def test_failed_source_does_not_stop_other_source_or_enter_exact_plan(vault: Path):
+    refs = publish_sources(vault, ["# Broken candidate\nA.\n", "# Usable candidate\nB.\n"])
+    paths = ["10_Raw/source-1.md", "10_Raw/source-2.md"]
+    fake = FakeKanban(True)
+    adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
+    pinned = start_and_pin(vault, workflow_request(
+        workflow_id="ingest-source-gaps", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": paths,
+                                      "knowledge_selector": "all-current"}))
+    adapter.sync(workflow_request(workflow_id=pinned["workflow_id"],
+                                  actor="agent", expected_revision=pinned["revision"]))
+    cards = [item for item in adapter.workflow.status(pinned["workflow_id"])["kanban"]["task_map"]
+             if item["node"].startswith("source-prepare:")]
+    assert len(cards) == 2
+    assert all(fake.tasks[item["idempotency_key"]]["enabled"] for item in cards)
+    by_path = {}
+    for item in cards:
+        request = {"workflow_id": pinned["workflow_id"], "node": item["node"],
+                   "task_id": item["task_id"], "worker_id": "worker"}
+        begun = adapter.worker_begin(request)
+        by_path[begun["source"]["path"]] = (request, begun)
+    first, first_begin = by_path[paths[0]]
+    gap = adapter.worker_fail({**first, "template_hash": first_begin["template_hash"],
+                               "code": "PDF_UNREADABLE", "message": "MinerU cannot decode source"})
+    assert gap["source_coverage"]["failed"] == [paths[0]]
+    assert gap["source_coverage"]["pending"] == [paths[1]]
+    assert adapter.workflow.status(pinned["workflow_id"])["current_stage"] == "source_preparing"
+    second, second_begin = by_path[paths[1]]
+    unit_ref = refs[1]["unit_ref"]
+    result = adapter.worker_complete({**second, "template_hash": second_begin["template_hash"],
+                                      "resource_id": unit_ref["resource_id"],
+                                      "unit_set_id": unit_ref["unit_set_id"]})
+    assert result["source_coverage"]["ready"] == [paths[1]]
+    assert result["source_coverage"]["failed"] == [paths[0]]
+    workflow = adapter.workflow.status(pinned["workflow_id"])
+    assert workflow["current_stage"] == "planning"
+    assert workflow["source_outcomes"][0]["error_code"] == "PDF_UNREADABLE"
+    plan_card = next(item for item in workflow["kanban"]["task_map"]
+                     if item["node"] == "exact-plan")
+    assert fake.tasks[plan_card["idempotency_key"]]["enabled"]
+    begun = adapter.worker_begin({"workflow_id": pinned["workflow_id"],
+                                  "node": "exact-plan", "task_id": plan_card["task_id"]})
+    assert begun["source_coverage"]["failed"] == [paths[0]]
+    batch = adapter.workflow.knowledge
+    batch.plan_batch({"batch_id": "source-gap-batch", "actor": "agent",
+                      "registry_revision": 1, "exact_reading_budget": True,
+                      "tasks": [{"task_id": "source-gap-task", "target_refs": [refs[1]],
+                                 "expected_revision": 0}]})
+    batch.plan_batch({"batch_id": "wrong-source-batch", "actor": "agent",
+                      "registry_revision": 1, "exact_reading_budget": True,
+                      "tasks": [{"task_id": "wrong-source-task", "target_refs": [refs[0]],
+                                 "expected_revision": 0}]})
+    with pytest.raises(ContractError, match="INCOMPLETE_COVERAGE"):
+        adapter.worker_complete({"workflow_id": pinned["workflow_id"],
+                                 "node": "exact-plan", "task_id": plan_card["task_id"],
+                                 "template_hash": begun["template_hash"],
+                                 "batch_id": "wrong-source-batch"})
+    completed = adapter.worker_complete({"workflow_id": pinned["workflow_id"],
+                                         "node": "exact-plan", "task_id": plan_card["task_id"],
+                                         "template_hash": begun["template_hash"],
+                                         "batch_id": "source-gap-batch"})
+    assert completed["batch_id"] == "source-gap-batch"
+    assert adapter.workflow.status(pinned["workflow_id"])["current_stage"] == "analyzing"
+
+
+def test_all_failed_sources_remain_visible_and_do_not_dispatch_plan(vault: Path):
+    path = vault / "10_Raw/broken.pdf"
+    path.write_bytes(b"unreadable source")
+    fake = FakeKanban(True)
+    adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
+    pinned = start_and_pin(vault, workflow_request(
+        workflow_id="ingest-all-failed", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": ["10_Raw/broken.pdf"],
+                                      "knowledge_selector": "all-current"}))
+    adapter.sync(workflow_request(workflow_id=pinned["workflow_id"],
+                                  actor="agent", expected_revision=pinned["revision"]))
+    card = next(item for item in adapter.workflow.status(pinned["workflow_id"])["kanban"]["task_map"]
+                if item["node"].startswith("source-prepare:"))
+    begun = adapter.worker_begin({"workflow_id": pinned["workflow_id"],
+                                  "node": card["node"], "task_id": card["task_id"]})
+    adapter.worker_fail({"workflow_id": pinned["workflow_id"],
+                         "node": card["node"], "task_id": card["task_id"],
+                         "template_hash": begun["template_hash"],
+                         "code": "PDF_UNREADABLE", "message": "unsupported handler"})
+    status = adapter.workflow.status(pinned["workflow_id"], compact=True)
+    assert status["source_coverage"]["failed"] == ["10_Raw/broken.pdf"]
+    assert status["source_coverage"]["ready"] == []
+    assert status["current_stage"] == "source_preparing"
+    plan = next(item for item in adapter.workflow.status(pinned["workflow_id"])["kanban"]["task_map"]
+                if item["node"] == "exact-plan")
+    assert not fake.tasks[plan["idempotency_key"]]["enabled"]
+    path.write_bytes(b"changed after failure")
+    current = adapter.workflow.status(pinned["workflow_id"])
+    with pytest.raises(ContractError, match="SOURCE_CHANGED"):
+        desired_graph(adapter.workflow, current)
+
+
 def test_canary_allows_only_eight_slices_and_survives_dispatcher_restart(vault: Path):
     plan_sliced_batch(vault, 27, "canary-batch")
     created = start_and_pin(vault, workflow_request(
