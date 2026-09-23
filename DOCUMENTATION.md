@@ -6,11 +6,12 @@
 
 1. 先读 [`README.md`](README.md)，了解仓库能力、六个 Skill、短命令和 Provider 边界。
 2. 做设计、评审、交付或跨团队沟通时读 [`docs/OFFICIAL_TECHNICAL_SPECIFICATION.md`](docs/OFFICIAL_TECHNICAL_SPECIFICATION.md)。
-3. 设计多机构材料、文档身份或业务版本时读 [`docs/architecture/0001-weknora-inspired-document-governance.md`](docs/architecture/0001-weknora-inspired-document-governance.md)。
-4. 需要理解端到端关系时读 [`charts.md`](charts.md)。
-5. 执行具体任务时只加载对应 Skill 的 `SKILL.md`，再按其中的路由读取必要 reference。
-6. 部署或排障检索 Provider 时读 [`RETRIEVAL_PROVIDER_OPERATIONS.md`](RETRIEVAL_PROVIDER_OPERATIONS.md)。
-7. 安装、迁移或排查 MinerU WSL 环境时读 [`MINERU_WSL_ENVIRONMENT_RUNBOOK.md`](MINERU_WSL_ENVIRONMENT_RUNBOOK.md)。
+3. 理解 SourceUnit 如何从文件产生、为何取代旧内容边界及下游如何消费时读 [`docs/SOURCE_UNIT_DESIGN_AND_ROLE.md`](docs/SOURCE_UNIT_DESIGN_AND_ROLE.md)。
+4. 设计多机构材料、文档身份或业务版本时读 [`docs/architecture/0001-weknora-inspired-document-governance.md`](docs/architecture/0001-weknora-inspired-document-governance.md)。
+5. 需要理解端到端关系时读 [`charts.md`](charts.md)。
+6. 执行具体任务时只加载对应 Skill 的 `SKILL.md`，再按其中的路由读取必要 reference。
+7. 部署或排障检索 Provider 时读 [`RETRIEVAL_PROVIDER_OPERATIONS.md`](RETRIEVAL_PROVIDER_OPERATIONS.md)。
+8. 安装、迁移或排查 MinerU WSL 环境时读 [`MINERU_WSL_ENVIRONMENT_RUNBOOK.md`](MINERU_WSL_ENVIRONMENT_RUNBOOK.md)。
 
 `SKILL.md` 是运行入口和边界契约；`references/` 保存较长的操作细则；`scripts/` 是实际执行入口。流程说明与脚本行为冲突时，应先核对当前分支、部署配置和测试，再修正文档或实现，不能在运行时临时发明替代流程。
 
@@ -30,6 +31,7 @@
 | [`docs/architecture/0005-shared-chunk-engine.md`](docs/architecture/0005-shared-chunk-engine.md) | 共享 Chunk Engine、P2.1 UnitSet 身份及回退/诊断决策。 |
 | [`docs/architecture/0006-release-driven-retrieval-projection.md`](docs/architecture/0006-release-driven-retrieval-projection.md) | P5 Release 驱动的 SourceUnit/knowledge-page 检索投影、真实 tokenizer、索引代次、Query 精确回读和部署边界。 |
 | [`docs/SOURCE_UNITS_EVOLUTION_PLAN.md`](docs/SOURCE_UNITS_EVOLUTION_PLAN.md) | 从 P0 契约到 P7 正式重建的当前阶段计划、子任务与验收边界。 |
+| [`docs/SOURCE_UNIT_DESIGN_AND_ROLE.md`](docs/SOURCE_UNIT_DESIGN_AND_ROLE.md) | SourceUnit 的设计动机、旧 ledger/source map 与 WeKnora chunk 思路的吸收、从 Bootstrap/原件到 UnitSet 的产生过程、知识构建和检索消费边界。 |
 | [`docs/WIKI_KNOWLEDGE_CONSTRUCTION_GUIDE.md`](docs/WIKI_KNOWLEDGE_CONSTRUCTION_GUIDE.md) | 现行来源单元到知识页的操作与人工判断指南。 |
 | [`docs/HERMES_WIKI_FROM_FILES_TO_KNOWLEDGE.md`](docs/HERMES_WIKI_FROM_FILES_TO_KNOWLEDGE.md) | 当前从文件到来源单元、知识 release 和检索的解释性说明。 |
 | [`charts.md`](charts.md) | Mermaid 端到端流程图：`main`/`intranet` 环境差异、建库、摄取、Lint、单遍 Query Session、Provider 与 Vault 的读写关系。 |

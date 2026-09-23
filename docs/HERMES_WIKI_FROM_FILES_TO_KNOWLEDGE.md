@@ -1,6 +1,6 @@
 # 从文件到知识：Hermes + Obsidian 当前链路
 
-日期：2026-09-23。本文面向需要理解系统如何把文件变成可查询知识的读者。早期旧链路分析及 WeKnora 时间点对照保存在本地 Git 忽略目录 `legacy docs/`；当前合同以[官方技术规范](OFFICIAL_TECHNICAL_SPECIFICATION.md)和各 Skill 为准。
+日期：2026-09-23。本文面向需要理解系统如何把文件变成可查询知识的读者。SourceUnit 的详细设计与生成过程见[SourceUnit 设计与作用](SOURCE_UNIT_DESIGN_AND_ROLE.md)。早期旧链路分析及 WeKnora 时间点对照保存在本地 Git 忽略目录 `legacy docs/`；当前合同以[官方技术规范](OFFICIAL_TECHNICAL_SPECIFICATION.md)和各 Skill 为准。
 
 ## 一份文件如何进入系统
 

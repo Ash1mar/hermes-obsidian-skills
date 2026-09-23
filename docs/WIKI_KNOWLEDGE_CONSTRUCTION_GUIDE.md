@@ -1,6 +1,6 @@
 # 当前 Wiki 知识构建指南
 
-日期：2026-09-23。本文说明当前 P5 SourceUnit Vault 的知识构建路径。命令参数和强制门禁以 [Governed Ingest Orchestrator](../hermes-obsidian-governed-ingest-orchestrator/SKILL.md)、[Controlled Ingest](../hermes-obsidian-controlled-ingest/SKILL.md)、[Knowledge Finalize](../hermes-obsidian-knowledge-finalize/SKILL.md)及直接 reference 为准；本文不授权跳过人工审批。早期 v3、WeKnora 对照和当时的操作记录保存在本地 `legacy docs/`。
+日期：2026-09-23。本文说明当前 P5 SourceUnit Vault 的知识构建路径。若需了解 SourceUnit 为何存在、如何从原件生成及怎样服务检索，先读[设计与作用](SOURCE_UNIT_DESIGN_AND_ROLE.md)。命令参数和强制门禁以 [Governed Ingest Orchestrator](../hermes-obsidian-governed-ingest-orchestrator/SKILL.md)、[Controlled Ingest](../hermes-obsidian-controlled-ingest/SKILL.md)、[Knowledge Finalize](../hermes-obsidian-knowledge-finalize/SKILL.md)及直接 reference 为准；本文不授权跳过人工审批。早期 v3、WeKnora 对照和当时的操作记录保存在本地 `legacy docs/`。
 
 ## 从原件到知识页
 

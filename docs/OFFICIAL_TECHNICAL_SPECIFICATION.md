@@ -566,6 +566,7 @@ cherry-pick 或并行 worktree 作为日常双分支同步方式。`intranet` �
 
 - [仓库总览](../README.md)
 - [文档索引](../DOCUMENTATION.md)
+- [SourceUnit 设计与作用](SOURCE_UNIT_DESIGN_AND_ROLE.md)
 - [端到端流程图](../charts.md)
 - [检索 Provider 运维说明](../RETRIEVAL_PROVIDER_OPERATIONS.md)
 - [MinerU WSL 环境运行手册](../MINERU_WSL_ENVIRONMENT_RUNBOOK.md)
