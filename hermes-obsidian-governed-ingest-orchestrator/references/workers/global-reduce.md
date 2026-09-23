@@ -1,4 +1,4 @@
-# global-reduce · v1
+# global-reduce · v2
 
 - Role / sole objective: aggregate the batch's completed resource reductions once.
 - Allowed inputs: pinned batch ID, complete resource reduction IDs and their summaries/candidate references; no raw reading packages.
@@ -9,3 +9,4 @@
 - Output JSON schema: `{"ok":boolean,"batch_id":string,"global_reduction_id":string|null,"draft_run_ids":string[],"error_code":string|null}`.
 - Complete when the global request owns stable identity, output path and draft-run assignment.
 - Prohibited: direct legacy Reduce for a new plan, Build Finalize, release or checkpoint approval.
+- Call `dispatch_ingest_workflow.py worker-begin` before the global reduction. After its durable draft runs exist call `worker-complete` with the returned template hash; on failure call `worker-fail`. The adapter validates the authoritative reduction before dispatching checkpoint 1.

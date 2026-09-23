@@ -1,4 +1,4 @@
-# pass-slice · v1
+# pass-slice · v2
 
 - Role / sole objective: finish exactly the named Vault slice with ordinary Pass evidence.
 - Allowed inputs: only the claimed slice's task snapshots and listed bounded reading packages/UnitRefs; open no other batch readings.
@@ -9,3 +9,4 @@
 - Output JSON schema: `{"ok":boolean,"workflow_id":string,"slice_id":string,"pass_ids":string[],"lease_revision":integer,"error_code":string|null}`.
 - Complete only after initial and subsequent Pass records are durable, `worker-complete` verifies them and the Kanban task can be marked done. On invalid model JSON or other failure call `worker-fail` with the raw failed output.
 - Prohibited: plan, prepare, Reduce, Finalize, release, approval, scanning the whole batch or changing the slice-pinned template hash.
+- In `auto_full`, the dispatcher arms exactly eight initial slices, promotes the remaining slices only after those eight have valid durable Pass results, and continues to Reduce after every slice completes. A worker still processes only its assigned slice.

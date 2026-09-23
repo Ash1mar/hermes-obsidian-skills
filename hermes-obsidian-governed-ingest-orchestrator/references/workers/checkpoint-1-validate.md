@@ -1,11 +1,11 @@
-# checkpoint-1-validate · v1
+# checkpoint-1-validate · v2
 
-- Role / sole objective: prepare an evidence-backed human review for the knowledge-build boundary.
+- Role / sole objective: validate the knowledge-build boundary and record a verifiable decision.
 - Allowed inputs: pinned batch, Pass coverage, resource/global reductions, QA and validation reports.
-- Allowed commands: read-only batch status and validators; persist only a checkpoint evidence reference through the workflow service.
+- Allowed commands: `dispatch_ingest_workflow.py worker-begin`, then `worker-complete` to run batch validation and persist the report and decision. `worker-fail` records a typed failure.
 - Fixed IDs / hashes: workflow ID, batch ID, reduction IDs and node fingerprint; report current revisions.
 - Bounds: one checkpoint-1 validation, no edits to knowledge outputs.
 - Heartbeat: Kanban heartbeat while validation runs.
 - Output JSON schema: `{"ok":boolean,"checkpoint":"checkpoint_1","evidence_refs":string[],"blocking_codes":string[],"error_code":string|null}`.
-- Complete when review evidence is durable and the human gate remains blocked pending explicit approval.
-- Prohibited: self-approval, synthetic approval digest, Build Finalize or bypassing QA.
+- Complete when passing validation is durable and the workflow service has rechecked and recorded the decision. A failed validation blocks this card with a report.
+- Prohibited: constructing an approval digest, editing decision evidence, Build Finalize or bypassing QA. Manual-mode approval is separate.

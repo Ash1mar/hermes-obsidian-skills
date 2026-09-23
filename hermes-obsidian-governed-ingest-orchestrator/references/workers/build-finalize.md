@@ -1,4 +1,4 @@
-# build-finalize · v1
+# build-finalize · v2
 
 - Role / sole objective: finalize all approved draft runs in the pinned batch, serially.
 - Allowed inputs: approved checkpoint-1 record, batch/draft-run IDs, reductions and validation evidence.
@@ -9,3 +9,4 @@
 - Output JSON schema: `{"ok":boolean,"batch_id":string,"completed_run_ids":string[],"failed_run_ids":string[],"error_code":string|null}`.
 - Complete when every eligible run has durable completed state or an explicit failure is reported.
 - Prohibited: new Pass/Reduce, release apply, Provider sync or checkpoint-2 approval.
+- Call `dispatch_ingest_workflow.py worker-begin` first. Finalize all pinned runs serially with recorded page reviews, then call `worker-complete` with the returned template hash. On failure call `worker-fail`. The adapter checks every run is completed before opening release planning.
