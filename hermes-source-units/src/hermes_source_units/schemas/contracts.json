@@ -1743,6 +1743,7 @@
       "properties": {
         "source_paths": {"type": "array", "items": {"type": "string", "minLength": 1, "format": "vault-relative-path"}, "minItems": 0, "uniqueItems": true},
         "knowledge_selector": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "execution_mode": {"enum": ["manual", "auto_full"]},
         "provider": {"enum": ["skip", "sync"]}
       },
       "required": ["source_paths", "knowledge_selector"],
@@ -1753,7 +1754,9 @@
       "properties": {
         "state": {"enum": ["pending", "approved"]},
         "approval_digest": {"anyOf": [{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, {"type": "null"}]},
-        "approved_by": {"anyOf": [{"type": "string", "minLength": 1, "pattern": "\\S"}, {"type": "null"}]}
+        "approved_by": {"anyOf": [{"type": "string", "minLength": 1, "pattern": "\\S"}, {"type": "null"}]},
+        "decision_ref": {"anyOf": [{"type": "string", "format": "vault-relative-path"}, {"type": "null"}]},
+        "decision_sha256": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]}
       },
       "required": ["state", "approval_digest", "approved_by"],
       "additionalProperties": false
@@ -1806,7 +1809,7 @@
     "ingest_workflow_dispatch_policy": {
       "type": "object",
       "properties": {
-        "mode": {"enum": ["disabled", "canary"]},
+        "mode": {"enum": ["disabled", "canary", "full"]},
         "slice_ids": {"type": "array", "items": {"type": "string", "minLength": 1}, "minItems": 0, "uniqueItems": true},
         "selection_digest": {"anyOf": [{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, {"type": "null"}]}
       },
@@ -1825,6 +1828,8 @@
         "state": {"enum": ["created", "source_preparing", "planning", "analyzing", "reducing", "checkpoint_1", "build_finalizing", "release_planning", "checkpoint_2", "applying", "indexing", "validating", "completed", "partial", "failed", "cancelled"]},
         "current_stage": {"enum": ["created", "source_preparing", "planning", "analyzing", "reducing", "checkpoint_1", "build_finalizing", "release_planning", "checkpoint_2", "applying", "indexing", "validating", "completed"]},
         "batch_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, {"type": "null"}]},
+        "release_id": {"anyOf": [{"type": "string", "minLength": 1, "maxLength": 160}, {"type": "null"}]},
+        "release_plan_id": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
         "pinned_inputs": {"type": "object", "properties": {"batch_id": {"type": "string", "minLength": 1}, "document_registry_revision": {"type": "integer", "minimum": 0}, "task_ids_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}, "additionalProperties": false},
         "dispatch_policy": {"$ref": "#/$defs/ingest_workflow_dispatch_policy"},
         "kanban": {"type": "object", "properties": {"board_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}, "task_map": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_task"}, "minItems": 0}}, "required": ["board_id", "task_map"], "additionalProperties": false},

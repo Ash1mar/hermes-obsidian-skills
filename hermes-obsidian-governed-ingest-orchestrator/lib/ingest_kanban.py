@@ -7,11 +7,14 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 from typing import Any, Callable, Mapping
 
 from hermes_source_units import (ContractError, FileIngestWorkflowService,
                                  mutation_digest)
-from hermes_source_units.source_units import _exclusive_lock, _load_json, _vault_path
+from hermes_source_units.source_units import (_exclusive_lock, _json_bytes, _load_json,
+                                              _vault_path, _write_atomic)
+from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from hermes_source_units.validation import fingerprint, validate_record
 
 
@@ -241,22 +244,37 @@ def domain_completed(service: FileIngestWorkflowService,
                 (bool(batch["run_ids"]) and batch["state"] in (
                     "checkpoint_1", "finalizing", "completed")))
     if node.kind == "checkpoint-1-validate":
-        return service.knowledge._batch(workflow["batch_id"])["state"] in (
-            "checkpoint_1", "finalizing", "completed")
+        return workflow["current_stage"] in ("checkpoint_1", "build_finalizing",
+                                               "release_planning", "checkpoint_2",
+                                               "applying", "indexing", "validating", "completed")
     if node.kind == "checkpoint-1-gate":
-        return workflow["checkpoints"]["checkpoint_1"]["state"] == "approved"
+        checkpoint = workflow["checkpoints"]["checkpoint_1"]
+        if checkpoint.get("decision_ref") and hashlib.sha256(_vault_path(
+                service.vault, checkpoint["decision_ref"]).read_bytes()).hexdigest() != checkpoint.get("decision_sha256"):
+            _fail("SOURCE_CHANGED", "checkpoint 1 decision evidence changed")
+        return checkpoint["state"] == "approved"
     if node.kind == "checkpoint-2-gate":
-        return workflow["checkpoints"]["checkpoint_2"]["state"] == "approved"
+        checkpoint = workflow["checkpoints"]["checkpoint_2"]
+        if checkpoint.get("decision_ref"):
+            decision_path = _vault_path(service.vault, checkpoint["decision_ref"])
+            if hashlib.sha256(decision_path.read_bytes()).hexdigest() != checkpoint.get("decision_sha256"):
+                _fail("SOURCE_CHANGED", "checkpoint 2 decision evidence changed")
+            decision = _load_json(decision_path)
+            lint_ref = decision.get("evidence", {}).get("lint_ref")
+            if not lint_ref or _load_json(_vault_path(service.vault, lint_ref)) != decision.get("lint"):
+                _fail("SOURCE_CHANGED", "checkpoint 2 lint evidence changed")
+        return checkpoint["state"] == "approved"
     if node.kind == "build-finalize":
         status = service.knowledge.batch_status(workflow["batch_id"], compact=True)
         return bool(status["runs"]) and all(item["state"] == "completed"
                                                 for item in status["runs"])
+    if node.kind == "vault-finalize-plan":
+        return bool(workflow.get("release_id") and workflow.get("release_plan_id"))
     stages = ("created", "source_preparing", "planning", "analyzing", "reducing",
               "checkpoint_1", "build_finalizing", "release_planning", "checkpoint_2",
               "applying", "indexing", "validating", "completed")
     stage = workflow["current_stage"]
     thresholds = {"source-prepare": "planning", "exact-plan": "analyzing",
-                  "vault-finalize-plan": "checkpoint_2",
                   "checkpoint-2-validate": "checkpoint_2",
                   "release-apply": "indexing", "provider-sync": "validating",
                   "acceptance": "completed"}
@@ -272,6 +290,28 @@ class IngestKanbanAdapter:
         self.enable_workers = enable_workers
 
     @staticmethod
+    def _mutation(value: Mapping[str, Any], **fields: Any) -> dict[str, Any]:
+        request = {"workflow_id": value["workflow_id"], "actor": value["actor"],
+                   "expected_revision": value["revision"], **fields}
+        request["input_digest"] = mutation_digest(request)
+        return request
+
+    def _advance(self, value: Mapping[str, Any], target: str,
+                 refs: list[str] | None = None) -> dict[str, Any]:
+        return self.workflow.reconcile(self._mutation(
+            value, target_stage=target, artifact_refs=refs or []))
+
+    def _sync_current(self, workflow_id: str) -> dict[str, Any]:
+        for _ in range(16):
+            value = self.workflow.status(workflow_id)
+            try:
+                return self.sync(self._mutation(value))
+            except ContractError as exc:
+                if exc.code != "REVISION_CONFLICT":
+                    raise
+        _fail("REVISION_CONFLICT", "workflow changed repeatedly during dispatch")
+
+    @staticmethod
     def _canary_allows(workflow: Mapping[str, Any], node: Node) -> bool:
         if node.kind == "source-prepare":
             return (workflow["batch_id"] is None and
@@ -281,8 +321,27 @@ class IngestKanbanAdapter:
             return (workflow["batch_id"] is None and workflow["current_stage"] == "planning"
                     and not coverage["pending"] and bool(coverage["ready"]))
         policy = workflow.get("dispatch_policy", {})
+        if node.kind == "pass-slice" and policy.get("mode") == "full":
+            return workflow["current_stage"] in ("analyzing", "reducing")
+        if (workflow["scope"].get("execution_mode") == "auto_full"
+                and policy.get("mode") == "full"):
+            stages = {"resource-reduce": "reducing", "global-reduce": "reducing",
+                      "checkpoint-1-validate": "reducing",
+                      "build-finalize": "build_finalizing",
+                      "vault-finalize-plan": "release_planning",
+                      "checkpoint-2-validate": "release_planning",
+                      "release-apply": "applying", "provider-sync": "indexing",
+                      "acceptance": "validating"}
+            return workflow["current_stage"] == stages.get(node.kind)
         return (policy.get("mode") == "canary" and node.kind == "pass-slice"
                 and node.name.partition(":")[2] in policy.get("slice_ids", []))
+
+    def _eligible(self, workflow: Mapping[str, Any], node: Node,
+                  nodes: list[Node]) -> bool:
+        by_name = {item.name: item for item in nodes}
+        return (self.enable_workers and self._canary_allows(workflow, node)
+                and all(domain_completed(self.workflow, workflow, by_name[parent])
+                        for parent in node.parents))
 
     def start(self, request: Mapping[str, Any]) -> dict[str, Any]:
         created = self.workflow.start(request)
@@ -358,6 +417,60 @@ class IngestKanbanAdapter:
                     value["batch_id"], actor, batch["revision"])
             self.workflow.knowledge.reclaim_expired_slices(value["batch_id"])
             self.workflow.knowledge.refresh_ready_slices(value["batch_id"], actor)
+            if (value["scope"].get("execution_mode") == "auto_full"
+                    and value["current_stage"] == "analyzing"):
+                policy = value["dispatch_policy"]
+                if policy["mode"] == "disabled":
+                    try:
+                        preview = self.workflow.canary_preview(workflow_id, 8)
+                    except ContractError as exc:
+                        if exc.code != "CANARY_UNAVAILABLE":
+                            raise
+                        return {"workflow_id": workflow_id, "workflow_created": True,
+                                "state": "canary_unavailable", "reason": str(exc),
+                                "background_dispatch": False,
+                                "board_id": value["kanban"]["board_id"]}
+                    armed = {"workflow_id": workflow_id, "actor": actor,
+                             "expected_revision": value["revision"],
+                             "slice_ids": [item["slice_id"] for item in preview["slices"]],
+                             "selection_digest": preview["selection_digest"]}
+                    armed["input_digest"] = mutation_digest(armed)
+                    value = self.workflow.arm_canary(armed)
+                elif policy["mode"] == "canary" and len(policy["slice_ids"]) == 8 and all(
+                        self.workflow.knowledge._slice(value["batch_id"], slice_id)["state"] == "completed"
+                        for slice_id in policy["slice_ids"]):
+                    promoted = {"workflow_id": workflow_id, "actor": actor,
+                                "expected_revision": value["revision"]}
+                    promoted["input_digest"] = mutation_digest(promoted)
+                    value = self.workflow.promote_canary(promoted)
+                if (value["dispatch_policy"]["mode"] == "full"
+                        and value["current_stage"] == "analyzing"
+                        and all(item["state"] == "completed"
+                                for item in self.workflow.knowledge._slices(value["batch_id"]))):
+                    transition = {"workflow_id": workflow_id, "actor": actor,
+                                  "expected_revision": value["revision"],
+                                  "target_stage": "reducing"}
+                    transition["input_digest"] = mutation_digest(transition)
+                    value = self.workflow.reconcile(transition)
+            if (value["scope"].get("execution_mode") == "auto_full"
+                    and value["dispatch_policy"]["mode"] == "full"):
+                if (value["current_stage"] == "checkpoint_1"
+                        and value["checkpoints"]["checkpoint_1"]["state"] == "approved"):
+                    value = self._advance(value, "build_finalizing")
+                if value["current_stage"] == "build_finalizing":
+                    status = self.workflow.knowledge.batch_status(value["batch_id"], compact=True)
+                    if status["runs"] and all(item["state"] == "completed" for item in status["runs"]):
+                        refs = [f"_system/knowledge-builds/{item['run_id']}/manifest.json"
+                                for item in status["runs"]]
+                        value = self._advance(value, "release_planning", refs)
+                if (value["current_stage"] == "checkpoint_2"
+                        and value["checkpoints"]["checkpoint_2"]["state"] == "approved"):
+                    plan_ref = (f"_system/knowledge-releases/{value['release_id']}/plan.json")
+                    value = self._advance(value, "applying", [plan_ref])
+                if (value["current_stage"] == "indexing"
+                        and value["scope"].get("provider", "skip") == "skip"):
+                    manifest_ref = (f"_system/knowledge-releases/{value['release_id']}/manifest.json")
+                    value = self._advance(value, "validating", [manifest_ref])
         if not self.kanban.dispatcher_available():
             return {"workflow_id": workflow_id, "workflow_created": True,
                     "state": "dispatcher_unavailable", "background_dispatch": False,
@@ -368,7 +481,7 @@ class IngestKanbanAdapter:
         ids: dict[str, str] = {}
         task_map: list[dict[str, str]] = []
         for node in nodes:
-            worker_enabled = self.enable_workers and self._canary_allows(value, node)
+            worker_enabled = self._eligible(value, node, nodes)
             key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
             pin = next((item for item in value.get("template_pins", [])
                         if item["kind"] == node.kind), None)
@@ -406,6 +519,11 @@ class IngestKanbanAdapter:
                             for item in value.get("source_outcomes", [])):
                         self.kanban.complete(slug, previous["task_id"],
                                              "Authoritative Vault source outcome committed")
+                    elif (current := next((node for node in nodes
+                                           if node.name == previous["node"]), None)) is not None \
+                            and domain_completed(self.workflow, value, current):
+                        self.kanban.complete(slug, previous["task_id"],
+                                             "Authoritative Vault worker result committed")
                     else:
                         self.kanban.wait(slug, previous["task_id"], "blocked",
                                          "Superseded by Vault workflow graph")
@@ -422,9 +540,9 @@ class IngestKanbanAdapter:
             if domain_completed(self.workflow, updated, node):
                 self.kanban.complete(slug, ids[node.name],
                                      "Authoritative Vault outcome already committed")
-            elif node.gate or not (self.enable_workers and self._canary_allows(updated, node)):
+            elif node.gate or not self._eligible(updated, node, nodes):
                 self.kanban.wait(slug, ids[node.name], "blocked",
-                                 "Human checkpoint or outside armed canary")
+                                 "Vault gate or outside active dispatch scope")
             elif node.kind == "pass-slice":
                 slice_id = node.name.partition(":")[2]
                 state = self.workflow.knowledge._slice(updated["batch_id"], slice_id)["state"]
@@ -435,11 +553,11 @@ class IngestKanbanAdapter:
                     self.kanban.wait(slug, ids[node.name], "blocked", "Vault worker gate")
                 elif state == "ready":
                     self.kanban.unblock(slug, ids[node.name])
-            elif node.kind in ("source-prepare", "exact-plan"):
+            else:
                 self.kanban.unblock(slug, ids[node.name])
         active_canary = self.enable_workers and any(
             not domain_completed(self.workflow, updated, node)
-            and self._canary_allows(updated, node)
+            and self._eligible(updated, node, nodes)
             and (node.kind != "pass-slice" or self.workflow.knowledge._slice(
                 updated["batch_id"], node.name.partition(":")[2])["state"]
                 in ("ready", "leased")) for node in nodes)
@@ -454,8 +572,9 @@ class IngestKanbanAdapter:
         workflow = self.workflow.status(workflow_id)
         self.workflow.pinned_templates(workflow)
         policy = workflow.get("dispatch_policy", {})
-        if (policy.get("mode") != "canary" or not node_name.startswith("pass-slice:")
-                or node_name.partition(":")[2] not in policy.get("slice_ids", [])):
+        if (policy.get("mode") not in ("canary", "full") or not node_name.startswith("pass-slice:")
+                or (policy.get("mode") == "canary" and
+                    node_name.partition(":")[2] not in policy.get("slice_ids", []))):
             _fail("ACCESS_DENIED", "Pass slice is outside the armed canary")
         if workflow["cancel_requested"] or workflow["current_stage"] != "analyzing":
             _fail("WORKFLOW_STOPPED", "Pass work is outside the active analyzing stage")
@@ -526,8 +645,167 @@ class IngestKanbanAdapter:
             _fail("INCOMPLETE_COVERAGE", "exact plan requires all source outcomes and a ready source")
         return workflow, node, source_info
 
+    def _batch_worker(self, request: Mapping[str, Any], *, beginning: bool = False) -> tuple[dict[str, Any], Node]:
+        if not self.enable_workers:
+            _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
+        workflow = self.workflow.status(str(request["workflow_id"]))
+        self.workflow.pinned_templates(workflow)
+        if (workflow["cancel_requested"] or workflow["batch_id"] is None
+                or workflow["scope"].get("execution_mode") != "auto_full"
+                or workflow["dispatch_policy"]["mode"] != "full"):
+            _fail("WORKFLOW_STOPPED", "automatic batch work is not active")
+        nodes = desired_graph(self.workflow, workflow)
+        node = next((item for item in nodes if item.name == request["node"]), None)
+        if node is None or node.kind in ("source-prepare", "exact-plan", "pass-slice") or node.gate:
+            _fail("ACCESS_DENIED", "card is not a dispatchable batch worker")
+        matching = [item for item in workflow["kanban"]["task_map"]
+                    if item["node"] == node.name and item.get("task_id") == request["task_id"]]
+        key = f"ingest:{workflow['workflow_id']}:{node.kind}:{node.input_fingerprint}"
+        if len(matching) != 1 or matching[0]["idempotency_key"] != key:
+            _fail("STALE_INPUT", "batch worker card binding changed")
+        if not self._eligible(workflow, node, nodes):
+            _fail("INCOMPLETE_COVERAGE", "batch worker stage or parent outcome is not ready")
+        pin = next(item for item in workflow["template_pins"] if item["kind"] == node.kind)
+        if not beginning and request.get("template_hash") != pin["template_hash"]:
+            _fail("STALE_INPUT", "batch worker template hash changed")
+        return workflow, node
+
+    def _report(self, workflow: Mapping[str, Any], name: str,
+                payload: Mapping[str, Any]) -> str:
+        ref = (f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/"
+               f"reports/{name}.json")
+        _write_atomic(_vault_path(self.workflow.vault, ref), _json_bytes(payload))
+        return ref
+
+    def _lint(self) -> dict[str, Any]:
+        script = (Path(__file__).resolve().parents[2] /
+                  "hermes-obsidian-vault-lint/scripts/lint_vault.py")
+        if not script.is_file():
+            _fail("VALIDATOR_UNAVAILABLE", "Vault lint Skill is not installed")
+        result = subprocess.run([sys.executable, str(script), "--vault",
+                                 str(self.workflow.vault), "--profile", "post-ingest",
+                                 "--json"], capture_output=True, text=True,
+                                encoding="utf-8", errors="replace", timeout=300,
+                                check=False)
+        try:
+            payload = json.loads(result.stdout or "")
+        except json.JSONDecodeError:
+            _fail("VALIDATOR_UNAVAILABLE", result.stderr.strip() or "Vault lint returned no JSON")
+        if result.returncode not in (0, 1, 2):
+            _fail("VALIDATOR_UNAVAILABLE", result.stderr.strip() or "Vault lint failed")
+        return payload
+
+    def _approve_automatic(self, value: Mapping[str, Any], checkpoint: str,
+                           evidence: Mapping[str, Any], lint: Mapping[str, Any] | None = None) -> dict[str, Any]:
+        digest = value["checkpoints"][checkpoint]["approval_digest"]
+        decision = {"contract": "hermes-ingest-checkpoint-decision/v1",
+                    "workflow_id": value["workflow_id"], "checkpoint": checkpoint,
+                    "approval_digest": digest, "ok": True, "blocking_codes": [],
+                    "evidence": dict(evidence)}
+        if lint is not None:
+            decision["lint"] = dict(lint)
+        ref = (f"_system/ledgers/ingest-workflows/{value['workflow_id']}/"
+               f"decisions/{checkpoint}.json")
+        path = _vault_path(self.workflow.vault, ref)
+        encoded = _json_bytes(decision)
+        if path.exists() and path.read_bytes() != encoded:
+            _fail("IDEMPOTENCY_CONFLICT", "checkpoint decision report already differs")
+        if not path.exists():
+            _write_atomic(path, encoded)
+        return self.workflow.approve(self._mutation(
+            value, checkpoint=checkpoint, approval_digest=digest,
+            decision_mode="auto_verified", decision_ref=ref))
+
+    def _complete_batch_worker(self, workflow: dict[str, Any], node: Node,
+                               request: Mapping[str, Any]) -> dict[str, Any]:
+        kind = node.kind
+        batch_id = workflow["batch_id"]
+        updated = workflow
+        if kind in ("resource-reduce", "global-reduce"):
+            if not domain_completed(self.workflow, workflow, node):
+                _fail("INCOMPLETE_COVERAGE", f"{kind} has no durable Vault result")
+        elif kind == "checkpoint-1-validate":
+            validation = self.workflow.knowledge.validate_batch(batch_id)
+            report = self._report(workflow, "checkpoint-1-validation", validation)
+            if not validation["ok"]:
+                self.kanban.wait(workflow["kanban"]["board_id"], str(request["task_id"]),
+                                 "blocked", "Knowledge batch validation failed")
+                return {"ok": False, "report_ref": report,
+                        "blocking_codes": [item.get("code", "VALIDATION_FAILED")
+                                           for item in validation["failures"]]}
+            updated = self._advance(workflow, "checkpoint_1", [report])
+            updated = self._approve_automatic(updated, "checkpoint_1", validation)
+        elif kind == "build-finalize":
+            batch = self.workflow.knowledge._batch(batch_id)
+            if batch["state"] != "completed" or not domain_completed(self.workflow, workflow, node):
+                _fail("INCOMPLETE_COVERAGE", "all build runs must be completed")
+        elif kind == "vault-finalize-plan":
+            updated = self.workflow.bind_release_plan(self._mutation(
+                workflow, release_id=str(request["release_id"]),
+                plan_id=str(request["plan_id"])))
+        elif kind == "checkpoint-2-validate":
+            if not workflow.get("release_id"):
+                _fail("INCOMPLETE_COVERAGE", "release plan is not bound")
+            lint = self._lint()
+            report = self._report(workflow, "checkpoint-2-lint", lint)
+            if not lint.get("ok"):
+                self.kanban.wait(workflow["kanban"]["board_id"], str(request["task_id"]),
+                                 "blocked", "Vault lint has blocking errors")
+                return {"ok": False, "report_ref": report,
+                        "blocking_codes": [item.get("code", "LINT_FAILED")
+                                           for item in lint.get("issues", [])
+                                           if item.get("severity") == "error"]}
+            plan_ref = f"_system/knowledge-releases/{workflow['release_id']}/plan.json"
+            updated = self._advance(workflow, "checkpoint_2", [plan_ref, report])
+            updated = self._approve_automatic(updated, "checkpoint_2",
+                                              {"plan_ref": plan_ref, "lint_ref": report}, lint)
+        elif kind == "release-apply":
+            release_id = workflow.get("release_id")
+            if not release_id:
+                _fail("INCOMPLETE_COVERAGE", "release plan is not bound")
+            checked = FileVaultFinalizeService(self.workflow.vault).validate(release_id)
+            if not checked["ok"]:
+                _fail("INCOMPLETE_COVERAGE", "release validation failed")
+            manifest_ref = f"_system/knowledge-releases/{release_id}/manifest.json"
+            updated = self._advance(workflow, "indexing", [manifest_ref])
+        elif kind == "provider-sync":
+            ref = "_system/reports/retrieval-index-manifest.json"
+            manifest = _load_json(_vault_path(self.workflow.vault, ref))
+            release_ref = f"_system/knowledge-releases/{workflow['release_id']}/manifest.json"
+            release_hash = hashlib.sha256(_vault_path(self.workflow.vault, release_ref).read_bytes()).hexdigest()
+            if (manifest.get("status") != "ready" or
+                    manifest.get("release_id") != workflow["release_id"] or
+                    manifest.get("release_hash") != release_hash):
+                _fail("INCOMPLETE_COVERAGE", "Provider index is not ready for the exact release")
+            updated = self._advance(workflow, "validating", [ref])
+        elif kind == "acceptance":
+            release_id = workflow.get("release_id")
+            checked = FileVaultFinalizeService(self.workflow.vault).validate(release_id)
+            lint = self._lint()
+            report = self._report(workflow, "acceptance-lint", lint)
+            if not checked["ok"] or not lint.get("ok"):
+                self.kanban.wait(workflow["kanban"]["board_id"], str(request["task_id"]),
+                                 "blocked", "Final release or Vault lint validation failed")
+                return {"ok": False, "report_ref": report,
+                        "blocking_codes": [item.get("code", "LINT_FAILED")
+                                           for item in lint.get("issues", [])
+                                           if item.get("severity") == "error"]}
+            release_ref = f"_system/knowledge-releases/{release_id}/manifest.json"
+            target = ("partial" if self.workflow.source_coverage(workflow)["failed"]
+                      else "completed")
+            updated = self._advance(workflow, target, [release_ref, report])
+        else:
+            _fail("ACCESS_DENIED", "unsupported automatic batch worker")
+        self.kanban.complete(workflow["kanban"]["board_id"], str(request["task_id"]),
+                             "Authoritative Vault worker result committed")
+        latest = self.workflow.status(workflow["workflow_id"])
+        result = {"ok": True, "node": node.name, "workflow_state": latest["state"]}
+        if latest["state"] not in ("completed", "partial", "failed", "cancelled"):
+            result["dispatch"] = self._sync_current(workflow["workflow_id"])
+        return result
+
     def worker_begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        if not str(request["node"]).startswith("pass-slice:"):
+        if str(request["node"]).startswith("source-prepare:") or request["node"] == "exact-plan":
             workflow, node, source = self._pre_worker(request, beginning=True)
             if node.kind == "source-prepare" and domain_completed(self.workflow, workflow, node):
                 _fail("INVALID_TRANSITION", "source outcome is already recorded")
@@ -535,6 +813,13 @@ class IngestKanbanAdapter:
             return {"ok": True, "node": node.name, "template_hash": pin["template_hash"],
                     "input_fingerprint": node.input_fingerprint,
                     "source": source, "source_coverage": self.workflow.source_coverage(workflow)}
+        if not str(request["node"]).startswith("pass-slice:"):
+            workflow, node = self._batch_worker(request, beginning=True)
+            pin = next(item for item in workflow["template_pins"] if item["kind"] == node.kind)
+            return {"ok": True, "node": node.name, "batch_id": workflow["batch_id"],
+                    "release_id": workflow.get("release_id"),
+                    "template_hash": pin["template_hash"],
+                    "input_fingerprint": node.input_fingerprint}
         workflow_id, node_name = str(request["workflow_id"]), str(request["node"])
         workflow, value = self._slice_worker(workflow_id, node_name,
                                              str(request["task_id"]))
@@ -549,10 +834,15 @@ class IngestKanbanAdapter:
                 "task_ids": result["slice"]["task_ids"]}
 
     def worker_check(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        if not str(request["node"]).startswith("pass-slice:"):
+        if str(request["node"]).startswith("source-prepare:") or request["node"] == "exact-plan":
             workflow, node, source = self._pre_worker(request)
             return {"ok": True, "node": node.name, "source": source,
                     "source_coverage": self.workflow.source_coverage(workflow)}
+        if not str(request["node"]).startswith("pass-slice:"):
+            workflow, node = self._batch_worker(request)
+            return {"ok": True, "node": node.name, "batch_id": workflow["batch_id"],
+                    "release_id": workflow.get("release_id"),
+                    "input_fingerprint": node.input_fingerprint}
         workflow, value = self._slice_worker(str(request["workflow_id"]),
                                              str(request["node"]),
                                              str(request["task_id"]))
@@ -585,7 +875,7 @@ class IngestKanbanAdapter:
         return result
 
     def worker_complete(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        if not str(request["node"]).startswith("pass-slice:"):
+        if str(request["node"]).startswith("source-prepare:") or request["node"] == "exact-plan":
             workflow, node, source = self._pre_worker(request)
             if node.kind == "source-prepare":
                 outcome = {"workflow_id": workflow["workflow_id"], "actor": workflow["actor"],
@@ -606,11 +896,11 @@ class IngestKanbanAdapter:
                           "source_coverage": self.workflow.source_coverage(updated)}
             self.kanban.complete(workflow["kanban"]["board_id"], str(request["task_id"]),
                                  "Authoritative Vault pre-batch outcome committed")
-            sync_request = {"workflow_id": updated["workflow_id"], "actor": updated["actor"],
-                            "expected_revision": updated["revision"]}
-            sync_request["input_digest"] = mutation_digest(sync_request)
-            result["dispatch"] = self.sync(sync_request)
+            result["dispatch"] = self._sync_current(workflow["workflow_id"])
             return result
+        if not str(request["node"]).startswith("pass-slice:"):
+            workflow, node = self._batch_worker(request)
+            return self._complete_batch_worker(workflow, node, request)
         workflow_id, node_name = str(request["workflow_id"]), str(request["node"])
         workflow, value = self._slice_worker(workflow_id, node_name,
                                              str(request["task_id"]))
@@ -642,11 +932,13 @@ class IngestKanbanAdapter:
             })
         self.kanban.complete(workflow["kanban"]["board_id"],
                              str(request["task_id"]), "Vault Pass slice complete")
+        if workflow["scope"].get("execution_mode") == "auto_full":
+            self._sync_current(workflow_id)
         return {"ok": True, "slice_id": value["slice_id"],
                 "result_refs": result_refs}
 
     def worker_fail(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        if not str(request["node"]).startswith("pass-slice:"):
+        if str(request["node"]).startswith("source-prepare:") or request["node"] == "exact-plan":
             workflow, node, source = self._pre_worker(request)
             if node.kind == "exact-plan":
                 self.kanban.wait(workflow["kanban"]["board_id"], str(request["task_id"]),
@@ -662,11 +954,18 @@ class IngestKanbanAdapter:
             updated = self.workflow.record_source_outcome(outcome)
             self.kanban.complete(workflow["kanban"]["board_id"], str(request["task_id"]),
                                  "Source failed; coverage gap recorded")
-            sync_request = {"workflow_id": updated["workflow_id"], "actor": updated["actor"],
-                            "expected_revision": updated["revision"]}
-            sync_request["input_digest"] = mutation_digest(sync_request)
             return {"ok": True, "source_coverage": self.workflow.source_coverage(updated),
-                    "dispatch": self.sync(sync_request)}
+                    "dispatch": self._sync_current(workflow["workflow_id"])}
+        if not str(request["node"]).startswith("pass-slice:"):
+            workflow, node = self._batch_worker(request)
+            report = self._report(workflow, f"failed-{fingerprint(node.name)[:16]}",
+                                  {"node": node.name, "input_fingerprint": node.input_fingerprint,
+                                   "error_code": str(request["code"]),
+                                   "reason": str(request["message"])})
+            self.kanban.wait(workflow["kanban"]["board_id"], str(request["task_id"]),
+                             "blocked", f"Worker failed: {request['code']}")
+            return {"ok": False, "node": node.name, "report_ref": report,
+                    "error_code": request["code"]}
         checked = self.worker_check(request)
         outcome = self.workflow.knowledge.slice_fail({
             "batch_id": checked["batch_id"], "slice_id": checked["slice_id"],

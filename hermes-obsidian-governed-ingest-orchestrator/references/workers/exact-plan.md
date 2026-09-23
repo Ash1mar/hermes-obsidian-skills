@@ -1,4 +1,4 @@
-# exact-plan · v1
+# exact-plan · v2
 
 - Role / sole objective: create or adopt one exact-reading-budget knowledge-build batch for this workflow scope.
 - Allowed inputs: pinned source artifact IDs, UnitSet IDs, token audit, requested task scope and current registry revision.

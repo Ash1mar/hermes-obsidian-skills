@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "hermes-obsidian-governed-ingest-orchestrator/lib"
 
 from hermes_source_units import (ContractError, FileIngestWorkflowService,
                                  FileKnowledgeBuildService, FileSourceUnitService,
+                                 FileVaultFinalizeService,
                                  mutation_digest)
 from hermes_source_units.ingest_workflow import (DISPLAY_PHASES, STAGES,
                                                 WORKER_KINDS, display_phase)
@@ -862,6 +863,134 @@ class FakeKanban:
         return None
 
 
+def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
+        vault: Path, monkeypatch: pytest.MonkeyPatch):
+    batch_id = "auto-full-batch"
+    batch, _, citations, snapshots = prepare_layered_reduce_batch(vault, batch_id)
+    fake = FakeKanban(True)
+    adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
+    started = start_and_pin(vault, workflow_request(
+        workflow_id="ingest-auto-full-flow", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": [],
+                                    "knowledge_selector": "all-current",
+                                    "execution_mode": "auto_full"}, batch_id=batch_id))
+    # The separate eight-slice test verifies promotion; this fixture starts just
+    # beyond that boundary to exercise every downstream worker and gate.
+    full = {**started, "revision": started["revision"] + 1,
+            "dispatch_policy": {"mode": "full", "slice_ids": [],
+                                "selection_digest": None}}
+    adapter.workflow._write(full)
+    adapter.sync(workflow_request(workflow_id=full["workflow_id"], actor="agent",
+                                  expected_revision=full["revision"]))
+
+    def card(kind: str, suffix: str = "") -> tuple[dict, dict]:
+        current = adapter.workflow.status(full["workflow_id"])
+        name = kind + suffix
+        bound = next(item for item in current["kanban"]["task_map"]
+                     if item["node"] == name)
+        req = {"workflow_id": full["workflow_id"], "node": name,
+               "task_id": bound["task_id"], "worker_id": "worker"}
+        begun = adapter.worker_begin(req)
+        return req, begun
+
+    def finish(kind: str, suffix: str = "", **fields: object) -> dict:
+        req, begun = card(kind, suffix)
+        result = adapter.worker_complete({**req, "template_hash": begun["template_hash"],
+                                          **fields})
+        assert result["ok"]
+        return result
+
+    for item in batch._slices(batch_id):
+        req, begun = card("pass-slice", ":" + item["slice_id"])
+        assert begun["leased"]
+        finish_request = {**req, "template_hash": begun["template_hash"],
+                          "expected_revision": begun["slice"]["revision"]}
+        assert adapter.worker_complete(finish_request)["ok"]
+    assert adapter.workflow.status(full["workflow_id"])["current_stage"] == "reducing"
+
+    reductions = []
+    requests = resource_reduce_requests(batch_id, citations, snapshots)
+    for item in requests:
+        req, begun = card("resource-reduce", ":" + item["resource_id"])
+        reductions.append(batch.reduce_resource(item)["reduction"])
+        assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
+    refs = [item["proposals"][0]["candidate_refs"][0] for item in requests]
+    req, begun = card("global-reduce")
+    batch.reduce_global({
+        "batch_id": batch_id, "actor": "agent",
+        "resource_reduction_ids": [item["reduction_id"] for item in reductions],
+        "runs": [{"run_id": "auto-full-run", "actor": "agent", "tasks": snapshots,
+                  "expected_registry_revision": 0, "document_registry_revision": 1,
+                  "decisions": [{"candidate_refs": refs,
+                                 "identity": {"kind": "entity",
+                                              "identity_key": "project-a:pump-x",
+                                              "canonical_name": "Pump X", "aliases": []},
+                                 "action": "create", "path": "30_Cards/auto-pump-x.md",
+                                 "content": "# Pump X\n\nTransfers coolant.\n"}],
+                  "reason": "Global coordination"}],
+        "omitted_candidate_refs": [], "reason": "Global coordination",
+    })
+    assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
+    finish("checkpoint-1-validate")
+    first = adapter.workflow.status(full["workflow_id"])
+    assert first["current_stage"] == "build_finalizing"
+    assert first["checkpoints"]["checkpoint_1"]["approved_by"] == "hermes:auto"
+    assert first["checkpoints"]["checkpoint_1"]["decision_ref"]
+    decision_path = vault / first["checkpoints"]["checkpoint_1"]["decision_ref"]
+    decision_bytes = decision_path.read_bytes()
+    decision_path.write_bytes(decision_bytes + b"\n")
+    with pytest.raises(ContractError, match="SOURCE_CHANGED"):
+        adapter.sync(workflow_request(workflow_id=full["workflow_id"],
+                                      actor="agent", expected_revision=first["revision"]))
+    decision_path.write_bytes(decision_bytes)
+
+    req, begun = card("build-finalize")
+    run = json.loads((vault / "_system/knowledge-builds/auto-full-run/manifest.json").read_text())
+    page = run["page_revisions"][0]
+    assert batch.finalize_batch({"batch_id": batch_id, "actor": "agent",
+                                 "finalizations": [{"run_id": "auto-full-run",
+                                                    "actor": "agent", "expected_revision": 1,
+                                                    "reviews": [{"page_id": page["page_id"],
+                                                                 "authored_sha256": page["authored_sha256"],
+                                                                 "parent_authored_sha256": None,
+                                                                 "actor": "reviewer",
+                                                                 "note": "Reviewed both sources"}]}]})["ok"]
+    assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
+    assert adapter.workflow.status(full["workflow_id"])["current_stage"] == "release_planning"
+
+    release = FileVaultFinalizeService(vault)
+    req, begun = card("vault-finalize-plan")
+    plan = release.plan({"release_id": "auto-full-release", "actor": "agent",
+                         "expected_state_revision": 0,
+                         "build_run_ids": ["auto-full-run"],
+                         "source_changes": [], "reason": "Automated governed release"})["plan"]
+    assert adapter.worker_complete({**req, "template_hash": begun["template_hash"],
+                                    "release_id": plan["release_id"],
+                                    "plan_id": plan["plan_id"]})["ok"]
+    # This older lightweight fixture omits governance metadata required by
+    # post-ingest lint; verify the real validator blocks before isolating dispatch.
+    blocked_req, blocked_begin = card("checkpoint-2-validate")
+    blocked = adapter.worker_complete({**blocked_req,
+                                       "template_hash": blocked_begin["template_hash"]})
+    assert blocked["ok"] is False and blocked["blocking_codes"]
+    assert adapter.workflow.status(full["workflow_id"])["current_stage"] == "release_planning"
+    monkeypatch.setattr(adapter, "_lint", lambda: {"ok": True,
+                                                    "summary": {"errors": 0},
+                                                    "issues": []})
+    finish("checkpoint-2-validate")
+    second = adapter.workflow.status(full["workflow_id"])
+    assert second["current_stage"] == "applying"
+    assert second["checkpoints"]["checkpoint_2"]["approved_by"] == "hermes:auto"
+    req, begun = card("release-apply")
+    assert release.apply({"release_id": plan["release_id"], "actor": plan["actor"],
+                          "plan_id": plan["plan_id"],
+                          "expected_revision": plan["revision"]})["ok"]
+    assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
+    assert adapter.workflow.status(full["workflow_id"])["current_stage"] == "validating"
+    finish("acceptance")
+    assert adapter.workflow.status(full["workflow_id"])["state"] == "completed"
+
+
 def test_failed_source_does_not_stop_other_source_or_enter_exact_plan(vault: Path):
     refs = publish_sources(vault, ["# Broken candidate\nA.\n", "# Usable candidate\nB.\n"])
     paths = ["10_Raw/source-1.md", "10_Raw/source-2.md"]
@@ -925,6 +1054,69 @@ def test_failed_source_does_not_stop_other_source_or_enter_exact_plan(vault: Pat
                                          "batch_id": "source-gap-batch"})
     assert completed["batch_id"] == "source-gap-batch"
     assert adapter.workflow.status(pinned["workflow_id"])["current_stage"] == "analyzing"
+
+
+def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path):
+    batch = plan_sliced_batch(vault, 27, "auto-canary-batch")
+    fake = FakeKanban(True)
+    adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
+    pinned = start_and_pin(vault, workflow_request(
+        workflow_id="ingest-auto-canary", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": [],
+                                    "knowledge_selector": "all-current",
+                                    "execution_mode": "auto_full"},
+        batch_id="auto-canary-batch"))
+    dispatched = adapter.sync(workflow_request(
+        workflow_id=pinned["workflow_id"], actor="agent",
+        expected_revision=pinned["revision"]))
+    assert dispatched["background_dispatch"]
+    workflow = adapter.workflow.status(pinned["workflow_id"])
+    assert workflow["dispatch_policy"]["mode"] == "canary"
+    assert len(workflow["dispatch_policy"]["slice_ids"]) == 8
+    cards = [item for item in workflow["kanban"]["task_map"]
+             if item["node"].startswith("pass-slice:")]
+    assert len(cards) == 9
+    assert sum(fake.tasks[item["idempotency_key"]]["enabled"] for item in cards) == 8
+    with pytest.raises(ContractError, match="INCOMPLETE_COVERAGE"):
+        adapter.workflow.promote_canary(workflow_request(
+            workflow_id=pinned["workflow_id"], actor="agent",
+            expected_revision=workflow["revision"]))
+    prepared = batch.prepare_batch("auto-canary-batch", "agent", 1)
+    packages = {item["task_id"]: item["reading_package_id"]
+                for item in prepared["results"]}
+    for slice_id in workflow["dispatch_policy"]["slice_ids"]:
+        card = next(item for item in adapter.workflow.status(pinned["workflow_id"])["kanban"]["task_map"]
+                    if item["node"] == f"pass-slice:{slice_id}")
+        worker = {"workflow_id": pinned["workflow_id"], "node": card["node"],
+                  "task_id": card["task_id"], "worker_id": "canary-worker"}
+        leased = adapter.worker_begin(worker)["slice"]
+        for task_id in leased["task_ids"]:
+            task = batch._task(task_id)
+            ref = task["target_refs"][0]
+            common = {"task_id": task_id, "actor": "agent",
+                      "reading_package_id": packages[task_id], "registry_revision": 1,
+                      "slice_id": slice_id, "worker_id": "canary-worker",
+                      "template_hash": leased["template_hash"],
+                      "inspections": [{"source_ref": ref, "finding": "inspected",
+                                       "qa": "usable", "qa_note": ""}],
+                      "candidates": [{"candidate_id": "candidate", "name": task_id,
+                                      "kind": "entity", "identity_rationale": "source evidence",
+                                      "finding": "found", "applicability": "Project A",
+                                      "conditions": [], "exceptions": [], "support_refs": [ref]}],
+                      "empty_reason": ""}
+            for sequence, pass_kind in enumerate(("candidate", "citation")):
+                batch.record_pass_batch({"batch_id": "auto-canary-batch", "passes": [{
+                    **common, "expected_revision": batch._task(task_id)["revision"],
+                    "pass_kind": pass_kind, "sequence": sequence}]})
+        adapter.worker_complete({**worker, "expected_revision": leased["revision"],
+                                 "template_hash": leased["template_hash"]})
+    promoted = adapter.workflow.status(pinned["workflow_id"])
+    assert promoted["dispatch_policy"]["mode"] == "full"
+    remaining = next(item for item in promoted["kanban"]["task_map"]
+                     if item["node"].partition(":")[2] not in
+                     promoted["dispatch_policy"]["slice_ids"] and
+                     item["node"].startswith("pass-slice:"))
+    assert remaining["task_id"] in fake.unblocked
 
 
 def test_all_failed_sources_remain_visible_and_do_not_dispatch_plan(vault: Path):

@@ -8,6 +8,7 @@ from typing import Any, Mapping
 
 from .knowledge_build import FileKnowledgeBuildService
 from .source_units import FileSourceUnitService
+from .vault_finalize import FileVaultFinalizeService
 from .source_units import (_exclusive_lock, _json_bytes, _load_json,
                            _vault_path, _write_atomic)
 from .validation import ContractError, fingerprint, validate_record
@@ -140,12 +141,15 @@ class FileIngestWorkflowService:
             "profile": request["profile"], "scope": scope,
             "state": "analyzing" if batch_id is not None else "created",
             "current_stage": "analyzing" if batch_id is not None else "created",
-            "batch_id": batch_id, "pinned_inputs": pinned,
+            "batch_id": batch_id, "release_id": None, "release_plan_id": None,
+            "pinned_inputs": pinned,
             "dispatch_policy": {"mode": "disabled", "slice_ids": [],
                                 "selection_digest": None},
             "kanban": {"board_id": None, "task_map": []},
             "checkpoints": {name: {"state": "pending", "approval_digest": None,
-                                   "approved_by": None} for name in ("checkpoint_1", "checkpoint_2")},
+                                   "approved_by": None, "decision_ref": None,
+                                   "decision_sha256": None}
+                            for name in ("checkpoint_1", "checkpoint_2")},
             "artifacts": [], "source_outcomes": [], "cancel_requested": False,
             "resume_stage": None, "revision": 1, "template_pins": [],
             "start_digest": request["input_digest"],
@@ -166,6 +170,7 @@ class FileIngestWorkflowService:
             return value
         result = {key: value[key] for key in ("workflow_id", "revision", "state",
                   "current_stage", "batch_id", "profile", "cancel_requested", "checkpoints")}
+        result["release_id"] = value.get("release_id")
         result["display"] = display_phase(value)
         result["dispatch_policy"] = value.get("dispatch_policy", {
             "mode": "disabled", "slice_ids": [], "selection_digest": None})
@@ -238,6 +243,38 @@ class FileIngestWorkflowService:
             value["revision"] += 1
             self._write(value)
             return value
+
+    def bind_release_plan(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Bind one validated, blocker-free plan to the workflow before checkpoint 2."""
+        with _exclusive_lock(self._lock(str(request["workflow_id"]))):
+            value = self._mutation(request)
+            if value["cancel_requested"] or value["current_stage"] != "release_planning":
+                _fail("INVALID_TRANSITION", "release plan binding requires release_planning")
+            release_id = str(request["release_id"])
+            service = FileVaultFinalizeService(self.vault)
+            plan = _load_json(service._plan_path(release_id))
+            validate_record("vault_finalize_plan", plan)
+            if (plan["actor"] != value["actor"] or plan["plan_id"] != request.get("plan_id")
+                    or plan["state"] != "draft" or plan["blockers"]):
+                _fail("STALE_INPUT", "release plan identity, actor, state or blockers changed")
+            batch = self.knowledge._batch(value["batch_id"])
+            if ({item["run_id"] for item in plan["build_runs"]} != set(batch["run_ids"])
+                    or not batch["run_ids"] or batch["state"] != "completed"):
+                _fail("INCOMPLETE_COVERAGE", "release plan must contain all completed batch runs")
+            for item in plan["build_runs"]:
+                checked = self.knowledge.validate_run(item["run_id"])
+                if checked["state"] != "completed" or checked["revision"] != item["revision"]:
+                    _fail("STALE_INPUT", "release plan run revision changed")
+            if value.get("release_id") is not None:
+                if (value["release_id"] == release_id and value["release_plan_id"] == plan["plan_id"]):
+                    return value
+                _fail("IDEMPOTENCY_CONFLICT", "workflow already binds another release plan")
+            updated = dict(value)
+            updated["release_id"] = release_id
+            updated["release_plan_id"] = plan["plan_id"]
+            updated["revision"] += 1
+            self._write(updated)
+            return updated
 
     def canary_preview(self, workflow_id: str, limit: int = 8) -> dict[str, Any]:
         """Read-only deterministic selection; no lease or worker activation."""
@@ -323,6 +360,30 @@ class FileIngestWorkflowService:
             self._write(updated)
             return updated
 
+    def promote_canary(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Open remaining Pass slices only after the pinned eight-slice trial passed."""
+        with _exclusive_lock(self._lock(str(request["workflow_id"]))):
+            value = self._mutation(request)
+            if (value["scope"].get("execution_mode") != "auto_full"
+                    or value["current_stage"] != "analyzing" or value["cancel_requested"]):
+                _fail("INVALID_TRANSITION", "automatic promotion requires an active analyzing workflow")
+            policy = value["dispatch_policy"]
+            if policy["mode"] == "full":
+                return value
+            if policy["mode"] != "canary" or len(policy["slice_ids"]) != 8:
+                _fail("CANARY_UNAVAILABLE", "exactly eight pinned canary slices are required")
+            for slice_id in policy["slice_ids"]:
+                item = self.knowledge._slice(value["batch_id"], slice_id)
+                if item["state"] != "completed" or not item["result_refs"]:
+                    _fail("INCOMPLETE_COVERAGE", "canary slice lacks durable Pass coverage")
+                for ref in item["result_refs"]:
+                    validate_record("knowledge_pass", _load_json(_vault_path(self.vault, ref)))
+            updated = dict(value)
+            updated["dispatch_policy"] = {**policy, "mode": "full"}
+            updated["revision"] += 1
+            self._write(updated)
+            return updated
+
     def reconcile(self, request: Mapping[str, Any]) -> dict[str, Any]:
         with _exclusive_lock(self._lock(str(request["workflow_id"]))):
             value = self._mutation(request)
@@ -331,8 +392,19 @@ class FileIngestWorkflowService:
                 _fail("WORKFLOW_STOPPED", "resume before advancing workflow")
             current = value["current_stage"]
             if current in ("checkpoint_1", "checkpoint_2"):
-                if value["checkpoints"][current]["state"] != "approved":
-                    _fail("AWAITING_APPROVAL", "checkpoint requires explicit approval")
+                checkpoint = value["checkpoints"][current]
+                if checkpoint["state"] != "approved":
+                    _fail("AWAITING_APPROVAL", "checkpoint requires a recorded passing decision")
+                if checkpoint.get("decision_ref"):
+                    decision_path = _vault_path(self.vault, checkpoint["decision_ref"])
+                    observed = hashlib.sha256(decision_path.read_bytes()).hexdigest()
+                    if observed != checkpoint.get("decision_sha256"):
+                        _fail("SOURCE_CHANGED", "checkpoint decision evidence changed")
+                    if current == "checkpoint_2":
+                        decision = _load_json(decision_path)
+                        lint_ref = decision.get("evidence", {}).get("lint_ref")
+                        if not lint_ref or _load_json(_vault_path(self.vault, lint_ref)) != decision.get("lint"):
+                            _fail("SOURCE_CHANGED", "checkpoint 2 lint evidence changed")
             next_stage = STAGES[STAGES.index(current) + 1] if current != "completed" else None
             if target not in (next_stage, "partial", "failed") or (target in ("partial", "failed") and current != "validating"):
                 _fail("INVALID_TRANSITION", "reconcile advances exactly one stage")
@@ -342,6 +414,11 @@ class FileIngestWorkflowService:
                     _fail("INCOMPLETE_COVERAGE", "planning requires every source outcome and at least one ready source")
             if target == "completed" and self.source_coverage(value)["failed"]:
                 _fail("INCOMPLETE_COVERAGE", "record final workflow as partial while source gaps remain")
+            if target == "reducing" and value["scope"].get("execution_mode") == "auto_full":
+                if (value["dispatch_policy"]["mode"] != "full" or
+                        any(item["state"] != "completed"
+                            for item in self.knowledge._slices(value["batch_id"]))):
+                    _fail("INCOMPLETE_COVERAGE", "all Pass slices and canary promotion are required")
             if target == "analyzing" and value["batch_id"] is None:
                 batch_id = str(request.get("batch_id", ""))
                 coverage = self.source_coverage(value)
@@ -413,8 +490,55 @@ class FileIngestWorkflowService:
             checkpoint = value["checkpoints"][checkpoint_name]
             if checkpoint["state"] != "pending" or checkpoint["approval_digest"] != request.get("approval_digest"):
                 _fail("APPROVAL_DIGEST_MISMATCH", "approval digest is stale or incorrect")
+            automatic = request.get("decision_mode") == "auto_verified"
+            if automatic:
+                if value["scope"].get("execution_mode") != "auto_full":
+                    _fail("ACCESS_DENIED", "automatic checkpoint decision was not requested")
+                decision_ref = str(request.get("decision_ref", ""))
+                expected_ref = (f"{WORKFLOW_ROOT}/{value['workflow_id']}/"
+                                f"decisions/{checkpoint_name}.json")
+                if decision_ref != expected_ref:
+                    _fail("ACCESS_DENIED", "checkpoint decision path is outside this workflow")
+                decision_path = _vault_path(self.vault, decision_ref)
+                decision_bytes = decision_path.read_bytes()
+                decision = _load_json(decision_path)
+                if (decision.get("contract") != "hermes-ingest-checkpoint-decision/v1"
+                        or decision.get("workflow_id") != value["workflow_id"]
+                        or decision.get("checkpoint") != checkpoint_name
+                        or decision.get("approval_digest") != checkpoint["approval_digest"]
+                        or decision.get("ok") is not True or decision.get("blocking_codes") != []):
+                    _fail("CHECKPOINT_BLOCKED", "automatic decision report has blocking or stale evidence")
+                if checkpoint_name == "checkpoint_1":
+                    validated = self.knowledge.validate_batch(value["batch_id"])
+                    if not validated["ok"] or validated["batch"]["state"] != "checkpoint_1":
+                        _fail("CHECKPOINT_BLOCKED", "batch validation no longer passes")
+                else:
+                    service = FileVaultFinalizeService(self.vault)
+                    plan = _load_json(service._plan_path(value["release_id"]))
+                    validate_record("vault_finalize_plan", plan)
+                    lint = decision.get("lint", {})
+                    evidence = decision.get("evidence", {})
+                    lint_ref = (f"{WORKFLOW_ROOT}/{value['workflow_id']}/"
+                                "reports/checkpoint-2-lint.json")
+                    plan_ref = f"_system/knowledge-releases/{value['release_id']}/plan.json"
+                    if (plan["plan_id"] != value["release_plan_id"] or plan["blockers"]
+                            or plan["state"] != "draft" or lint.get("ok") is not True
+                            or lint.get("summary", {}).get("errors") != 0
+                            or evidence.get("lint_ref") != lint_ref
+                            or evidence.get("plan_ref") != plan_ref
+                            or _load_json(_vault_path(self.vault, lint_ref)) != lint):
+                        _fail("CHECKPOINT_BLOCKED", "release plan or Vault lint has blockers")
+                    rebuilt = service._build_plan({
+                        "release_id": plan["release_id"], "actor": plan["actor"],
+                        "expected_state_revision": plan["expected_state_revision"],
+                        "build_run_ids": [item["run_id"] for item in plan["build_runs"]],
+                        "source_changes": plan["source_changes"], "reason": plan["reason"]})
+                    if rebuilt != plan:
+                        _fail("STALE_INPUT", "release plan changed after validation")
+                checkpoint["decision_ref"] = decision_ref
+                checkpoint["decision_sha256"] = hashlib.sha256(decision_bytes).hexdigest()
             checkpoint["state"] = "approved"
-            checkpoint["approved_by"] = request["actor"]
+            checkpoint["approved_by"] = "hermes:auto" if automatic else request["actor"]
             value["revision"] += 1
             self._write(value)
             return value

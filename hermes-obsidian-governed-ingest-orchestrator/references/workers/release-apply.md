@@ -1,4 +1,4 @@
-# release-apply · v1
+# release-apply · v2
 
 - Role / sole objective: apply only the release plan approved at checkpoint 2.
 - Allowed inputs: exact plan ID/digest, approval digest, governed output paths and current Vault revision.
@@ -9,3 +9,4 @@
 - Output JSON schema: `{"ok":boolean,"release_id":string|null,"published_refs":string[],"error_code":string|null}`.
 - Complete only when release state is durably recorded in Vault.
 - Prohibited: modifying plan, approving it, writing Provider index first or silently replaying conflicting apply.
+- Call `dispatch_ingest_workflow.py worker-begin` before applying the bound plan. After the release manifest is durable, call `worker-complete` with the returned template hash. The adapter validates the exact release before advancing. On failure call `worker-fail`.

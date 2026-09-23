@@ -1,4 +1,4 @@
-# source-prepare · v1
+# source-prepare · v2
 
 - Role / sole objective: prepare exactly the card's one source as a governed, versioned artifact.
 - Allowed inputs: pinned workflow/source path, source byte hash, registry identity and relevant existing Bundle only.
