@@ -1437,8 +1437,11 @@ def lint(args: argparse.Namespace) -> dict[str, Any]:
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             if "source_units" in manifest:
                 metrics["source_units"] = validate_source_unit_vault(vault)
-                add_issue(issues, "source_units.pipeline_pending", "error", "_system/vault.json",
-                          "P4 Vault Finalize is available, but Provider/query pipelines are not implemented.")
+                if not metrics["source_units"].get("query_ready"):
+                    add_issue(issues, "source_units.pipeline_pending",
+                              "error" if profile in ("query-ready", "strict") else "warning",
+                              "_system/vault.json",
+                              "SourceUnit query readiness is not established; verify the retrieval Provider before query use.")
         except (OSError, ValueError, TypeError) as exc:
             add_issue(issues, "source_units.invalid_config", "error", "_system/vault.json", str(exc))
 

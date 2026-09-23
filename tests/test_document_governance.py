@@ -327,11 +327,13 @@ def test_manager_registers_and_atomically_activates_versions(tmp_path: Path) -> 
         text=True,
         capture_output=True,
     )
-    # Newly bootstrapped Vaults now advertise P1; governance can be valid while
-    # the full content pipeline is explicitly not ready.
-    assert linted.returncode == 2, linted.stderr
-    errors = [issue for issue in json.loads(linted.stdout)["issues"] if issue["severity"] == "error"]
-    assert [issue["code"] for issue in errors] == ["source_units.pipeline_pending"]
+    # A publishable Vault can skip Provider sync; query readiness remains a
+    # warning in post-ingest lint and an error in query-ready lint.
+    assert linted.returncode == 0, linted.stderr
+    issues = json.loads(linted.stdout)["issues"]
+    assert not [issue for issue in issues if issue["severity"] == "error"]
+    assert any(issue["code"] == "source_units.pipeline_pending"
+               and issue["severity"] == "warning" for issue in issues)
 
 
 def test_manager_deduplicates_content_and_appends_source_occurrence(tmp_path: Path) -> None:
