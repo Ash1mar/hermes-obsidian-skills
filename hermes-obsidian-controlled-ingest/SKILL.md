@@ -24,7 +24,7 @@ Select scope from the user's requested outcome, not from the amount of conversio
 `pending` is work to select, not a blocker. No page quota is required, but knowledge construction
 requires actual range inspection and decisions, including evidence-backed skip/defer decisions.
 An empty build record, query-index generation, Provider sync or gap query cannot replace this work.
-For a P4 source-unit Vault, use the UnitSet-native route in `references/source-units.md`.
+For a P5 source-unit Vault, use the UnitSet-native route in `references/source-units.md`.
 The older line/ledger build record in `references/knowledge-construction.md` remains
 only for Vaults that do not declare the source-unit knowledge-build capability.
 For the phase-5 Vault workflow ledger and explicit checkpoint commands, read

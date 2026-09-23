@@ -1,9 +1,10 @@
-# P3 Source-unit and knowledge-build operations
+# P5 Source-unit and knowledge-build operations
 
-Use this path only when `_system/vault.json` declares `phase: P3`,
+Use this path when `_system/vault.json` declares `source_units.phase: P5`,
 `capabilities.source_reader: true` and `capabilities.knowledge_build: true`.
-It runs source preparation through Build Finalize. Vault Finalize, Provider sync
-and query remain unavailable.
+It runs source preparation through Build Finalize. The separate Knowledge Finalize
+Skill publishes releases and may explicitly submit them to the Provider; Query
+consumes a ready release without writing an index.
 
 The runtime is embedded under the Skill `lib/` directory and uses Python 3.11+
 standard library only. All paths passed to the commands below are Vault-relative.
@@ -73,7 +74,7 @@ python3 "<ingest-skill-root>/scripts/manage_source_units.py" --vault "/path/to/v
 
 Text coordinates are LF-normalized Unicode codepoint, zero-based half-open spans.
 Source units are the canonical chunks shared by knowledge construction and the
-future Provider. They use the source overlap configuration without crossing a
+release-driven Provider. They use the source overlap configuration without crossing a
 section owned range. Heading breadcrumbs and context are separate.
 The packaged starting values are 512 target, 1024 maximum and 80 overlap
 codepoints. Changing strategy, size or overlap produces a new UnitSet; Provider
@@ -83,7 +84,9 @@ silently truncated. Unknown pages or image regions remain unknown.
 
 The packaged `audit-tokens` command uses the explicitly named Unicode-codepoint
 diagnostic counter; it exercises the adapter path but is not a model tokenizer.
-P5 must inject the actual embedding tokenizer and immutable fingerprint.
+The P5 Provider uses the actual embedding tokenizer and immutable fingerprint
+when rendering a committed release; the packaged diagnostic counter is not a
+substitute for that check.
 
 ## Pass/Reduce and Build Finalize
 
@@ -111,7 +114,7 @@ files so shell quoting cannot alter content or exact references.
 Zero-candidate work still records Pass 0, complete inspections and a substantive
 Reduce reason; it can Finalize with no page or identity. A committed page remains
 `business_status: unassessed` and `visibility: draft`; QA is independently
-`usable` or `qa_required`. P4 Vault Finalize will determine release projections.
+`usable` or `qa_required`. The separate Vault Finalize Skill determines release projections.
 
 ### Batch orchestration
 

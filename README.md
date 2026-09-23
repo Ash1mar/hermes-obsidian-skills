@@ -2,7 +2,7 @@
 
 This repository stores six local skills and tool-integration notes for the Hermes + Obsidian knowledge workflow. It also maintains `qmd-like-rag/`, the independently installed coarse-recall Provider used by the query and release-sync Skills; it is repository code, not a seventh Skill.
 
-The system-level architecture, data authority, interface, compatibility, and acceptance baseline is defined in [`docs/OFFICIAL_TECHNICAL_SPECIFICATION.md`](docs/OFFICIAL_TECHNICAL_SPECIFICATION.md).
+The system-level architecture, data authority, interface, compatibility, and acceptance baseline is defined in [`docs/OFFICIAL_TECHNICAL_SPECIFICATION.md`](docs/OFFICIAL_TECHNICAL_SPECIFICATION.md). For the SourceUnit design from raw-file preparation through knowledge construction and retrieval, read [`docs/SOURCE_UNIT_DESIGN_AND_ROLE.md`](docs/SOURCE_UNIT_DESIGN_AND_ROLE.md).
 
 See [`DOCUMENTATION.md`](DOCUMENTATION.md) for a file-by-file documentation map and [`charts.md`](charts.md) for editable Mermaid diagrams of the complete bootstrap, ingest, lint, query, retrieval, and branch-specific deployment flow.
 
