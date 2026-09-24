@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -139,6 +140,9 @@ class KanbanCLI:
                               encoding="utf-8", check=False)
 
     def command(self, *parts: str) -> str:
+        if (os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
+                or os.environ.get("HERMES_KANBAN_TASK")):
+            _fail("ACCESS_DENIED", "Kanban reconciliation requires a trusted orchestrator process")
         result = self.invoke(["hermes", *parts])
         if result.returncode != 0:
             _fail("KANBAN_UNAVAILABLE", result.stderr.strip() or result.stdout.strip()
@@ -314,6 +318,17 @@ class IngestKanbanAdapter:
         _fail("REVISION_CONFLICT", "workflow changed repeatedly during dispatch")
 
     @staticmethod
+    def _pending_reconciliation(result: dict[str, Any]) -> dict[str, Any]:
+        result["kanban_reconciliation_pending"] = True
+        return result
+
+    def _failed_card(self, workflow_id: str, node: Node) -> bool:
+        path = _vault_path(self.workflow.vault,
+            f"_system/ledgers/ingest-workflows/{workflow_id}/reports/"
+            f"failed-{fingerprint(node.name)[:16]}.json")
+        return path.is_file() and _load_json(path).get("input_fingerprint") == node.input_fingerprint
+
+    @staticmethod
     def _canary_allows(workflow: Mapping[str, Any], node: Node) -> bool:
         if node.kind == "source-prepare":
             return (workflow["batch_id"] is None and
@@ -395,6 +410,9 @@ class IngestKanbanAdapter:
         return self.sync(followup)
 
     def sync(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        if (os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
+                or os.environ.get("HERMES_KANBAN_TASK")):
+            _fail("ACCESS_DENIED", "Kanban reconciliation requires a trusted orchestrator process")
         self.workflow._check_request(request)
         workflow_id = str(request["workflow_id"])
         lock = _vault_path(self.workflow.vault,
@@ -545,6 +563,9 @@ class IngestKanbanAdapter:
             if domain_completed(self.workflow, updated, node):
                 self.kanban.complete(slug, ids[node.name],
                                      "Authoritative Vault outcome already committed")
+            elif self._failed_card(workflow_id, node):
+                self.kanban.wait(slug, ids[node.name], "blocked",
+                                 "Vault worker failure report requires review")
             elif node.gate or not self._eligible(updated, node, nodes):
                 self.kanban.wait(slug, ids[node.name], "blocked",
                                  "Vault gate or outside active dispatch scope")
@@ -746,11 +767,14 @@ class IngestKanbanAdapter:
             validation = self.workflow.knowledge.validate_batch(batch_id)
             report = self._report(workflow, "checkpoint-1-validation", validation)
             if not validation["ok"]:
-                self.kanban.wait(workflow["kanban"]["board_id"], str(request["task_id"]),
-                                 "blocked", "Knowledge batch validation failed")
-                return {"ok": False, "report_ref": report,
+                self._report(workflow, f"failed-{fingerprint(node.name)[:16]}",
+                             {"node": node.name, "input_fingerprint": node.input_fingerprint,
+                              "report_ref": report, "blocking_codes": [
+                                  item.get("code", "VALIDATION_FAILED")
+                                  for item in validation["failures"]]})
+                return self._pending_reconciliation({"ok": False, "report_ref": report,
                         "blocking_codes": [item.get("code", "VALIDATION_FAILED")
-                                           for item in validation["failures"]]}
+                                           for item in validation["failures"]]})
             updated = self._advance(workflow, "checkpoint_1", [report])
             updated = self._approve_automatic(updated, "checkpoint_1", validation)
         elif kind == "build-finalize":
@@ -767,12 +791,15 @@ class IngestKanbanAdapter:
             lint = self._lint()
             report = self._report(workflow, "checkpoint-2-lint", lint)
             if not lint.get("ok"):
-                self.kanban.wait(workflow["kanban"]["board_id"], str(request["task_id"]),
-                                 "blocked", "Vault lint has blocking errors")
-                return {"ok": False, "report_ref": report,
+                self._report(workflow, f"failed-{fingerprint(node.name)[:16]}",
+                             {"node": node.name, "input_fingerprint": node.input_fingerprint,
+                              "report_ref": report, "blocking_codes": [
+                                  item.get("code", "LINT_FAILED") for item in lint.get("issues", [])
+                                  if item.get("severity") == "error"]})
+                return self._pending_reconciliation({"ok": False, "report_ref": report,
                         "blocking_codes": [item.get("code", "LINT_FAILED")
                                            for item in lint.get("issues", [])
-                                           if item.get("severity") == "error"]}
+                                           if item.get("severity") == "error"]})
             plan_ref = f"_system/knowledge-releases/{workflow['release_id']}/plan.json"
             updated = self._advance(workflow, "checkpoint_2", [plan_ref, report])
             updated = self._approve_automatic(updated, "checkpoint_2",
@@ -802,25 +829,24 @@ class IngestKanbanAdapter:
             lint = self._lint()
             report = self._report(workflow, "acceptance-lint", lint)
             if not checked["ok"] or not lint.get("ok"):
-                self.kanban.wait(workflow["kanban"]["board_id"], str(request["task_id"]),
-                                 "blocked", "Final release or Vault lint validation failed")
-                return {"ok": False, "report_ref": report,
+                self._report(workflow, f"failed-{fingerprint(node.name)[:16]}",
+                             {"node": node.name, "input_fingerprint": node.input_fingerprint,
+                              "report_ref": report, "blocking_codes": [
+                                  item.get("code", "LINT_FAILED") for item in lint.get("issues", [])
+                                  if item.get("severity") == "error"]})
+                return self._pending_reconciliation({"ok": False, "report_ref": report,
                         "blocking_codes": [item.get("code", "LINT_FAILED")
                                            for item in lint.get("issues", [])
-                                           if item.get("severity") == "error"]}
+                                           if item.get("severity") == "error"]})
             release_ref = f"_system/knowledge-releases/{release_id}/manifest.json"
             target = ("partial" if self.workflow.source_coverage(workflow)["failed"]
                       else "completed")
             updated = self._advance(workflow, target, [release_ref, report])
         else:
             _fail("ACCESS_DENIED", "unsupported automatic batch worker")
-        self.kanban.complete(workflow["kanban"]["board_id"], str(request["task_id"]),
-                             "Authoritative Vault worker result committed")
         latest = self.workflow.status(workflow["workflow_id"])
         result = {"ok": True, "node": node.name, "workflow_state": latest["state"]}
-        if latest["state"] not in ("completed", "partial", "failed", "cancelled"):
-            result["dispatch"] = self._sync_current(workflow["workflow_id"])
-        return result
+        return self._pending_reconciliation(result)
 
     def worker_register_source(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Assign technical identities without asserting origin authority or approving it."""
@@ -935,18 +961,11 @@ class IngestKanbanAdapter:
 
     def worker_heartbeat(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if not str(request["node"]).startswith("pass-slice:"):
-            checked = self.worker_check(request)
-            workflow = self.workflow.status(str(request["workflow_id"]))
-            self.kanban.command("kanban", "--board", workflow["kanban"]["board_id"],
-                                "heartbeat", str(request["task_id"]))
-            return checked
+            return self.worker_check(request)
         checked = self.worker_check(request)
         result = self.workflow.knowledge.slice_heartbeat(
             checked["batch_id"], checked["slice_id"],
             str(request["worker_id"]), int(request["expected_revision"]))
-        workflow = self.workflow.status(str(request["workflow_id"]))
-        self.kanban.command("kanban", "--board", workflow["kanban"]["board_id"],
-                            "heartbeat", str(request["task_id"]))
         return result
 
     def worker_complete(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -969,10 +988,7 @@ class IngestKanbanAdapter:
                 updated = self.workflow.reconcile(transition)
                 result = {"ok": True, "batch_id": updated["batch_id"],
                           "source_coverage": self.workflow.source_coverage(updated)}
-            self.kanban.complete(workflow["kanban"]["board_id"], str(request["task_id"]),
-                                 "Authoritative Vault pre-batch outcome committed")
-            result["dispatch"] = self._sync_current(workflow["workflow_id"])
-            return result
+            return self._pending_reconciliation(result)
         if not str(request["node"]).startswith("pass-slice:"):
             workflow, node = self._batch_worker(request)
             return self._complete_batch_worker(workflow, node, request)
@@ -1005,12 +1021,8 @@ class IngestKanbanAdapter:
                 "expected_revision": request["expected_revision"],
                 "result_refs": result_refs,
             })
-        self.kanban.complete(workflow["kanban"]["board_id"],
-                             str(request["task_id"]), "Vault Pass slice complete")
-        if workflow["scope"].get("execution_mode") in ("canary_only", "auto_full"):
-            self._sync_current(workflow_id)
-        return {"ok": True, "slice_id": value["slice_id"],
-                "result_refs": result_refs}
+        return self._pending_reconciliation({"ok": True, "slice_id": value["slice_id"],
+                "result_refs": result_refs})
 
     def worker_fail(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if str(request["node"]).startswith("source-prepare:") or request["node"] == "exact-plan":
@@ -1020,11 +1032,9 @@ class IngestKanbanAdapter:
                     "node": node.name, "input_fingerprint": node.input_fingerprint,
                     "error_code": str(request["code"]), "reason": str(request["message"]),
                     "source_failed": False})
-                self.kanban.wait(workflow["kanban"]["board_id"], str(request["task_id"]),
-                                 "blocked", str(request["message"]))
-                return {"ok": False, "error_code": request["code"],
+                return self._pending_reconciliation({"ok": False, "error_code": request["code"],
                         "report_ref": report,
-                        "source_coverage": self.workflow.source_coverage(workflow)}
+                        "source_coverage": self.workflow.source_coverage(workflow)})
             outcome = {"workflow_id": workflow["workflow_id"], "actor": workflow["actor"],
                        "expected_revision": workflow["revision"], **source,
                        "status": "failed", "error_code": request["code"],
@@ -1032,20 +1042,16 @@ class IngestKanbanAdapter:
                        "artifact_refs": request.get("artifact_refs", [])}
             outcome["input_digest"] = mutation_digest(outcome)
             updated = self.workflow.record_source_outcome(outcome)
-            self.kanban.complete(workflow["kanban"]["board_id"], str(request["task_id"]),
-                                 "Source failed; coverage gap recorded")
-            return {"ok": True, "source_coverage": self.workflow.source_coverage(updated),
-                    "dispatch": self._sync_current(workflow["workflow_id"])}
+            return self._pending_reconciliation({"ok": True,
+                    "source_coverage": self.workflow.source_coverage(updated)})
         if not str(request["node"]).startswith("pass-slice:"):
             workflow, node = self._batch_worker(request)
             report = self._report(workflow, f"failed-{fingerprint(node.name)[:16]}",
                                   {"node": node.name, "input_fingerprint": node.input_fingerprint,
                                    "error_code": str(request["code"]),
                                    "reason": str(request["message"])})
-            self.kanban.wait(workflow["kanban"]["board_id"], str(request["task_id"]),
-                             "blocked", f"Worker failed: {request['code']}")
-            return {"ok": False, "node": node.name, "report_ref": report,
-                    "error_code": request["code"]}
+            return self._pending_reconciliation({"ok": False, "node": node.name,
+                    "report_ref": report, "error_code": request["code"]})
         checked = self.worker_check(request)
         outcome = self.workflow.knowledge.slice_fail({
             "batch_id": checked["batch_id"], "slice_id": checked["slice_id"],
@@ -1055,9 +1061,4 @@ class IngestKanbanAdapter:
             **({"failed_output": request["failed_output"]}
                if "failed_output" in request else {}),
         })
-        workflow = self.workflow.status(str(request["workflow_id"]))
-        state = outcome["slice"]["state"]
-        self.kanban.wait(workflow["kanban"]["board_id"], str(request["task_id"]),
-                         "scheduled" if state == "retry_wait" else "blocked",
-                         f"Vault slice state: {state}")
-        return outcome
+        return self._pending_reconciliation(outcome)

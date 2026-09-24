@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import hashlib
 import importlib.util
 import json
@@ -22,7 +23,7 @@ from governance_repository import (
     utc_now,
 )
 from hermes_source_units import ContractError
-from hermes_source_units.workflow_guard import workflow_write_guard
+from hermes_source_units.workflow_guard import workflow_write_guard, worker_binding
 
 
 def sha256_file(path: Path) -> str:
@@ -250,6 +251,7 @@ def add_source_arguments(parser: argparse.ArgumentParser) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Manage hermes-governance/v1 through its JSON adapter")
     parser.add_argument("--vault", type=Path, required=True, help="Engineering Vault root")
+    parser.add_argument("--worker-binding", help="JSON worker request with workflow_id, task_id and node")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     validate_parser = subparsers.add_parser("validate", help="Validate the complete governance state")
@@ -366,11 +368,14 @@ def main() -> int:
     args = parser.parse_args()
     try:
         repository = JsonGovernanceRepository(args.vault)
-        if args.command == "validate":
-            result = args.handler(repository, args)
-        else:
-            with workflow_write_guard(repository.vault, actor=args.actor):
+        binding = (json.loads(Path(args.worker_binding).read_text(encoding="utf-8"))
+                   if args.worker_binding else None)
+        with worker_binding(binding) if binding is not None else nullcontext():
+            if args.command == "validate":
                 result = args.handler(repository, args)
+            else:
+                with workflow_write_guard(repository.vault, actor=args.actor):
+                    result = args.handler(repository, args)
     except (ContractError, GovernanceError, OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

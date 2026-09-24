@@ -883,6 +883,11 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
     adapter.sync(workflow_request(workflow_id=full["workflow_id"], actor="agent",
                                   expected_revision=full["revision"]))
 
+    def reconcile():
+        current = adapter.workflow.status(full["workflow_id"])
+        return adapter.sync(workflow_request(workflow_id=full["workflow_id"],
+                                             actor="agent", expected_revision=current["revision"]))
+
     def card(kind: str, suffix: str = "") -> tuple[dict, dict]:
         current = adapter.workflow.status(full["workflow_id"])
         name = kind + suffix
@@ -898,6 +903,7 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
         result = adapter.worker_complete({**req, "template_hash": begun["template_hash"],
                                           **fields})
         assert result["ok"]
+        reconcile()
         return result
 
     for item in batch._slices(batch_id):
@@ -906,6 +912,7 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
         finish_request = {**req, "template_hash": begun["template_hash"],
                           "expected_revision": begun["slice"]["revision"]}
         assert adapter.worker_complete(finish_request)["ok"]
+        reconcile()
     assert adapter.workflow.status(full["workflow_id"])["current_stage"] == "reducing"
 
     reductions = []
@@ -914,6 +921,7 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
         req, begun = card("resource-reduce", ":" + item["resource_id"])
         reductions.append(batch.reduce_resource(item)["reduction"])
         assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
+        reconcile()
     refs = [item["proposals"][0]["candidate_refs"][0] for item in requests]
     req, begun = card("global-reduce")
     batch.reduce_global({
@@ -931,6 +939,7 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
         "omitted_candidate_refs": [], "reason": "Global coordination",
     })
     assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
+    reconcile()
     finish("checkpoint-1-validate")
     first = adapter.workflow.status(full["workflow_id"])
     assert first["current_stage"] == "build_finalizing"
@@ -956,6 +965,7 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
                                                                  "actor": "reviewer",
                                                                  "note": "Reviewed both sources"}]}]})["ok"]
     assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
+    reconcile()
     assert adapter.workflow.status(full["workflow_id"])["current_stage"] == "release_planning"
 
     release = FileVaultFinalizeService(vault)
@@ -967,6 +977,7 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
     assert adapter.worker_complete({**req, "template_hash": begun["template_hash"],
                                     "release_id": plan["release_id"],
                                     "plan_id": plan["plan_id"]})["ok"]
+    reconcile()
     # This older lightweight fixture omits governance metadata required by
     # post-ingest lint; verify the real validator blocks before isolating dispatch.
     blocked_req, blocked_begin = card("checkpoint-2-validate")
@@ -986,12 +997,14 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
                           "plan_id": plan["plan_id"],
                           "expected_revision": plan["revision"]})["ok"]
     assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
+    reconcile()
     assert adapter.workflow.status(full["workflow_id"])["current_stage"] == "validating"
     finish("acceptance")
     assert adapter.workflow.status(full["workflow_id"])["state"] == "completed"
 
 
-def test_failed_source_does_not_stop_other_source_or_enter_exact_plan(vault: Path):
+def test_failed_source_does_not_stop_other_source_or_enter_exact_plan(
+        vault: Path, monkeypatch: pytest.MonkeyPatch):
     refs = publish_sources(vault, ["# Broken candidate\nA.\n", "# Usable candidate\nB.\n"])
     paths = ["10_Raw/source-1.md", "10_Raw/source-2.md"]
     fake = FakeKanban(True)
@@ -1013,21 +1026,31 @@ def test_failed_source_does_not_stop_other_source_or_enter_exact_plan(vault: Pat
         begun = adapter.worker_begin(request)
         by_path[begun["source"]["path"]] = (request, begun)
     first, first_begin = by_path[paths[0]]
-    gap = adapter.worker_fail({**first, "template_hash": first_begin["template_hash"],
-                               "code": "PDF_UNREADABLE", "message": "MinerU cannot decode source"})
+    completed_before = set(fake.completed)
+    with monkeypatch.context() as isolated:
+        isolated.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+        gap = adapter.worker_fail({**first, "template_hash": first_begin["template_hash"],
+                                   "code": "PDF_UNREADABLE", "message": "MinerU cannot decode source"})
+    assert fake.completed == completed_before
     assert gap["source_coverage"]["failed"] == [paths[0]]
     assert gap["source_coverage"]["pending"] == [paths[1]]
     assert adapter.workflow.status(pinned["workflow_id"])["current_stage"] == "source_preparing"
     second, second_begin = by_path[paths[1]]
     unit_ref = refs[1]["unit_ref"]
-    result = adapter.worker_complete({**second, "template_hash": second_begin["template_hash"],
-                                      "resource_id": unit_ref["resource_id"],
-                                      "unit_set_id": unit_ref["unit_set_id"]})
+    with monkeypatch.context() as isolated:
+        isolated.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+        result = adapter.worker_complete({**second, "template_hash": second_begin["template_hash"],
+                                          "resource_id": unit_ref["resource_id"],
+                                          "unit_set_id": unit_ref["unit_set_id"]})
+    assert fake.completed == completed_before
     assert result["source_coverage"]["ready"] == [paths[1]]
     assert result["source_coverage"]["failed"] == [paths[0]]
     workflow = adapter.workflow.status(pinned["workflow_id"])
     assert workflow["current_stage"] == "planning"
     assert workflow["source_outcomes"][0]["error_code"] == "PDF_UNREADABLE"
+    adapter.sync(workflow_request(workflow_id=pinned["workflow_id"], actor="agent",
+                                  expected_revision=workflow["revision"]))
+    workflow = adapter.workflow.status(pinned["workflow_id"])
     plan_card = next(item for item in workflow["kanban"]["task_map"]
                      if item["node"] == "exact-plan")
     assert fake.tasks[plan_card["idempotency_key"]]["enabled"]
@@ -1111,6 +1134,9 @@ def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path, mode: str)
                     "pass_kind": pass_kind, "sequence": sequence}]})
         adapter.worker_complete({**worker, "expected_revision": leased["revision"],
                                  "template_hash": leased["template_hash"]})
+        current = adapter.workflow.status(pinned["workflow_id"])
+        adapter.sync(workflow_request(workflow_id=pinned["workflow_id"], actor="agent",
+                                      expected_revision=current["revision"]))
     promoted = adapter.workflow.status(pinned["workflow_id"])
     assert promoted["dispatch_policy"]["mode"] == ("full" if mode == "auto_full" else "canary")
     remaining = next(item for item in promoted["kanban"]["task_map"]
@@ -1454,7 +1480,8 @@ def test_dispatch_cli_creates_workflow_without_false_background_claim(vault: Pat
     assert FileIngestWorkflowService(vault).status("ingest-no-dispatcher")["state"] == "created"
 
 
-def test_kanban_worker_recovers_after_domain_completion_before_board_ack(vault: Path):
+def test_kanban_worker_recovers_after_domain_completion_before_board_ack(
+        vault: Path, monkeypatch: pytest.MonkeyPatch):
     batch = plan_sliced_batch(vault, 1, "worker-recovery-batch")
     fake = FakeKanban(True)
     adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
@@ -1505,11 +1532,18 @@ def test_kanban_worker_recovers_after_domain_completion_before_board_ack(vault: 
     fake.complete = fail_once
     complete_request = {**worker, "expected_revision": begun["revision"],
                         "template_hash": begun["template_hash"]}
-    with pytest.raises(OSError, match="ack loss"):
-        adapter.worker_complete(complete_request)
+    with monkeypatch.context() as isolated:
+        isolated.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+        assert adapter.worker_complete(complete_request)["kanban_reconciliation_pending"]
     assert batch._slice("worker-recovery-batch", begun["slice_id"])["state"] == "completed"
-    recovered = adapter.worker_complete(complete_request)
-    assert recovered["ok"] and item["task_id"] in fake.completed
+    current = adapter.workflow.status("ingest-recovery")
+    with pytest.raises(OSError, match="ack loss"):
+        adapter.sync(workflow_request(workflow_id="ingest-recovery", actor="agent",
+                                      expected_revision=current["revision"]))
+    current = adapter.workflow.status("ingest-recovery")
+    adapter.sync(workflow_request(workflow_id="ingest-recovery", actor="agent",
+                                  expected_revision=current["revision"]))
+    assert item["task_id"] in fake.completed
 
 
 def test_slice_leases_are_deterministic_bounded_and_worker_exclusive(vault: Path):

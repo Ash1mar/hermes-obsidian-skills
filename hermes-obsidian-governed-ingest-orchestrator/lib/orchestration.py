@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 from pathlib import Path
+import subprocess
+import sys
+import tempfile
 from typing import Any, Mapping
 
 from hermes_source_units import FileIngestWorkflowService, mutation_digest
@@ -43,5 +48,20 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any]) -> dic
     adapter = IngestKanbanAdapter(vault, enable_workers=configuration()["worker_dispatch_enabled"])
     if command == "start":
         value = start_and_pin(vault, request)
-        return adapter.sync(_mutation(value))
-    return getattr(adapter, command.replace("-", "_"))(request)
+        result = adapter.sync(_mutation(value))
+    else:
+        result = getattr(adapter, command.replace("-", "_"))(request)
+    if (command in ("start", "resume") and result.get("background_dispatch")
+            and os.name == "posix"):
+        script = SKILL / "scripts/watch_ingest_workflow.py"
+        name = hashlib.sha256(str(result["workflow_id"]).encode()).hexdigest()[:16]
+        log = Path(tempfile.gettempdir()) / f"hermes-ingest-watch-{name}.log"
+        with log.open("ab") as output:
+            process = subprocess.Popen(
+                [sys.executable, str(script), "--vault", str(vault),
+                 "--workflow-id", str(result["workflow_id"])],
+                stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                start_new_session=True)
+        result["reconciler_pid"] = process.pid
+        result["reconciler_log"] = str(log)
+    return result

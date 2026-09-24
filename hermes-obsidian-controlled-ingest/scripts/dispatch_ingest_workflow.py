@@ -26,13 +26,13 @@ def main() -> int:
     args = parser.parse_args()
     try:
         request = json.loads(Path(args.request).read_text(encoding="utf-8-sig"))
-        if args.command.startswith("worker-"):
-            sibling = Path(__file__).resolve().parents[2] / "hermes-obsidian-governed-ingest-orchestrator/lib"
-            if not (sibling / "orchestration.py").is_file():
-                raise ContractError("WORKER_CONTRACT_UNAVAILABLE", "$", "install the governed-ingest orchestrator Skill")
+        sibling = Path(__file__).resolve().parents[2] / "hermes-obsidian-governed-ingest-orchestrator/lib"
+        if (sibling / "orchestration.py").is_file():
             sys.path.insert(0, str(sibling))
             from orchestration import dispatch
             result = dispatch(args.vault, args.command, request)
+        elif args.command.startswith("worker-"):
+                raise ContractError("WORKER_CONTRACT_UNAVAILABLE", "$", "install the governed-ingest orchestrator Skill")
         else:
             adapter = IngestKanbanAdapter(args.vault)
             result = getattr(adapter, args.command.replace("-", "_"))(request)

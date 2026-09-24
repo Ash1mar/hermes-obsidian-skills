@@ -45,8 +45,14 @@ processing. A worker must call `worker-check` before model work and before
 `batch-pass`, heartbeat both the Vault lease and Kanban task, commit Passes
 through `batch-pass` with slice ID/template hash/worker ID, then call
 `worker-complete`. The latter verifies candidate and citation Passes in the
-Vault before completing the slice and finally the Kanban card. Domain results
-are written before Kanban completion so a crash is recoverable by `sync`.
+Vault and commits the slice without calling the Kanban CLI. The trusted
+reconciler acknowledges the card and projects successors with `sync`. A
+worker response containing `kanban_reconciliation_pending` means the Vault
+result is durable while board acknowledgement is pending. The governed
+orchestrator starts a separate reconciler after `start` or `resume`; operators
+can restart `watch_ingest_workflow.py` outside a worker after a process failure.
+`worker-heartbeat` maintains only the Vault slice lease; Hermes owns the
+Kanban run heartbeat. Isolated worker terminals must not invoke Kanban CLI.
 
 If the gateway is absent, `start` still creates the workflow and returns
 `state: dispatcher_unavailable`, `workflow_created: true`, and
