@@ -13,7 +13,7 @@ from test_p3_knowledge_build import (
     ContractError, start_and_pin, worker_pack, workflow_request,
 )
 from hermes_source_units.validation import fingerprint
-from hermes_source_units.workflow_guard import workflow_write_guard, require_source
+from hermes_source_units.workflow_guard import workflow_write_guard, require_source, worker_binding
 from hermes_source_units import FileSourceUnitService
 
 
@@ -49,8 +49,9 @@ def cli(vault, script, command, request, env=None):
 @pytest.mark.parametrize("script", [DISPATCH_CLI, ORCHESTRATOR_CLI])
 def test_real_worker_cli_registers_and_reuses_identity_then_stops(tmp_path, script):
     vault, adapter, value, request = setup_worker(tmp_path)
-    env = {**os.environ, "HERMES_KANBAN_TASK": request["task_id"],
-           "HERMES_KANBAN_BOARD": value["kanban"]["board_id"]}
+    env = {key: value for key, value in os.environ.items()
+           if key not in ("HERMES_KANBAN_TASK", "HERMES_KANBAN_BOARD")}
+    env["HERMES_DELEGATED_CHILD_CONTEXT"] = "1"
     result, begun = cli(vault, script, "worker-begin", request, env)
     assert result.returncode == 0, begun
     assert begun["assigned_source"]["path"] == "10_Raw/first.pdf"
@@ -62,6 +63,19 @@ def test_real_worker_cli_registers_and_reuses_identity_then_stops(tmp_path, scri
     result, reused = cli(vault, script, "worker-register-source", request, env)
     assert result.returncode == 0, reused
     assert reused["reused"] and reused["resource_id"] == registered["resource_id"]
+    result, heartbeat = cli(vault, script, "worker-heartbeat", request, env)
+    assert result.returncode == 0, heartbeat
+    result, failed = cli(vault, script, "worker-fail", {
+        **request, "code": "SCOPE_MISMATCH", "message": "test failure report"}, env)
+    assert result.returncode == 0 and failed["kanban_reconciliation_pending"]
+    result, denied = cli(vault, script, "sync", request, env)
+    assert result.returncode == 2 and denied["code"] == "ACCESS_DENIED"
+    bound = subprocess.run([sys.executable, str(MANAGER), "--vault", str(vault),
+        "--worker-binding", str(vault / "worker-request.json"),
+        "organization-add", "--organization-id", "organization-bound", "--name", "bound",
+        "--expected-revision", "1", "--actor", "agent"], env=env,
+        capture_output=True, text=True, encoding="utf-8")
+    assert bound.returncode == 0, bound.stderr
     registry = vault / "_system/metadata/document-registry.json"
     before = registry.read_bytes()
     record = json.loads(before)["records"][0]
@@ -74,44 +88,55 @@ def test_real_worker_cli_registers_and_reuses_identity_then_stops(tmp_path, scri
     assert result.returncode == 2 and error["code"] == "WORKFLOW_STOPPED"
     # Also exercise the previously unguarded domain CLI, without dispatch.
     result = subprocess.run([sys.executable, str(MANAGER), "--vault", str(vault),
+        "--worker-binding", str(vault / "worker-request.json"),
         "organization-add", "--organization-id", "organization-late", "--name", "late",
-        "--expected-revision", "1", "--actor", "agent"], env=env,
+        "--expected-revision", "2", "--actor", "agent"], env=env,
         capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 2 and "WORKFLOW_STOPPED" in result.stderr
+    unbound = subprocess.run([sys.executable, str(MANAGER), "--vault", str(vault),
+        "organization-add", "--organization-id", "organization-late", "--name", "late",
+        "--expected-revision", "2", "--actor", "agent"], env=env,
+        capture_output=True, text=True, encoding="utf-8")
+    assert unbound.returncode == 2 and "ACCESS_DENIED" in unbound.stderr
     assert registry.read_bytes() == before
     organizations = json.loads((vault / "_system/metadata/source-organizations.json").read_text())
-    assert len(organizations["organizations"]) == 1
+    assert len(organizations["organizations"]) == 2
 
 
 def test_worker_guard_serializes_cancel_and_rejects_other_source(tmp_path, monkeypatch):
     vault, adapter, value, request = setup_worker(tmp_path)
-    prepared = FileSourceUnitService(vault).prepare_markdown(
-        "10_Raw/first.pdf", "doc-test", "version-test", "resource-test")
+    with worker_binding(request):
+        prepared = FileSourceUnitService(vault).prepare_markdown(
+            "10_Raw/first.pdf", "doc-test", "version-test", "resource-test")
     registry_path = vault / "_system/metadata/document-registry.json"
     registry = json.loads(registry_path.read_text())
     registry["records"] = [{"document_id": "doc-test", "version_id": "version-test",
         "resource_id": "resource-test", "processing_status": "completed",
         "content_sha256": hashlib.sha256((vault / "10_Raw/first.pdf").read_bytes()).hexdigest()}]
     registry_path.write_text(json.dumps(registry))
-    monkeypatch.setenv("HERMES_KANBAN_TASK", request["task_id"])
-    monkeypatch.setenv("HERMES_KANBAN_BOARD", value["kanban"]["board_id"])
+    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
     cancel = workflow_request(workflow_id=value["workflow_id"], actor="agent",
                               expected_revision=value["revision"])
-    with workflow_write_guard(vault, actor="agent") as context:
+    with worker_binding(request), workflow_write_guard(vault, actor="agent") as context:
         with pytest.raises(ContractError, match="ACCESS_DENIED"):
             require_source(context, hashlib.sha256(b"other").hexdigest())
         with pytest.raises(ContractError, match="REVISION_CONFLICT"):
             adapter.workflow.cancel(cancel)
+    with pytest.raises(ContractError, match="ACCESS_DENIED"):
+        with worker_binding({**request, "node": "exact-plan"}), workflow_write_guard(vault):
+            pass
     adapter.workflow.cancel(cancel)
     with pytest.raises(ContractError, match="WORKFLOW_STOPPED"):
-        with workflow_write_guard(vault):
+        with worker_binding(request), workflow_write_guard(vault):
             pytest.fail("cancelled worker entered mutation")
     service = FileSourceUnitService(vault)
     with pytest.raises(ContractError, match="WORKFLOW_STOPPED"):
-        service.prepare_markdown("10_Raw/first.pdf", "doc-test", "version-test", "resource-test")
+        with worker_binding(request):
+            service.prepare_markdown("10_Raw/first.pdf", "doc-test", "version-test", "resource-test")
     with pytest.raises(ContractError, match="WORKFLOW_STOPPED"):
-        service.build({"artifact_manifest": prepared["artifact_manifest"],
-                       "config": service.config, "actor": "agent", "expected_revision": 0})
+        with worker_binding(request):
+            service.build({"artifact_manifest": prepared["artifact_manifest"],
+                           "config": service.config, "actor": "agent", "expected_revision": 0})
     assert service._current("resource-test") is None
 
 

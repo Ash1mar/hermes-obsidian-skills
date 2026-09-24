@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 from pathlib import Path
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
 from hermes_source_units import ContractError, FileSourceUnitService, UnicodeCodepointCounter
+from hermes_source_units.workflow_guard import worker_binding
 
 
 def load(path: str):
@@ -46,6 +48,7 @@ def main():
         sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vault", required=True)
+    parser.add_argument("--worker-binding", help="JSON worker request with workflow_id, task_id and node")
     sub = parser.add_subparsers(dest="command", required=True)
     markdown = sub.add_parser("prepare-markdown")
     markdown.add_argument("--source", required=True, help="Vault-relative immutable Markdown source")
@@ -78,7 +81,9 @@ def main():
             command.add_argument("--max-codepoints", type=int, required=True)
     args = parser.parse_args()
     try:
-        result = run(args)
+        scope = worker_binding(load(args.worker_binding)) if args.worker_binding else nullcontext()
+        with scope:
+            result = run(args)
     except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
         detail = {"ok": False, "error": str(exc)}
         if isinstance(exc, ContractError):

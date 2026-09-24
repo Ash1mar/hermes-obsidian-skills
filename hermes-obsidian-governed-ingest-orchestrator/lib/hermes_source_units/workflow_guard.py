@@ -10,10 +10,25 @@ from pathlib import Path
 from .validation import ContractError, fingerprint
 
 _ACTIVE = ContextVar("ingest_write_guard", default=None)
+_BINDING = ContextVar("ingest_worker_binding", default=None)
 
 
 def _fail(code, message):
     raise ContractError(code, "$", message)
+
+
+@contextmanager
+def worker_binding(binding):
+    """Supply the card identity explicitly across isolated domain CLI processes."""
+    if not isinstance(binding, dict) or not all(
+            isinstance(binding.get(key), str) and binding[key]
+            for key in ("workflow_id", "task_id", "node")):
+        _fail("INVALID_SCHEMA", "worker binding needs workflow_id, task_id and node")
+    token = _BINDING.set(binding)
+    try:
+        yield
+    finally:
+        _BINDING.reset(token)
 
 
 @contextmanager
@@ -24,10 +39,17 @@ def workflow_write_guard(vault, *, kinds=("source-prepare",), actor=None,
     from .source_units import _exclusive_lock, _load_json, _vault_path
 
     vault = Path(vault).resolve()
+    binding = _BINDING.get()
+    if binding is not None:
+        if (workflow_id is not None and workflow_id != binding["workflow_id"]
+                or task_id is not None and task_id != binding["task_id"]):
+            _fail("ACCESS_DENIED", "domain write differs from explicit worker binding")
+        workflow_id, task_id = binding["workflow_id"], binding["task_id"]
     inherited = _ACTIVE.get()
     if inherited is not None:
         if (inherited["vault"] != str(vault) or inherited["kind"] not in kinds
-                or (actor is not None and actor != inherited["actor"])):
+                or (actor is not None and actor != inherited["actor"])
+                or (workflow_id is not None and workflow_id != inherited["workflow_id"])):
             _fail("ACCESS_DENIED", "nested domain write exceeds worker scope")
         yield inherited
         return
@@ -37,6 +59,14 @@ def workflow_write_guard(vault, *, kinds=("source-prepare",), actor=None,
         _fail("ACCESS_DENIED", "worker cannot use another task binding")
     task_id = task_id or env_task
     if not workflow_id and not task_id:
+        if os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"):
+            _fail("ACCESS_DENIED", "isolated worker domain write needs an explicit card binding")
+        for path in (vault / WORKFLOW_ROOT).glob("*.json"):
+            candidate = _load_json(path)
+            if (candidate.get("kanban", {}).get("task_map")
+                    and (candidate.get("cancel_requested")
+                         or candidate.get("state") not in TERMINAL)):
+                _fail("ACCESS_DENIED", "active workflow domain write needs an explicit card binding")
         yield None  # Existing foreground domain API remains supported.
         return
     service = FileIngestWorkflowService(vault)
@@ -59,6 +89,8 @@ def workflow_write_guard(vault, *, kinds=("source-prepare",), actor=None,
         cards = [item for item in value["kanban"]["task_map"] if item.get("task_id") == task_id]
         if len(cards) != 1 or (board and board != value["kanban"]["board_id"]):
             _fail("STALE_INPUT", "worker card has been superseded")
+        if binding is not None and cards[0]["node"] != binding["node"]:
+            _fail("ACCESS_DENIED", "worker binding names a different card")
         kind = cards[0]["node"].partition(":")[0]
         if kind not in kinds:
             _fail("ACCESS_DENIED", "worker kind cannot perform this domain write")
