@@ -21,6 +21,8 @@ from governance_repository import (
     atomic_write_json,
     utc_now,
 )
+from hermes_source_units import ContractError
+from hermes_source_units.workflow_guard import workflow_write_guard
 
 
 def sha256_file(path: Path) -> str:
@@ -364,8 +366,12 @@ def main() -> int:
     args = parser.parse_args()
     try:
         repository = JsonGovernanceRepository(args.vault)
-        result = args.handler(repository, args)
-    except (GovernanceError, OSError, ValueError) as exc:
+        if args.command == "validate":
+            result = args.handler(repository, args)
+        else:
+            with workflow_write_guard(repository.vault, actor=args.actor):
+                result = args.handler(repository, args)
+    except (ContractError, GovernanceError, OSError, ValueError) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     print_result(result, args.json)

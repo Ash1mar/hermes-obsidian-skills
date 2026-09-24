@@ -1056,7 +1056,8 @@ def test_failed_source_does_not_stop_other_source_or_enter_exact_plan(vault: Pat
     assert adapter.workflow.status(pinned["workflow_id"])["current_stage"] == "analyzing"
 
 
-def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path):
+@pytest.mark.parametrize("mode", ["auto_full", "canary_only"])
+def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path, mode: str):
     batch = plan_sliced_batch(vault, 27, "auto-canary-batch")
     fake = FakeKanban(True)
     adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
@@ -1064,7 +1065,7 @@ def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path):
         workflow_id="ingest-auto-canary", actor="agent", expected_revision=0,
         profile="compact-3", scope={"source_paths": [],
                                     "knowledge_selector": "all-current",
-                                    "execution_mode": "auto_full"},
+                                    "execution_mode": mode},
         batch_id="auto-canary-batch"))
     dispatched = adapter.sync(workflow_request(
         workflow_id=pinned["workflow_id"], actor="agent",
@@ -1077,7 +1078,7 @@ def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path):
              if item["node"].startswith("pass-slice:")]
     assert len(cards) == 9
     assert sum(fake.tasks[item["idempotency_key"]]["enabled"] for item in cards) == 8
-    with pytest.raises(ContractError, match="INCOMPLETE_COVERAGE"):
+    with pytest.raises(ContractError, match="INCOMPLETE_COVERAGE" if mode == "auto_full" else "INVALID_TRANSITION"):
         adapter.workflow.promote_canary(workflow_request(
             workflow_id=pinned["workflow_id"], actor="agent",
             expected_revision=workflow["revision"]))
@@ -1111,12 +1112,18 @@ def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path):
         adapter.worker_complete({**worker, "expected_revision": leased["revision"],
                                  "template_hash": leased["template_hash"]})
     promoted = adapter.workflow.status(pinned["workflow_id"])
-    assert promoted["dispatch_policy"]["mode"] == "full"
+    assert promoted["dispatch_policy"]["mode"] == ("full" if mode == "auto_full" else "canary")
     remaining = next(item for item in promoted["kanban"]["task_map"]
                      if item["node"].partition(":")[2] not in
                      promoted["dispatch_policy"]["slice_ids"] and
                      item["node"].startswith("pass-slice:"))
-    assert remaining["task_id"] in fake.unblocked
+    assert (remaining["task_id"] in fake.unblocked) == (mode == "auto_full")
+    if mode == "canary_only":
+        result = adapter.sync(workflow_request(workflow_id=promoted["workflow_id"],
+                              actor="agent", expected_revision=promoted["revision"]))
+        assert result["canary_complete"] and not result["background_dispatch"]
+        assert (vault / result["canary_report_ref"]).is_file()
+        assert not batch._batch("auto-canary-batch").get("resource_reduction_ids")
 
 
 def test_all_failed_sources_remain_visible_and_do_not_dispatch_plan(vault: Path):

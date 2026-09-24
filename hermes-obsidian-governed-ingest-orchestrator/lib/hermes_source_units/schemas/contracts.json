@@ -1743,7 +1743,7 @@
       "properties": {
         "source_paths": {"type": "array", "items": {"type": "string", "minLength": 1, "format": "vault-relative-path"}, "minItems": 0, "uniqueItems": true},
         "knowledge_selector": {"type": "string", "minLength": 1, "pattern": "\\S"},
-        "execution_mode": {"enum": ["manual", "auto_full"]},
+        "execution_mode": {"enum": ["manual", "canary_only", "auto_full"]},
         "provider": {"enum": ["skip", "sync"]}
       },
       "required": ["source_paths", "knowledge_selector"],
@@ -1840,7 +1840,16 @@
         "resume_stage": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
         "revision": {"type": "integer", "minimum": 1},
         "start_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-        "template_pins": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_template_pin"}, "minItems": 0}
+        "template_pins": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_template_pin"}, "minItems": 0},
+        "repair_history": {"type": "array", "items": {"type": "object", "properties": {
+          "repair_id": {"type": "string", "minLength": 1},
+          "input_digest": {"type": "string"},
+          "before_ref": {"type": "string", "format": "vault-relative-path"},
+          "before_sha256": {"type": "string"},
+          "reason": {"type": "string", "minLength": 1},
+          "actor": {"type": "string", "minLength": 1},
+          "evidence_refs": {"type": "array", "items": {"type": "string", "format": "vault-relative-path"}}
+        }, "required": ["repair_id", "input_digest", "before_ref", "before_sha256", "reason", "actor", "evidence_refs"], "additionalProperties": false}}
       },
       "required": ["contract", "workflow_id", "schema_version", "actor", "profile", "scope", "state", "current_stage", "batch_id", "pinned_inputs", "kanban", "checkpoints", "artifacts", "cancel_requested", "resume_stage", "revision", "start_digest"],
       "additionalProperties": false

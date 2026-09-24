@@ -20,14 +20,22 @@ def main() -> int:
     parser.add_argument("--vault", required=True)
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("start", "sync", "cancel", "resume", "worker-begin", "worker-check",
-                 "worker-heartbeat", "worker-complete", "worker-fail", "arm-canary",
+                 "worker-register-source", "worker-heartbeat", "worker-complete", "worker-fail", "arm-canary",
                  "disarm-canary"):
         sub.add_parser(name).add_argument("--request", required=True)
     args = parser.parse_args()
     try:
         request = json.loads(Path(args.request).read_text(encoding="utf-8-sig"))
-        adapter = IngestKanbanAdapter(args.vault)
-        result = getattr(adapter, args.command.replace("-", "_"))(request)
+        if args.command.startswith("worker-"):
+            sibling = Path(__file__).resolve().parents[2] / "hermes-obsidian-governed-ingest-orchestrator/lib"
+            if not (sibling / "orchestration.py").is_file():
+                raise ContractError("WORKER_CONTRACT_UNAVAILABLE", "$", "install the governed-ingest orchestrator Skill")
+            sys.path.insert(0, str(sibling))
+            from orchestration import dispatch
+            result = dispatch(args.vault, args.command, request)
+        else:
+            adapter = IngestKanbanAdapter(args.vault)
+            result = getattr(adapter, args.command.replace("-", "_"))(request)
     except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
         detail = {"ok": False, "error": str(exc)}
         if isinstance(exc, ContractError):

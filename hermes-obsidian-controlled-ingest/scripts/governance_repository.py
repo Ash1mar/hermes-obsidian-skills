@@ -7,12 +7,16 @@ import copy
 import json
 import os
 import re
+import sys
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Iterator
 from urllib.parse import urlsplit
 from uuid import uuid4
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from hermes_source_units.workflow_guard import workflow_write_guard, require_source
 
 
 SCHEMA_VERSION = "1.0"
@@ -441,7 +445,7 @@ class JsonGovernanceRepository:
             raise GovernanceError("expected_revision must be non-negative")
         if not actor.strip():
             raise GovernanceError("actor must not be empty")
-        with self.mutation_lock(actor):
+        with workflow_write_guard(self.vault, actor=actor) as worker, self.mutation_lock(actor):
             organizations, registry = self.load_state()
             self._validate_or_raise(organizations, registry)
             document = organizations if target == "organizations" else registry
@@ -453,6 +457,22 @@ class JsonGovernanceRepository:
             next_organizations = copy.deepcopy(organizations)
             next_registry = copy.deepcopy(registry)
             changed, result = operation(next_organizations, next_registry)
+            if worker:
+                if action in ("organization_status_changed", "document_activated", "document_status_changed"):
+                    raise GovernanceError("ACCESS_DENIED: source worker cannot change governance approval")
+                if target == "organizations":
+                    prior = {item["id"]: item for item in organizations.get("organizations", [])}
+                    if any(item.get("status") != "candidate" for item in next_organizations.get("organizations", [])
+                           if item != prior.get(item["id"])):
+                        raise GovernanceError("ACCESS_DENIED: new source organization must remain candidate")
+                else:
+                    prior = {item["version_id"]: item for item in registry.get("records", [])}
+                    for item in next_registry.get("records", []):
+                        if item != prior.get(item["version_id"]):
+                            require_source(worker, item.get("content_sha256"))
+                            if item["version_id"] not in prior and (item.get("governance_status") != "candidate"
+                                    or item.get("authority_status") != "unknown"):
+                                raise GovernanceError("ACCESS_DENIED: new source identity is candidate with unknown authority")
             if not changed:
                 return {**result, "changed": False, "registry_revision": current_revision}
             selected = next_organizations if target == "organizations" else next_registry
