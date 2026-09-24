@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import copy
+import os
 from pathlib import Path
 import re
 from typing import Any, Mapping
@@ -15,6 +17,8 @@ from .validation import ContractError, fingerprint, validate_record
 
 WORKFLOW_ROOT = "_system/ledgers/ingest-workflows"
 WORKFLOW_CONTRACT = "hermes-ingest-workflow/v1"
+SOURCE_FAILURE_CODES = {"PDF_UNREADABLE", "CONVERSION_FAILED", "UNSUPPORTED_FORMAT",
+                        "BUNDLE_VALIDATION_FAILED", "SOURCE_UNIT_VALIDATION_FAILED"}
 STAGES = ("created", "source_preparing", "planning", "analyzing", "reducing",
           "checkpoint_1", "build_finalizing", "release_planning", "checkpoint_2",
           "applying", "indexing", "validating", "completed")
@@ -223,6 +227,8 @@ class FileIngestWorkflowService:
                 code, reason = str(request.get("error_code", "")).strip(), str(request.get("reason", "")).strip()
                 if not code or not reason:
                     _fail("INVALID_SCHEMA", "failed source requires an error code and reason")
+                if code not in SOURCE_FAILURE_CODES:
+                    _fail("INVALID_SOURCE_FAILURE", "worker/runtime errors must block the card, not mark the source failed")
                 outcome.update(error_code=code, reason=reason)
             refs = list(request.get("artifact_refs", []))
             if any(not isinstance(ref, str) or not _vault_path(self.vault, ref).is_file() for ref in refs):
@@ -240,6 +246,77 @@ class FileIngestWorkflowService:
             coverage = self.source_coverage(value)
             value["current_stage"] = "planning" if not coverage["pending"] and coverage["ready"] else "source_preparing"
             value["state"] = value["current_stage"]
+            value["revision"] += 1
+            self._write(value)
+            return value
+
+    def repair_preparation(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Operator-only, auditable replacement of pre-batch contracts and erroneous outcomes."""
+        self._check_request(request)
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            _fail("ACCESS_DENIED", "workers cannot repair their own workflow contracts")
+        with _exclusive_lock(self._lock(str(request["workflow_id"]))):
+            existing = self._load(str(request["workflow_id"]))
+            repair_id = str(request["repair_id"])
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", repair_id):
+                _fail("INVALID_SCHEMA", "invalid repair id")
+            for prior in existing.get("repair_history", []):
+                if prior["repair_id"] == repair_id:
+                    if prior["input_digest"] != request["input_digest"]:
+                        _fail("IDEMPOTENCY_CONFLICT", "repair id already used")
+                    return existing
+            value = self._mutation(request)
+            if not value["cancel_requested"] or value["batch_id"] is not None:
+                _fail("INVALID_TRANSITION", "repair requires cancelled pre-batch workflow")
+            reason = str(request.get("reason", "")).strip()
+            refs = list(request.get("evidence_refs", []))
+            if not reason or not refs or any(not _vault_path(self.vault, ref).is_file() for ref in refs):
+                _fail("ARTIFACT_REQUIRED", "repair requires a reason and existing evidence")
+            mode = request.get("execution_mode", value["scope"].get("execution_mode", "manual"))
+            if mode not in ("manual", "canary_only", "auto_full"):
+                _fail("INVALID_SCHEMA", "invalid execution mode")
+            reset = {item["path"]: item["outcome_digest"] for item in request.get("reset_sources", [])}
+            outcomes = {item["path"]: item for item in value.get("source_outcomes", [])}
+            for path, digest in reset.items():
+                outcome = outcomes.get(path)
+                if outcome is None or outcome["status"] != "failed" or "sha256:" + fingerprint(outcome) != digest:
+                    _fail("STALE_INPUT", "repair must pin an existing failed outcome")
+                if hashlib.sha256(_vault_path(self.vault, path).read_bytes()).hexdigest() != outcome["content_sha256"]:
+                    _fail("SOURCE_CHANGED", "repair cannot substitute changed source bytes")
+            templates = request["templates"]
+            if sorted(item["kind"] for item in templates) != sorted(WORKER_KINDS):
+                _fail("INVALID_SCHEMA", "repair requires a complete worker pack")
+            before_ref = f"{WORKFLOW_ROOT}/{value['workflow_id']}/repairs/{repair_id}/before.json"
+            before = _json_bytes(value)
+            before_path = _vault_path(self.vault, before_ref)
+            if before_path.exists() and before_path.read_bytes() != before:
+                _fail("IDEMPOTENCY_CONFLICT", "repair snapshot differs")
+            pins = []
+            for item in sorted(templates, key=lambda item: item["kind"]):
+                if not item["content"].strip() or not item["template_id"].strip():
+                    _fail("INVALID_SCHEMA", "empty worker template")
+                data = item["content"].encode("utf-8")
+                digest = hashlib.sha256(data).hexdigest()
+                ref = f"{WORKFLOW_ROOT}/{value['workflow_id']}/templates/{item['kind']}-{digest}.md"
+                dest = _vault_path(self.vault, ref)
+                if dest.exists() and dest.read_bytes() != data:
+                    _fail("TEMPLATE_CHANGED", "template snapshot differs")
+                if not dest.exists():
+                    _write_atomic(dest, data)
+                pins.append({"kind": item["kind"], "template_id": item["template_id"],
+                             "template_hash": "sha256:" + digest, "path": ref})
+            if not before_path.exists():
+                _write_atomic(before_path, before)
+            value = copy.deepcopy(value)
+            value["source_outcomes"] = [item for item in value.get("source_outcomes", []) if item["path"] not in reset]
+            value["template_pins"] = pins
+            value["scope"]["execution_mode"] = mode
+            value["kanban"]["task_map"] = []  # old workers must fail closed after migration
+            value["resume_stage"] = "source_preparing"
+            value.setdefault("repair_history", []).append({"repair_id": repair_id,
+                "input_digest": request["input_digest"], "before_ref": before_ref,
+                "before_sha256": hashlib.sha256(before).hexdigest(), "reason": reason,
+                "actor": value["actor"], "evidence_refs": refs})
             value["revision"] += 1
             self._write(value)
             return value
@@ -414,6 +491,8 @@ class FileIngestWorkflowService:
                     _fail("INCOMPLETE_COVERAGE", "planning requires every source outcome and at least one ready source")
             if target == "completed" and self.source_coverage(value)["failed"]:
                 _fail("INCOMPLETE_COVERAGE", "record final workflow as partial while source gaps remain")
+            if target == "reducing" and value["scope"].get("execution_mode") == "canary_only":
+                _fail("INVALID_TRANSITION", "canary-only workflow stops after its eight Pass slices")
             if target == "reducing" and value["scope"].get("execution_mode") == "auto_full":
                 if (value["dispatch_policy"]["mode"] != "full" or
                         any(item["state"] != "completed"

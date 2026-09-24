@@ -19,7 +19,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vault", required=True)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("start", "resume", "approve", "cancel", "reconcile", "rebuild-kanban", "bind-kanban", "pin-templates", "arm-canary", "promote-canary", "disarm-canary", "bind-release-plan", "digest"):
+    for name in ("start", "resume", "approve", "cancel", "reconcile", "rebuild-kanban", "bind-kanban", "pin-templates", "arm-canary", "promote-canary", "disarm-canary", "bind-release-plan", "repair-preparation", "digest"):
         sub.add_parser(name).add_argument("--request", required=True)
     status = sub.add_parser("status")
     status.add_argument("--workflow-id", required=True)

@@ -229,6 +229,12 @@ class FileSourceUnitService:
 
     def _publish_artifact(self, identity: dict[str, str], source_sha: str, text: str,
                           outline: Mapping[str, Any], assets: list[tuple[dict[str, Any], Path]]) -> dict[str, Any]:
+        from .workflow_guard import workflow_write_guard, require_source
+        with workflow_write_guard(self.vault) as worker:
+            require_source(worker, source_sha)
+            return self._publish_artifact_guarded(identity, source_sha, text, outline, assets)
+
+    def _publish_artifact_guarded(self, identity, source_sha, text, outline, assets):
         document_bytes = text.encode("utf-8")
         outline_bytes = _json_bytes(outline)
         records = [item[0] for item in assets]
@@ -483,7 +489,9 @@ class FileSourceUnitService:
         resource = manifest["identity"]["resource_id"]
         root = _vault_path(self.vault, f"{UNIT_ROOT}/{resource}")
         destination = root / manifest["unit_set_id"]
-        with _exclusive_lock(root / ".publish.lock"):
+        from .workflow_guard import workflow_write_guard, require_source
+        with workflow_write_guard(self.vault, actor=request["actor"]) as worker, _exclusive_lock(root / ".publish.lock"):
+            require_source(worker, generated["units"][0]["source_sha256"] if generated["units"] else None)
             # Recheck after acquiring the lock.
             current = self._current(resource)
             current_revision = int(current.get("revision", 0)) if current else 0

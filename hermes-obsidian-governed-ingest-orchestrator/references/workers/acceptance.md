@@ -1,4 +1,7 @@
-# acceptance · v2
+# acceptance · v3
+
+- Dispatcher: use the absolute `dispatcher_script` from the card: `python3 "<dispatcher_script>" --vault "<vault>" <worker-command> --request "<request.json>"`. Never resolve a bare filename or select another Skill's dispatcher. In request JSON copy `workflow_id` and `node` from `worker_request`, and `task_id` from this card / `HERMES_KANBAN_TASK`; after begin include the returned `template_hash`.
+- Stop immediately on failed worker-check or heartbeat, cancellation, stale binding or template mismatch. Do not import internal services to bypass a failed command, resume/cancel the whole workflow, alter pinned contracts, or clear worker environment variables. Report runtime/contract failures on this card; they are not evidence of damaged source material.
 
 - Role / sole objective: verify final Vault, release and optional Provider outcomes against the requested scope.
 - Allowed inputs: pinned workflow, release ID, authoritative ledger, lint/smoke reports and exact Provider sync status.

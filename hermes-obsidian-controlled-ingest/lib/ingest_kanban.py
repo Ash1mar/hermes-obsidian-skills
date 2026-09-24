@@ -16,6 +16,8 @@ from hermes_source_units.source_units import (_exclusive_lock, _json_bytes, _loa
                                               _vault_path, _write_atomic)
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from hermes_source_units.validation import fingerprint, validate_record
+from hermes_source_units.ingest_workflow import SOURCE_FAILURE_CODES
+from hermes_source_units.workflow_guard import workflow_write_guard
 
 
 def _fail(code: str, message: str) -> None:
@@ -417,7 +419,7 @@ class IngestKanbanAdapter:
                     value["batch_id"], actor, batch["revision"])
             self.workflow.knowledge.reclaim_expired_slices(value["batch_id"])
             self.workflow.knowledge.refresh_ready_slices(value["batch_id"], actor)
-            if (value["scope"].get("execution_mode") == "auto_full"
+            if (value["scope"].get("execution_mode") in ("canary_only", "auto_full")
                     and value["current_stage"] == "analyzing"):
                 policy = value["dispatch_policy"]
                 if policy["mode"] == "disabled":
@@ -436,7 +438,7 @@ class IngestKanbanAdapter:
                              "selection_digest": preview["selection_digest"]}
                     armed["input_digest"] = mutation_digest(armed)
                     value = self.workflow.arm_canary(armed)
-                elif policy["mode"] == "canary" and len(policy["slice_ids"]) == 8 and all(
+                elif value["scope"].get("execution_mode") == "auto_full" and policy["mode"] == "canary" and len(policy["slice_ids"]) == 8 and all(
                         self.workflow.knowledge._slice(value["batch_id"], slice_id)["state"] == "completed"
                         for slice_id in policy["slice_ids"]):
                     promoted = {"workflow_id": workflow_id, "actor": actor,
@@ -496,6 +498,9 @@ class IngestKanbanAdapter:
                                "template_id": pin["template_id"] if pin else None,
                                "worker_template_hash": pin["template_hash"] if pin else None,
                                "slice_template_hash": slice_template_hash,
+                               "dispatcher_script": str(Path(__file__).resolve().parents[2] /
+                                   "hermes-obsidian-governed-ingest-orchestrator/scripts/dispatch_ingest_workflow.py"),
+                               "worker_request": {"workflow_id": workflow_id, "node": node.name},
                                "instructions": templates.get(node.kind)},
                               ensure_ascii=False, sort_keys=True)
             task_id = self.kanban.create_node(
@@ -561,9 +566,22 @@ class IngestKanbanAdapter:
             and (node.kind != "pass-slice" or self.workflow.knowledge._slice(
                 updated["batch_id"], node.name.partition(":")[2])["state"]
                 in ("ready", "leased")) for node in nodes)
+        canary_done = (updated["dispatch_policy"]["mode"] == "canary"
+                       and len(updated["dispatch_policy"]["slice_ids"]) == 8
+                       and all(self.workflow.knowledge._slice(updated["batch_id"], sid)["state"] == "completed"
+                               for sid in updated["dispatch_policy"]["slice_ids"]))
+        canary_report = None
+        if canary_done:
+            canary_report = self._report(updated, "canary", {
+                "workflow_id": workflow_id, "ok": True,
+                "slice_ids": updated["dispatch_policy"]["slice_ids"],
+                "selection_digest": updated["dispatch_policy"]["selection_digest"],
+                "source_coverage": self.workflow.source_coverage(updated),
+                "execution_mode": updated["scope"].get("execution_mode", "manual")})
         return {"workflow_id": workflow_id, "workflow_created": True,
                 "state": updated["state"], "background_dispatch": active_canary,
-                "board_id": slug, "task_count": len(task_map)}
+                "board_id": slug, "task_count": len(task_map),
+                "canary_complete": canary_done, "canary_report_ref": canary_report}
 
     def _slice_worker(self, workflow_id: str, node_name: str,
                       task_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -804,6 +822,60 @@ class IngestKanbanAdapter:
             result["dispatch"] = self._sync_current(workflow["workflow_id"])
         return result
 
+    def worker_register_source(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Assign technical identities without asserting origin authority or approving it."""
+        scripts = Path(__file__).resolve().parents[2] / "hermes-obsidian-controlled-ingest/scripts"
+        sys.path.insert(0, str(scripts))
+        from governance_repository import GovernanceError
+        try:
+            return self._register_source(request)
+        except GovernanceError as exc:
+            _fail("SOURCE_REGISTRATION_BLOCKED", str(exc))
+
+    def _register_source(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        workflow, node, source = self._pre_worker(request)
+        if node.kind != "source-prepare":
+            _fail("ACCESS_DENIED", "registration is restricted to a source card")
+        from governance_repository import JsonGovernanceRepository, utc_now
+        repository = JsonGovernanceRepository(self.workflow.vault)
+        with workflow_write_guard(self.workflow.vault, actor=workflow["actor"],
+                                  workflow_id=workflow["workflow_id"], task_id=request["task_id"]):
+            organizations, registry = repository.load_state()
+            matches = [item for item in registry["records"] if item["content_sha256"] == source["content_sha256"]]
+            if len(matches) > 1:
+                _fail("IDEMPOTENCY_CONFLICT", "multiple existing identities for source bytes")
+            if matches:
+                record = matches[0]
+                if record["storage_uri"] != "local://" + source["path"]:
+                    _fail("SOURCE_IDENTITY_CONFLICT", "same-content source has a different registered path; reconcile provenance explicitly")
+                return {"ok": True, "reused": True, "source": source,
+                        "document_id": record["document_id"], "version_id": record["version_id"],
+                        "resource_id": record["resource_id"], "registry_revision": registry["registry_revision"]}
+            # Unknown origin is represented explicitly; the ID is an internal grouping key.
+            vault_key = fingerprint(repository.manifest["vault"]["id"])[:20]
+            org_id = "organization-unresolved-" + vault_key
+            if not any(item["id"] == org_id for item in organizations["organizations"]):
+                repository.add_organization(organization_id=org_id,
+                    name="Unresolved source organization (technical intake group)", aliases=[],
+                    status="candidate", expected_revision=organizations["registry_revision"], actor=workflow["actor"])
+            sha = source["content_sha256"]
+            now = utc_now()
+            collection = "collection-intake-" + vault_key
+            record = {"document_id": "doc-" + sha, "version_id": "version-" + sha,
+                      "resource_id": "resource-" + sha, "collection_id": collection,
+                      "title": Path(source["path"]).stem, "business_version": None,
+                      "storage_uri": "local://" + source["path"], "content_sha256": sha,
+                      "processing_status": "processing", "governance_status": "candidate",
+                      "authority_status": "unknown", "supersedes_version_id": None,
+                      "created_at": now, "updated_at": now,
+                      "source_occurrences": [{"source_occurrence_id": "occurrence-" + fingerprint(source),
+                          "source_organization_id": org_id, "source_collection_id": collection,
+                          "batch_id": None, "original_relative_path": source["path"], "received_at": now}]}
+            result = repository.register(record, registry["registry_revision"], workflow["actor"])
+            return {"ok": True, "reused": False, "source": source,
+                    "document_id": record["document_id"], "version_id": record["version_id"],
+                    "resource_id": record["resource_id"], "registry_revision": result["registry_revision"]}
+
     def worker_begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if str(request["node"]).startswith("source-prepare:") or request["node"] == "exact-plan":
             workflow, node, source = self._pre_worker(request, beginning=True)
@@ -812,7 +884,10 @@ class IngestKanbanAdapter:
             pin = next(item for item in workflow["template_pins"] if item["kind"] == node.kind)
             return {"ok": True, "node": node.name, "template_hash": pin["template_hash"],
                     "input_fingerprint": node.input_fingerprint,
-                    "source": source, "source_coverage": self.workflow.source_coverage(workflow)}
+                    "source": source, "assigned_source": source,
+                    "scope_note": "assigned_source is the ONLY source this card may process; source_coverage is read-only whole-workflow progress, not assigned work",
+                    "actor": workflow["actor"],
+                    "source_coverage": self.workflow.source_coverage(workflow)}
         if not str(request["node"]).startswith("pass-slice:"):
             workflow, node = self._batch_worker(request, beginning=True)
             pin = next(item for item in workflow["template_pins"] if item["kind"] == node.kind)
@@ -932,7 +1007,7 @@ class IngestKanbanAdapter:
             })
         self.kanban.complete(workflow["kanban"]["board_id"],
                              str(request["task_id"]), "Vault Pass slice complete")
-        if workflow["scope"].get("execution_mode") == "auto_full":
+        if workflow["scope"].get("execution_mode") in ("canary_only", "auto_full"):
             self._sync_current(workflow_id)
         return {"ok": True, "slice_id": value["slice_id"],
                 "result_refs": result_refs}
@@ -940,10 +1015,15 @@ class IngestKanbanAdapter:
     def worker_fail(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if str(request["node"]).startswith("source-prepare:") or request["node"] == "exact-plan":
             workflow, node, source = self._pre_worker(request)
-            if node.kind == "exact-plan":
+            if node.kind == "exact-plan" or request["code"] not in SOURCE_FAILURE_CODES:
+                report = self._report(workflow, f"failed-{fingerprint(node.name)[:16]}", {
+                    "node": node.name, "input_fingerprint": node.input_fingerprint,
+                    "error_code": str(request["code"]), "reason": str(request["message"]),
+                    "source_failed": False})
                 self.kanban.wait(workflow["kanban"]["board_id"], str(request["task_id"]),
                                  "blocked", str(request["message"]))
                 return {"ok": False, "error_code": request["code"],
+                        "report_ref": report,
                         "source_coverage": self.workflow.source_coverage(workflow)}
             outcome = {"workflow_id": workflow["workflow_id"], "actor": workflow["actor"],
                        "expected_revision": workflow["revision"], **source,

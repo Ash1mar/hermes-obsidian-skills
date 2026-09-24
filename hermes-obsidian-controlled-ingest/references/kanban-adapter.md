@@ -58,3 +58,6 @@ allowlist of at most eight Pass slice IDs; all other worker nodes remain blocked
 See the orchestrator's `references/workflow-contract.md` and `references/operations.md`
 for the additional gate. Do not run a long interactive fallback or claim that
 blocked cards are running.
+# Worker entry-point compatibility
+
+Use the governed-ingest orchestrator dispatcher for all live worker operations, via the absolute `dispatcher_script` recorded in each card. This Skill's worker CLI commands delegate to the same installed orchestrator configuration. Its legacy non-worker projection API retains its disabled-by-default behavior. Worker entry-point errors must block the card, never mark its source as failed.
