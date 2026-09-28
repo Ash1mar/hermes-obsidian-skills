@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import hashlib
 import copy
+from contextlib import ExitStack
+from datetime import datetime, timezone
 import os
 from pathlib import Path
 import re
@@ -14,6 +16,7 @@ from .vault_finalize import FileVaultFinalizeService
 from .source_units import (_exclusive_lock, _json_bytes, _load_json,
                            _vault_path, _write_atomic)
 from .validation import ContractError, fingerprint, validate_record
+from .file_locks import kernel_lock, process_exists, host_identity
 
 WORKFLOW_ROOT = "_system/ledgers/ingest-workflows"
 WORKFLOW_CONTRACT = "hermes-ingest-workflow/v1"
@@ -115,6 +118,65 @@ class FileIngestWorkflowService:
         if value["revision"] != request["expected_revision"]:
             _fail("REVISION_CONFLICT", "workflow revision changed", "$.expected_revision")
         return value
+
+    def recover_locks(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Trusted operator recovery of pinned legacy markers, without ledger mutation."""
+        self._check_request(request)
+        if os.environ.get("HERMES_KANBAN_TASK") or os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"):
+            _fail("ACCESS_DENIED", "workers cannot recover workflow locks")
+        wid = str(request["workflow_id"])
+        self._path(wid)
+        recovery_id = str(request["recovery_id"])
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", recovery_id):
+            _fail("INVALID_SCHEMA", "invalid lock recovery id")
+        if not str(request.get("reason", "")).strip():
+            _fail("INVALID_SCHEMA", "lock recovery requires a reason")
+        allowed = {f"{WORKFLOW_ROOT}/{folder}/{wid}.lock"
+                   for folder in (".locks", ".dispatch-locks", ".watch-locks")}
+        entries = request.get("locks", [])
+        refs = [item["path"] for item in entries]
+        if not refs or len(refs) != len(set(refs)) or not set(refs).issubset(allowed):
+            _fail("INVALID_SCHEMA", "recovery must name unique locks for this workflow")
+        report_ref = f"{WORKFLOW_ROOT}/{wid}/reports/lock-recovery-{recovery_id}.json"
+        report_path = _vault_path(self.vault, report_ref)
+        paths = {_vault_path(self.vault, ref) for ref in refs} | {self._lock(wid)}
+        with ExitStack() as stack:
+            for path in sorted(paths):
+                stack.enter_context(kernel_lock(path))
+            if self._lock(wid).exists() and self._lock(wid) not in {
+                    _vault_path(self.vault, ref) for ref in refs}:
+                _fail("LOCK_RECOVERY_REQUIRED", "include the existing workflow lock in recovery")
+            value = self._mutation(request)
+            prior = _load_json(report_path) if report_path.exists() else None
+            if prior and prior["input_digest"] != request["input_digest"]:
+                _fail("IDEMPOTENCY_CONFLICT", "lock recovery id already used")
+            recovered = []
+            for item in entries:
+                path = _vault_path(self.vault, item["path"])
+                if prior and not path.exists():
+                    recovered.append(item)
+                    continue
+                if not path.exists():
+                    _fail("STALE_INPUT", "legacy lock is no longer present")
+                data = path.read_bytes()
+                pid = item.get("expected_owner_pid")
+                if (type(pid) is not int or pid <= 0 or data.strip() != str(pid).encode()
+                        or item.get("sha256") != "sha256:" + hashlib.sha256(data).hexdigest()):
+                    _fail("STALE_INPUT", "legacy lock owner or content changed")
+                if process_exists(pid):
+                    _fail("LOCK_BUSY", f"legacy owner PID {pid} is still alive or cannot be verified")
+                recovered.append(item)
+            report = prior or {"workflow_id": wid, "recovery_id": recovery_id,
+                "actor": value["actor"], "revision": value["revision"],
+                "input_digest": request["input_digest"], "reason": request["reason"],
+                "host": host_identity(), "verified_at": datetime.now(timezone.utc).isoformat(),
+                "locks": recovered, "proof": "kernel locks acquired; legacy PIDs absent"}
+            if not prior:
+                _write_atomic(report_path, _json_bytes(report))
+            for item in recovered:
+                _vault_path(self.vault, item["path"]).unlink(missing_ok=True)
+            return {"workflow_id": wid, "revision": value["revision"],
+                    "state": value["state"], "recovered_locks": refs, "report_ref": report_ref}
 
     def _pin_batch(self, batch_id: str, actor: str) -> dict[str, Any]:
         batch = self.knowledge._batch(batch_id)
