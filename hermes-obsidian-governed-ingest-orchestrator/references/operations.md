@@ -5,9 +5,10 @@ All examples use `python3 "<skill-dir>/scripts/<script>.py" --vault "<vault>" <c
 | Intent | Command | Result |
 | --- | --- | --- |
 | Start once | `dispatch_ingest_workflow.py start` | Vault record + pinned templates; attempts Kanban projection |
-| Inspect | `manage_ingest_workflow.py status --workflow-id <id> --compact` | Authoritative stage, revision, checkpoints |
+| Inspect | `manage_ingest_workflow.py status --workflow-id <id> --compact --runtime` | Authoritative stage, revision, checkpoints plus read-only native attempts |
 | Preview canary | `manage_ingest_workflow.py canary-preview --workflow-id <id> --limit 8` | Read-only first eight ready slice IDs and selection digest |
 | Arm canary | `dispatch_ingest_workflow.py arm-canary` | Persist the exact previewed allowlist and project only those Pass cards |
+| Prepare one source (v5) | `dispatch_ingest_workflow.py worker-prepare-source` | Bound registration, supervised PDF conversion, QA and SourceUnit publication; preserves pending on runtime/review errors |
 | Source worker result | `dispatch_ingest_workflow.py worker-complete` or `worker-fail` | Commit one validated ready UnitSet or one typed failed-source coverage gap; continue other source cards |
 | Exact plan worker result | `dispatch_ingest_workflow.py worker-complete` | Adopt the exact-budget batch after every source has a result; only ready UnitSets may enter the batch |
 | Stop canary | `dispatch_ingest_workflow.py disarm-canary` | Persist disabled policy; subsequent worker checks fail closed |
@@ -51,3 +52,32 @@ start the Gateway. Foreign-host JSON markers cannot be removed by this plain-PID
 For a bounded trial choose canary_only. All requested sources are prepared (real failed files remain explicit gaps), exact planning runs, and exactly eight ready Pass slices run. The dispatcher writes reports/canary.json after their durable completion, then stops eligibility; no automatic promotion, Reduce or release follows. Fewer than eight ready slices reports canary_unavailable. Use auto_full only for an explicitly requested full run.
 
 worker-register-source is the standard source identity allocator. Runtime/contract errors create a Vault failure report without writing a failed-source outcome; the trusted reconciler blocks the card. Domain governance commits and SourceUnit publication use an explicit `--worker-binding` request with workflow_id, task_id and node, verified under the same workflow lock as cancellation. Successful cancellation therefore prevents subsequent authoritative source commits even when Hermes strips task environment variables; in-flight conversion scratch output is not a committed artifact. Worker commands never call the Kanban CLI. These cooperative worker guards are not an OS security sandbox.
+
+## Runtime status and deterministic source preparation
+
+`status --compact --runtime` reads native task/run JSON without syncing cards or writing the ledger.
+Each card reports `kanban_status`, `state`, attempt identity/timestamps and an evidence-based
+`error_category`. A requeued closed attempt is `retry_wait`; a new active run is `running`, with
+`last_failed_attempt` retained separately as history. Explicit APIConnectionError/ConnectError
+becomes `model_connection_failed`; explicit rate-limit/429 and quota messages remain separate.
+Hermes outcome `rate_limited`, its synthesized `pid ... exited rate-limited (quota wall)`
+sentence, or exit 75 alone is `provider_retry_reason_unknown`. For running/retry/blocked cards,
+status also reads at most 64 KiB of task log and reports explicit API error categories under
+`log_observations`; these log hints have no reliable attempt binding and must not be presented
+as proof that the current attempt failed. Missing logs remain explicitly unavailable.
+The snapshot does not expose a guaranteed retry deadline, so `retry_not_before` stays null.
+Native read failure is `unknown`, never successful running. These are per-card observations,
+not an atomic board snapshot; errors not yet persisted by Hermes remain unknown. Do not infer
+source failure or model recovery solely from these labels. Source coverage is still the ledger.
+
+New workflows pin pack v5. `worker-prepare-source` takes workflow_id, node and task_id;
+its begin call supplies the pinned template hash internally. It makes no agent chat-model calls and never
+calls the Kanban CLI. Local conversion retains the shared host gate and cancellation monitoring.
+Only this workflow/source's deterministic attempt directories are automatically resumed; use
+`bundle` for explicitly requested existing Bundle reuse. Already current units are validated
+against the assigned raw hash and identity before reuse. A validation failure allows one supported
+pipeline retry with both attempts preserved. Missing output or runtime/config errors stop for review;
+they are not automatically recorded as damaged PDF. On a failed command, obtain `worker-begin`'s
+hash if needed for `worker-fail`, then report the actual code while binding checks still pass.
+Completing one source does not enable exact planning/Canary until the remaining sources finish.
+Changing installed templates never updates an existing workflow's pinned pack automatically.

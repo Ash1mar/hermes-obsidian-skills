@@ -13,7 +13,7 @@
   "chunk_engine/validation.py": "35d6ab342f838fac18eb175f2ebdf45a70d04c63e9e0c94731928347f4cf8d36",
   "defaults/config.json": "1bf63565930370259243430afee19f89f26776ace4b055c728826b2e3aa024dd",
   "file_locks.py": "bf97c6fb07ed464bbe2cd2a5a2878d41e190ccc4a23cc19e025f4e35e09a6384",
-  "ingest_workflow.py": "1c2a0493fb534c66a5a0da8c5d002eeb4d5e2b4c8b12a8084a979a3f3459938e",
+  "ingest_workflow.py": "48d45a26f5e76fef5b1ded1af39a426c8f2280c08a16ad991028ed24e4c58914",
   "interfaces.py": "5d824d42fbea30efc0608260bbd21089d8b170816c85b43bb0dc6d45edb36373",
   "knowledge_build.py": "e2760eda3d37f2a154a85aa55dfc682d9b7d44c46ab5cf94030b59fa606c531e",
   "py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",

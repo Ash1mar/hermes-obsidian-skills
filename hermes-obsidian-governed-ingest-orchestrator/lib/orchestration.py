@@ -49,6 +49,9 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any]) -> dic
     if command == "start":
         value = start_and_pin(vault, request)
         result = adapter.sync(_mutation(value))
+    elif command == "worker-prepare-source":
+        from source_preparation import prepare_source
+        result = prepare_source(adapter, request)
     else:
         result = getattr(adapter, command.replace("-", "_"))(request)
     if (command in ("start", "resume") and result.get("background_dispatch")

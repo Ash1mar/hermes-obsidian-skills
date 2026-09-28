@@ -753,7 +753,13 @@ class FileIngestWorkflowService:
                     not item["idempotency_key"].startswith(
                         f"ingest:{value['workflow_id']}:") for item in task_map):
                 _fail("INVALID_SCHEMA", "invalid workflow Kanban task map")
-            value["kanban"] = {"board_id": board_id, "task_map": task_map}
+            binding = {"board_id": board_id, "task_map": task_map}
+            # Order is presentation only; node identities define the binding.
+            if (value["kanban"]["board_id"] == board_id and
+                    sorted(value["kanban"]["task_map"], key=lambda item: item["node"]) ==
+                    sorted(task_map, key=lambda item: item["node"])):
+                return value
+            value["kanban"] = binding
             value["revision"] += 1
             self._write(value)
             return value
