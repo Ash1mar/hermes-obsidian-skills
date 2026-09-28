@@ -1,0 +1,11 @@
+{
+  "max_concurrent": 2,
+  "min_available_memory_mib": 6144,
+  "startup_reservation_mib": 6144,
+  "startup_reservation_seconds": 120,
+  "min_free_gpu_memory_mib": 6144,
+  "timeout_seconds": 3600,
+  "queue_timeout_seconds": 3600,
+  "terminate_grace_seconds": 10,
+  "poll_seconds": 1
+}

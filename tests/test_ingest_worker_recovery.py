@@ -37,6 +37,54 @@ def setup_worker(tmp_path):
     return vault, adapter, value, request
 
 
+@pytest.mark.parametrize("code", ["CONVERSION_FAILED", "WORKER_PROTOCOL_FAILED"])
+def test_source_dispatch_window_and_failed_card_release(tmp_path, code):
+    vault = create_engineering_vault(tmp_path)
+    paths = [f"10_Raw/source-{i}.pdf" for i in range(5)]
+    for path in paths:
+        (vault / path).write_bytes(path.encode())
+    fake = FakeKanban(True)
+    adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
+    value = start_and_pin(vault, workflow_request(
+        workflow_id="ingest-window", actor="agent", expected_revision=0,
+        profile="compact-3", scope={"source_paths": paths, "knowledge_selector": "all-current"}))
+    adapter._sync_current(value["workflow_id"])
+    value = adapter.workflow.status(value["workflow_id"])
+    cards = [item for item in value["kanban"]["task_map"] if item["node"].startswith("source-prepare:")]
+    assert len(fake.unblocked) == 2
+    assert all(not task["enabled"] for task in fake.tasks.values())
+    first = next(item for item in cards if item["task_id"] in fake.unblocked)
+    request = {"workflow_id": value["workflow_id"], "task_id": first["task_id"], "node": first["node"]}
+    begun = adapter.worker_begin(request)
+    adapter.worker_fail({**request, "template_hash": begun["template_hash"],
+                         "code": code, "message": "test conversion failure"})
+    adapter._sync_current(value["workflow_id"])
+    assert len(fake.unblocked - fake.completed) == 2
+    if code == "CONVERSION_FAILED":
+        assert first["task_id"] in fake.completed
+    else:
+        assert first["task_id"] not in fake.unblocked
+        assert fake.waited[first["task_id"]] == "blocked"
+
+
+def test_conversion_checks_explicit_card_and_assigned_input_before_output(tmp_path):
+    vault, adapter, value, request = setup_worker(tmp_path)
+    begun = adapter.worker_begin(request)
+    binding = vault / "conversion-binding.json"
+    binding.write_text(json.dumps(request), encoding="utf-8")
+    assigned = vault / begun["assigned_source"]["path"]
+    other = next(vault / path for path in value["scope"]["source_paths"] if vault / path != assigned)
+    output = vault / "10_Raw/unauthorized-bundle"
+    script = ROOT / "hermes-obsidian-controlled-ingest/scripts/convert_pdf_with_mineru_bundle.py"
+    env = {**os.environ, "HERMES_DELEGATED_CHILD_CONTEXT": "1"}
+    for extra, expected in (([], "requires"),
+                            (["--vault", str(vault), "--worker-binding", str(binding)], "differs")):
+        result = subprocess.run([sys.executable, str(script), str(other), "-o", str(output), *extra],
+                                capture_output=True, text=True, env=env)
+        assert result.returncode == 2 and expected in result.stderr
+        assert not output.exists()
+
+
 def cli(vault, script, command, request, env=None):
     path = vault / "worker-request.json"
     path.write_text(json.dumps(request), encoding="utf-8")

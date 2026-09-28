@@ -7,6 +7,25 @@ description: 受控摄取 / Controlled Ingest：新增、导入、登记、恢�
 
 Turn source files into governed Obsidian artifacts without rewriting raw material or overcreating concepts.
 
+## Local MinerU admission and supervision
+
+Invoke local PDF conversion through `python3 "<skill-dir>/scripts/convert_pdf_with_mineru_bundle.py"`.
+Do not launch MinerU or a local MinerU API server directly. Source workers must supply
+`--vault "<vault>" --worker-binding "<worker-request.json>"` to conversion.
+The Skill starts `scripts/supervise_mineru.py`, using only Python and existing Linux facilities.
+`config/mineru-runtime.json` limits conversions across workflows to two per runtime user.
+Host state is in `~/.cache/hermes-skill-runtime/mineru`, outside the Vault. At least 6144 MiB
+available RAM is required at startup; existing starts reserve another 6144 MiB for 120 seconds
+to avoid concurrent model-loading races. When NVIDIA tooling is present, at least 6144 MiB
+free GPU memory after startup reservations is required. These checks are admission heuristics, not OOM guarantees.
+Queue and conversion each time out after one hour. Waiting does not justify bypassing the gate.
+The supervisor checks caller lifetime and explicit workflow binding while waiting/running.
+On exit, timeout or cancellation it terminates this run's tagged descendants, including detached
+children, with a 10-second grace followed by kill. A later invocation cleans orphan run records
+before admitting new work. Killing both caller and supervisor can delay cleanup until that invocation.
+Direct external MinerU commands and different Linux user accounts are outside this gate;
+remote MinerU HTTP services retain their own concurrency policy.
+
 ## Task Scope and Completion
 
 Select scope from the user's requested outcome, not from the amount of conversion work:
@@ -32,8 +51,9 @@ For the phase-5 Vault workflow ledger and explicit checkpoint commands, read
 dispatch; do not describe its `rebuild-kanban` output as a running Kanban board.
 For the phase-6 Hermes Kanban projection and worker lease handshake, read
 `references/kanban-adapter.md`. The governed orchestrator now pins twelve versioned
-worker templates, but its host rollout switch still disables autonomous dispatch.
-Even after host activation, only explicitly armed Pass canary slices may run.
+worker templates and enables bounded dispatch through its checked-in configuration.
+In `canary_only`, only the eight armed Pass slices run after source preparation;
+in `auto_full`, verified canary completion permits the remaining downstream workflow.
 
 Report separate completion dimensions: source preservation; registration; conversion/processing;
 section processing (status counts); knowledge construction (inspected scope, decisions and outputs);

@@ -294,6 +294,11 @@ class IngestKanbanAdapter:
         self.workflow = FileIngestWorkflowService(vault)
         self.kanban = kanban or KanbanCLI()
         self.enable_workers = enable_workers
+        config = _load_json(Path(__file__).resolve().parents[2] /
+                            "hermes-obsidian-governed-ingest-orchestrator/config/orchestration.json")
+        self.source_prepare_concurrency = int(config.get("source_prepare_concurrency", 2))
+        if self.source_prepare_concurrency < 1:
+            _fail("INVALID_SCHEMA", "source_prepare_concurrency must be positive")
 
     @staticmethod
     def _mutation(value: Mapping[str, Any], **fields: Any) -> dict[str, Any]:
@@ -496,12 +501,18 @@ class IngestKanbanAdapter:
                     "state": "dispatcher_unavailable", "background_dispatch": False,
                     "board_id": value["kanban"]["board_id"]}
         nodes = desired_graph(self.workflow, value)
+        # Reserve a stable window before exposing any cards to the dispatcher.
+        # Failed cards do not occupy the window; their failure remains visible.
+        source_window = {node.name for node in [
+            item for item in nodes if item.kind == "source-prepare"
+            and not domain_completed(self.workflow, value, item)
+            and not self._failed_card(workflow_id, item)
+        ][:self.source_prepare_concurrency]}
         slug = board_slug(workflow_id)
         self.kanban.ensure_board(slug)
         ids: dict[str, str] = {}
         task_map: list[dict[str, str]] = []
         for node in nodes:
-            worker_enabled = self._eligible(value, node, nodes)
             key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
             pin = next((item for item in value.get("template_pins", [])
                         if item["kind"] == node.kind), None)
@@ -523,7 +534,7 @@ class IngestKanbanAdapter:
                               ensure_ascii=False, sort_keys=True)
             task_id = self.kanban.create_node(
                 slug, node, key, [ids[parent] for parent in node.parents], body,
-                enable_workers=worker_enabled)
+                enable_workers=False)  # bind the complete graph before releasing cards
             ids[node.name] = task_id
             task_map.append({"node": node.name, "idempotency_key": key,
                              "task_id": task_id})
@@ -569,6 +580,9 @@ class IngestKanbanAdapter:
             elif node.gate or not self._eligible(updated, node, nodes):
                 self.kanban.wait(slug, ids[node.name], "blocked",
                                  "Vault gate or outside active dispatch scope")
+            elif node.kind == "source-prepare" and node.name not in source_window:
+                self.kanban.wait(slug, ids[node.name], "blocked",
+                                 "Skill source preparation concurrency limit")
             elif node.kind == "pass-slice":
                 slice_id = node.name.partition(":")[2]
                 state = self.workflow.knowledge._slice(updated["batch_id"], slice_id)["state"]
