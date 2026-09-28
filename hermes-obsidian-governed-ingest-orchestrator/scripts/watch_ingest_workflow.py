@@ -30,7 +30,7 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                 if result.get("canary_complete") and value["scope"].get("execution_mode") == "canary_only":
                     return
             except ContractError as exc:
-                if exc.code not in ("KANBAN_UNAVAILABLE", "REVISION_CONFLICT"):
+                if exc.code not in ("KANBAN_UNAVAILABLE", "REVISION_CONFLICT", "LOCK_BUSY"):
                     raise
             time.sleep(interval)
 

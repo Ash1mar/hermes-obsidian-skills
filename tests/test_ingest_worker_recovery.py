@@ -15,6 +15,7 @@ from test_p3_knowledge_build import (
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.workflow_guard import workflow_write_guard, require_source, worker_binding
 from hermes_source_units import FileSourceUnitService
+from hermes_source_units.file_locks import kernel_lock
 
 
 def setup_worker(tmp_path):
@@ -94,6 +95,64 @@ def cli(vault, script, command, request, env=None):
     return result, json.loads(result.stdout if result.returncode == 0 else result.stderr)
 
 
+def legacy_recovery_fixture(tmp_path, pid=None):
+    vault, adapter, value, _ = setup_worker(tmp_path)
+    if pid is None:
+        child = subprocess.Popen([sys.executable, "-c", "pass"])
+        child.wait()
+        pid = child.pid
+    locks = []
+    for folder in (".dispatch-locks", ".watch-locks"):
+        ref = f"_system/ledgers/ingest-workflows/{folder}/{value['workflow_id']}.lock"
+        path = vault / ref
+        path.parent.mkdir(exist_ok=True)
+        path.write_bytes(str(pid).encode())
+        locks.append({"path": ref, "expected_owner_pid": pid,
+                      "sha256": "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()})
+    request = workflow_request(workflow_id=value["workflow_id"], actor="agent",
+        expected_revision=value["revision"], recovery_id="test-recovery", reason="test orphan recovery", locks=locks)
+    return vault, adapter, value, request
+
+
+@pytest.mark.parametrize("script", [ROOT / "hermes-obsidian-governed-ingest-orchestrator/scripts/manage_ingest_workflow.py", ROOT / "hermes-obsidian-controlled-ingest/scripts/manage_ingest_workflow.py"])
+def test_supported_recovery_cli_preserves_ledger_and_is_idempotent(tmp_path, script):
+    vault, adapter, value, request = legacy_recovery_fixture(tmp_path)
+    ledger = adapter.workflow._path(value["workflow_id"])
+    before = ledger.read_bytes()
+    for _ in range(2):
+        result, recovered = cli(vault, script, "recover-locks", request)
+        assert result.returncode == 0, recovered
+        assert recovered["revision"] == value["revision"]
+        assert ledger.read_bytes() == before
+        assert all(not (vault / item["path"]).exists() for item in request["locks"])
+        assert (vault / recovered["report_ref"]).exists()
+    adapter._sync_current(value["workflow_id"])
+
+
+def test_recovery_refuses_live_owner_and_changed_content_without_deleting_any_lock(tmp_path):
+    vault, adapter, _, request = legacy_recovery_fixture(tmp_path, os.getpid())
+    with pytest.raises(ContractError, match="LOCK_BUSY"):
+        adapter.workflow.recover_locks(request)
+    assert all((vault / item["path"]).exists() for item in request["locks"])
+    vault, adapter, _, request = legacy_recovery_fixture(tmp_path / "changed")
+    (vault / request["locks"][1]["path"]).write_text("changed")
+    with pytest.raises(ContractError, match="STALE_INPUT"):
+        adapter.workflow.recover_locks(request)
+    assert all((vault / item["path"]).exists() for item in request["locks"])
+
+
+def test_recovery_refuses_worker_or_held_kernel_lock(tmp_path, monkeypatch):
+    vault, adapter, _, request = legacy_recovery_fixture(tmp_path)
+    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
+    with pytest.raises(ContractError, match="ACCESS_DENIED"):
+        adapter.workflow.recover_locks(request)
+    monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT")
+    with kernel_lock(vault / request["locks"][0]["path"]):
+        with pytest.raises(ContractError, match="LOCK_BUSY"):
+            adapter.workflow.recover_locks(request)
+    assert all((vault / item["path"]).exists() for item in request["locks"])
+
+
 @pytest.mark.parametrize("script", [DISPATCH_CLI, ORCHESTRATOR_CLI])
 def test_real_worker_cli_registers_and_reuses_identity_then_stops(tmp_path, script):
     vault, adapter, value, request = setup_worker(tmp_path)
@@ -168,7 +227,7 @@ def test_worker_guard_serializes_cancel_and_rejects_other_source(tmp_path, monke
     with worker_binding(request), workflow_write_guard(vault, actor="agent") as context:
         with pytest.raises(ContractError, match="ACCESS_DENIED"):
             require_source(context, hashlib.sha256(b"other").hexdigest())
-        with pytest.raises(ContractError, match="REVISION_CONFLICT"):
+        with pytest.raises(ContractError, match="LOCK_BUSY"):
             adapter.workflow.cancel(cancel)
     with pytest.raises(ContractError, match="ACCESS_DENIED"):
         with worker_binding({**request, "node": "exact-plan"}), workflow_write_guard(vault):

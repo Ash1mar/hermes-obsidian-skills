@@ -15,6 +15,7 @@ from .chunk_engine import (ENGINE_VERSION, ChunkEngineInput, ChunkProfile,
                            SharedChunkEngine, TokenCounter)
 from .validation import ContractError, canonical_json, fingerprint, validate_record, validate_references
 from .vault_config import CONFIG_PATH, declaration
+from .file_locks import exclusive_lock as _exclusive_lock
 
 ARTIFACT_ROOT = "_system/sources/artifacts"
 UNIT_ROOT = "_system/sources/units"
@@ -70,24 +71,6 @@ def _write_atomic(path: Path, data: bytes) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
-
-
-@contextmanager
-def _exclusive_lock(path: Path):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        descriptor = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-    except FileExistsError:
-        _fail("REVISION_CONFLICT", f"source-unit publication is locked: {path}")
-    try:
-        os.write(descriptor, str(os.getpid()).encode("ascii"))
-        yield
-    finally:
-        os.close(descriptor)
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def _normalize_text(data: bytes) -> str:

@@ -21,6 +21,29 @@ Before any mutation inspect current status and compute a fresh digest with `mana
 
 Current `worker_dispatch_enabled: true` permits scoped source workers and exact planning after coverage checks. In `auto_full`, the first eight ready slices form a bounded canary; once all eight have durable valid Pass records, remaining slices and the downstream workers become eligible in order. Manual mode retains explicit canary arm and approval operations. Inspect compact status for `source_coverage` before planning or reporting completion. Failed sources are listed as gaps and require a partial final workflow outcome.
 
+## Workflow lock recovery
+
+New workflow, dispatch and watcher locks use host kernel locks. Their stable kernel files live
+outside the Vault (`~/.cache/hermes-skill-runtime/locks` on Linux; the user temporary directory
+on Windows). Vault owner markers describe the holder but do not determine occupancy.
+Process exit, SIGTERM, SIGKILL or OOM releases the kernel lock; the next local invocation
+can replace a leftover marker. Never delete kernel lock files while processes may be running.
+`LOCK_BUSY` means actual contention; `REVISION_CONFLICT` means a ledger revision conflict.
+`LOCK_RECOVERY_REQUIRED` means a legacy PID marker or a marker from another host requires review.
+
+For old plain-PID workflow locks, use the trusted operator command:
+`python3 "<skill-dir>/scripts/manage_ingest_workflow.py" --vault "<vault>" recover-locks --request "<request.json>"`.
+The request includes workflow_id, actor, expected_revision, input_digest, recovery_id, reason,
+and locks: each entry has a full Vault-relative path, expected_owner_pid and sha256 (prefixed `sha256:`).
+Only this workflow's `.locks`, `.dispatch-locks` and `.watch-locks` markers are permitted.
+Run recovery on the verified original runtime host. The operation acquires all relevant kernel
+locks, rechecks the current ledger and every pinned legacy marker, verifies the PIDs are absent,
+and writes a recovery audit report before removing the markers. It refuses live or unverifiable
+owners, changed content and isolated workers. It does not change workflow revision or source outcomes.
+Recovery is idempotent for the same request and ID. Recover both dispatch and watcher markers,
+then verify Gateway is running and use normal resume/sync; opening dashboard TUI alone does not
+start the Gateway. Foreign-host JSON markers cannot be removed by this plain-PID recovery command.
+
 ## Auditable pre-batch repair
 
 `python3 "<skill-dir>/scripts/manage_ingest_workflow.py" --vault "<vault>" repair-preparation --request "<request.json>"` requires a cancelled workflow with no batch. Include workflow_id, actor, expected_revision, input_digest, a stable repair_id, reason, existing Vault evidence_refs, complete templates from the installed orchestration.worker_pack(), and optional execution_mode. Each reset_sources entry must pin path and outcome_digest (`sha256:` plus fingerprint of the current failed outcome). Only those failed outcomes are reset; valid registrations and other source outcomes remain. The before.json snapshot, its hash and repair history retain the old record. Old template snapshots stay immutable and old cards lose their binding. The command is idempotent for the same repair ID and digest, and does not resume work. A subsequent normal resume projects new cards from the repaired contracts.

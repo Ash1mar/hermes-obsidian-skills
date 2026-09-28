@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 from typing import Any, Callable, Mapping
 
 from hermes_source_units import (ContractError, FileIngestWorkflowService,
@@ -318,9 +319,11 @@ class IngestKanbanAdapter:
             try:
                 return self.sync(self._mutation(value))
             except ContractError as exc:
-                if exc.code != "REVISION_CONFLICT":
+                if exc.code not in ("REVISION_CONFLICT", "LOCK_BUSY"):
                     raise
-        _fail("REVISION_CONFLICT", "workflow changed repeatedly during dispatch")
+                if _ == 15:
+                    raise
+                time.sleep(0.05)
 
     @staticmethod
     def _pending_reconciliation(result: dict[str, Any]) -> dict[str, Any]:
