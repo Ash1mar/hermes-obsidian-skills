@@ -1359,9 +1359,10 @@ def test_kanban_adapter_reports_gateway_absence_then_rebuilds_dag(vault: Path):
         workflow_id="ingest-dispatch", actor="agent", expected_revision=2))
     assert again["task_count"] == projected["task_count"]
     assert len(fake.tasks) == first_count
+    assert adapter.workflow.status("ingest-dispatch")["revision"] == 2
     fake.tasks.clear()  # Kanban data plane deleted; Vault remains authoritative.
     rebuilt = adapter.sync(workflow_request(
-        workflow_id="ingest-dispatch", actor="agent", expected_revision=3))
+        workflow_id="ingest-dispatch", actor="agent", expected_revision=2))
     assert len(fake.tasks) == rebuilt["task_count"]
 
 
@@ -1449,13 +1450,13 @@ def test_kanban_worker_must_hold_exact_slice_lease(vault: Path):
         adapter.worker_check({**request, "expected_revision": begun["slice"]["revision"],
                               "template_hash": "0" * 64})
     cancelled = adapter.cancel(workflow_request(
-        workflow_id="ingest-worker", actor="agent", expected_revision=5))
+        workflow_id="ingest-worker", actor="agent", expected_revision=4))
     assert cancelled["state"] == "cancelled"
     assert adapter.workflow.knowledge._batch("worker-batch")["cancel_requested"]
     with pytest.raises(ContractError, match="WORKFLOW_STOPPED"):
         adapter.worker_begin(request)
     resumed = adapter.resume(workflow_request(
-        workflow_id="ingest-worker", actor="agent", expected_revision=6))
+        workflow_id="ingest-worker", actor="agent", expected_revision=5))
     assert resumed["state"] == "analyzing"
     assert not adapter.workflow.knowledge._batch("worker-batch")["cancel_requested"]
     assert adapter.workflow.knowledge._slice(

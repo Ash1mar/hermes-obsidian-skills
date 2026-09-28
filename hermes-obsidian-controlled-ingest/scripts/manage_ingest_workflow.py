@@ -24,6 +24,7 @@ def main() -> int:
     status = sub.add_parser("status")
     status.add_argument("--workflow-id", required=True)
     status.add_argument("--compact", action="store_true")
+    status.add_argument("--runtime", action="store_true", help="Read native Kanban attempts without dispatching")
     preview = sub.add_parser("canary-preview")
     preview.add_argument("--workflow-id", required=True)
     preview.add_argument("--limit", type=int, default=8)
@@ -31,6 +32,9 @@ def main() -> int:
     try:
         if args.command == "status":
             result = FileIngestWorkflowService(args.vault).status(args.workflow_id, args.compact)
+            if args.runtime:
+                from ingest_kanban import IngestKanbanAdapter
+                result["runtime"] = IngestKanbanAdapter(args.vault).runtime_status(args.workflow_id)
         elif args.command == "canary-preview":
             result = FileIngestWorkflowService(args.vault).canary_preview(
                 args.workflow_id, args.limit)

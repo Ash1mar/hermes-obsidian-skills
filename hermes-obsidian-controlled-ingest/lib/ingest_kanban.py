@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 import sys
@@ -211,6 +212,12 @@ class KanbanCLI:
                                         task_id, "--json"))
         return str(shown["task"]["status"])
 
+    def task_snapshot(self, slug: str, task_id: str) -> dict[str, Any]:
+        return json.loads(self.command("kanban", "--board", slug, "show", task_id, "--json"))
+
+    def task_log(self, slug: str, task_id: str) -> str:
+        return self.command("kanban", "--board", slug, "log", task_id, "--tail", "65536")
+
     def wait(self, slug: str, task_id: str, state: str, reason: str) -> None:
         if self.task_status(slug, task_id) in (state, "done", "archived"):
             return
@@ -289,6 +296,69 @@ def domain_completed(service: FileIngestWorkflowService,
     return threshold is not None and stages.index(stage) >= stages.index(threshold)
 
 
+def _runtime_error_category(error: str, outcome: str | None) -> str | None:
+    if re.fullmatch(r"pid \d+ exited rate-limited \(quota wall\).*", error, re.S):
+        # This native sentence is synthesized solely from rc=75, including
+        # APIConnectionError exits; it is not provider evidence.
+        return "provider_retry_reason_unknown"
+    category = None
+    if re.search(r"APIConnectionError|ConnectError|connection (?:error|failed)|connection reset", error, re.I):
+        category = "model_connection_failed"
+    elif re.search(r"insufficient_quota|quota (?:exceeded|exhausted)", error, re.I):
+        category = "quota_exhausted"
+    elif re.search(r"RateLimitError|HTTP\s*429|rate.?limit", error, re.I):
+        category = "model_rate_limited"
+    elif error:
+        category = "runtime_error"
+    elif outcome == "rate_limited":
+        category = "provider_retry_reason_unknown"
+    return category
+
+
+def runtime_log_observations(log: str) -> dict[str, Any]:
+    """Bounded diagnostic hints, never assign an unbound log to a current run."""
+    categories = set()
+    for line in log[-65536:].splitlines():
+        if re.search(r"(?:API|provider|model).*(?:request failed|call failed|error_type=|exception chain)", line, re.I):
+            category = _runtime_error_category(line, None)
+            if category in ("model_connection_failed", "model_rate_limited", "quota_exhausted"):
+                categories.add(category)
+    return {"scope": "recent task log tail; not correlated to an attempt",
+            "error_categories": sorted(categories), "current_attempt_proven": False}
+
+
+def runtime_projection(snapshot: Mapping[str, Any]) -> dict[str, Any]:
+    """Read-only attempt telemetry; exit 75 alone does not prove quota exhaustion."""
+    task = snapshot["task"]
+    runs = snapshot.get("runs", [])
+    latest = max(runs, key=lambda run: int(run["id"]), default=None)
+    error = str((latest or {}).get("error") or "")
+    category = _runtime_error_category(error, (latest or {}).get("outcome"))
+    failed = max((run for run in runs if run.get("ended_at") is not None and
+                  run.get("outcome") in ("rate_limited", "crashed", "spawn_failed")),
+                 key=lambda run: int(run["id"]), default=None)
+    history = None if failed is None else {
+        "attempt_id": failed["id"], "ended_at": failed["ended_at"],
+        "error_category": _runtime_error_category(str(failed.get("error") or ""), failed.get("outcome")),
+        "error_excerpt": str(failed.get("error") or "")[:500] or None}
+    status = str(task["status"])
+    active = bool(latest and latest.get("ended_at") is None)
+    state = status
+    if status in ("ready", "todo", "scheduled") and not active and latest:
+        if latest.get("outcome") in ("rate_limited", "crashed", "spawn_failed"):
+            state = "retry_wait"
+    # Previous failed attempts remain history once a newer run has started.
+    return {"kanban_status": status, "state": state,
+            "attempt_id": (latest or {}).get("id"),
+            "attempt_outcome": (latest or {}).get("outcome"),
+            "attempt_started_at": (latest or {}).get("started_at"),
+            "attempt_ended_at": (latest or {}).get("ended_at"),
+            "error_category": category, "error_excerpt": error[:500] or None,
+            "last_failed_attempt": history,
+            "retry_not_before": None,
+            "retry_time_note": "Native task snapshot does not expose a retry deadline; retry_wait means requeued, not a guaranteed retry time."}
+
+
 class IngestKanbanAdapter:
     def __init__(self, vault: str | Path, kanban: KanbanCLI | None = None,
                  *, enable_workers: bool = False):
@@ -312,6 +382,32 @@ class IngestKanbanAdapter:
                  refs: list[str] | None = None) -> dict[str, Any]:
         return self.workflow.reconcile(self._mutation(
             value, target_stage=target, artifact_refs=refs or []))
+
+    def runtime_status(self, workflow_id: str) -> dict[str, Any]:
+        """Observe native cards without dispatching or writing the Vault ledger."""
+        value = self.workflow.status(workflow_id)
+        cards = []
+        for binding in value["kanban"]["task_map"]:
+            card = {"node": binding["node"], "task_id": binding["task_id"]}
+            try:
+                snapshot = self.kanban.task_snapshot(value["kanban"]["board_id"], binding["task_id"])
+                if snapshot["task"]["id"] != binding["task_id"]:
+                    _fail("KANBAN_INVALID_RESPONSE", "snapshot names another card")
+                card.update(runtime_projection(snapshot))
+                if card["state"] in ("running", "retry_wait", "blocked") and hasattr(self.kanban, "task_log"):
+                    try:
+                        card["log_observations"] = runtime_log_observations(
+                            self.kanban.task_log(value["kanban"]["board_id"], binding["task_id"]))
+                    except (ContractError, OSError, ValueError) as exc:
+                        card["log_observation_error"] = (exc.code if isinstance(exc, ContractError)
+                                                         else "KANBAN_UNAVAILABLE")
+            except (ContractError, OSError, ValueError, KeyError, TypeError) as exc:
+                card.update(state="unknown", observation_error=(
+                    exc.code if isinstance(exc, ContractError) else "KANBAN_UNAVAILABLE"))
+            cards.append(card)
+        return {"observed_at": datetime.now(timezone.utc).isoformat(),
+                "authority": "native Kanban attempt telemetry; source coverage remains Vault-authoritative",
+                "cards": cards}
 
     def _sync_current(self, workflow_id: str) -> dict[str, Any]:
         for _ in range(16):
