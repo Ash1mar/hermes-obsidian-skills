@@ -1018,7 +1018,7 @@ def test_failed_source_does_not_stop_other_source_or_enter_exact_plan(
     cards = [item for item in adapter.workflow.status(pinned["workflow_id"])["kanban"]["task_map"]
              if item["node"].startswith("source-prepare:")]
     assert len(cards) == 2
-    assert all(fake.tasks[item["idempotency_key"]]["enabled"] for item in cards)
+    assert all(item["task_id"] in fake.unblocked for item in cards)
     by_path = {}
     for item in cards:
         request = {"workflow_id": pinned["workflow_id"], "node": item["node"],
@@ -1053,7 +1053,7 @@ def test_failed_source_does_not_stop_other_source_or_enter_exact_plan(
     workflow = adapter.workflow.status(pinned["workflow_id"])
     plan_card = next(item for item in workflow["kanban"]["task_map"]
                      if item["node"] == "exact-plan")
-    assert fake.tasks[plan_card["idempotency_key"]]["enabled"]
+    assert plan_card["task_id"] in fake.unblocked
     begun = adapter.worker_begin({"workflow_id": pinned["workflow_id"],
                                   "node": "exact-plan", "task_id": plan_card["task_id"]})
     assert begun["source_coverage"]["failed"] == [paths[0]]
@@ -1100,7 +1100,7 @@ def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path, mode: str)
     cards = [item for item in workflow["kanban"]["task_map"]
              if item["node"].startswith("pass-slice:")]
     assert len(cards) == 9
-    assert sum(fake.tasks[item["idempotency_key"]]["enabled"] for item in cards) == 8
+    assert sum(item["task_id"] in fake.unblocked for item in cards) == 8
     with pytest.raises(ContractError, match="INCOMPLETE_COVERAGE" if mode == "auto_full" else "INVALID_TRANSITION"):
         adapter.workflow.promote_canary(workflow_request(
             workflow_id=pinned["workflow_id"], actor="agent",

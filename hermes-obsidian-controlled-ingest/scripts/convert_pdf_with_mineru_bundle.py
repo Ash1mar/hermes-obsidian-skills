@@ -146,7 +146,25 @@ def run_mineru(args: argparse.Namespace, work_dir: Path) -> None:
         env["MINERU_MODEL_SOURCE"] = args.model_source
 
     try:
-        subprocess.run(cmd, check=True, env=env)
+        if sys.platform != "linux":
+            raise RuntimeError("Local MinerU requires the Linux/WSL Skill supervisor")
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        from supervise_mineru import identity
+        supervisor = [sys.executable, str(Path(__file__).with_name("supervise_mineru.py")),
+                      "--caller-pid", str(os.getpid()), "--caller-start", identity(os.getpid())]
+        if args.vault:
+            supervisor.extend(["--vault", str(args.vault.resolve())])
+        if args.worker_binding:
+            supervisor.extend(["--worker-binding", str(args.worker_binding.resolve())])
+        process = subprocess.Popen(supervisor + ["--"] + cmd, env=env, start_new_session=True)
+        try:
+            code = process.wait()
+            if code:
+                raise subprocess.CalledProcessError(code, cmd)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=30)
     except FileNotFoundError:
         print(
             "MinerU CLI not found. Install MinerU in the project/WSL environment, "
@@ -974,6 +992,9 @@ def main() -> int:
         description="Convert a PDF with MinerU and create a layered document bundle v2."
     )
     parser.add_argument("input", type=Path, help="Input PDF path")
+    parser.add_argument("--vault", type=Path, help="Workflow Vault for cancellation checks")
+    parser.add_argument("--worker-binding", type=Path,
+                        help="Explicit source worker request JSON; required for isolated local conversions")
     parser.add_argument("-o", "--output", type=Path, required=True, help="Output document_bundle directory")
     parser.add_argument(
         "--deployment-config",
@@ -1099,6 +1120,26 @@ def main() -> int:
         return 2
     if input_path.suffix.lower() != ".pdf":
         print(f"Expected a PDF input, got: {input_path}", file=sys.stderr)
+        return 2
+
+    if args.worker_binding:
+        if not args.vault:
+            print("--worker-binding requires --vault", file=sys.stderr)
+            return 2
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+        from hermes_source_units import ContractError
+        from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard, require_source
+        try:
+            binding = json.loads(args.worker_binding.read_text(encoding="utf-8"))
+            with worker_binding(binding), workflow_write_guard(args.vault) as context:
+                if input_path != (args.vault / context["source"]["path"]).resolve():
+                    raise RuntimeError("conversion input differs from assigned source")
+                require_source(context, hashlib.sha256(input_path.read_bytes()).hexdigest())
+        except (ContractError, OSError, ValueError, RuntimeError) as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+    elif os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT") or os.environ.get("HERMES_KANBAN_TASK"):
+        print("isolated conversion requires --vault and --worker-binding", file=sys.stderr)
         return 2
 
     prepare_bundle_dir(bundle_dir, args.overwrite)
