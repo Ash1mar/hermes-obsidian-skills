@@ -15,7 +15,10 @@ def _fail(code: str, message: str) -> None:
 
 def _line_offsets(text: str) -> list[int]:
     offsets = [0]
-    offsets.extend(match.end() for match in re.finditer("\n", text))
+    # Outline generation, profiling and atoms all use Python's logical lines.
+    # Keep original codepoint positions, including NEL/VT/FF/Unicode separators.
+    for line in text.splitlines(keepends=True):
+        offsets.append(offsets[-1] + len(line))
     return offsets
 
 

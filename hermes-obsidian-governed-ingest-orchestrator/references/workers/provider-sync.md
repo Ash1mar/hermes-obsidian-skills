@@ -1,4 +1,4 @@
-# provider-sync · v5
+# provider-sync · v6
 
 - Worker commands commit Vault results only. A response with `kanban_reconciliation_pending` leaves Kanban completion, failure status and successor dispatch to the trusted workflow reconciler. Do not invoke `hermes kanban` from this worker terminal or remove Hermes isolation markers.
 

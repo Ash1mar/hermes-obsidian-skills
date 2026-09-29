@@ -19,7 +19,7 @@ IDENTITY_PATH = "_system/metadata/knowledge-identities.json"
 KNOWLEDGE_CONTRACT = "hermes-knowledge-build-run/v1"
 READING_MEASUREMENT_CONTRACT = "hermes-reading-window-measurement/v1"
 READING_SERIALIZATION = "canonical-json-window-materials/v1"
-READING_CONTEXT_SELECTION = "source-context-trimmed-to-serialized-budget/v1"
+READING_CONTEXT_SELECTION = "nearest-context-candidates-8-trimmed-to-serialized-budget/v2"
 SLICE_CONTRACT = "hermes-knowledge-build-slice/v1"
 DEFAULT_SLICE_CONFIG = {
     "pass_worker_concurrency": 2,
@@ -150,6 +150,7 @@ class FileKnowledgeBuildService:
         capability = self.source.vault_manifest.get("source_units", {}).get("capabilities", {})
         if capability.get("knowledge_build") is not True:
             _fail("CAPABILITY_DISABLED", "Vault does not declare P3 knowledge-build capability")
+        self._exact_planner = None
 
     def _task_path(self, task_id: str) -> Path:
         return _vault_path(self.vault, f"{WORK_ROOT}/{task_id}.json")
@@ -302,13 +303,18 @@ class FileKnowledgeBuildService:
 
     def _assemble_reading(self, refs: list[Mapping[str, Any]], actor: str,
                           registry_revision: int, reader_config: Mapping[str, Any]) -> dict[str, Any]:
+        with self.source.reading_snapshot():
+            return self._assemble_reading_snapshot(refs, actor, registry_revision, reader_config)
+
+    def _assemble_reading_snapshot(self, refs, actor, registry_revision, reader_config):
         maximum = int(reader_config["max_codepoints"])
         access = {"actor": actor, "purpose": "construction",
                   "registry_revision": registry_revision}
         core = [self.source.get({"source_ref": ref, "access": access}) for ref in refs]
         core_codepoints = sum(len(item["core_text"] or "") for item in core)
         result = self.source.context({"core_refs": refs, "access": access,
-                                     "max_codepoints": max(maximum, core_codepoints)})
+                                     "max_codepoints": max(maximum, core_codepoints),
+                                     "max_context_units": 8})
         context = list(result["context"])
         omitted = list(result["omitted_refs"])
 
@@ -385,6 +391,15 @@ class FileKnowledgeBuildService:
         refs = [dict(item) for item in unit_refs]
         if not refs:
             _fail("INVALID_SCHEMA", "reading measurement requires at least one UnitRef")
+        if self._exact_planner is not None:
+            planner, self._exact_planner = self._exact_planner, None
+            try:
+                if (registry_revision != planner.registry or actor != planner.actor
+                        or dict(reader_config) != planner.reader):
+                    _fail('STALE_PLAN', 'measurement differs from pinned exact planner')
+                return planner.measure(refs)
+            finally:
+                self._exact_planner = planner
         observed = self._unitset_revisions(refs)
         if unitset_revisions is not None and list(unitset_revisions) != observed:
             _fail("STALE_PLAN", "pinned UnitSet revisions changed during reading measurement")

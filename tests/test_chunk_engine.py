@@ -15,6 +15,22 @@ from hermes_source_units import (ChunkEngineInput, ChunkProfile, ContractError,
 REVISION = "a" * 64
 
 
+@pytest.mark.parametrize('separator', ['\n','\r','\r\n','\v','\f','\x1c','\x1d','\x1e','\x85','\u2028','\u2029'])
+@pytest.mark.parametrize('trailing', [False, True])
+def test_outline_logical_lines_preserve_exact_codepoint_spans(separator, trailing):
+    from hermes_source_units.chunk_engine.sections import build_sections
+    first = '# A' + separator + 'alpha' + separator
+    text = first + '# B' + separator + 'beta' + (separator if trailing else '')
+    outline = {'sections':[
+        {'id':'a','start_line':1,'end_line':2},
+        {'id':'b','start_line':3,'end_line':4}]}
+    sections, _ = build_sections(text, outline, REVISION)
+    assert sections[1]['scope'] == {'start':0,'end':len(first)}
+    assert sections[2]['scope'] == {'start':len(first),'end':len(text)}
+    assert ''.join(text[r['start']:r['end']] for section in sections
+                   for r in section['owned_ranges']) == text
+
+
 class CharacterCounter:
     def __init__(self, fingerprint: str = "test-character-tokenizer/v1"):
         self._fingerprint = fingerprint
