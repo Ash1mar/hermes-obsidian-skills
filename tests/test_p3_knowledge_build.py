@@ -862,6 +862,9 @@ class FakeKanban:
         self.waited.pop(task_id, None)
         return None
 
+    def archive(self, slug, task_id):
+        self.wait(slug, task_id, 'archived', 'Execution binding requires repair')
+
 
 def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
         vault: Path, monkeypatch: pytest.MonkeyPatch):
@@ -1099,7 +1102,7 @@ def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path, mode: str)
     assert len(workflow["dispatch_policy"]["slice_ids"]) == 8
     cards = [item for item in workflow["kanban"]["task_map"]
              if item["node"].startswith("pass-slice:")]
-    assert len(cards) == 9
+    assert len(cards) == (8 if mode == 'canary_only' else 9)
     assert sum(item["task_id"] in fake.unblocked for item in cards) == 8
     with pytest.raises(ContractError, match="INCOMPLETE_COVERAGE" if mode == "auto_full" else "INVALID_TRANSITION"):
         adapter.workflow.promote_canary(workflow_request(
@@ -1139,12 +1142,13 @@ def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path, mode: str)
                                       expected_revision=current["revision"]))
     promoted = adapter.workflow.status(pinned["workflow_id"])
     assert promoted["dispatch_policy"]["mode"] == ("full" if mode == "auto_full" else "canary")
-    remaining = next(item for item in promoted["kanban"]["task_map"]
+    remaining = next((item for item in promoted["kanban"]["task_map"]
                      if item["node"].partition(":")[2] not in
                      promoted["dispatch_policy"]["slice_ids"] and
-                     item["node"].startswith("pass-slice:"))
-    assert (remaining["task_id"] in fake.unblocked) == (mode == "auto_full")
+                     item["node"].startswith("pass-slice:")), None)
+    assert (remaining is not None and remaining['task_id'] in fake.unblocked) == (mode == 'auto_full')
     if mode == "canary_only":
+        assert len(promoted['kanban']['task_map']) == 8
         result = adapter.sync(workflow_request(workflow_id=promoted["workflow_id"],
                               actor="agent", expected_revision=promoted["revision"]))
         assert result["canary_complete"] and not result["background_dispatch"]
@@ -1435,7 +1439,7 @@ def test_kanban_worker_must_hold_exact_slice_lease(vault: Path):
     body = next(task["body"] for task in fake.tasks.values()
                 if task["id"] == item["task_id"])
     assert body["worker_contract"] == "pinned-v1"
-    assert body["worker_template_hash"].startswith("sha256:")
+    assert body["template_hash"].startswith("sha256:")
     assert body["slice_template_hash"] == adapter.workflow.knowledge._slice(
         "worker-batch", item["node"].partition(":")[2])["template_hash"]
     assert "pass-slice" in body["instructions"]

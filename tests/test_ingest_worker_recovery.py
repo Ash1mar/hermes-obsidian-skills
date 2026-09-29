@@ -65,7 +65,7 @@ def test_source_dispatch_window_and_failed_card_release(tmp_path, code):
         assert first["task_id"] in fake.completed
     else:
         assert first["task_id"] not in fake.unblocked
-        assert fake.waited[first["task_id"]] == "blocked"
+        assert fake.waited[first["task_id"]] == "archived"
 
 
 def test_conversion_checks_explicit_card_and_assigned_input_before_output(tmp_path):
@@ -182,7 +182,7 @@ def test_real_worker_cli_registers_and_reuses_identity_then_stops(tmp_path, scri
         "organization-add", "--organization-id", "organization-bound", "--name", "bound",
         "--expected-revision", "1", "--actor", "agent"], env=env,
         capture_output=True, text=True, encoding="utf-8")
-    assert bound.returncode == 0, bound.stderr
+    assert bound.returncode == 2 and 'EXECUTION_BLOCKED' in bound.stderr
     registry = vault / "_system/metadata/document-registry.json"
     before = registry.read_bytes()
     record = json.loads(before)["records"][0]
@@ -207,7 +207,7 @@ def test_real_worker_cli_registers_and_reuses_identity_then_stops(tmp_path, scri
     assert unbound.returncode == 2 and "ACCESS_DENIED" in unbound.stderr
     assert registry.read_bytes() == before
     organizations = json.loads((vault / "_system/metadata/source-organizations.json").read_text())
-    assert len(organizations["organizations"]) == 2
+    assert len(organizations["organizations"]) == 1
 
 
 def test_worker_guard_serializes_cancel_and_rejects_other_source(tmp_path, monkeypatch):

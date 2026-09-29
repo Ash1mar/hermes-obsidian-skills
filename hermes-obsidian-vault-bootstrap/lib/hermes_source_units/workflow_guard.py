@@ -91,6 +91,12 @@ def workflow_write_guard(vault, *, kinds=("source-prepare",), actor=None,
             _fail("STALE_INPUT", "worker card has been superseded")
         if binding is not None and cards[0]["node"] != binding["node"]:
             _fail("ACCESS_DENIED", "worker binding names a different card")
+        failure = _vault_path(vault, f"{WORKFLOW_ROOT}/{workflow_id}/reports/failed-{fingerprint(cards[0]['node'])[:16]}.json")
+        if failure.is_file():
+            report = _load_json(failure)
+            key = cards[0]['idempotency_key']
+            if report.get('error_code') and (report.get('idempotency_key') == key or key.endswith(':' + report.get('input_fingerprint', 'INVALID'))):
+                _fail("EXECUTION_BLOCKED", "domain write rejected: current binding requires trusted repair")
         kind = cards[0]["node"].partition(":")[0]
         if kind not in kinds:
             _fail("ACCESS_DENIED", "worker kind cannot perform this domain write")
