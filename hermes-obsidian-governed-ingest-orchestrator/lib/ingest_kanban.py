@@ -774,7 +774,17 @@ class IngestKanbanAdapter:
             if not domain_completed(self.workflow, updated, node) and hasattr(self.kanban, "task_snapshot"):
                 snapshot = self.kanban.task_snapshot(slug, ids[node.name])
                 ended = [r for r in snapshot.get("runs", []) if r.get("ended_at")]
-                if ended and snapshot['task']['status'] not in ('running', 'archived') and not self._failed_card(workflow_id, node):
+                durable_slice_failure = False
+                if ended and node.kind == 'pass-slice':
+                    current_slice = self.workflow.knowledge._slice(updated['batch_id'], node.name.partition(':')[2])
+                    error = current_slice.get('last_error')
+                    if error and current_slice['state'] != 'leased':
+                        try:
+                            failure_at = datetime.fromisoformat(error['at'].replace('Z', '+00:00')).timestamp()
+                            durable_slice_failure = failure_at >= float(ended[-1]['started_at'])
+                        except (KeyError, TypeError, ValueError):
+                            pass
+                if ended and not durable_slice_failure and snapshot['task']['status'] not in ('running', 'archived') and not self._failed_card(workflow_id, node):
                     self.execution_failure({"workflow_id": workflow_id, "node": node.name,
                         "task_id": ids[node.name]}, "NATIVE_WORKER_STOPPED",
                         str(ended[-1].get("error") or ended[-1].get("summary") or "worker ended without a Vault outcome"))
