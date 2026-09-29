@@ -8,7 +8,7 @@ import pytest
 
 from test_ingest_worker_recovery import setup_worker
 from test_p3_knowledge_build import (ROOT, vault, publish_sources, FakeKanban,
-    IngestKanbanAdapter, start_and_pin, workflow_request)
+    IngestKanbanAdapter, start_and_pin, workflow_request, plan_sliced_batch)
 from hermes_source_units import ContractError
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard
@@ -126,3 +126,35 @@ def test_runtime_exposes_execution_reason_without_ledger_write(tmp_path):
     assert card['state']=='execution_blocked' and card['error_code']=='INVALID_SCHEMA'
     assert 'template_hash' in card['reason']
     assert adapter.workflow._path(value['workflow_id']).read_bytes()==before
+
+
+def test_native_failure_preserves_durable_slice_retry_but_blocks_unreported_failure(vault):
+    from datetime import datetime, timezone, timedelta
+    batch=plan_sliced_batch(vault,27,'native-retry-batch')
+    fake=FakeKanban(True)
+    adapter=IngestKanbanAdapter(vault,fake,enable_workers=True)
+    value=start_and_pin(vault,workflow_request(workflow_id='ingest-native-retry',actor='agent',
+        expected_revision=0,profile='compact-3',scope={'source_paths':[],
+        'knowledge_selector':'all-current','execution_mode':'canary_only'},batch_id='native-retry-batch'))
+    adapter._sync_current(value['workflow_id'])
+    value=adapter.workflow.status(value['workflow_id'])
+    card=next(c for c in value['kanban']['task_map'] if c['node'].startswith('pass-slice:'))
+    req={'workflow_id':value['workflow_id'],'node':card['node'],'task_id':card['task_id'],'worker_id':'retry-worker'}
+    begun=adapter.worker_begin(req)
+    adapter.worker_fail({**req,'template_hash':begun['template_hash'],'expected_revision':begun['slice']['revision'],
+        'code':'INVALID_MODEL_JSON','message':'invalid structured response','failed_output':'{broken'})
+    sid=card['node'].partition(':')[2]
+    failed=batch._slice('native-retry-batch',sid)
+    failure_at=datetime.fromisoformat(failed['last_error']['at'].replace('Z','+00:00')).timestamp()
+    native_start=[failure_at-1]
+    fake.task_snapshot=lambda slug, task_id: {'task':{'id':task_id,'status':'blocked'},
+        'runs':[{'id':1,'started_at':native_start[0],'ended_at':failure_at+1,'outcome':'blocked'}] if task_id==card['task_id'] else []}
+    adapter._sync_current(value['workflow_id'])
+    assert fake.waited[card['task_id']]=='scheduled'
+    batch.refresh_ready_slices('native-retry-batch','agent',now=datetime.now(timezone.utc)+timedelta(hours=1))
+    adapter._sync_current(value['workflow_id'])
+    assert card['task_id'] in fake.unblocked
+    native_start[0]=failure_at+2  # A later run ended without a new Vault failure.
+    result=adapter._sync_current(value['workflow_id'])
+    assert card['node'] in result['execution_blocked']
+    assert fake.waited[card['task_id']]=='archived'

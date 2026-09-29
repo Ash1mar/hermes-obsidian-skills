@@ -25,6 +25,12 @@ this avoids hundreds of unnecessary native CLI calls during a bounded trial.
    Every core UnitRef appears exactly once and every committed task's measured
    serialized window fits the unchanged reader limit.
 
+Native worker termination is reconciled against durable slice failures from that
+run. A recorded model/semantic failure retains its existing bounded retry or
+approval state; it is not reclassified as a dispatch contract failure. A later
+native run ending without its own Vault outcome is quarantined. Regression
+coverage exercises both cases and the elapsed retry deadline.
+
 Retain request digests, native run events, helper execution/progress records,
 typed failure reports, retry counts, timings and output coverage. Model outage or
 an unavailable native interface leaves its gate unpassed. Observe a small real
