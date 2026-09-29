@@ -1,4 +1,4 @@
-# pass-slice · v5
+# pass-slice · v6
 
 - Worker commands commit Vault results only. A response with `kanban_reconciliation_pending` leaves Kanban completion, failure status and successor dispatch to the trusted workflow reconciler. Do not invoke `hermes kanban` from this worker terminal or remove Hermes isolation markers.
 

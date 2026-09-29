@@ -205,7 +205,7 @@ class KanbanCLI:
         if self.task_status(slug, task_id) == "done":
             return
         self.command("kanban", "--board", slug, "complete", task_id,
-                     "--result", result)
+                     "--force", "--result", result)
 
     def task_status(self, slug: str, task_id: str) -> str:
         shown = json.loads(self.command("kanban", "--board", slug, "show",
@@ -671,8 +671,17 @@ class IngestKanbanAdapter:
             cooldown.replace("Z", "+00:00")) > datetime.now(timezone.utc))
         for node in nodes:
             if domain_completed(self.workflow, updated, node):
+                summary = "Authoritative Vault outcome already committed"
+                if node.kind == 'source-prepare':
+                    for item in updated.get('source_outcomes', []):
+                        name = 'source-prepare:' + fingerprint({'path':item['path'],
+                            'content_sha256':item['content_sha256']})[:16]
+                        if name == node.name:
+                            summary = ('Source preparation ready' if item['status']=='ready' else
+                                f"Source preparation failed ({item['error_code']}): {item['reason']}; coverage gap retained")
+                            break
                 self.kanban.complete(slug, ids[node.name],
-                                     "Authoritative Vault outcome already committed")
+                                     summary)
             elif self._failed_card(workflow_id, node):
                 self.kanban.wait(slug, ids[node.name], "blocked",
                                  "Vault worker failure report requires review")

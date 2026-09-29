@@ -52,6 +52,9 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any]) -> dic
     elif command == "worker-prepare-source":
         from source_preparation import prepare_source
         result = prepare_source(adapter, request)
+    elif command == "worker-plan-exact":
+        from exact_preparation import prepare_exact
+        result = prepare_exact(adapter, request)
     else:
         result = getattr(adapter, command.replace("-", "_"))(request)
     if (command in ("start", "resume") and result.get("background_dispatch")

@@ -16,7 +16,7 @@ ENGINE_FINGERPRINT = fingerprint({
     "engine_version": ENGINE_VERSION,
     "pipeline": ["profile", "sections-owned-ranges", "atoms", "strategies", "overlap", "validation"],
     "strategies": ["structure", "heuristic", "recursive"],
-    "offsets": "lf-unicode-codepoint-half-open",
+    "offsets": "splitlines-unicode-codepoint-half-open/v2",
     "oversized": "preserve-and-report",
 })
 

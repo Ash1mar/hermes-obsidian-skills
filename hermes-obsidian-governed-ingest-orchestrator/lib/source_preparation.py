@@ -5,6 +5,7 @@ from argparse import Namespace
 import json
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import time
@@ -54,17 +55,18 @@ def prepare_source(adapter, request):
 
         # A supplied Bundle is explicit resumption; automatic reuse is restricted
         # to this workflow/source's deterministic attempt directories.
-        bundle_ref = request.get("bundle")
+        bundle_ref = request.get("bundle") or _repaired_bundle(adapter, request, source)
         if bundle_ref:
             bundle = _vault_path(vault, str(bundle_ref))
-            if not bundle.is_relative_to(_vault_path(vault, "10_Raw/converted")):
-                _fail("UNSAFE_PATH", "Bundle must be derived output under 10_Raw/converted")
+            if not any(bundle.is_relative_to(_vault_path(vault, location))
+                       for location in ("10_Raw/converted", "_system/reports/source-bundles")):
+                _fail("UNSAFE_PATH", "Bundle must be a governed derived Bundle")
             _validate_identity(bundle, source)
         else:
             raw = _vault_path(vault, source["path"])
             if raw.suffix.lower() != ".pdf":
                 _fail("PREPARATION_REVIEW_REQUIRED", "automatic preparation currently supports PDF; use governed manual preparation for other formats")
-            base = f"10_Raw/converted/{raw.stem}-{source['content_sha256'][:16]}-{fingerprint(request['workflow_id'])[:8]}"
+            base = f"_system/reports/source-bundles/{raw.stem}-{source['content_sha256'][:16]}-{fingerprint(request['workflow_id'])[:8]}"
             bundle = None
             with tempfile.TemporaryDirectory(prefix="hermes-source-binding-") as temporary:
                 binding_file = Path(temporary) / "binding.json"
@@ -106,10 +108,23 @@ def prepare_source(adapter, request):
             _fail("PREPARATION_REVIEW_REQUIRED", "Bundle failed validation; inspect source-preparation validation.json")
         repository = JsonGovernanceRepository(vault)
         try:
-            with workflow_write_guard(vault, actor=actor):
-                _, revision = repository.get_version(identity["version_id"])
-                command_ingest_finish(repository, Namespace(bundle=bundle,
-                    version_id=identity["version_id"], expected_revision=revision, actor=actor))
+            record, revision = repository.get_version(identity['version_id'])
+            governance = json.loads((bundle/'manifest.json').read_text(encoding='utf-8-sig')).get('governance', {})
+            finished = (record.get('processing_status') == 'completed' and
+                all(governance.get(key) == identity[key] for key in ('resource_id','document_id','version_id'))
+                and governance.get('vault_id') == service.vault_id)
+            if not finished:
+                # ingest-finish annotates Bundle manifests; source material is read-only.
+                if bundle.is_relative_to(_vault_path(vault, '10_Raw')):
+                    derived = _vault_path(vault, f"_system/reports/source-bundles/reused-{source['content_sha256']}")
+                    if not derived.exists():
+                        with workflow_write_guard(vault, actor=actor):
+                            shutil.copytree(bundle, derived)
+                    bundle = derived
+                    _validate_identity(bundle, source)
+                with workflow_write_guard(vault, actor=actor):
+                    command_ingest_finish(repository, Namespace(bundle=bundle,
+                        version_id=identity["version_id"], expected_revision=revision, actor=actor))
         except GovernanceError as exc:
             _fail("SOURCE_REGISTRATION_BLOCKED", str(exc))
         adapter.worker_check(bound)
@@ -130,6 +145,28 @@ def _validate_identity(bundle, source):
     manifest = json.loads((bundle / "manifest.json").read_text(encoding="utf-8-sig"))
     if manifest.get("source", {}).get("sha256") != source["content_sha256"]:
         _fail("SOURCE_IDENTITY_CONFLICT", "Bundle does not carry assigned raw SHA-256")
+
+
+def _repaired_bundle(adapter, request, source):
+    """Reuse only this source's explicit QA Bundle in a verified repair snapshot."""
+    import hashlib
+    workflow = adapter.workflow.status(request['workflow_id'])
+    for repair in reversed(workflow.get('repair_history', [])):
+        path = _vault_path(adapter.workflow.vault, repair['before_ref'])
+        payload = path.read_bytes()
+        if hashlib.sha256(payload).hexdigest() != repair['before_sha256']:
+            _fail('SOURCE_CHANGED', 'repair snapshot hash differs')
+        previous = json.loads(payload)
+        for item in previous.get('source_outcomes', []):
+            if (item['path'] != source['path'] or item['content_sha256'] != source['content_sha256']
+                    or item.get('error_code') != 'SOURCE_UNIT_VALIDATION_FAILED'):
+                continue
+            for ref in item.get('artifact_refs', []):
+                if str(ref).endswith('/manifest.json'):
+                    bundle = _vault_path(adapter.workflow.vault, ref).parent
+                    _validate_identity(bundle, source)
+                    return bundle.relative_to(adapter.workflow.vault).as_posix()
+    return None
 
 
 def _complete(adapter, bound, resource, unit_set, refs, *, reused=False, quality=None):
