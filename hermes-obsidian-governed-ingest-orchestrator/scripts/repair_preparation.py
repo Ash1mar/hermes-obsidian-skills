@@ -29,7 +29,7 @@ def prepare(vault, workflow_id, hashes, repair_id):
         refs = [value['template_pins'][0]['path']]
     request = {'workflow_id':workflow_id,'actor':value['actor'],
         'expected_revision':value['revision'],'repair_id':repair_id,
-        'reason':'Install validated v6 preparation/planning contracts; retry selected SourceUnit engine failures using existing QA Bundles',
+        'reason':'Install validated current worker contracts; preserve outcomes except explicitly selected SourceUnit engine failures',
         'evidence_refs':refs,'templates':worker_pack(),
         'reset_sources':[{'path':item['path'],'outcome_digest':'sha256:'+fingerprint(item)} for item in selected]}
     request['input_digest'] = mutation_digest(request)

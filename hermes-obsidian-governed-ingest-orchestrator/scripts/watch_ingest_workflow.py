@@ -27,6 +27,9 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                 return
             try:
                 result = adapter._sync_current(workflow_id)
+                if result.get('execution_blocked') and not result.get('background_dispatch'):
+                    print('Execution blocked; trusted repair required: ' + ', '.join(result['execution_blocked']), flush=True)
+                    return
                 if result.get("canary_complete") and value["scope"].get("execution_mode") == "canary_only":
                     return
             except ContractError as exc:

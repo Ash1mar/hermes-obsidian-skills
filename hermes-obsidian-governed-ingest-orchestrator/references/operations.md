@@ -8,7 +8,7 @@ All examples use `python3 "<skill-dir>/scripts/<script>.py" --vault "<vault>" <c
 | Inspect | `manage_ingest_workflow.py status --workflow-id <id> --compact --runtime` | Authoritative stage, revision, checkpoints plus read-only native attempts |
 | Preview canary | `manage_ingest_workflow.py canary-preview --workflow-id <id> --limit 8` | Read-only first eight ready slice IDs and selection digest |
 | Arm canary | `dispatch_ingest_workflow.py arm-canary` | Persist the exact previewed allowlist and project only those Pass cards |
-| Prepare one source (v6) | `dispatch_ingest_workflow.py worker-prepare-source` | Bound registration, supervised PDF conversion, QA and SourceUnit publication; preserves pending on runtime/review errors |
+| Prepare one source (v7) | `dispatch_ingest_workflow.py worker-prepare-source` | Bound registration, supervised PDF conversion, QA and SourceUnit publication; preserves pending on runtime/review errors |
 | Source worker result | `dispatch_ingest_workflow.py worker-complete` or `worker-fail` | Commit one validated ready UnitSet or one typed failed-source coverage gap; continue other source cards |
 | Exact plan worker result | `dispatch_ingest_workflow.py worker-complete` | Adopt the exact-budget batch after every source has a result; only ready UnitSets may enter the batch |
 | Stop canary | `dispatch_ingest_workflow.py disarm-canary` | Persist disabled policy; subsequent worker checks fail closed |
@@ -70,26 +70,29 @@ Native read failure is `unknown`, never successful running. These are per-card o
 not an atomic board snapshot; errors not yet persisted by Hermes remain unknown. Do not infer
 source failure or model recovery solely from these labels. Source coverage is still the ledger.
 
-New workflows pin pack v6. `worker-prepare-source` takes workflow_id, node and task_id;
-its begin call supplies the pinned template hash internally. It makes no agent chat-model calls and never
+New workflows pin pack v7. Preparation workers execute the card's complete `worker_command`,
+which reads its immutable dispatcher binding. Missing/changed artifacts stop for trusted repair;
+sync never overwrites a changed request. The helper owns begin/check/complete and makes no chat-model calls. It never
 calls the Kanban CLI. Local conversion retains the shared host gate and cancellation monitoring.
 Only this workflow/source's deterministic attempt directories are automatically resumed; use
 `bundle` for explicitly requested existing Bundle reuse. Already current units are validated
 against the assigned raw hash and identity before reuse. A validation failure allows one supported
 pipeline retry with both attempts preserved. Missing output or runtime/config errors stop for review;
-they are not automatically recorded as damaged PDF. On a failed command, obtain `worker-begin`'s
-hash if needed for `worker-fail`, then report the actual code while binding checks still pass.
+they are not automatically recorded as damaged PDF. Failed helper execution persists a typed
+execution blocker; the trusted reconciler closes the native card and dependent subtree. Do not
+restart the same failed binding or manufacture a missing request field.
 Completing one source does not enable exact planning/Canary until the remaining sources finish.
 Changing installed templates never updates an existing workflow's pinned pack automatically.
 
-## Exact planning and pre-batch recovery (v6)
+## Exact planning and pre-batch recovery (v7)
 
-Use `worker-plan-exact` as a single supervised background terminal job (`background=true,
+Execute exact-plan's `worker_command` as a single supervised background terminal job (`background=true,
 notify=true`), polling in short calls rather than waiting through the outer tool deadline.
 The helper validates full ready coverage, splits on the actual canonical serialized budget,
 and persists per-window measurements plus `progress.json` and `plan-request.json` under
 `_system/reports/exact-planning/<input-fingerprint>/`. Restart the same bound command to reuse
-verified checkpoints. Registry/ACL, UnitSet bytes, reader configuration and input fingerprints
+verified checkpoints while the binding remains valid. A reported contract failure requires the supported repair
+below before rerunning; a repair epoch changes card identity but preserves compatible measurements. Registry/ACL, UnitSet bytes, reader configuration and input fingerprints
 must still match. An indivisible oversize unit stays explicitly blocked. Commit reuses the
 same verified measurements instead of recalculating the entire plan.
 The generic reader selects at most eight nearest eligible context candidates before
@@ -101,7 +104,7 @@ fingerprint is versioned, invalidating measurements made with the previous rule.
 For an already cancelled workflow without a batch, an operator can preview
 `python3 "<skill-dir>/scripts/repair_preparation.py" --vault "<vault>" --workflow-id "<id>"
 --reset-source-sha256 "<failed-source-raw-sha256>" --repair-id "<stable-id>"`.
-Add `--apply` to archive superseded bound cards, install the complete v6 pinned pack and reset
+Add `--apply` to archive superseded bound cards, install the complete v7 pinned pack and reset
 only the selected failed SourceUnit outcome. This never resumes. Use the normal governed
 `resume` command afterward with the same workflow ID. Do not invoke repair from a worker.
 The auditable repair snapshot preserves previous results; it is a workflow record, not a

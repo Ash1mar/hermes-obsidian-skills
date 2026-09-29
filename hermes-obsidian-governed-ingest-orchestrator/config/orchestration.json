@@ -1,6 +1,6 @@
 {
   "contract": "hermes-governed-ingest-orchestration/v1",
-  "template_version": "v6",
+  "template_version": "v7",
   "worker_dispatch_enabled": true,
   "source_prepare_concurrency": 2,
   "activation_note": "In auto_full, dispatch source preparation, exact plan, an eight-slice canary, remaining Pass slices and all downstream nodes. Advance both checkpoints only after durable validation and rechecked hashed decisions."
