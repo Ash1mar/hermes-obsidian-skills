@@ -43,9 +43,20 @@ def test_exact_budget_split_resume_and_commit_without_remeasure(vault, monkeypat
     assert second.measured == 0
     resumed_service._exact_planner = resumed
     before = resumed.measured
+    # Batch preflight checks the whole live source once; task validation should
+    # stay proportional to assigned units as a batch grows.
+    import hermes_source_units.knowledge_build as knowledge_module
+    validate = knowledge_module.validate_references
+    validated_counts = []
+    def track_validation(kind, record, units):
+        if kind == 'work':
+            validated_counts.append(len(units))
+        return validate(kind, record, units)
+    monkeypatch.setattr(knowledge_module, 'validate_references', track_validation)
     result = resumed_service.plan_batch(plan)
     assert result['created_tasks'] == len(plan['tasks'])
     assert resumed.measured == before
+    assert sum(validated_counts) == len(resumed.refs)
 
 
 def test_measure_checkpoint_detects_corruption_and_changed_artifact(vault):

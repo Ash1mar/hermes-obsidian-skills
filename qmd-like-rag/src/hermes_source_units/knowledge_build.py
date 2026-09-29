@@ -555,6 +555,11 @@ class FileKnowledgeBuildService:
                 return {"ok": True, "created": False, "batch": existing_batch,
                         "created_tasks": 0, "existing_tasks": len(task_ids)}
             units = self._live_units(all_refs, actor, registry_revision)
+            # The complete batch has passed live source/ACL and overlap preflight.
+            # A task's reference validation needs its assigned units, not every
+            # unit of every source again (quadratic for large exact plans).
+            units_by_ref = {self._ref_key({'unit_ref':unit['ref'], 'span':None}):unit
+                            for unit in units}
             active = self._task_ref_index({"pending", "running"}, set(task_ids))
             completed = self._task_ref_index({"completed"}, set(task_ids))
             active_conflicts = sorted({task_id for key in ref_owners for task_id in active.get(key, set())})
@@ -585,7 +590,8 @@ class FileKnowledgeBuildService:
                               "$.tasks")
                     task["reading_measurement"] = measurement
                     task["reader_config_hash"] = measurement["reader_config_hash"]
-                validate_references("work", task, units)
+                task_units = [units_by_ref[self._ref_key(ref)] for ref in refs]
+                validate_references("work", task, task_units)
                 if path.exists():
                     existing = self._task(task_id)
                     if existing != task:

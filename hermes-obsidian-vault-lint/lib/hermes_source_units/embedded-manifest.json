@@ -16,7 +16,7 @@
   "file_locks.py": "bf97c6fb07ed464bbe2cd2a5a2878d41e190ccc4a23cc19e025f4e35e09a6384",
   "ingest_workflow.py": "48d45a26f5e76fef5b1ded1af39a426c8f2280c08a16ad991028ed24e4c58914",
   "interfaces.py": "5d824d42fbea30efc0608260bbd21089d8b170816c85b43bb0dc6d45edb36373",
-  "knowledge_build.py": "29c5672a478172cd694803164f3b62a581d5dfa83347ea435e5b9ad07a97c603",
+  "knowledge_build.py": "39f8c023bf46e251025122c4e1c736f919fd8df1a44fa15cfd03ab3f268c8a58",
   "py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "schemas/contracts.json": "5faca709eaf94e83cf0569f7907f4671a05d63c3f17c0a01f64cb41fa647c1e9",
   "source_units.py": "e7087c233b5f6d795673bbd2af18a11834d51d0e20f9af01fa4e11840cb0c6e0",
