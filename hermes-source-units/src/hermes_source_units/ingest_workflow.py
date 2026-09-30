@@ -17,6 +17,7 @@ from .source_units import (_exclusive_lock, _json_bytes, _load_json,
                            _vault_path, _write_atomic)
 from .validation import ContractError, fingerprint, validate_record
 from .file_locks import kernel_lock, process_exists, host_identity
+from .ingest_pauses import WorkflowPauseMixin
 
 WORKFLOW_ROOT = "_system/ledgers/ingest-workflows"
 WORKFLOW_CONTRACT = "hermes-ingest-workflow/v1"
@@ -76,7 +77,7 @@ def display_phase(value: Mapping[str, Any]) -> dict[str, Any]:
     _fail("INVALID_SCHEMA", "workflow stage has no display phase")
 
 
-class FileIngestWorkflowService:
+class FileIngestWorkflowService(WorkflowPauseMixin):
     def __init__(self, vault_root: str | Path):
         self.knowledge = FileKnowledgeBuildService(vault_root)
         self.vault = self.knowledge.vault
@@ -195,6 +196,8 @@ class FileIngestWorkflowService:
         scope = request["scope"]
         if not isinstance(scope, dict):
             _fail("INVALID_SCHEMA", "scope must be an object")
+        if scope.get("pause_after") and scope.get("execution_mode") != "auto_full":
+            _fail("INVALID_SCHEMA", "pause_after requires auto_full execution")
         batch_id = request.get("batch_id")
         if batch_id is not None and scope.get("source_paths"):
             _fail("INVALID_SCHEMA", "adopted batches cannot bypass scoped source preparation")
@@ -241,6 +244,7 @@ class FileIngestWorkflowService:
         result["dispatch_policy"] = value.get("dispatch_policy", {
             "mode": "disabled", "slice_ids": [], "selection_digest": None})
         result["source_coverage"] = self.source_coverage(value)
+        result["pause"] = self.pause_status(value)
         return result
 
     @staticmethod
@@ -337,6 +341,12 @@ class FileIngestWorkflowService:
             mode = request.get("execution_mode", value["scope"].get("execution_mode", "manual"))
             if mode not in ("manual", "canary_only", "auto_full"):
                 _fail("INVALID_SCHEMA", "invalid execution mode")
+            repaired_scope = {**value["scope"], "execution_mode": mode}
+            if "pause_after" in request:
+                repaired_scope["pause_after"] = request["pause_after"]
+            validate_record("ingest_workflow_scope", repaired_scope)
+            if repaired_scope.get("pause_after") and mode != "auto_full":
+                _fail("INVALID_SCHEMA", "pause_after requires auto_full execution")
             reset = {item["path"]: item["outcome_digest"] for item in request.get("reset_sources", [])}
             outcomes = {item["path"]: item for item in value.get("source_outcomes", [])}
             for path, digest in reset.items():
@@ -371,6 +381,7 @@ class FileIngestWorkflowService:
                 _write_atomic(before_path, before)
             value = copy.deepcopy(value)
             value["source_outcomes"] = [item for item in value.get("source_outcomes", []) if item["path"] not in reset]
+            value["scope"] = repaired_scope
             value["template_pins"] = pins
             value["scope"]["execution_mode"] = mode
             value["kanban"]["task_map"] = []  # old workers must fail closed after migration
@@ -463,6 +474,7 @@ class FileIngestWorkflowService:
         """Persist a one-time allowlist; never widen an existing canary."""
         with _exclusive_lock(self._lock(str(request["workflow_id"]))):
             value = self._mutation(request)
+            self.assert_not_paused(value)
             requested = list(request["slice_ids"])
             if len(requested) != len(set(requested)) or not 1 <= len(requested) <= 8:
                 _fail("INVALID_SCHEMA", "canary requires 1 to 8 distinct slice IDs")
@@ -503,6 +515,7 @@ class FileIngestWorkflowService:
         """Open remaining Pass slices only after the pinned eight-slice trial passed."""
         with _exclusive_lock(self._lock(str(request["workflow_id"]))):
             value = self._mutation(request)
+            self.assert_not_paused(value)
             if (value["scope"].get("execution_mode") != "auto_full"
                     or value["current_stage"] != "analyzing" or value["cancel_requested"]):
                 _fail("INVALID_TRANSITION", "automatic promotion requires an active analyzing workflow")
@@ -526,6 +539,7 @@ class FileIngestWorkflowService:
     def reconcile(self, request: Mapping[str, Any]) -> dict[str, Any]:
         with _exclusive_lock(self._lock(str(request["workflow_id"]))):
             value = self._mutation(request)
+            self.assert_not_paused(value)
             target = request["target_stage"]
             if value["cancel_requested"] or value["state"] in TERMINAL:
                 _fail("WORKFLOW_STOPPED", "resume before advancing workflow")

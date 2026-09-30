@@ -57,7 +57,7 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any]) -> dic
         result = prepare_exact(adapter, request)
     else:
         result = getattr(adapter, command.replace("-", "_"))(request)
-    if (command in ("start", "resume") and result.get("background_dispatch")
+    if (command in ("start", "resume", "continue-workflow") and result.get("background_dispatch")
             and os.name == "posix"):
         script = SKILL / "scripts/watch_ingest_workflow.py"
         name = hashlib.sha256(str(result["workflow_id"]).encode()).hexdigest()[:16]

@@ -1,4 +1,6 @@
-# release-apply · v8
+# release-apply
+
+- `WORKFLOW_PAUSED` is a durable operator boundary. Stop without bypassing it, requesting continuation, cancelling the workflow or recording a failed source. A boundary owner with an already durable result may submit only `worker-complete`; the trusted reconciler acknowledges that result while holding successors.
 
 - Worker commands commit Vault results only. A response with `kanban_reconciliation_pending` leaves Kanban completion, failure status and successor dispatch to the trusted workflow reconciler. Do not invoke `hermes kanban` from this worker terminal or remove Hermes isolation markers.
 

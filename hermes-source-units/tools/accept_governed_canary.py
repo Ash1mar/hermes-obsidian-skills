@@ -29,6 +29,8 @@ def main():
     parser.add_argument('--output', required=True)
     parser.add_argument('--timeout', type=int, default=7200)
     parser.add_argument('--measurements-from', help='Previous isolated gate Vault; checkpoints are freshly verified')
+    parser.add_argument('--verify-pauses', action='store_true',
+                        help='Verify exact-plan pause, explicit continuation and eight-slice pause')
     args = parser.parse_args()
     if os.name != 'posix':
         raise RuntimeError('this gate must use the deployed Hermes Linux runtime')
@@ -107,6 +109,18 @@ def main():
             dest = vault/path
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(original/path, dest)
+        # Pause evidence also pins historical preparation reports and Bundle
+        # manifests. These are authoritative inputs, unlike Provider state.
+        for outcome in old.get('source_outcomes', []):
+            for ref in outcome.get('artifact_refs', []):
+                source = (original/ref).resolve()
+                source.relative_to(original)
+                dest = vault/ref
+                if not dest.exists():
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, dest)
+                if source.name=='manifest.json' and 'converted' in source.parts:
+                    shutil.copytree(source.parent, dest.parent, dirs_exist_ok=True)
         ledger = vault/f'_system/ledgers/ingest-workflows/{args.workflow_id}.json'
         ledger.parent.mkdir(parents=True, exist_ok=True)
         ledger.write_bytes(before)
@@ -137,7 +151,9 @@ def main():
         current = service.repair_preparation(request(current, repair_id='release-gate',
             reason='Validate candidate deployment in isolated full-scale native workflow',
             evidence_refs=[current['template_pins'][0]['path']], templates=worker_pack(),
-            reset_sources=[], execution_mode='canary_only'))
+            reset_sources=[], execution_mode='auto_full' if args.verify_pauses else 'canary_only',
+            pause_after=['exact_plan', 'canary', 'pass', 'checkpoint_1', 'build_finalize',
+                         'checkpoint_2', 'release_sync'] if args.verify_pauses else []))
         assert current['source_outcomes']==old['source_outcomes']
         # No model request construction or fixture completion in the success path.
         with (state/'gateway.log').open('wb') as output:
@@ -163,6 +179,25 @@ def main():
         print('GATE_STARTED', json.dumps({k:evidence[k] for k in ('vault','runtime','gateway_pid','candidate_version')}), flush=True)
         begun = time.monotonic()
         adapter = IngestKanbanAdapter(vault, enable_workers=True)
+        def quiescent_pause(boundary):
+            # The receipt precedes native card acknowledgement. Do not race a
+            # still-running reconciler when testing the operator's next command.
+            deadline = time.monotonic() + 180
+            while watcher_pid:
+                try:
+                    status = Path(f'/proc/{watcher_pid}/status').read_text()
+                except FileNotFoundError:
+                    break
+                state_line = next(line for line in status.splitlines() if line.startswith('State:'))
+                if state_line.split()[1] == 'Z':
+                    break
+                if time.monotonic() > deadline:
+                    raise RuntimeError('paused reconciler did not finish native acknowledgement')
+                time.sleep(2)
+            current = service.status(args.workflow_id)
+            assert current['pause_control']['boundary']==boundary
+            assert current['pause_control']['evidence_digest']
+            return current
         last = None
         while time.monotonic()-begun < args.timeout:
             if gateway.poll() is not None:
@@ -185,13 +220,33 @@ def main():
             if failures:
                 evidence['execution_blockers']=failures
                 raise RuntimeError('native worker execution blocked; inspect report')
+            if (args.verify_pauses and service.pause_status(value)['boundary']=='exact_plan'
+                    and value.get('pause_control', {}).get('evidence_digest')):
+                value = quiescent_pause('exact_plan')
+                assert value['batch_id'] and value['dispatch_policy']['mode']=='disabled'
+                assert not list((vault/'_system/knowledge-builds').glob('task-*/passes/*.json'))
+                ledger_before = service._path(args.workflow_id).read_bytes()
+                recovered = dispatch(vault, 'resume', request(value))
+                assert not recovered['background_dispatch']
+                assert service._path(args.workflow_id).read_bytes()==ledger_before
+                assert all(c['state'] not in ('running','done') for c in cards
+                           if c['node'].startswith('pass-slice:'))
+                evidence['exact_plan_pause_verified'] = True
+                continuation = request(value, continue_id='gate-continue-plan', boundary='exact_plan',
+                    evidence_digest=value['pause_control']['evidence_digest'])
+                next_dispatch = dispatch(vault, 'continue-workflow', continuation)
+                watcher_pid = next_dispatch.get('reconciler_pid', watcher_pid)
+                evidence['explicit_plan_continuation'] = continuation
+                save()
+                continue
             canary = vault/f'_system/ledgers/ingest-workflows/{args.workflow_id}/reports/canary.json'
             if canary.exists():
                 outcome = json.loads(canary.read_text())
-                assert outcome['ok'] and outcome['execution_mode']=='canary_only'
+                assert outcome['ok'] and outcome['execution_mode']==('auto_full' if args.verify_pauses else 'canary_only')
                 assert len(set(outcome['slice_ids']))==8
                 snapshots = [native.task_snapshot(value['kanban']['board_id'],c['task_id'])
-                             for c in value['kanban']['task_map'] if c['node'].startswith('pass-slice:')]
+                             for c in value['kanban']['task_map']
+                             if c['node'].startswith('pass-slice:') and c['node'].partition(':')[2] in outcome['slice_ids']]
                 if any(s['task']['status']!='done' for s in snapshots):
                     time.sleep(3)
                     continue
@@ -208,7 +263,18 @@ def main():
                            by_refs[json.dumps(t['target_refs'],sort_keys=True)]['limit']==12000 for t in plan['tasks'])
                 selected = [service.knowledge._slice(value['batch_id'],sid) for sid in outcome['slice_ids']]
                 assert all(s['state']=='completed' and s['result_refs'] for s in selected)
-                assert all(c['node'].startswith('pass-slice:') for c in value['kanban']['task_map'])
+                if args.verify_pauses:
+                    value = quiescent_pause('canary')
+                    assert service.pause_status(value)['boundary']=='canary'
+                    assert value['dispatch_policy']['mode']=='canary'
+                    assert evidence.get('exact_plan_pause_verified')
+                    assert not dispatch(vault, 'resume', request(value))['background_dispatch']
+                    for c in value['kanban']['task_map']:
+                        if c['node'].partition(':')[2] not in outcome['slice_ids']:
+                            assert native.task_snapshot(value['kanban']['board_id'],c['task_id'])['task']['status'] not in ('running','done')
+                    evidence['canary_pause_verified'] = True
+                else:
+                    assert all(c['node'].startswith('pass-slice:') for c in value['kanban']['task_map'])
                 assert not list((vault/'_system/knowledge-builds').glob('*/reduce.json'))
                 # Observe a further dispatch period: completed canary must not promote.
                 time.sleep(min(60, float(config['kanban'].get('dispatch_interval_seconds',60))))

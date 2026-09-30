@@ -85,6 +85,7 @@ def workflow_write_guard(vault, *, kinds=("source-prepare",), actor=None,
         value = service.status(workflow_id)
         if value["cancel_requested"] or value["state"] in TERMINAL:
             _fail("WORKFLOW_STOPPED", "domain write rejected: workflow is stopped")
+        service.assert_not_paused(value)
         if actor is not None and actor != value["actor"]:
             _fail("ACTOR_MISMATCH", "domain writer differs from workflow actor")
         cards = [item for item in value["kanban"]["task_map"] if item.get("task_id") == task_id]

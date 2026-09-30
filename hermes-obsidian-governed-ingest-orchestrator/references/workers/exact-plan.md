@@ -1,4 +1,6 @@
-# exact-plan · v8
+# exact-plan
+
+- `WORKFLOW_PAUSED` is a durable operator boundary. Stop without bypassing it, requesting continuation, cancelling the workflow or recording a failed source. A boundary owner with an already durable result may submit only `worker-complete`; the trusted reconciler acknowledges that result while holding successors.
 
 Run the card's complete `worker_command` unchanged, once, using terminal `background=true, notify=true`. The command reads the dispatcher's canonical binding file and performs worker-begin/check/complete internally. Do not build request JSON, call begin/check first, select another dispatcher, or infer any hash. If the card no longer contains the command, stop and report a dispatch contract error.
 

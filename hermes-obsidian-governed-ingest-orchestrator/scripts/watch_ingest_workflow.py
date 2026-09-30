@@ -27,6 +27,10 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                 return
             try:
                 result = adapter._sync_current(workflow_id)
+                if (result.get("pause", {}).get("boundary")
+                        and result["pause"].get("evidence_digest")):
+                    print("Workflow paused after " + result["pause"]["boundary"], flush=True)
+                    return
                 if result.get('execution_blocked') and not result.get('background_dispatch'):
                     print('Execution blocked; trusted repair required: ' + ', '.join(result['execution_blocked']), flush=True)
                     return
