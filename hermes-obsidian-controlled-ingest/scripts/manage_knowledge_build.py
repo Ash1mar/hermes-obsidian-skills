@@ -17,6 +17,37 @@ def load(path: str):
 
 def run(args):
     service = FileKnowledgeBuildService(args.vault)
+    if args.worker_binding:
+        if args.command != 'batch-pass':
+            raise ContractError('ACCESS_DENIED', '$', 'Pass binding permits only batch-pass')
+        from ingest_kanban import IngestKanbanAdapter
+        from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard
+        binding = load(args.worker_binding)
+        adapter = IngestKanbanAdapter(args.vault, enable_workers=True)
+        adapter.validate_worker_request(binding)
+        if not binding['node'].startswith('pass-slice:'):
+            raise ContractError('ACCESS_DENIED', '$', 'batch-pass requires a Pass slice binding')
+        request = load(args.request)
+        with worker_binding(binding), workflow_write_guard(args.vault, kinds=('pass-slice',), actor=binding.get('actor')):
+            checked = adapter.worker_check(binding)
+            if request['batch_id'] != checked['batch_id']:
+                raise ContractError('ACCESS_DENIED', '$', 'Pass belongs to a different batch')
+            canonical = {'slice_id':checked['slice_id'], 'worker_id':binding['worker_id'],
+                         'template_hash':binding['template_hash']}
+            for item in [request, *request['passes']]:
+                if any(item.get(key, val) != val for key,val in canonical.items()):
+                    raise ContractError('STALE_INPUT', '$', 'Pass identity differs from the bound lease')
+            for item in request['passes']:
+                if item['task_id'] not in checked['task_ids'] or item['actor'] != binding['actor']:
+                    raise ContractError('ACCESS_DENIED', '$', 'Pass task or actor exceeds the bound slice')
+            from hermes_source_units.workflow_guard import WORKER_LOCK_TIMEOUT
+            return service.record_pass_batch({**request, **canonical},
+                lock_timeout=WORKER_LOCK_TIMEOUT, lock_check=lambda: adapter.worker_check(binding))
+    if args.command == 'batch-pass':
+        from hermes_source_units.workflow_guard import workflow_write_guard
+        # An active workflow or isolated worker cannot omit its binding.
+        with workflow_write_guard(args.vault, kinds=('pass-slice',)):
+            return service.record_pass_batch(load(args.request))
     if args.command in ("plan", "pass", "reduce", "finalize"):
         method = {"plan": service.plan_task, "pass": service.record_pass,
                   "reduce": service.reduce, "finalize": service.finalize}[args.command]
@@ -90,6 +121,7 @@ def main() -> int:
         sys.stderr.reconfigure(encoding="utf-8")
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vault", required=True)
+    parser.add_argument("--worker-binding", help="explicit dispatcher/lease binding for isolated batch-pass")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("plan", "pass", "reduce", "finalize"):
         command = sub.add_parser(name)

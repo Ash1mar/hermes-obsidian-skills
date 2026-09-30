@@ -8,7 +8,7 @@ All examples use `python3 "<skill-dir>/scripts/<script>.py" --vault "<vault>" <c
 | Inspect | `manage_ingest_workflow.py status --workflow-id <id> --compact --runtime` | Authoritative stage, revision, checkpoints plus read-only native attempts |
 | Preview canary | `manage_ingest_workflow.py canary-preview --workflow-id <id> --limit 8` | Read-only first eight ready slice IDs and selection digest |
 | Arm canary | `dispatch_ingest_workflow.py arm-canary` | Persist the exact previewed allowlist and project only those Pass cards |
-| Prepare one source (v7) | `dispatch_ingest_workflow.py worker-prepare-source` | Bound registration, supervised PDF conversion, QA and SourceUnit publication; preserves pending on runtime/review errors |
+| Prepare one source (v8) | `dispatch_ingest_workflow.py worker-prepare-source` | Bound registration, supervised PDF conversion, QA and SourceUnit publication; preserves pending on runtime/review errors |
 | Source worker result | `dispatch_ingest_workflow.py worker-complete` or `worker-fail` | Commit one validated ready UnitSet or one typed failed-source coverage gap; continue other source cards |
 | Exact plan worker result | `dispatch_ingest_workflow.py worker-complete` | Adopt the exact-budget batch after every source has a result; only ready UnitSets may enter the batch |
 | Stop canary | `dispatch_ingest_workflow.py disarm-canary` | Persist disabled policy; subsequent worker checks fail closed |
@@ -30,6 +30,12 @@ on Windows). Vault owner markers describe the holder but do not determine occupa
 Process exit, SIGTERM, SIGKILL or OOM releases the kernel lock; the next local invocation
 can replace a leftover marker. Never delete kernel lock files while processes may be running.
 `LOCK_BUSY` means actual contention; `REVISION_CONFLICT` means a ledger revision conflict.
+Worker domain writes wait at most ten seconds for a workflow lock, checking cancellation,
+card identity and pinned contracts while waiting and again under the acquired lock.
+Only lock acquisition is retried; a domain mutation is never replayed by this wait.
+`LOCK_TIMEOUT` means that bounded wait was exhausted and remains an execution blocker,
+not a failed source. Exact-plan completion rebuilds its checks and revision on each
+rejected lock/revision attempt within the same ten-second bound.
 `LOCK_RECOVERY_REQUIRED` means a legacy PID marker or a marker from another host requires review.
 
 For old plain-PID workflow locks, use the trusted operator command:
@@ -70,7 +76,7 @@ Native read failure is `unknown`, never successful running. These are per-card o
 not an atomic board snapshot; errors not yet persisted by Hermes remain unknown. Do not infer
 source failure or model recovery solely from these labels. Source coverage is still the ledger.
 
-New workflows pin pack v7. Preparation workers execute the card's complete `worker_command`,
+New workflows pin pack v8. Preparation workers execute the card's complete `worker_command`,
 which reads its immutable dispatcher binding. Missing/changed artifacts stop for trusted repair;
 sync never overwrites a changed request. The helper owns begin/check/complete and makes no chat-model calls. It never
 calls the Kanban CLI. Local conversion retains the shared host gate and cancellation monitoring.
@@ -84,7 +90,7 @@ restart the same failed binding or manufacture a missing request field.
 Completing one source does not enable exact planning/Canary until the remaining sources finish.
 Changing installed templates never updates an existing workflow's pinned pack automatically.
 
-## Exact planning and pre-batch recovery (v7)
+## Exact planning and pre-batch recovery (v8)
 
 Execute exact-plan's `worker_command` as a single supervised background terminal job (`background=true,
 notify=true`), polling in short calls rather than waiting through the outer tool deadline.
@@ -103,9 +109,11 @@ fingerprint is versioned, invalidating measurements made with the previous rule.
 
 For an already cancelled workflow without a batch, an operator can preview
 `python3 "<skill-dir>/scripts/repair_preparation.py" --vault "<vault>" --workflow-id "<id>"
---reset-source-sha256 "<failed-source-raw-sha256>" --repair-id "<stable-id>"`.
-Add `--apply` to archive superseded bound cards, install the complete v7 pinned pack and reset
-only the selected failed SourceUnit outcome. This never resumes. Use the normal governed
+--repair-id "<stable-id>" --evidence-ref "<Vault-relative-failure-report>"`.
+The evidence ref is required when no source is reset. Add `--reset-source-sha256
+"<failed-source-raw-sha256>"` only when the selected failed SourceUnit outcome truly needs
+replacement. Add `--apply` to archive superseded bound cards, install the complete v8 pinned
+pack and reset only explicitly selected failed SourceUnit outcomes. This never resumes. Use the normal governed
 `resume` command afterward with the same workflow ID. Do not invoke repair from a worker.
 The auditable repair snapshot preserves previous results; it is a workflow record, not a
 backup of installed Skills. The source helper may reuse that selected source's QA Bundle

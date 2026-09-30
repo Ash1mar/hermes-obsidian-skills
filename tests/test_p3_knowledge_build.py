@@ -1103,7 +1103,9 @@ def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path, mode: str)
     cards = [item for item in workflow["kanban"]["task_map"]
              if item["node"].startswith("pass-slice:")]
     assert len(cards) == (8 if mode == 'canary_only' else 9)
-    assert sum(item["task_id"] in fake.unblocked for item in cards) == 8
+    assert sum(item["task_id"] in fake.unblocked for item in cards) == 2
+    assert all(item['node'].partition(':')[2] in workflow['dispatch_policy']['slice_ids']
+               for item in cards if item['task_id'] in fake.unblocked)
     with pytest.raises(ContractError, match="INCOMPLETE_COVERAGE" if mode == "auto_full" else "INVALID_TRANSITION"):
         adapter.workflow.promote_canary(workflow_request(
             workflow_id=pinned["workflow_id"], actor="agent",
@@ -1226,7 +1228,8 @@ def test_canary_allows_only_eight_slices_and_survives_dispatcher_restart(vault: 
     task_map = adapter.workflow.status("ingest-canary")["kanban"]["task_map"]
     allowed_cards = {item["task_id"] for item in task_map
                      if item["node"] in {f"pass-slice:{slice_id}" for slice_id in selection}}
-    assert fake.unblocked == allowed_cards and len(allowed_cards) == 8
+    assert fake.unblocked <= allowed_cards and len(allowed_cards) == 8
+    assert len(fake.unblocked) == 2
     outside = next(item for item in task_map
                    if item["node"].startswith("pass-slice:")
                    and item["task_id"] not in allowed_cards)

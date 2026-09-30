@@ -1,4 +1,4 @@
-# source-prepare · v7
+# source-prepare · v8
 
 Prepare only the source assigned to this card. Run its complete `worker_command` unchanged once using terminal `background=true, notify=true`. The helper reads a canonical dispatcher binding and performs begin/check/complete internally. Do not build request JSON or call begin/check first. If the command is missing, stop with a dispatch contract error.
 

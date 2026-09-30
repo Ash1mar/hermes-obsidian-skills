@@ -787,11 +787,12 @@ class FileKnowledgeBuildService:
                          config: Mapping[str, Any] | None = None,
                          lease_seconds: int | None = None,
                          now: datetime | str | None = None,
-                         slice_id: str | None = None) -> dict[str, Any]:
+                         slice_id: str | None = None, *, lock_timeout: float = 0,
+                         lock_check=None) -> dict[str, Any]:
         if not worker_id.strip():
             _fail("INVALID_SCHEMA", "worker_id is required", "$.worker_id")
         moment, stamp = _utc(now)
-        with _exclusive_lock(self._batch_lock_path(batch_id)):
+        with _exclusive_lock(self._batch_lock_path(batch_id), timeout=lock_timeout, check=lock_check):
             batch = self._batch(batch_id)
             if batch.get("cancel_requested"):
                 return {"ok": True, "leased": False, "reason": "batch_cancelled", "slice": None}
@@ -905,9 +906,10 @@ class FileKnowledgeBuildService:
 
     def slice_heartbeat(self, batch_id: str, slice_id: str, worker_id: str,
                         expected_revision: int,
-                        now: datetime | str | None = None) -> dict[str, Any]:
+                        now: datetime | str | None = None, *, lock_timeout: float = 0,
+                        lock_check=None) -> dict[str, Any]:
         moment, stamp = _utc(now)
-        with _exclusive_lock(self._batch_lock_path(batch_id)):
+        with _exclusive_lock(self._batch_lock_path(batch_id), timeout=lock_timeout, check=lock_check):
             batch = self._batch(batch_id)
             value = self._slice(batch_id, slice_id)
             if batch.get("cancel_requested") or value["state"] == "cancelled":
@@ -928,7 +930,8 @@ class FileKnowledgeBuildService:
             return {"ok": True, "slice": updated}
 
     def slice_complete(self, request: Mapping[str, Any],
-                       now: datetime | str | None = None) -> dict[str, Any]:
+                       now: datetime | str | None = None, *, lock_timeout: float = 0,
+                       lock_check=None) -> dict[str, Any]:
         batch_id, slice_id = str(request["batch_id"]), str(request["slice_id"])
         worker_id, expected = str(request["worker_id"]), int(request["expected_revision"])
         result_refs = [str(item) for item in request.get("result_refs", [])]
@@ -936,7 +939,7 @@ class FileKnowledgeBuildService:
             _fail("INVALID_SCHEMA", "completed slice requires at least one result reference",
                   "$.result_refs")
         moment, _ = _utc(now)
-        with _exclusive_lock(self._batch_lock_path(batch_id)):
+        with _exclusive_lock(self._batch_lock_path(batch_id), timeout=lock_timeout, check=lock_check):
             batch = self._batch(batch_id)
             value = self._slice(batch_id, slice_id)
             if batch.get("cancel_requested") or value["state"] == "cancelled":
@@ -1394,6 +1397,37 @@ class FileKnowledgeBuildService:
             updated = self._store_batch(batch, state="analyzing", operation="prepare", failures=failures)
             return {"ok": not failures, "batch": updated, "results": results, "failures": failures}
 
+    def prepare_leased_slice(self, batch_id: str, slice_id: str, worker_id: str,
+                             expected_revision: int, *, check, timeout: float) -> dict[str, Any]:
+        """Prepare only a checked lease's tasks, never scan the whole batch."""
+        self.source.enable_session_cache()
+        with _exclusive_lock(self._batch_lock_path(batch_id), timeout=timeout, check=check):
+            check()
+            batch, value = self._batch(batch_id), self._slice(batch_id, slice_id)
+            if (batch.get('cancel_requested') or value['state'] != 'leased'
+                    or value['lease']['worker_id'] != worker_id
+                    or value['revision'] != expected_revision):
+                _fail('STALE_INPUT', 'slice preparation requires the current worker lease')
+            actor, registry = batch['actor'], batch['document_registry_revision']
+            tasks, packages = [], []
+            for task_id in value['task_ids']:
+                task = self._task(task_id)
+                self._verify_planned_measurement(task, actor, registry, batch.get('max_codepoints'))
+                if task['status'] == 'pending':
+                    task = self.claim_task(task_id, actor, task['revision'])['task']
+                if task['status'] != 'running' or task['actor'] != actor:
+                    _fail('ACCESS_DENIED', 'leased task is not owned by the batch actor')
+                package = self._existing_reading_package(task, actor, registry)
+                if package is None:
+                    package = self.reading_material(task_id, actor, registry,
+                                                   batch.get('max_codepoints'))['package']
+                path = f"{BUILD_ROOT}/task-{task_id}/readings/{package['package_id']}.json"
+                tasks.append(task)
+                packages.append({'task_id':task_id, 'reading_package_id':package['package_id'],
+                                 'path':path})
+            check()
+            return {'task_snapshots':tasks, 'reading_packages':packages}
+
     def claim_task(self, task_id: str, actor: str, expected_revision: int) -> dict[str, Any]:
         task = self._task(task_id)
         if (task["status"] == "running" and task["actor"] == actor
@@ -1603,12 +1637,13 @@ class FileKnowledgeBuildService:
                 "idempotency_key": body.get("idempotency_key"),
                 "path": path.relative_to(self.vault).as_posix()}
 
-    def record_pass_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
+    def record_pass_batch(self, request: Mapping[str, Any], *, lock_timeout: float = 0,
+                          lock_check=None) -> dict[str, Any]:
         """Persist model-produced Pass records for a batch with per-task recovery."""
         self.source.enable_session_cache()
         batch_id = str(request["batch_id"])
         pass_requests = list(request["passes"])
-        with _exclusive_lock(self._batch_lock_path(batch_id)):
+        with _exclusive_lock(self._batch_lock_path(batch_id), timeout=lock_timeout, check=lock_check):
             batch = self._batch(batch_id)
             allowed = set(batch["task_ids"])
             for item in pass_requests:

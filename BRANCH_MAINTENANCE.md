@@ -88,3 +88,12 @@ intranet Provider adapter。共享 Skill 和脚本不得重新硬编码这些值
 
 Worktree 只用于用户明确要求的并行隔离任务，或普通的干净切换流程确实无法执行时；它不是双分支
 日常同步机制。
+
+涉及 ingest 调度、锁或 worker 契约的发布，还须运行
+`hermes-source-units/tools/accept_governed_canary.py`。使用实际 Hermes Python 环境，提供
+`--source-vault`、`--workflow-id` 和 `--output`。此门槛把实际 ready 来源、原生 Gateway、
+模型 worker、隔离终端及后台 reconciler 放在同一运行中，检查预算完整覆盖、自动原生收尾、
+真实八切片 Pass 和 canary-only 停止。测试 Vault 与来源 Vault 使用相同文件系统；
+HERMES_HOME、Kanban 及 HERMES_GATEWAY_LOCK_DIR 必须全部隔离并验证实际 Gateway PID。
+不能以直接 helper 的规模测试、小型派发测试或测试脚本代完成卡片替代这个门槛。
+失败报告必须保留，并阻止部署及正式流程恢复；单元测试通过仅说明回归通过。

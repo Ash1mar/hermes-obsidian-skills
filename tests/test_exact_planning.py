@@ -109,7 +109,7 @@ def test_snapshot_rejects_change_before_result_escapes(vault):
             registry.write_text(registry.read_text(encoding='utf-8')+' ',encoding='utf-8')
 
 
-def test_exact_worker_bound_completion_and_gaps(vault):
+def test_exact_worker_bound_completion_and_gaps(vault, monkeypatch):
     from test_p3_knowledge_build import (FakeKanban,IngestKanbanAdapter,
         start_and_pin,workflow_request)
     from exact_preparation import prepare_exact
@@ -134,10 +134,21 @@ def test_exact_worker_bound_completion_and_gaps(vault):
     adapter._sync_current(started['workflow_id'])
     card = next(item for item in adapter.workflow.status(started['workflow_id'])['kanban']['task_map']
                 if item['node']=='exact-plan')
+    # A reconciler may hold the same workflow lock at completion. Rejected
+    # attempts must rebuild the revision/checks and commit the transition once.
+    reconcile = adapter.workflow.reconcile
+    attempts = []
+    def contend(request):
+        attempts.append(request['expected_revision'])
+        if len(attempts)==1:
+            raise ContractError('LOCK_BUSY', '$', 'concurrent reconciler commit')
+        return reconcile(request)
+    monkeypatch.setattr(adapter.workflow, 'reconcile', contend)
     result = prepare_exact(adapter,{'workflow_id':started['workflow_id'],
         'node':card['node'],'task_id':card['task_id']})
     assert result['batch_id']=='exact-worker-batch'
     assert adapter.workflow.status(started['workflow_id'])['current_stage']=='analyzing'
+    assert len(attempts)==2
 
 
 def test_many_context_candidates_do_not_make_tiny_core_unreadable(vault):
