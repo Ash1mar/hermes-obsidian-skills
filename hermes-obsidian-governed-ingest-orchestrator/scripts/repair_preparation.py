@@ -8,12 +8,13 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'lib'))
 from hermes_source_units import ContractError, FileIngestWorkflowService, mutation_digest
+from hermes_source_units.source_units import _vault_path
 from hermes_source_units.validation import fingerprint
 from ingest_kanban import KanbanCLI
 from orchestration import worker_pack
 
 
-def prepare(vault, workflow_id, hashes, repair_id):
+def prepare(vault, workflow_id, hashes, repair_id, evidence_refs):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise ContractError('ACCESS_DENIED','$','repair must run in an operator session')
     service = FileIngestWorkflowService(vault)
@@ -24,9 +25,11 @@ def prepare(vault, workflow_id, hashes, repair_id):
     if (len(selected) != len(set(hashes)) or any(item['status']!='failed' or
             item['error_code']!='SOURCE_UNIT_VALIDATION_FAILED' for item in selected)):
         raise ContractError('STALE_INPUT','$','select existing failed SourceUnit outcomes by exact raw SHA-256')
-    refs = sorted({ref for item in selected for ref in item['artifact_refs']})
+    refs = sorted({*evidence_refs, *(ref for item in selected for ref in item['artifact_refs'])})
     if not refs:
-        refs = [value['template_pins'][0]['path']]
+        raise ContractError('ARTIFACT_REQUIRED','$','repair requires explicit Vault evidence when no source is reset')
+    if any(not _vault_path(service.vault, ref).is_file() for ref in refs):
+        raise ContractError('ARTIFACT_REQUIRED','$','repair evidence must exist in the Vault')
     request = {'workflow_id':workflow_id,'actor':value['actor'],
         'expected_revision':value['revision'],'repair_id':repair_id,
         'reason':'Install validated current worker contracts; preserve outcomes except explicitly selected SourceUnit engine failures',
@@ -41,11 +44,12 @@ def main():
     parser.add_argument('--vault',required=True)
     parser.add_argument('--workflow-id',required=True)
     parser.add_argument('--reset-source-sha256',action='append',default=[])
+    parser.add_argument('--evidence-ref',action='append',default=[])
     parser.add_argument('--repair-id',required=True)
     parser.add_argument('--apply',action='store_true')
     args = parser.parse_args()
     try:
-        service,value,request = prepare(args.vault,args.workflow_id,args.reset_source_sha256,args.repair_id)
+        service,value,request = prepare(args.vault,args.workflow_id,args.reset_source_sha256,args.repair_id,args.evidence_ref)
         if not args.apply:
             print(json.dumps({'ok':True,'preview':True,'request':request},ensure_ascii=False,indent=2))
             return 0

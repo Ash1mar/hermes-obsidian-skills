@@ -5,6 +5,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -93,6 +94,28 @@ class KernelLockTest(unittest.TestCase):
             with exclusive_lock(self.lock):
                 self.fail("legacy marker was silently bypassed")
         self.assertEqual(self.lock.read_text(), data)
+
+    def test_bounded_wait_acquires_after_owner_exits(self):
+        holder = self.helper(hold=True)
+        self.await_ready()
+        release = threading.Timer(.2, holder.terminate)
+        release.start()
+        try:
+            with exclusive_lock(self.lock, timeout=2):
+                self.assertEqual(json.loads(self.lock.read_text())["pid"], os.getpid())
+        finally:
+            release.cancel()
+            release.join()
+        holder.wait()
+
+    def test_bounded_wait_expires_without_removing_owner(self):
+        holder = self.helper(hold=True)
+        self.await_ready()
+        before = self.lock.read_bytes()
+        with self.assertRaisesRegex(ContractError, "LOCK_TIMEOUT"):
+            with exclusive_lock(self.lock, timeout=.15):
+                self.fail("waiter bypassed live owner")
+        self.assertEqual(self.lock.read_bytes(), before)
 
 
 if __name__ == "__main__":

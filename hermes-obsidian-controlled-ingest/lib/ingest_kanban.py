@@ -21,7 +21,7 @@ from hermes_source_units.source_units import (_exclusive_lock, _json_bytes, _loa
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from hermes_source_units.validation import fingerprint, validate_record
 from hermes_source_units.ingest_workflow import SOURCE_FAILURE_CODES
-from hermes_source_units.workflow_guard import workflow_write_guard
+from hermes_source_units.workflow_guard import workflow_write_guard, worker_binding, WORKER_LOCK_TIMEOUT
 
 
 def _fail(code: str, message: str) -> None:
@@ -37,25 +37,33 @@ class Node:
     gate: bool = False
 
 
+def node_identity(workflow, kind, inputs, parent_keys):
+    identity = {'workflow_id':workflow['workflow_id'], 'kind':kind,
+                'inputs':inputs, 'parent_keys':parent_keys}
+    if workflow.get('repair_history'):
+        identity['repair_id'] = workflow['repair_history'][-1]['repair_id']
+    pin = next((p for p in workflow.get('template_pins', []) if p['kind']==kind), None)
+    if pin:
+        identity['worker_template_hash'] = pin['template_hash']
+    return 'sha256:' + fingerprint(identity)
+
+
+def pass_node(workflow, value):
+    return Node('pass-slice:' + value['slice_id'], 'pass-slice', (),
+                node_identity(workflow, 'pass-slice', {
+                    'slice_id':value['slice_id'], 'input_fingerprint':value['input_fingerprint'],
+                    'template_hash':value['template_hash']}, []))
+
+
 def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any]) -> list[Node]:
     """Derive the DAG from Vault records, never from Kanban's task state."""
     nodes: list[Node] = []
     workflow_id = workflow["workflow_id"]
-    template_hashes = {item["kind"]: item["template_hash"]
-                       for item in workflow.get("template_pins", [])}
-
     def add(name: str, kind: str, parents: tuple[str, ...], inputs: Any,
             gate: bool = False) -> str:
-        identity = {
-            "workflow_id": workflow_id, "kind": kind, "inputs": inputs,
-            "parent_keys": [next(item.input_fingerprint for item in nodes if item.name == parent)
-                            for parent in parents],
-        }
-        if workflow.get('repair_history'):
-            identity['repair_id'] = workflow['repair_history'][-1]['repair_id']
-        if kind in template_hashes:
-            identity["worker_template_hash"] = template_hashes[kind]
-        nodes.append(Node(name, kind, parents, "sha256:" + fingerprint(identity), gate))
+        parents_fingerprints = [next(item.input_fingerprint for item in nodes if item.name == parent)
+                               for parent in parents]
+        nodes.append(Node(name, kind, parents, node_identity(workflow, kind, inputs, parents_fingerprints), gate))
         return name
 
     batch_id = workflow["batch_id"]
@@ -77,6 +85,10 @@ def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any
         return nodes
 
     batch = service.knowledge._batch(batch_id)
+    if (workflow['scope'].get('execution_mode') == 'canary_only'
+            and workflow['dispatch_policy']['mode'] == 'canary'):
+        return [pass_node(workflow, service.knowledge._slice(batch_id, sid))
+                for sid in workflow['dispatch_policy']['slice_ids']]
     slices = service.knowledge._slices(batch_id)
     pass_nodes: dict[str, str] = {}
     for item in slices:
@@ -667,6 +679,17 @@ class IngestKanbanAdapter:
             and not domain_completed(self.workflow, value, item)
             and not self._failed_card(workflow_id, item)
         ][:self.source_prepare_concurrency]}
+        pass_window = set()
+        if value['batch_id']:
+            capacity = self.workflow.knowledge._batch(value['batch_id'])['slice_config']['pass_worker_concurrency']
+            candidates = [node for node in nodes if node.kind == 'pass-slice'
+                          and self._canary_allows(value, node)
+                          and not self._failed_card(workflow_id, node)
+                          and self.workflow.knowledge._slice(value['batch_id'], node.name.partition(':')[2])['state']
+                          in ('ready', 'leased')]
+            candidates.sort(key=lambda n: self.workflow.knowledge._slice(
+                value['batch_id'], n.name.partition(':')[2])['state'] != 'leased')
+            pass_window = {n.name for n in candidates[:capacity]}
         slug = board_slug(workflow_id)
         self.kanban.ensure_board(slug)
         ids: dict[str, str] = {}
@@ -831,7 +854,10 @@ class IngestKanbanAdapter:
                                "cancelled"):
                     self.kanban.wait(slug, ids[node.name], "blocked", "Vault worker gate")
                 elif state == "ready":
-                    self.kanban.unblock(slug, ids[node.name])
+                    if node.name in pass_window:
+                        self.kanban.unblock(slug, ids[node.name])
+                    else:
+                        self.kanban.wait(slug, ids[node.name], 'blocked', 'Vault Pass concurrency limit')
             else:
                 self.kanban.unblock(slug, ids[node.name])
         active_canary = self.enable_workers and any(
@@ -878,9 +904,8 @@ class IngestKanbanAdapter:
             _fail("ACCESS_DENIED", "Kanban task is not bound to this Pass slice")
         slice_id = node_name.partition(":")[2]
         value = self.workflow.knowledge._slice(workflow["batch_id"], slice_id)
-        graph = desired_graph(self.workflow, workflow)
-        node = next((item for item in graph if item.name == node_name), None)
-        if node is None or matching[0]["idempotency_key"] != (
+        node = pass_node(workflow, value)
+        if matching[0]["idempotency_key"] != (
                 f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"):
             _fail("STALE_INPUT", "Kanban node fingerprint changed")
         if self._execution_blocked(workflow_id, node):
@@ -1190,14 +1215,23 @@ class IngestKanbanAdapter:
         workflow, value = self._slice_worker(workflow_id, node_name,
                                              str(request["task_id"]))
         worker_id = str(request["worker_id"])
-        result = self.workflow.knowledge.batch_next_slice(
-            workflow["batch_id"], worker_id, slice_id=value["slice_id"])
-        if not result["leased"]:
-            return result
-        self._slice_worker(workflow_id, node_name, str(request["task_id"]))
+        with worker_binding(dict(request)), workflow_write_guard(
+                self.workflow.vault, kinds=('pass-slice',), actor=workflow['actor']):
+            result = self.workflow.knowledge.batch_next_slice(
+                workflow["batch_id"], worker_id, slice_id=value["slice_id"],
+                lock_timeout=WORKER_LOCK_TIMEOUT,
+                lock_check=lambda: self._slice_worker(workflow_id, node_name, str(request['task_id'])))
+            if not result["leased"]:
+                return result
+            bound = {**request, 'expected_revision':result['slice']['revision'],
+                     'template_hash':result['slice']['template_hash']}
+            prepared = self.workflow.knowledge.prepare_leased_slice(
+                workflow['batch_id'], value['slice_id'], worker_id, result['slice']['revision'],
+                check=lambda: self.worker_check(bound), timeout=WORKER_LOCK_TIMEOUT)
         return {"ok": True, "leased": True, "slice": result["slice"],
                 "template_hash": result["slice"]["template_hash"],
-                "task_ids": result["slice"]["task_ids"]}
+                "task_ids": result["slice"]["task_ids"], **prepared,
+                "worker_request": bound}
 
     def worker_check(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.validate_worker_request(request)
@@ -1229,9 +1263,14 @@ class IngestKanbanAdapter:
         if not str(request["node"]).startswith("pass-slice:"):
             return self.worker_check(request)
         checked = self.worker_check(request)
-        result = self.workflow.knowledge.slice_heartbeat(
-            checked["batch_id"], checked["slice_id"],
-            str(request["worker_id"]), int(request["expected_revision"]))
+        with worker_binding(dict(request)), workflow_write_guard(
+                self.workflow.vault, kinds=('pass-slice',)):
+            result = self.workflow.knowledge.slice_heartbeat(
+                checked["batch_id"], checked["slice_id"],
+                str(request["worker_id"]), int(request["expected_revision"]),
+                lock_timeout=WORKER_LOCK_TIMEOUT, lock_check=lambda: self.worker_check(request))
+        result["worker_request"] = {**request,
+                                    "expected_revision": result["slice"]["revision"]}
         return result
 
     def worker_complete(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -1280,13 +1319,15 @@ class IngestKanbanAdapter:
             if sorted(value["result_refs"]) != sorted(result_refs):
                 _fail("IDEMPOTENCY_CONFLICT", "completed slice Pass set changed")
         else:
-            self.worker_check(request)
-            self.workflow.knowledge.slice_complete({
-                "batch_id": workflow["batch_id"], "slice_id": value["slice_id"],
-                "worker_id": request["worker_id"],
-                "expected_revision": request["expected_revision"],
-                "result_refs": result_refs,
-            })
+            with worker_binding(dict(request)), workflow_write_guard(
+                    self.workflow.vault, kinds=('pass-slice',)):
+                self.worker_check(request)
+                self.workflow.knowledge.slice_complete({
+                    "batch_id": workflow["batch_id"], "slice_id": value["slice_id"],
+                    "worker_id": request["worker_id"],
+                    "expected_revision": request["expected_revision"],
+                    "result_refs": result_refs,
+                }, lock_timeout=WORKER_LOCK_TIMEOUT, lock_check=lambda: self.worker_check(request))
         return self._pending_reconciliation({"ok": True, "slice_id": value["slice_id"],
                 "result_refs": result_refs})
 

@@ -9,6 +9,23 @@ from hermes_source_units.exact_planning import ExactPlanner
 from hermes_source_units.source_units import _exclusive_lock, _vault_path
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard
+from hermes_source_units.workflow_guard import WORKER_LOCK_TIMEOUT
+
+
+def complete_exact(adapter, request):
+    """Retry only rejected ledger commits, rebuilding checks/revision each time."""
+    deadline = time.monotonic() + WORKER_LOCK_TIMEOUT
+    while True:
+        try:
+            return adapter.worker_complete(request)
+        except ContractError as exc:
+            if exc.code not in ('LOCK_BUSY', 'REVISION_CONFLICT'):
+                raise
+            if time.monotonic() >= deadline:
+                raise ContractError('LOCK_TIMEOUT', '$',
+                    'exact-plan completion could not commit within the lock wait limit') from exc
+            adapter.worker_check(request)
+            time.sleep(.05)
 
 
 def prepare_exact(adapter, request):
@@ -21,7 +38,7 @@ def prepare_exact(adapter, request):
     if coverage['pending'] or not coverage['ready']:
         raise ContractError('INCOMPLETE_COVERAGE', '$', 'planning requires all source outcomes')
     if workflow['batch_id']:
-        return adapter.worker_complete({**bound, 'batch_id':workflow['batch_id']})
+        return complete_exact(adapter, {**bound, 'batch_id':workflow['batch_id']})
     selector = workflow['scope']['knowledge_selector']
     fixed = re.search(r'fixed batch_id\s+([A-Za-z0-9_.:-]+)', selector)
     batch_id = request.get('batch_id') or (fixed.group(1).rstrip(';') if fixed else
@@ -56,7 +73,7 @@ def prepare_exact(adapter, request):
         finally:
             knowledge._exact_planner = None
         adapter.worker_check(bound)
-        result = adapter.worker_complete({**bound, 'batch_id':batch_id})
+        result = complete_exact(adapter, {**bound, 'batch_id':batch_id})
         return {**result, 'batch_id':batch_id, 'task_count':len(plan['tasks']),
                 'progress_ref':(planner.root/'progress.json').relative_to(knowledge.vault).as_posix(),
                 'new_measurements':planner.measured, 'reused_measurements':planner.reused,

@@ -11,6 +11,7 @@ from .validation import ContractError, fingerprint
 
 _ACTIVE = ContextVar("ingest_write_guard", default=None)
 _BINDING = ContextVar("ingest_worker_binding", default=None)
+WORKER_LOCK_TIMEOUT = 10.0
 
 
 def _fail(code, message):
@@ -80,7 +81,7 @@ def workflow_write_guard(vault, *, kinds=("source-prepare",), actor=None,
         if len(matches) != 1:
             _fail("STALE_INPUT", "worker has no unique workflow binding in this Vault")
         workflow_id = matches[0]
-    with _exclusive_lock(service._lock(workflow_id)):
+    def validate_live():
         value = service.status(workflow_id)
         if value["cancel_requested"] or value["state"] in TERMINAL:
             _fail("WORKFLOW_STOPPED", "domain write rejected: workflow is stopped")
@@ -101,13 +102,25 @@ def workflow_write_guard(vault, *, kinds=("source-prepare",), actor=None,
         if kind not in kinds:
             _fail("ACCESS_DENIED", "worker kind cannot perform this domain write")
         service.pinned_templates(value)
+        if binding is not None:
+            expected_hash = next(p['template_hash'] for p in value['template_pins'] if p['kind'] == kind)
+            if binding.get('template_hash') is not None and kind != 'pass-slice' and binding['template_hash'] != expected_hash:
+                _fail("STALE_INPUT", "worker template hash changed during lock wait")
+            if binding.get('input_fingerprint') is not None and not cards[0]['idempotency_key'].endswith(':' + binding['input_fingerprint']):
+                _fail("STALE_INPUT", "worker input binding changed during lock wait")
+        return value, cards[0], kind
+    # Wait only for lock acquisition. Never retry a yielded domain mutation.
+    # Poll authoritative state while waiting, then validate again under lock.
+    with _exclusive_lock(service._lock(workflow_id), timeout=WORKER_LOCK_TIMEOUT,
+                         check=validate_live):
+        value, card, kind = validate_live()
         if kind == "source-prepare" and (value["batch_id"] is not None or
                 value["current_stage"] not in ("created", "source_preparing")):
             _fail("WORKFLOW_STOPPED", "source write is outside source preparation")
         source = None
         for path in value["scope"]["source_paths"] if kind == "source-prepare" else []:
             sha = hashlib.sha256(_vault_path(vault, path).read_bytes()).hexdigest()
-            if cards[0]["node"] == "source-prepare:" + fingerprint({
+            if card["node"] == "source-prepare:" + fingerprint({
                     "path": path, "content_sha256": sha})[:16]:
                 source = {"path": path, "content_sha256": sha}
                 break

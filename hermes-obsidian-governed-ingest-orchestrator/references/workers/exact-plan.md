@@ -1,4 +1,4 @@
-# exact-plan · v7
+# exact-plan · v8
 
 Run the card's complete `worker_command` unchanged, once, using terminal `background=true, notify=true`. The command reads the dispatcher's canonical binding file and performs worker-begin/check/complete internally. Do not build request JSON, call begin/check first, select another dispatcher, or infer any hash. If the card no longer contains the command, stop and report a dispatch contract error.
 

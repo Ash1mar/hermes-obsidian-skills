@@ -14,6 +14,31 @@ from hermes_source_units.validation import fingerprint
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard
 
 
+def test_operator_repair_preview_requires_failure_report_evidence(tmp_path):
+    target, adapter, value, _ = setup_worker(tmp_path)
+    current = adapter.workflow.status(value['workflow_id'])
+    adapter.workflow.cancel(workflow_request(workflow_id=value['workflow_id'], actor='agent',
+        expected_revision=current['revision']))
+    report_ref = f"_system/ledgers/ingest-workflows/{value['workflow_id']}/reports/failed-lock.json"
+    report = target / report_ref
+    report.parent.mkdir(parents=True, exist_ok=True)
+    report.write_text('{"error_code":"LOCK_BUSY","source_failed":false}')
+    command = [sys.executable, '-I', '-S', str(ROOT /
+        'hermes-obsidian-governed-ingest-orchestrator/scripts/repair_preparation.py'),
+        '--vault', str(target), '--workflow-id', value['workflow_id'], '--repair-id', 'lock-repair']
+    missing = subprocess.run(command, capture_output=True, text=True)
+    assert missing.returncode == 2 and 'ARTIFACT_REQUIRED' in missing.stderr
+    nonexistent = subprocess.run(command + ['--evidence-ref', report_ref + '.missing'],
+        capture_output=True, text=True)
+    assert nonexistent.returncode == 2 and 'ARTIFACT_REQUIRED' in nonexistent.stderr
+    preview = subprocess.run(command + ['--evidence-ref', report_ref], capture_output=True, text=True)
+    assert preview.returncode == 0, preview.stderr
+    request = json.loads(preview.stdout)['request']
+    assert request['reset_sources'] == []
+    assert request['evidence_refs'] == [report_ref]
+    assert adapter.workflow.status(value['workflow_id']).get('repair_history', []) == []
+
+
 @pytest.mark.parametrize('change,code', [
     ({'template_hash':None},'INVALID_SCHEMA'),
     ({'worker_template_hash':'wrong'},'INVALID_SCHEMA'),
