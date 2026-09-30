@@ -220,6 +220,14 @@ def main():
             if failures:
                 evidence['execution_blockers']=failures
                 raise RuntimeError('native worker execution blocked; inspect report')
+            if value['batch_id']:
+                blocked = [s for s in service.knowledge._slices(value['batch_id'])
+                           if s['slice_id'] in value['dispatch_policy']['slice_ids']
+                           and s['last_error'] and s['state'] in ('blocked', 'reconcile_required', 'awaiting_approval')]
+                if blocked:
+                    evidence['slice_blockers'] = blocked
+                    save()
+                    raise RuntimeError('native Pass slice blocked; inspect durable slice evidence')
             if (args.verify_pauses and service.pause_status(value)['boundary']=='exact_plan'
                     and value.get('pause_control', {}).get('evidence_digest')):
                 value = quiescent_pause('exact_plan')
@@ -297,6 +305,19 @@ def main():
         evidence['error']=repr(exc)
         evidence['traceback']=traceback.format_exc()
         print('GATE_FAILED',str(exc),flush=True)
+        # Preserve only Pass draft JSON, never credentials or whole conversations.
+        drafts = []
+        for path in home.rglob('*.json'):
+            try:
+                payload = json.loads(path.read_text())
+                if isinstance(payload, dict) and payload.get('batch_id') and isinstance(payload.get('passes'), list):
+                    destination = sandbox/'failed-pass-drafts'/f'{sha(path)}.json'
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, destination)
+                    drafts.append(str(destination))
+            except (OSError, ValueError):
+                pass
+        evidence['failed_pass_drafts'] = sorted(set(drafts))
     finally:
         # Only terminate this isolated runtime; never stop the user's Gateway.
         if not evidence['passed'] and evidence.get('resume'):

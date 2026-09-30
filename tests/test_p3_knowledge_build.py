@@ -1758,6 +1758,47 @@ def test_batch_pass_idempotency_survives_worker_restart_and_rejects_key_conflict
     assert completed["slice"]["state"] == "completed"
 
 
+@pytest.mark.parametrize("error", [None, "INVALID_SCHEMA", "STALE_INPUT", "UNRESOLVED_REFERENCE"])
+def test_batch_pass_preflight_is_read_only_and_checks_draft(vault: Path, error, tmp_path):
+    service = plan_sliced_batch(vault, 1, "preflight-pass")
+    prepared = service.prepare_batch("preflight-pass", "agent", 1)
+    leased = service.batch_next_slice("preflight-pass", "worker-a")["slice"]
+    task = service._task(leased["task_ids"][0])
+    ref = task["target_refs"][0]
+    draft = {"batch_id": "preflight-pass", "slice_id": leased["slice_id"], "worker_id": "worker-a",
+        "passes": [{"task_id": task["task_id"], "actor": "agent", "expected_revision": task["revision"],
+        "registry_revision": 1, "reading_package_id": prepared["results"][0]["reading_package_id"],
+        "pass_kind": "candidate", "sequence": 0,
+        "inspections": [{"source_ref": ref, "finding": "Grounded inspection", "qa": "usable", "qa_note": ""}],
+        "candidates": [{"candidate_id": "candidate", "name": "Evidence", "kind": "fact",
+            "identity_rationale": "Observed source", "finding": "Grounded fact", "applicability": "This source",
+            "conditions": [], "exceptions": [], "support_refs": [json.loads(json.dumps(ref))]}], "empty_reason": ""}]}
+    if error in ("INVALID_SCHEMA", "UNRESOLVED_REFERENCE"):
+        draft["passes"][0]["candidates"][0]["support_refs"][0]["unit_ref"]["unit_id"] = (
+            "mistyped-unit-id" if error == "INVALID_SCHEMA" else "0" * 64)
+    if error == "STALE_INPUT":
+        draft["passes"][0]["expected_revision"] -= 1
+    request_path = tmp_path / "draft.json"
+    request_path.write_text(json.dumps(draft), encoding="utf-8")
+    def snapshot():
+        return {p.relative_to(vault).as_posix(): p.read_bytes() for p in vault.rglob("*")
+                if p.is_file() and not any(part.startswith(".") for part in p.relative_to(vault).parts)}
+    before = snapshot()
+    checked = subprocess.run([sys.executable, str(KNOWLEDGE_CLI), "--vault", str(vault),
+        "batch-pass", "--request", str(request_path), "--validate-only"], capture_output=True,
+        text=True, encoding="utf-8")
+    result = json.loads(checked.stdout)
+    assert checked.returncode == (0 if error is None else 2)
+    assert result["validated"] == (error is None)
+    if error:
+        assert result["failures"][0]["code"] == error
+    assert snapshot() == before  # No rejected draft contaminates task/batch failure state.
+    if error is None:
+        persisted = service.record_pass_batch(draft)
+        assert persisted["ok"] and persisted["results"][0]["created"]
+        assert persisted["results"][0]["pass_id"] == result["results"][0]["pass_id"]
+
+
 def test_batch_pass_rejects_stale_revision_before_writing(vault: Path):
     service = plan_sliced_batch(vault, 1, "stale-pass")
     prepared = service.prepare_batch("stale-pass", "agent", 1)

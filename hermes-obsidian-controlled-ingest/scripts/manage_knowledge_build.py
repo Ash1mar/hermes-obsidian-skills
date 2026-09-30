@@ -42,12 +42,13 @@ def run(args):
                     raise ContractError('ACCESS_DENIED', '$', 'Pass task or actor exceeds the bound slice')
             from hermes_source_units.workflow_guard import WORKER_LOCK_TIMEOUT
             return service.record_pass_batch({**request, **canonical},
-                lock_timeout=WORKER_LOCK_TIMEOUT, lock_check=lambda: adapter.worker_check(binding))
+                lock_timeout=WORKER_LOCK_TIMEOUT, lock_check=lambda: adapter.worker_check(binding),
+                validate_only=args.validate_only)
     if args.command == 'batch-pass':
         from hermes_source_units.workflow_guard import workflow_write_guard
         # An active workflow or isolated worker cannot omit its binding.
         with workflow_write_guard(args.vault, kinds=('pass-slice',)):
-            return service.record_pass_batch(load(args.request))
+            return service.record_pass_batch(load(args.request), validate_only=args.validate_only)
     if args.command in ("plan", "pass", "reduce", "finalize"):
         method = {"plan": service.plan_task, "pass": service.record_pass,
                   "reduce": service.reduce, "finalize": service.finalize}[args.command]
@@ -167,6 +168,9 @@ def main() -> int:
         command.add_argument("--request", required=True, help="JSON batch request file")
         if name == "batch-plan":
             command.add_argument("--exact-reading-budget", action="store_true")
+        if name == "batch-pass":
+            command.add_argument("--validate-only", action="store_true",
+                                 help="check draft evidence without writing Pass/task/batch records")
     for name in ("batch-resource-reduce", "batch-global-reduce"):
         command = sub.add_parser(name)
         command.add_argument("--request", required=True, help="JSON layered Reduce request file")

@@ -81,6 +81,14 @@ unopened phases are not mistaken for missing domain results or completed native 
 
 ## Workflow lock recovery
 
+Pass workers preflight each semantic draft with the bound `batch-pass --validate-only`
+command. It checks the same schema, task revision, reading window and live references
+as persistence, without creating Pass/task/batch records or failure state. A worker
+may correct an `INVALID_SCHEMA` in its own draft from observed package references
+and retry preflight at most twice. This never permits changing a binding, source or
+ledger, recovering a stopped lease or crossing a pause. Persist only the draft that
+passed preflight; unresolved errors retain their evidence and stop the slice.
+
 New workflow, dispatch and watcher locks use host kernel locks. Their stable kernel files live
 outside the Vault (`~/.cache/hermes-skill-runtime/locks` on Linux; the user temporary directory
 on Windows). Vault owner markers describe the holder but do not determine occupancy.

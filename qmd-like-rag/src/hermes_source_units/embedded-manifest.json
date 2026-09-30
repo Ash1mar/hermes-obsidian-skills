@@ -17,7 +17,7 @@
   "ingest_pauses.py": "3679a957e1513d05aff558175a57b644b0eccb0bdaae68968d99e95c49271ad6",
   "ingest_workflow.py": "5435f63cecc61af9130564fffe55feee53e3a8e6e3c6f8252089994f4a7a51d9",
   "interfaces.py": "5d824d42fbea30efc0608260bbd21089d8b170816c85b43bb0dc6d45edb36373",
-  "knowledge_build.py": "beac05d639663e8c521c3be4b6f11b4d779e47903c831057df90a828db427e41",
+  "knowledge_build.py": "1088641005a0c9966d6f06e5b37a882f78edfbb08adf1b269e1874adb8763681",
   "py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
   "schemas/contracts.json": "900c8f057b97aaf2d4076393ec11cd20dbd649372d4c43832f087fa788478fab",
   "source_units.py": "e7087c233b5f6d795673bbd2af18a11834d51d0e20f9af01fa4e11840cb0c6e0",
