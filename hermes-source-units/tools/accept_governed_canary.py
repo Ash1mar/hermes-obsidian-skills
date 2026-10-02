@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,45 @@ import time
 
 def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def native_preflight_evidence(home, snapshots):
+    """Read native terminal transcripts; never run or manufacture a Pass."""
+    import re
+    sessions = []
+    for snapshot in snapshots:
+        ids = {snapshot['task']['session_id']} if snapshot['task'].get('session_id') else set()
+        if not ids:
+            raise RuntimeError('native Pass snapshot has no session identity for preflight audit')
+        sessions.append((snapshot['task']['id'], ids))
+    database = home/'state.db'
+    result = []
+    with sqlite3.connect('file:' + str(database) + '?mode=ro', uri=True) as connection:
+        for task_id, ids in sessions:
+            calls, successes = 0, 0
+            for session_id in sorted(ids):
+                for role, content, tool_calls in connection.execute(
+                        'SELECT role, content, tool_calls FROM messages WHERE session_id=?', (session_id,)):
+                    if tool_calls and 'batch-pass' in tool_calls and '--validate-only' in tool_calls and '--worker-binding' in tool_calls:
+                        calls += 1
+                    if role == 'tool' and content:
+                        # Terminal responses may encode stdout as a nested JSON string.
+                        try:
+                            parsed = json.loads(content)
+                        except ValueError:
+                            parsed = content
+                        texts = [content]
+                        if isinstance(parsed, dict):
+                            texts.extend(v for v in parsed.values() if isinstance(v, str))
+                        if any(re.search(r'"validated"\s*:\s*true', text)
+                               and all('"' + key + '"' in text for key in ('batch', 'results', 'failures'))
+                               for text in texts):
+                            successes += 1
+            if not calls or not successes:
+                raise RuntimeError(f'native Pass {task_id} has no successful bound preflight transcript')
+            result.append({'task_id': task_id, 'session_ids': sorted(ids),
+                           'preflight_tool_calls': calls, 'successful_result_messages': successes})
+    return result
 
 
 def main():
@@ -31,6 +71,8 @@ def main():
     parser.add_argument('--measurements-from', help='Previous isolated gate Vault; checkpoints are freshly verified')
     parser.add_argument('--verify-pauses', action='store_true',
                         help='Verify exact-plan pause, explicit continuation and eight-slice pause')
+    parser.add_argument('--verify-preflight', action='store_true',
+                        help='Require successful bound draft preflight in all eight native worker sessions')
     args = parser.parse_args()
     if os.name != 'posix':
         raise RuntimeError('this gate must use the deployed Hermes Linux runtime')
@@ -271,6 +313,9 @@ def main():
                            by_refs[json.dumps(t['target_refs'],sort_keys=True)]['limit']==12000 for t in plan['tasks'])
                 selected = [service.knowledge._slice(value['batch_id'],sid) for sid in outcome['slice_ids']]
                 assert all(s['state']=='completed' and s['result_refs'] for s in selected)
+                if args.verify_preflight:
+                    evidence['native_preflight'] = native_preflight_evidence(home, snapshots)
+                    evidence['native_preflight_verified'] = True
                 if args.verify_pauses:
                     value = quiescent_pause('canary')
                     assert service.pause_status(value)['boundary']=='canary'
