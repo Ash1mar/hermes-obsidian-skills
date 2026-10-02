@@ -68,9 +68,14 @@ def test_pass_cli_uses_bound_lease_and_rejects_other_task(vault):
         'candidates':[], 'empty_reason':'Fixture has no reusable candidate'}
     req = {'batch_id':'bound-pass-batch','passes':[common]}
     request_path = vault/'pass-request.json'
-    check = subprocess.run(dispatcher+['worker-check','--request',str(binding_path)],
+    before_check = {str(path):path.read_bytes() for path in (vault/'_system/ledgers').rglob('*.json')}
+    check = subprocess.run(dispatcher+['worker-check','--request',str(binding_path),
+        '--request-output',str(binding_path)],
         capture_output=True,text=True,env=env)
     assert check.returncode==0,check.stderr
+    assert json.loads(binding_path.read_text()) == binding
+    assert json.loads(check.stdout)['worker_request'] == binding
+    assert before_check == {str(path):path.read_bytes() for path in (vault/'_system/ledgers').rglob('*.json')}
     command = [sys.executable,'-I','-S',str(ROOT/'hermes-obsidian-controlled-ingest/scripts/manage_knowledge_build.py'),
         '--vault',str(vault),'--worker-binding',str(binding_path),'batch-pass','--request',str(request_path)]
     request_path.write_text(json.dumps(req))
@@ -87,6 +92,12 @@ def test_pass_cli_uses_bound_lease_and_rejects_other_task(vault):
     # A current slice hash is mandatory, including after terminal env stripping.
     binding['template_hash']='sha256:'+'0'*64
     binding_path.write_text(json.dumps(binding))
+    before_invalid_check = binding_path.read_bytes()
+    invalid_check = subprocess.run(dispatcher+['worker-check','--request',str(binding_path),
+        '--request-output',str(binding_path)],capture_output=True,text=True,env=env)
+    assert invalid_check.returncode==2 and 'STALE_INPUT' in invalid_check.stderr
+    assert binding_path.read_bytes() == before_invalid_check
+    assert not list(workspace.glob('.worker-request-*'))
     result=subprocess.run(command,capture_output=True,text=True,env=env)
     assert result.returncode==2 and 'STALE_INPUT' in result.stderr
     binding_path.write_text(json.dumps(begun['worker_request']))

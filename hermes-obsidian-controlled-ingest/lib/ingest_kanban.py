@@ -1289,7 +1289,8 @@ class IngestKanbanAdapter:
             _fail("LEASE_EXPIRED", "slice lease expired")
         return {"ok": True, "batch_id": workflow["batch_id"],
                 "slice_id": value["slice_id"], "task_ids": value["task_ids"],
-                "input_fingerprint": value["input_fingerprint"]}
+                "input_fingerprint": value["input_fingerprint"],
+                "worker_request": dict(request)}
 
     def worker_heartbeat(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if not str(request["node"]).startswith("pass-slice:"):

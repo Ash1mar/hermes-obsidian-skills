@@ -26,7 +26,7 @@ def main() -> int:
                  "disarm-canary"):
         command = sub.add_parser(name)
         command.add_argument("--request", required=True)
-        if name in ("worker-begin", "worker-heartbeat"):
+        if name in ("worker-begin", "worker-check", "worker-heartbeat"):
             command.add_argument("--request-output")
     args = parser.parse_args()
     temporary = None
