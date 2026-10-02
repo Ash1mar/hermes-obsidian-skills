@@ -25,16 +25,23 @@ def sha(path):
 def native_preflight_evidence(home, snapshots):
     """Read native terminal transcripts; never run or manufacture a Pass."""
     import re
-    sessions = []
-    for snapshot in snapshots:
-        ids = {snapshot['task']['session_id']} if snapshot['task'].get('session_id') else set()
-        if not ids:
-            raise RuntimeError('native Pass snapshot has no session identity for preflight audit')
-        sessions.append((snapshot['task']['id'], ids))
     database = home/'state.db'
     result = []
     with sqlite3.connect('file:' + str(database) + '?mode=ro', uri=True) as connection:
-        for task_id, ids in sessions:
+        claimed = set()
+        for snapshot in snapshots:
+            task_id = snapshot['task']['id']
+            # task.session_id is nullable even while the native worker has a
+            # durable session. Compaction may also create linked child sessions.
+            # Bind to the native task prompt or canonical lease tool response.
+            ids = {row[0] for row in connection.execute(
+                "SELECT DISTINCT m.session_id FROM messages m JOIN sessions s ON s.id=m.session_id "
+                "WHERE s.source='kanban' AND ((m.role='user' AND instr(m.content,?)>0) "
+                "OR (m.role='tool' AND instr(m.content,?)>0))",
+                (task_id, 'ingest-worker-' + task_id))}
+            if not ids or claimed.intersection(ids):
+                raise RuntimeError('native Pass snapshot has no unique session identity for preflight audit')
+            claimed.update(ids)
             calls, successes = 0, 0
             for session_id in sorted(ids):
                 for role, content, tool_calls in connection.execute(

@@ -18,10 +18,15 @@ def test_preflight_audit_requires_all_eight_native_workers(tmp_path, missing):
     snapshots = []
     with sqlite3.connect(database) as connection:
         connection.execute('CREATE TABLE messages(session_id TEXT, role TEXT, content TEXT, tool_calls TEXT)')
+        connection.execute('CREATE TABLE sessions(id TEXT, source TEXT)')
         for index in range(8):
             session = 'session-' + str(index)
-            snapshots.append({'task': {'id': 'task-' + str(index), 'session_id': session},
+            task_id = 'task-' + str(index)
+            snapshots.append({'task': {'id': task_id, 'session_id': None},
                               'runs': [{'id': index, 'ended_at': 123}]})
+            connection.execute('INSERT INTO sessions VALUES (?, ?)', (session, 'kanban'))
+            lease = json.dumps({'worker_request': {'worker_id': 'ingest-worker-' + task_id}})
+            connection.execute('INSERT INTO messages VALUES (?, ?, ?, ?)', (session, 'tool', lease, None))
             command = 'python3 domain.py --worker-binding lease.json batch-pass --request draft.json --validate-only'
             if index == 7 and missing == 'bound_command':
                 command = command.replace('--worker-binding lease.json ', '')
