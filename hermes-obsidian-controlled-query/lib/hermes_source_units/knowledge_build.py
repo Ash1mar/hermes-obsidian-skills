@@ -1545,7 +1545,7 @@ class FileKnowledgeBuildService:
         return all(left.get(field) == right.get(field) for field in fields)
 
     def record_pass(self, request: Mapping[str, Any], *, batch_id: str | None = None,
-                    template_hash: str | None = None) -> dict[str, Any]:
+                    template_hash: str | None = None, validate_only: bool = False) -> dict[str, Any]:
         task_id, actor = str(request["task_id"]), str(request["actor"])
         task = self._task(task_id)
         expected_revision = int(request["expected_revision"])
@@ -1626,6 +1626,10 @@ class FileKnowledgeBuildService:
                 *[r for c in body["candidates"] for r in c["support_refs"]]]
         units = self._live_units(refs, actor, package["document_registry_revision"])
         validate_references("knowledge_pass", body, units)
+        if validate_only:
+            return {"ok": True, "created": False, "validated": True, "pass": body,
+                    "task": task, "idempotency_key": body.get("idempotency_key"),
+                    "path": path.relative_to(self.vault).as_posix()}
         _write_atomic(path, _json_bytes(body))
         owned_inspections = [item for item in body["inspections"]
                              if any(_covers(target, item["source_ref"]) for target in task["target_refs"])]
@@ -1638,7 +1642,7 @@ class FileKnowledgeBuildService:
                 "path": path.relative_to(self.vault).as_posix()}
 
     def record_pass_batch(self, request: Mapping[str, Any], *, lock_timeout: float = 0,
-                          lock_check=None) -> dict[str, Any]:
+                          lock_check=None, validate_only: bool = False) -> dict[str, Any]:
         """Persist model-produced Pass records for a batch with per-task recovery."""
         self.source.enable_session_cache()
         batch_id = str(request["batch_id"])
@@ -1674,6 +1678,7 @@ class FileKnowledgeBuildService:
                         _fail("ACCESS_DENIED", "Pass worker does not own the slice lease")
                     recorded = self.record_pass(
                         item, batch_id=batch_id,
+                        validate_only=validate_only,
                         template_hash=(selected["template_hash"] if selected is not None
                                        else str(requested_template or _pass_template_hash())))
                     results.append({"task_id": task_id, "created": recorded["created"],
@@ -1684,8 +1689,12 @@ class FileKnowledgeBuildService:
                                     "task_revision": recorded["task"]["revision"]})
                 except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
                     failures.append(self._failure("pass", task_id, exc))
-            updated = self._store_batch(batch, state="analyzing", operation="pass", failures=failures)
-            return {"ok": not failures, "batch": updated, "results": results, "failures": failures}
+            updated = (batch if validate_only else self._store_batch(
+                batch, state="analyzing", operation="pass", failures=failures))
+            result = {"ok": not failures, "batch": updated, "results": results, "failures": failures}
+            if validate_only:
+                result["validated"] = not failures
+            return result
 
     def _pass_index(self, task_ids: Iterable[str]) -> tuple[
             dict[tuple[str, str], tuple[dict[str, Any], dict[str, Any]]],

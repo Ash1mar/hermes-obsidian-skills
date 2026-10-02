@@ -21,12 +21,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vault", required=True)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("start", "sync", "cancel", "resume", "worker-begin", "worker-check",
+    for name in ("start", "sync", "cancel", "resume", "continue-workflow", "worker-begin", "worker-check",
                  "worker-register-source", "worker-prepare-source", "worker-plan-exact", "worker-heartbeat", "worker-complete", "worker-fail", "arm-canary",
                  "disarm-canary"):
         command = sub.add_parser(name)
         command.add_argument("--request", required=True)
-        if name in ("worker-begin", "worker-heartbeat"):
+        if name in ("worker-begin", "worker-check", "worker-heartbeat"):
             command.add_argument("--request-output")
     args = parser.parse_args()
     temporary = None

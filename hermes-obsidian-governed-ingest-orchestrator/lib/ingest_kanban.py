@@ -85,7 +85,10 @@ def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any
         return nodes
 
     batch = service.knowledge._batch(batch_id)
-    if (workflow['scope'].get('execution_mode') == 'canary_only'
+    staged = bool(workflow['scope'].get('pause_after'))
+    if staged and service.pending_pause(workflow) == 'exact_plan':
+        return []  # Slice manifests are the plan; unopened phases need no native cards.
+    if ((workflow['scope'].get('execution_mode') == 'canary_only' or staged)
             and workflow['dispatch_policy']['mode'] == 'canary'):
         return [pass_node(workflow, service.knowledge._slice(batch_id, sid))
                 for sid in workflow['dispatch_policy']['slice_ids']]
@@ -140,6 +143,14 @@ def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any
     if provider == "sync":
         applied = add("provider-sync", "provider-sync", (applied,), batch_id)
     add("acceptance", "acceptance", (applied,), batch_id)
+    if staged:
+        last_kind = {"analyzing": "pass-slice", "reducing": "checkpoint-1-validate",
+                     "checkpoint_1": "checkpoint-1-gate", "build_finalizing": "build-finalize",
+                     "release_planning": "checkpoint-2-validate", "checkpoint_2": "checkpoint-2-gate",
+                     "applying": "release-apply", "indexing": "provider-sync" if provider == "sync" else "release-apply",
+                     "validating": "acceptance", "completed": "acceptance"}[workflow["current_stage"]]
+        eligible_prefix = [i for i, node in enumerate(nodes) if node.kind == last_kind]
+        nodes = nodes[:max(eligible_prefix) + 1] if eligible_prefix else []
     return nodes
 
 
@@ -496,8 +507,9 @@ class IngestKanbanAdapter:
         if missing:
             _fail("INVALID_SCHEMA", "missing worker request fields: " + ", ".join(missing))
 
-    @staticmethod
-    def _canary_allows(workflow: Mapping[str, Any], node: Node) -> bool:
+    def _canary_allows(self, workflow: Mapping[str, Any], node: Node, *, completing: bool = False) -> bool:
+        if not completing and self.workflow.pending_pause(workflow):
+            return False
         if node.kind == "source-prepare":
             return (workflow["batch_id"] is None and
                     workflow["current_stage"] in ("created", "source_preparing"))
@@ -563,6 +575,10 @@ class IngestKanbanAdapter:
         followup["input_digest"] = mutation_digest(followup)
         return self.sync(followup)
 
+    def continue_workflow(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        value = self.workflow.continue_workflow(request)
+        return self.sync(self._mutation(value))
+
     def arm_canary(self, request: Mapping[str, Any]) -> dict[str, Any]:
         value = self.workflow.arm_canary(request)
         followup = {"workflow_id": value["workflow_id"], "actor": value["actor"],
@@ -607,9 +623,12 @@ class IngestKanbanAdapter:
             if not batch.get("slices_initialized"):
                 self.workflow.knowledge.initialize_slices(
                     value["batch_id"], actor, batch["revision"])
-            self.workflow.knowledge.reclaim_expired_slices(value["batch_id"])
-            self.workflow.knowledge.refresh_ready_slices(value["batch_id"], actor)
+            value = self.workflow.latch_pause(self._mutation(value))
+            if not self.workflow.pending_pause(value):
+                self.workflow.knowledge.reclaim_expired_slices(value["batch_id"])
+                self.workflow.knowledge.refresh_ready_slices(value["batch_id"], actor)
             if (value["scope"].get("execution_mode") in ("canary_only", "auto_full")
+                    and not self.workflow.pending_pause(value)
                     and value["current_stage"] == "analyzing"):
                 policy = value["dispatch_policy"]
                 if policy["mode"] == "disabled":
@@ -636,6 +655,7 @@ class IngestKanbanAdapter:
                     promoted["input_digest"] = mutation_digest(promoted)
                     value = self.workflow.promote_canary(promoted)
                 if (value["dispatch_policy"]["mode"] == "full"
+                        and not self.workflow.pending_pause(value)
                         and value["current_stage"] == "analyzing"
                         and all(item["state"] == "completed"
                                 for item in self.workflow.knowledge._slices(value["batch_id"]))):
@@ -645,6 +665,7 @@ class IngestKanbanAdapter:
                     transition["input_digest"] = mutation_digest(transition)
                     value = self.workflow.reconcile(transition)
             if (value["scope"].get("execution_mode") == "auto_full"
+                    and not self.workflow.pending_pause(value)
                     and value["dispatch_policy"]["mode"] == "full"):
                 if (value["current_stage"] == "checkpoint_1"
                         and value["checkpoints"]["checkpoint_1"]["state"] == "approved"):
@@ -779,6 +800,9 @@ class IngestKanbanAdapter:
                 "board_id": slug, "task_map": task_map}
         bind["input_digest"] = mutation_digest(bind)
         updated = self.workflow.bind_kanban(bind)
+        # A worker may commit its boundary while this graph is being projected.
+        # Hold successors immediately and persist the receipt before the watcher exits.
+        updated = self.workflow.latch_pause(self._mutation(updated))
         for record in artifact_conflicts:
             node = next(n for n in nodes if n.name == record['node'])
             if not self._failed_card(workflow_id, node):
@@ -880,7 +904,9 @@ class IngestKanbanAdapter:
                 "source_coverage": self.workflow.source_coverage(updated),
                 "execution_mode": updated["scope"].get("execution_mode", "manual")})
         return {"workflow_id": workflow_id, "workflow_created": True,
-                "state": updated["state"], "background_dispatch": active_canary,
+                "state": "paused" if self.workflow.pending_pause(updated) else updated["state"],
+                "pause": self.workflow.pause_status(updated),
+                "revision": updated["revision"], "background_dispatch": active_canary,
                 "board_id": slug, "task_count": len(task_map),
                 "canary_complete": canary_done, "canary_report_ref": canary_report,
                 "execution_blocked": [n.name for n in nodes if self._execution_blocked(workflow_id, n)]}
@@ -890,6 +916,7 @@ class IngestKanbanAdapter:
         if not self.enable_workers:
             _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
         workflow = self.workflow.status(workflow_id)
+        self.workflow.assert_not_paused(workflow)
         self.workflow.pinned_templates(workflow)
         policy = workflow.get("dispatch_policy", {})
         if (policy.get("mode") not in ("canary", "full") or not node_name.startswith("pass-slice:")
@@ -971,10 +998,13 @@ class IngestKanbanAdapter:
             _fail("INCOMPLETE_COVERAGE", "exact plan requires all source outcomes and a ready source")
         return workflow, node, source_info
 
-    def _batch_worker(self, request: Mapping[str, Any], *, beginning: bool = False) -> tuple[dict[str, Any], Node]:
+    def _batch_worker(self, request: Mapping[str, Any], *, beginning: bool = False,
+                      completing: bool = False) -> tuple[dict[str, Any], Node]:
         if not self.enable_workers:
             _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
         workflow = self.workflow.status(str(request["workflow_id"]))
+        if not completing:
+            self.workflow.assert_not_paused(workflow)
         self.workflow.pinned_templates(workflow)
         if (workflow["cancel_requested"] or workflow["batch_id"] is None
                 or workflow["scope"].get("execution_mode") != "auto_full"
@@ -991,7 +1021,9 @@ class IngestKanbanAdapter:
             _fail("STALE_INPUT", "batch worker card binding changed")
         if self._execution_blocked(workflow['workflow_id'], node):
             _fail('EXECUTION_BLOCKED', 'batch worker binding requires trusted repair')
-        if not self._eligible(workflow, node, nodes):
+        by_name = {item.name: item for item in nodes}
+        if not (self._canary_allows(workflow, node, completing=completing)
+                and all(domain_completed(self.workflow, workflow, by_name[parent]) for parent in node.parents)):
             _fail("INCOMPLETE_COVERAGE", "batch worker stage or parent outcome is not ready")
         pin = next(item for item in workflow["template_pins"] if item["kind"] == node.kind)
         if not beginning and request.get("template_hash") != pin["template_hash"]:
@@ -1257,7 +1289,8 @@ class IngestKanbanAdapter:
             _fail("LEASE_EXPIRED", "slice lease expired")
         return {"ok": True, "batch_id": workflow["batch_id"],
                 "slice_id": value["slice_id"], "task_ids": value["task_ids"],
-                "input_fingerprint": value["input_fingerprint"]}
+                "input_fingerprint": value["input_fingerprint"],
+                "worker_request": dict(request)}
 
     def worker_heartbeat(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if not str(request["node"]).startswith("pass-slice:"):
@@ -1295,7 +1328,7 @@ class IngestKanbanAdapter:
                           "source_coverage": self.workflow.source_coverage(updated)}
             return self._pending_reconciliation(result)
         if not str(request["node"]).startswith("pass-slice:"):
-            workflow, node = self._batch_worker(request)
+            workflow, node = self._batch_worker(request, completing=True)
             return self._complete_batch_worker(workflow, node, request)
         workflow_id, node_name = str(request["workflow_id"]), str(request["node"])
         workflow, value = self._slice_worker(workflow_id, node_name,

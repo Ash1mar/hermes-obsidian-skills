@@ -8,11 +8,12 @@ All examples use `python3 "<skill-dir>/scripts/<script>.py" --vault "<vault>" <c
 | Inspect | `manage_ingest_workflow.py status --workflow-id <id> --compact --runtime` | Authoritative stage, revision, checkpoints plus read-only native attempts |
 | Preview canary | `manage_ingest_workflow.py canary-preview --workflow-id <id> --limit 8` | Read-only first eight ready slice IDs and selection digest |
 | Arm canary | `dispatch_ingest_workflow.py arm-canary` | Persist the exact previewed allowlist and project only those Pass cards |
-| Prepare one source (v8) | `dispatch_ingest_workflow.py worker-prepare-source` | Bound registration, supervised PDF conversion, QA and SourceUnit publication; preserves pending on runtime/review errors |
+| Prepare one source | `dispatch_ingest_workflow.py worker-prepare-source` | Bound registration, supervised PDF conversion, QA and SourceUnit publication; preserves pending on runtime/review errors |
 | Source worker result | `dispatch_ingest_workflow.py worker-complete` or `worker-fail` | Commit one validated ready UnitSet or one typed failed-source coverage gap; continue other source cards |
 | Exact plan worker result | `dispatch_ingest_workflow.py worker-complete` | Adopt the exact-budget batch after every source has a result; only ready UnitSets may enter the batch |
 | Stop canary | `dispatch_ingest_workflow.py disarm-canary` | Persist disabled policy; subsequent worker checks fail closed |
 | Resume | `dispatch_ingest_workflow.py resume` | Clears permitted stop, then resynchronizes projection |
+| Continue one reviewed pause | `dispatch_ingest_workflow.py continue-workflow` | Revalidates evidence, records explicit authorization and releases only this boundary |
 | Approve in manual mode | `manage_ingest_workflow.py approve` | Records named human checkpoint with approval digest |
 | Cancel | `dispatch_ingest_workflow.py cancel` | Persists cancellation and blocks projected cards |
 | Recover board | `manage_ingest_workflow.py rebuild-kanban`, then `dispatch_ingest_workflow.py sync` | Rebuilds projection from Vault |
@@ -22,7 +23,71 @@ Before any mutation inspect current status and compute a fresh digest with `mana
 
 Current `worker_dispatch_enabled: true` permits scoped source workers and exact planning after coverage checks. In `auto_full`, the first eight ready slices form a bounded canary; once all eight have durable valid Pass records, remaining slices and the downstream workers become eligible in order. Manual mode retains explicit canary arm and approval operations. Inspect compact status for `source_coverage` before planning or reporting completion. Failed sources are listed as gaps and require a partial final workflow outcome.
 
+## Staged pauses and explicit continuation
+
+For a staged full run set `scope.execution_mode: auto_full`, keep the desired Provider
+choice (`sync` or `skip`), and set:
+
+```json
+"pause_after": ["exact_plan", "canary", "pass", "checkpoint_1", "build_finalize", "checkpoint_2", "release_sync"]
+```
+
+| Boundary | Completed evidence | Next work held |
+| --- | --- | --- |
+| `exact_plan` | Adopted batch and initialized slices | Canary arming and every Pass worker |
+| `canary` | Exactly eight pinned slices with durable Pass results | Promotion and remaining Pass |
+| `pass` | All slices and planned tasks have candidate/citation Pass coverage | Every Reduce worker |
+| `checkpoint_1` | Passing validation and verified decision | Build Finalize |
+| `build_finalize` | Completed build runs | Vault Finalize release planning |
+| `checkpoint_2` | Passing release-plan validation and verified decision | Release apply |
+| `release_sync` | Applied release and requested Provider sync | Final acceptance |
+
+With `provider: skip`, `release_sync` records an explicit skipped Provider, not a
+successful index build. Checkpoints still validate automatically; a configured
+pause requires a separate operator continuation before their successors dispatch.
+
+Inspect `status --compact --runtime` and review `pause.report_ref`. On explicit user
+authorization, construct the following request from the latest observed ledger,
+compute its `input_digest` with `digest`, and call:
+`python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" continue-workflow --request "<request.json>"`.
+
+```json
+{
+  "workflow_id": "<observed workflow>",
+  "actor": "<observed actor>",
+  "expected_revision": 123,
+  "continue_id": "<stable ID for this authorization>",
+  "boundary": "<observed pause boundary>",
+  "evidence_digest": "<observed pause evidence_digest>",
+  "input_digest": "<complete mutation digest>"
+}
+```
+
+Continuation releases exactly one boundary. Reuse the exact request on retry.
+`resume`, `sync`, board rebuild and Gateway restart never grant continuation.
+The watcher exits after acknowledging completed cards and reporting a pause; the
+dispatch continuation command starts the next reconciler when work becomes eligible.
+Worker begin/check and domain writes also enforce an unlatched reached boundary,
+so delayed reconciliation does not open a write window. A completed boundary owner
+may submit its durable completion while successors remain held. Changed evidence
+or an execution blocker must be inspected through supported operations; never edit
+the pause record, replay an old authorization for a new boundary or silently create
+a replacement workflow. Do not change an existing workflow's immutable pause policy.
+
+Staged workflows project only the current DAG prefix. An exact-plan pause projects
+no Pass cards; the canary segment projects only its eight selected slices. Full slice
+and task coverage remains in the Vault. Later segments add their cards on continuation;
+unopened phases are not mistaken for missing domain results or completed native work.
+
 ## Workflow lock recovery
+
+Pass workers preflight each semantic draft with the bound `batch-pass --validate-only`
+command. It checks the same schema, task revision, reading window and live references
+as persistence, without creating Pass/task/batch records or failure state. A worker
+may correct an `INVALID_SCHEMA` in its own draft from observed package references
+and retry preflight at most twice. This never permits changing a binding, source or
+ledger, recovering a stopped lease or crossing a pause. Persist only the draft that
+passed preflight; unresolved errors retain their evidence and stop the slice.
 
 New workflow, dispatch and watcher locks use host kernel locks. Their stable kernel files live
 outside the Vault (`~/.cache/hermes-skill-runtime/locks` on Linux; the user temporary directory
@@ -76,7 +141,7 @@ Native read failure is `unknown`, never successful running. These are per-card o
 not an atomic board snapshot; errors not yet persisted by Hermes remain unknown. Do not infer
 source failure or model recovery solely from these labels. Source coverage is still the ledger.
 
-New workflows pin pack v8. Preparation workers execute the card's complete `worker_command`,
+New workflows pin the installed contracts. Preparation workers execute the card's complete `worker_command`,
 which reads its immutable dispatcher binding. Missing/changed artifacts stop for trusted repair;
 sync never overwrites a changed request. The helper owns begin/check/complete and makes no chat-model calls. It never
 calls the Kanban CLI. Local conversion retains the shared host gate and cancellation monitoring.
@@ -90,7 +155,7 @@ restart the same failed binding or manufacture a missing request field.
 Completing one source does not enable exact planning/Canary until the remaining sources finish.
 Changing installed templates never updates an existing workflow's pinned pack automatically.
 
-## Exact planning and pre-batch recovery (v8)
+## Exact planning and pre-batch recovery
 
 Execute exact-plan's `worker_command` as a single supervised background terminal job (`background=true,
 notify=true`), polling in short calls rather than waiting through the outer tool deadline.

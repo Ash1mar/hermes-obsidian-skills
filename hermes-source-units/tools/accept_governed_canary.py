@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -21,6 +22,52 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def native_preflight_evidence(home, snapshots):
+    """Read native terminal transcripts; never run or manufacture a Pass."""
+    import re
+    database = home/'state.db'
+    result = []
+    with sqlite3.connect('file:' + str(database) + '?mode=ro', uri=True) as connection:
+        claimed = set()
+        for snapshot in snapshots:
+            task_id = snapshot['task']['id']
+            # task.session_id is nullable even while the native worker has a
+            # durable session. Compaction may also create linked child sessions.
+            # Bind to the native task prompt or canonical lease tool response.
+            ids = {row[0] for row in connection.execute(
+                "SELECT DISTINCT m.session_id FROM messages m JOIN sessions s ON s.id=m.session_id "
+                "WHERE s.source='kanban' AND ((m.role='user' AND instr(m.content,?)>0) "
+                "OR (m.role='tool' AND instr(m.content,?)>0))",
+                (task_id, 'ingest-worker-' + task_id))}
+            if not ids or claimed.intersection(ids):
+                raise RuntimeError('native Pass snapshot has no unique session identity for preflight audit')
+            claimed.update(ids)
+            calls, successes = 0, 0
+            for session_id in sorted(ids):
+                for role, content, tool_calls in connection.execute(
+                        'SELECT role, content, tool_calls FROM messages WHERE session_id=?', (session_id,)):
+                    if tool_calls and 'batch-pass' in tool_calls and '--validate-only' in tool_calls and '--worker-binding' in tool_calls:
+                        calls += 1
+                    if role == 'tool' and content:
+                        # Terminal responses may encode stdout as a nested JSON string.
+                        try:
+                            parsed = json.loads(content)
+                        except ValueError:
+                            parsed = content
+                        texts = [content]
+                        if isinstance(parsed, dict):
+                            texts.extend(v for v in parsed.values() if isinstance(v, str))
+                        if any(re.search(r'"validated"\s*:\s*true', text)
+                               and all('"' + key + '"' in text for key in ('batch', 'results', 'failures'))
+                               for text in texts):
+                            successes += 1
+            if not calls or not successes:
+                raise RuntimeError(f'native Pass {task_id} has no successful bound preflight transcript')
+            result.append({'task_id': task_id, 'session_ids': sorted(ids),
+                           'preflight_tool_calls': calls, 'successful_result_messages': successes})
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--source-vault', required=True)
@@ -29,6 +76,10 @@ def main():
     parser.add_argument('--output', required=True)
     parser.add_argument('--timeout', type=int, default=7200)
     parser.add_argument('--measurements-from', help='Previous isolated gate Vault; checkpoints are freshly verified')
+    parser.add_argument('--verify-pauses', action='store_true',
+                        help='Verify exact-plan pause, explicit continuation and eight-slice pause')
+    parser.add_argument('--verify-preflight', action='store_true',
+                        help='Require successful bound draft preflight in all eight native worker sessions')
     args = parser.parse_args()
     if os.name != 'posix':
         raise RuntimeError('this gate must use the deployed Hermes Linux runtime')
@@ -107,6 +158,18 @@ def main():
             dest = vault/path
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(original/path, dest)
+        # Pause evidence also pins historical preparation reports and Bundle
+        # manifests. These are authoritative inputs, unlike Provider state.
+        for outcome in old.get('source_outcomes', []):
+            for ref in outcome.get('artifact_refs', []):
+                source = (original/ref).resolve()
+                source.relative_to(original)
+                dest = vault/ref
+                if not dest.exists():
+                    dest.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, dest)
+                if source.name=='manifest.json' and 'converted' in source.parts:
+                    shutil.copytree(source.parent, dest.parent, dirs_exist_ok=True)
         ledger = vault/f'_system/ledgers/ingest-workflows/{args.workflow_id}.json'
         ledger.parent.mkdir(parents=True, exist_ok=True)
         ledger.write_bytes(before)
@@ -137,7 +200,9 @@ def main():
         current = service.repair_preparation(request(current, repair_id='release-gate',
             reason='Validate candidate deployment in isolated full-scale native workflow',
             evidence_refs=[current['template_pins'][0]['path']], templates=worker_pack(),
-            reset_sources=[], execution_mode='canary_only'))
+            reset_sources=[], execution_mode='auto_full' if args.verify_pauses else 'canary_only',
+            pause_after=['exact_plan', 'canary', 'pass', 'checkpoint_1', 'build_finalize',
+                         'checkpoint_2', 'release_sync'] if args.verify_pauses else []))
         assert current['source_outcomes']==old['source_outcomes']
         # No model request construction or fixture completion in the success path.
         with (state/'gateway.log').open('wb') as output:
@@ -163,6 +228,25 @@ def main():
         print('GATE_STARTED', json.dumps({k:evidence[k] for k in ('vault','runtime','gateway_pid','candidate_version')}), flush=True)
         begun = time.monotonic()
         adapter = IngestKanbanAdapter(vault, enable_workers=True)
+        def quiescent_pause(boundary):
+            # The receipt precedes native card acknowledgement. Do not race a
+            # still-running reconciler when testing the operator's next command.
+            deadline = time.monotonic() + 180
+            while watcher_pid:
+                try:
+                    status = Path(f'/proc/{watcher_pid}/status').read_text()
+                except FileNotFoundError:
+                    break
+                state_line = next(line for line in status.splitlines() if line.startswith('State:'))
+                if state_line.split()[1] == 'Z':
+                    break
+                if time.monotonic() > deadline:
+                    raise RuntimeError('paused reconciler did not finish native acknowledgement')
+                time.sleep(2)
+            current = service.status(args.workflow_id)
+            assert current['pause_control']['boundary']==boundary
+            assert current['pause_control']['evidence_digest']
+            return current
         last = None
         while time.monotonic()-begun < args.timeout:
             if gateway.poll() is not None:
@@ -185,13 +269,41 @@ def main():
             if failures:
                 evidence['execution_blockers']=failures
                 raise RuntimeError('native worker execution blocked; inspect report')
+            if value['batch_id']:
+                blocked = [s for s in service.knowledge._slices(value['batch_id'])
+                           if s['slice_id'] in value['dispatch_policy']['slice_ids']
+                           and s['last_error'] and s['state'] in ('blocked', 'reconcile_required', 'awaiting_approval')]
+                if blocked:
+                    evidence['slice_blockers'] = blocked
+                    save()
+                    raise RuntimeError('native Pass slice blocked; inspect durable slice evidence')
+            if (args.verify_pauses and service.pause_status(value)['boundary']=='exact_plan'
+                    and value.get('pause_control', {}).get('evidence_digest')):
+                value = quiescent_pause('exact_plan')
+                assert value['batch_id'] and value['dispatch_policy']['mode']=='disabled'
+                assert not list((vault/'_system/knowledge-builds').glob('task-*/passes/*.json'))
+                ledger_before = service._path(args.workflow_id).read_bytes()
+                recovered = dispatch(vault, 'resume', request(value))
+                assert not recovered['background_dispatch']
+                assert service._path(args.workflow_id).read_bytes()==ledger_before
+                assert all(c['state'] not in ('running','done') for c in cards
+                           if c['node'].startswith('pass-slice:'))
+                evidence['exact_plan_pause_verified'] = True
+                continuation = request(value, continue_id='gate-continue-plan', boundary='exact_plan',
+                    evidence_digest=value['pause_control']['evidence_digest'])
+                next_dispatch = dispatch(vault, 'continue-workflow', continuation)
+                watcher_pid = next_dispatch.get('reconciler_pid', watcher_pid)
+                evidence['explicit_plan_continuation'] = continuation
+                save()
+                continue
             canary = vault/f'_system/ledgers/ingest-workflows/{args.workflow_id}/reports/canary.json'
             if canary.exists():
                 outcome = json.loads(canary.read_text())
-                assert outcome['ok'] and outcome['execution_mode']=='canary_only'
+                assert outcome['ok'] and outcome['execution_mode']==('auto_full' if args.verify_pauses else 'canary_only')
                 assert len(set(outcome['slice_ids']))==8
                 snapshots = [native.task_snapshot(value['kanban']['board_id'],c['task_id'])
-                             for c in value['kanban']['task_map'] if c['node'].startswith('pass-slice:')]
+                             for c in value['kanban']['task_map']
+                             if c['node'].startswith('pass-slice:') and c['node'].partition(':')[2] in outcome['slice_ids']]
                 if any(s['task']['status']!='done' for s in snapshots):
                     time.sleep(3)
                     continue
@@ -208,7 +320,21 @@ def main():
                            by_refs[json.dumps(t['target_refs'],sort_keys=True)]['limit']==12000 for t in plan['tasks'])
                 selected = [service.knowledge._slice(value['batch_id'],sid) for sid in outcome['slice_ids']]
                 assert all(s['state']=='completed' and s['result_refs'] for s in selected)
-                assert all(c['node'].startswith('pass-slice:') for c in value['kanban']['task_map'])
+                if args.verify_preflight:
+                    evidence['native_preflight'] = native_preflight_evidence(home, snapshots)
+                    evidence['native_preflight_verified'] = True
+                if args.verify_pauses:
+                    value = quiescent_pause('canary')
+                    assert service.pause_status(value)['boundary']=='canary'
+                    assert value['dispatch_policy']['mode']=='canary'
+                    assert evidence.get('exact_plan_pause_verified')
+                    assert not dispatch(vault, 'resume', request(value))['background_dispatch']
+                    for c in value['kanban']['task_map']:
+                        if c['node'].partition(':')[2] not in outcome['slice_ids']:
+                            assert native.task_snapshot(value['kanban']['board_id'],c['task_id'])['task']['status'] not in ('running','done')
+                    evidence['canary_pause_verified'] = True
+                else:
+                    assert all(c['node'].startswith('pass-slice:') for c in value['kanban']['task_map'])
                 assert not list((vault/'_system/knowledge-builds').glob('*/reduce.json'))
                 # Observe a further dispatch period: completed canary must not promote.
                 time.sleep(min(60, float(config['kanban'].get('dispatch_interval_seconds',60))))
@@ -231,6 +357,19 @@ def main():
         evidence['error']=repr(exc)
         evidence['traceback']=traceback.format_exc()
         print('GATE_FAILED',str(exc),flush=True)
+        # Preserve only Pass draft JSON, never credentials or whole conversations.
+        drafts = []
+        for path in home.rglob('*.json'):
+            try:
+                payload = json.loads(path.read_text())
+                if isinstance(payload, dict) and payload.get('batch_id') and isinstance(payload.get('passes'), list):
+                    destination = sandbox/'failed-pass-drafts'/f'{sha(path)}.json'
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, destination)
+                    drafts.append(str(destination))
+            except (OSError, ValueError):
+                pass
+        evidence['failed_pass_drafts'] = sorted(set(drafts))
     finally:
         # Only terminate this isolated runtime; never stop the user's Gateway.
         if not evidence['passed'] and evidence.get('resume'):

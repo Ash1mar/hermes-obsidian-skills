@@ -866,8 +866,10 @@ class FakeKanban:
         self.wait(slug, task_id, 'archived', 'Execution binding requires repair')
 
 
+@pytest.mark.parametrize("pause_mode", [False, True])
+@pytest.mark.parametrize("provider", ["skip", "sync"])
 def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
-        vault: Path, monkeypatch: pytest.MonkeyPatch):
+        vault: Path, monkeypatch: pytest.MonkeyPatch, pause_mode: bool, provider: str):
     batch_id = "auto-full-batch"
     batch, _, citations, snapshots = prepare_layered_reduce_batch(vault, batch_id)
     fake = FakeKanban(True)
@@ -876,7 +878,10 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
         workflow_id="ingest-auto-full-flow", actor="agent", expected_revision=0,
         profile="compact-3", scope={"source_paths": [],
                                     "knowledge_selector": "all-current",
-                                    "execution_mode": "auto_full"}, batch_id=batch_id))
+                                    "execution_mode": "auto_full",
+                                    "provider": provider,
+                                    "pause_after": (["pass", "checkpoint_1", "build_finalize",
+                                                      "checkpoint_2", "release_sync"] if pause_mode else [])}, batch_id=batch_id))
     # The separate eight-slice test verifies promotion; this fixture starts just
     # beyond that boundary to exercise every downstream worker and gate.
     full = {**started, "revision": started["revision"] + 1,
@@ -890,6 +895,28 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
         current = adapter.workflow.status(full["workflow_id"])
         return adapter.sync(workflow_request(workflow_id=full["workflow_id"],
                                              actor="agent", expected_revision=current["revision"]))
+
+    continued_requests = []
+    def continue_boundary(boundary):
+        if not pause_mode:
+            return
+        current = adapter.workflow.status(full["workflow_id"])
+        assert current["pause_control"]["boundary"] == boundary
+        assert not reconcile()["background_dispatch"]
+        before = adapter.workflow._path(full["workflow_id"]).read_bytes()
+        fresh = IngestKanbanAdapter(vault, fake, enable_workers=True)
+        fresh.resume(workflow_request(workflow_id=full["workflow_id"], actor="agent",
+                                     expected_revision=current["revision"]))
+        assert adapter.workflow._path(full["workflow_id"]).read_bytes() == before
+        if continued_requests:
+            # Replaying a previous authorization must not release this pause.
+            adapter.continue_workflow(continued_requests[0])
+            assert adapter.workflow._path(full["workflow_id"]).read_bytes() == before
+        request = workflow_request(workflow_id=full["workflow_id"], actor="agent",
+            expected_revision=current["revision"], continue_id="continue-" + boundary,
+            boundary=boundary, evidence_digest=current["pause_control"]["evidence_digest"])
+        adapter.continue_workflow(request)
+        continued_requests.append(request)
 
     def card(kind: str, suffix: str = "") -> tuple[dict, dict]:
         current = adapter.workflow.status(full["workflow_id"])
@@ -916,6 +943,7 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
                           "expected_revision": begun["slice"]["revision"]}
         assert adapter.worker_complete(finish_request)["ok"]
         reconcile()
+    continue_boundary("pass")
     assert adapter.workflow.status(full["workflow_id"])["current_stage"] == "reducing"
 
     reductions = []
@@ -944,6 +972,7 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
     assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
     reconcile()
     finish("checkpoint-1-validate")
+    continue_boundary("checkpoint_1")
     first = adapter.workflow.status(full["workflow_id"])
     assert first["current_stage"] == "build_finalizing"
     assert first["checkpoints"]["checkpoint_1"]["approved_by"] == "hermes:auto"
@@ -969,6 +998,7 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
                                                                  "note": "Reviewed both sources"}]}]})["ok"]
     assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
     reconcile()
+    continue_boundary("build_finalize")
     assert adapter.workflow.status(full["workflow_id"])["current_stage"] == "release_planning"
 
     release = FileVaultFinalizeService(vault)
@@ -992,6 +1022,7 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
                                                     "summary": {"errors": 0},
                                                     "issues": []})
     finish("checkpoint-2-validate")
+    continue_boundary("checkpoint_2")
     second = adapter.workflow.status(full["workflow_id"])
     assert second["current_stage"] == "applying"
     assert second["checkpoints"]["checkpoint_2"]["approved_by"] == "hermes:auto"
@@ -1001,6 +1032,24 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
                           "expected_revision": plan["revision"]})["ok"]
     assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
     reconcile()
+    if provider == "sync":
+        indexing = adapter.workflow.status(full["workflow_id"])
+        assert indexing["current_stage"] == "indexing"
+        assert not indexing.get("pause_control", {}).get("boundary")
+        req, begun = card("provider-sync")
+        manifest_path = vault / "_system/reports/retrieval-index-manifest.json"
+        manifest_path.parent.mkdir(parents=True, exist_ok=True)
+        manifest = {"status": "ready", "release_id": plan["release_id"], "release_hash": "wrong"}
+        manifest_path.write_text(json.dumps(manifest))
+        with pytest.raises(ContractError, match="INCOMPLETE_COVERAGE"):
+            adapter.worker_complete({**req, "template_hash": begun["template_hash"]})
+        assert adapter.workflow.status(full["workflow_id"])["current_stage"] == "indexing"
+        release_path = vault / f"_system/knowledge-releases/{plan['release_id']}/manifest.json"
+        manifest["release_hash"] = hashlib.sha256(release_path.read_bytes()).hexdigest()
+        manifest_path.write_text(json.dumps(manifest))
+        assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
+        reconcile()
+    continue_boundary("release_sync")
     assert adapter.workflow.status(full["workflow_id"])["current_stage"] == "validating"
     finish("acceptance")
     assert adapter.workflow.status(full["workflow_id"])["state"] == "completed"
@@ -1082,8 +1131,8 @@ def test_failed_source_does_not_stop_other_source_or_enter_exact_plan(
     assert adapter.workflow.status(pinned["workflow_id"])["current_stage"] == "analyzing"
 
 
-@pytest.mark.parametrize("mode", ["auto_full", "canary_only"])
-def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path, mode: str):
+@pytest.mark.parametrize("mode, pauses", [("auto_full", False), ("canary_only", False), ("auto_full", True)])
+def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path, mode: str, pauses: bool):
     batch = plan_sliced_batch(vault, 27, "auto-canary-batch")
     fake = FakeKanban(True)
     adapter = IngestKanbanAdapter(vault, fake, enable_workers=True)
@@ -1091,7 +1140,7 @@ def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path, mode: str)
         workflow_id="ingest-auto-canary", actor="agent", expected_revision=0,
         profile="compact-3", scope={"source_paths": [],
                                     "knowledge_selector": "all-current",
-                                    "execution_mode": mode},
+                                    "execution_mode": mode, "pause_after": ["canary"] if pauses else []},
         batch_id="auto-canary-batch"))
     dispatched = adapter.sync(workflow_request(
         workflow_id=pinned["workflow_id"], actor="agent",
@@ -1102,7 +1151,7 @@ def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path, mode: str)
     assert len(workflow["dispatch_policy"]["slice_ids"]) == 8
     cards = [item for item in workflow["kanban"]["task_map"]
              if item["node"].startswith("pass-slice:")]
-    assert len(cards) == (8 if mode == 'canary_only' else 9)
+    assert len(cards) == (8 if mode == 'canary_only' or pauses else 9)
     assert sum(item["task_id"] in fake.unblocked for item in cards) == 2
     assert all(item['node'].partition(':')[2] in workflow['dispatch_policy']['slice_ids']
                for item in cards if item['task_id'] in fake.unblocked)
@@ -1143,6 +1192,16 @@ def test_auto_full_starts_with_exactly_eight_pass_slices(vault: Path, mode: str)
         adapter.sync(workflow_request(workflow_id=pinned["workflow_id"], actor="agent",
                                       expected_revision=current["revision"]))
     promoted = adapter.workflow.status(pinned["workflow_id"])
+    if pauses:
+        assert promoted["dispatch_policy"]["mode"] == "canary"
+        assert promoted["pause_control"]["boundary"] == "canary"
+        before = adapter.workflow._path(promoted["workflow_id"]).read_bytes()
+        assert not adapter._sync_current(promoted["workflow_id"])["background_dispatch"]
+        assert adapter.workflow._path(promoted["workflow_id"]).read_bytes() == before
+        adapter.continue_workflow(workflow_request(workflow_id=promoted["workflow_id"], actor="agent",
+            expected_revision=promoted["revision"], continue_id="continue-canary", boundary="canary",
+            evidence_digest=promoted["pause_control"]["evidence_digest"]))
+        promoted = adapter.workflow.status(pinned["workflow_id"])
     assert promoted["dispatch_policy"]["mode"] == ("full" if mode == "auto_full" else "canary")
     remaining = next((item for item in promoted["kanban"]["task_map"]
                      if item["node"].partition(":")[2] not in
@@ -1697,6 +1756,47 @@ def test_batch_pass_idempotency_survives_worker_restart_and_rejects_key_conflict
         "result_refs": [retried["results"][0]["path"]],
     }, now="2026-09-21T00:00:10Z")
     assert completed["slice"]["state"] == "completed"
+
+
+@pytest.mark.parametrize("error", [None, "INVALID_SCHEMA", "STALE_INPUT", "UNRESOLVED_REFERENCE"])
+def test_batch_pass_preflight_is_read_only_and_checks_draft(vault: Path, error, tmp_path):
+    service = plan_sliced_batch(vault, 1, "preflight-pass")
+    prepared = service.prepare_batch("preflight-pass", "agent", 1)
+    leased = service.batch_next_slice("preflight-pass", "worker-a")["slice"]
+    task = service._task(leased["task_ids"][0])
+    ref = task["target_refs"][0]
+    draft = {"batch_id": "preflight-pass", "slice_id": leased["slice_id"], "worker_id": "worker-a",
+        "passes": [{"task_id": task["task_id"], "actor": "agent", "expected_revision": task["revision"],
+        "registry_revision": 1, "reading_package_id": prepared["results"][0]["reading_package_id"],
+        "pass_kind": "candidate", "sequence": 0,
+        "inspections": [{"source_ref": ref, "finding": "Grounded inspection", "qa": "usable", "qa_note": ""}],
+        "candidates": [{"candidate_id": "candidate", "name": "Evidence", "kind": "fact",
+            "identity_rationale": "Observed source", "finding": "Grounded fact", "applicability": "This source",
+            "conditions": [], "exceptions": [], "support_refs": [json.loads(json.dumps(ref))]}], "empty_reason": ""}]}
+    if error in ("INVALID_SCHEMA", "UNRESOLVED_REFERENCE"):
+        draft["passes"][0]["candidates"][0]["support_refs"][0]["unit_ref"]["unit_id"] = (
+            "mistyped-unit-id" if error == "INVALID_SCHEMA" else "0" * 64)
+    if error == "STALE_INPUT":
+        draft["passes"][0]["expected_revision"] -= 1
+    request_path = tmp_path / "draft.json"
+    request_path.write_text(json.dumps(draft), encoding="utf-8")
+    def snapshot():
+        return {p.relative_to(vault).as_posix(): p.read_bytes() for p in vault.rglob("*")
+                if p.is_file() and not any(part.startswith(".") for part in p.relative_to(vault).parts)}
+    before = snapshot()
+    checked = subprocess.run([sys.executable, str(KNOWLEDGE_CLI), "--vault", str(vault),
+        "batch-pass", "--request", str(request_path), "--validate-only"], capture_output=True,
+        text=True, encoding="utf-8")
+    result = json.loads(checked.stdout)
+    assert checked.returncode == (0 if error is None else 2)
+    assert result["validated"] == (error is None)
+    if error:
+        assert result["failures"][0]["code"] == error
+    assert snapshot() == before  # No rejected draft contaminates task/batch failure state.
+    if error is None:
+        persisted = service.record_pass_batch(draft)
+        assert persisted["ok"] and persisted["results"][0]["created"]
+        assert persisted["results"][0]["pass_id"] == result["results"][0]["pass_id"]
 
 
 def test_batch_pass_rejects_stale_revision_before_writing(vault: Path):

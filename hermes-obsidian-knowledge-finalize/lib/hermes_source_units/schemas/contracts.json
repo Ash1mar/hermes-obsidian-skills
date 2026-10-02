@@ -1744,7 +1744,8 @@
         "source_paths": {"type": "array", "items": {"type": "string", "minLength": 1, "format": "vault-relative-path"}, "minItems": 0, "uniqueItems": true},
         "knowledge_selector": {"type": "string", "minLength": 1, "pattern": "\\S"},
         "execution_mode": {"enum": ["manual", "canary_only", "auto_full"]},
-        "provider": {"enum": ["skip", "sync"]}
+        "provider": {"enum": ["skip", "sync"]},
+        "pause_after": {"type": "array", "uniqueItems": true, "items": {"enum": ["exact_plan", "canary", "pass", "checkpoint_1", "build_finalize", "checkpoint_2", "release_sync"]}}
       },
       "required": ["source_paths", "knowledge_selector"],
       "additionalProperties": false
@@ -1816,6 +1817,24 @@
       "required": ["mode", "slice_ids", "selection_digest"],
       "additionalProperties": false
     },
+    "ingest_workflow_pause_control": {
+      "type": "object",
+      "properties": {
+        "boundary": {"anyOf": [{"enum": ["exact_plan", "canary", "pass", "checkpoint_1", "build_finalize", "checkpoint_2", "release_sync"]}, {"type": "null"}]},
+        "evidence_digest": {"anyOf": [{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, {"type": "null"}]},
+        "report_ref": {"anyOf": [{"type": "string", "format": "vault-relative-path"}, {"type": "null"}]},
+        "history": {"type": "array", "items": {"type": "object", "properties": {
+          "boundary": {"enum": ["exact_plan", "canary", "pass", "checkpoint_1", "build_finalize", "checkpoint_2", "release_sync"]},
+          "continue_id": {"type": "string", "minLength": 1},
+          "actor": {"type": "string", "minLength": 1},
+          "evidence_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "input_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "report_ref": {"type": "string", "format": "vault-relative-path"}
+        }, "required": ["boundary", "continue_id", "actor", "evidence_digest", "input_digest", "report_ref"], "additionalProperties": false}}
+      },
+      "required": ["boundary", "evidence_digest", "report_ref", "history"],
+      "additionalProperties": false
+    },
     "ingest_workflow": {
       "type": "object",
       "properties": {
@@ -1832,6 +1851,7 @@
         "release_plan_id": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
         "pinned_inputs": {"type": "object", "properties": {"batch_id": {"type": "string", "minLength": 1}, "document_registry_revision": {"type": "integer", "minimum": 0}, "task_ids_fingerprint": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}}, "additionalProperties": false},
         "dispatch_policy": {"$ref": "#/$defs/ingest_workflow_dispatch_policy"},
+        "pause_control": {"$ref": "#/$defs/ingest_workflow_pause_control"},
         "kanban": {"type": "object", "properties": {"board_id": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]}, "task_map": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_task"}, "minItems": 0}}, "required": ["board_id", "task_map"], "additionalProperties": false},
         "checkpoints": {"type": "object", "properties": {"checkpoint_1": {"$ref": "#/$defs/ingest_workflow_checkpoint"}, "checkpoint_2": {"$ref": "#/$defs/ingest_workflow_checkpoint"}}, "required": ["checkpoint_1", "checkpoint_2"], "additionalProperties": false},
         "artifacts": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_artifact"}, "minItems": 0},

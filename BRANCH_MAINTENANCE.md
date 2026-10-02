@@ -97,3 +97,11 @@ Worktree 只用于用户明确要求的并行隔离任务，或普通的干净�
 HERMES_HOME、Kanban 及 HERMES_GATEWAY_LOCK_DIR 必须全部隔离并验证实际 Gateway PID。
 不能以直接 helper 的规模测试、小型派发测试或测试脚本代完成卡片替代这个门槛。
 失败报告必须保留，并阻止部署及正式流程恢复；单元测试通过仅说明回归通过。
+
+涉及阶段暂停与继续授权的变更，还须为同一门槛提供 `--verify-pauses`。此模式在隔离 Vault
+验证 exact-plan 后无 Pass 写入、resume 保持暂停、显式 continue 后才运行八片，并在 canary
+后保持剩余 Pass 和全部下游节点未运行；生产 ledger 和原件仍必须不变。
+
+涉及 Pass 草稿预校验的变更，还须提供 `--verify-preflight`。此模式从八个实际
+Kanban worker 的原生 session 记录中验证绑定的 `batch-pass --validate-only` 调用及
+成功工具结果；不能以 worker 的文字声明或单元测试代替原生调用证据。
