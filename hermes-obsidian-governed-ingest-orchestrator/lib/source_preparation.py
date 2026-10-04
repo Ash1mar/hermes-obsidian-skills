@@ -35,7 +35,9 @@ def prepare_source(adapter, request):
     from manage_document_governance import command_ingest_finish
     from validate_document_bundle import validate_bundle
 
-    root = _vault_path(vault, f"{WORKFLOW_ROOT}/{request['workflow_id']}/source-preparation/{fingerprint(request['node'])[:16]}")
+    attempt_identity = fingerprint({'node': request['node'],
+                                    'input_fingerprint': begun['input_fingerprint']})[:16]
+    root = _vault_path(vault, f"{WORKFLOW_ROOT}/{request['workflow_id']}/source-preparation/{attempt_identity}")
     with _exclusive_lock(root / ".prepare.lock"), worker_binding(bound):
         adapter.worker_check(bound)
         identity = adapter.worker_register_source(bound)
@@ -66,14 +68,18 @@ def prepare_source(adapter, request):
             raw = _vault_path(vault, source["path"])
             if raw.suffix.lower() != ".pdf":
                 _fail("PREPARATION_REVIEW_REQUIRED", "automatic preparation currently supports PDF; use governed manual preparation for other formats")
-            base = f"_system/reports/source-bundles/{raw.stem}-{source['content_sha256'][:16]}-{fingerprint(request['workflow_id'])[:8]}"
+            generation = fingerprint({'workflow_id': request['workflow_id'],
+                                      'input_fingerprint': begun['input_fingerprint']})[:16]
+            base = f"_system/reports/source-bundles/{raw.stem}-{source['content_sha256'][:16]}-{generation}"
             bundle = None
+            document_failures = []
             with tempfile.TemporaryDirectory(prefix="hermes-source-binding-") as temporary:
                 binding_file = Path(temporary) / "binding.json"
                 binding_file.write_text(json.dumps(bound, ensure_ascii=False), encoding="utf-8")
                 for attempt, backend in ((1, "hybrid-engine"), (2, "pipeline")):
                     adapter.worker_check(bound)
                     candidate = _vault_path(vault, f"{base}/attempt-{attempt}")
+                    result = None
                     if not candidate.exists():
                         root.mkdir(parents=True, exist_ok=True)
                         with (root / f"conversion-{attempt}.log").open("wb") as output:
@@ -85,11 +91,27 @@ def prepare_source(adapter, request):
                                 check=False)
                         # Missing entrypoints, binding or environment errors cannot
                         # be repaired by parsing the same PDF with weaker settings.
-                        if result.returncode == 2:
-                            _fail("PREPARATION_RUNTIME_FAILED", f"converter rejected attempt {attempt}; inspect {root.relative_to(vault)}")
-                        if not (candidate / "manifest.json").is_file():
-                            _fail("PREPARATION_RUNTIME_FAILED", f"converter produced no Bundle manifest on attempt {attempt}; inspect {root.relative_to(vault)}; source outcome remains pending")
                     adapter.worker_check(bound)
+                    if result is not None and result.returncode not in (0, 3, 4):
+                        _fail("PREPARATION_RUNTIME_FAILED", f"converter rejected attempt {attempt}; inspect {root.relative_to(vault)}; source outcome remains pending")
+                    diagnostic_path = candidate / 'conversion-result.json'
+                    diagnostic = json.loads(diagnostic_path.read_text(encoding='utf-8')) if diagnostic_path.is_file() else None
+                    if diagnostic is not None:
+                        if (diagnostic.get('schema_version') != 'hermes-conversion-result/v1'
+                                or diagnostic.get('source_sha256') != source['content_sha256']
+                                or diagnostic.get('backend') != backend):
+                            _fail('SOURCE_IDENTITY_CONFLICT', 'conversion diagnostic differs from assigned attempt')
+                        if diagnostic.get('status') == 'document_failed' and diagnostic.get('error_code') == 'CONVERSION_FAILED':
+                            if (candidate / 'manifest.json').exists():
+                                _fail('PREPARATION_RUNTIME_FAILED', 'conversion failure conflicts with Bundle manifest')
+                            document_failures.append(diagnostic_path.relative_to(vault).as_posix())
+                            continue
+                        if diagnostic.get('status') != 'converted':
+                            _fail('PREPARATION_RUNTIME_FAILED', f'converter execution blocked; inspect {diagnostic_path.relative_to(vault)}; source outcome remains pending')
+                    if result is not None and result.returncode == 4:
+                        _fail('PREPARATION_RUNTIME_FAILED', 'document exit lacks a bound document failure diagnostic')
+                    if not (candidate / 'manifest.json').is_file():
+                        _fail('PREPARATION_RUNTIME_FAILED', f'converter produced no verified Bundle or document failure on attempt {attempt}; inspect {root.relative_to(vault)}; source outcome remains pending')
                     if (candidate / "manifest.json").is_file():
                         _validate_identity(candidate, source)
                     validation = validate_bundle(candidate)
@@ -98,6 +120,18 @@ def prepare_source(adapter, request):
                         bundle = candidate
                         break
             if bundle is None:
+                if len(document_failures) == 2:
+                    evidence = document_failures + [(root / f'conversion-{i}.log').relative_to(vault).as_posix() for i in (1, 2)]
+                    for retry in range(16):
+                        adapter.worker_check(bound)
+                        try:
+                            return adapter.worker_fail({**bound, 'code': 'CONVERSION_FAILED',
+                                'message': 'Both bounded conversion backends reported typed document load failures',
+                                'artifact_refs': evidence})
+                        except ContractError as exc:
+                            if exc.code not in ('REVISION_CONFLICT', 'LOCK_BUSY') or retry == 15:
+                                raise
+                            time.sleep(0.05)
                 _fail("PREPARATION_REVIEW_REQUIRED", f"two bounded conversion attempts lack a valid Bundle; inspect {root.relative_to(vault)}; source outcome remains pending")
 
         adapter.worker_check(bound)

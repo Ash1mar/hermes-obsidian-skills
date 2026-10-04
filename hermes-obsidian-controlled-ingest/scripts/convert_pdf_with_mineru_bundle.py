@@ -17,6 +17,7 @@ but downstream ingestion must not scan that directory by default.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import hashlib
 import importlib.metadata
 import json
@@ -48,6 +49,41 @@ EVIDENCE_PATTERNS = (
     "*span.pdf",
 )
 DEFAULT_DEPLOYMENT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "deployment.json"
+CONVERSION_RESULT_SCHEMA = "hermes-conversion-result/v1"
+
+
+class ConversionFailure(RuntimeError):
+    def __init__(self, message: str, *, document_failed: bool = False, engine_exit: int | None = None):
+        super().__init__(message)
+        self.document_failed = document_failed
+        self.engine_exit = engine_exit
+
+
+def document_load_failure(output: str) -> str | None:
+    """Recognize a terminal typed PDF load exception, never arbitrary log keywords.
+
+    MinerU's CLI does not expose structured failures. Only these PDFium load
+    diagnostics prove a document failure; other exceptions, signals, missing
+    output and supervisor errors remain execution failures.
+    """
+    lines = [re.sub(r"\x1b\[[0-9;]*m", "", line).strip() for line in output.splitlines()]
+    lines = [line for line in lines if line]
+    if not lines or "Traceback (most recent call last):" not in output:
+        return None
+    pattern = (r"(?:pypdfium2\._helpers\.misc\.)?PdfiumError: Failed to load document "
+               r"\(PDFium: (?:Data format error|Password error|Unsupported security scheme error)\)\.?")
+    return lines[-1] if re.fullmatch(pattern, lines[-1]) else None
+
+
+def write_conversion_result(args, bundle_dir, status, *, reason=None, engine_exit=None):
+    """Bind machine-readable diagnostics to the exact conversion inputs."""
+    value = {"schema_version": CONVERSION_RESULT_SCHEMA, "status": status,
+             "source_sha256": sha256_file(args.input), "backend": args.backend,
+             "error_code": "CONVERSION_FAILED" if status == "document_failed" else
+                           "PREPARATION_RUNTIME_FAILED" if status == "runtime_failed" else None,
+             "reason": reason, "engine_exit": engine_exit}
+    (bundle_dir / "conversion-result.json").write_text(
+        json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def load_deployment_config(explicit_path: Path | None = None) -> dict[str, Any]:
@@ -156,11 +192,19 @@ def run_mineru(args: argparse.Namespace, work_dir: Path) -> None:
             supervisor.extend(["--vault", str(args.vault.resolve())])
         if args.worker_binding:
             supervisor.extend(["--worker-binding", str(args.worker_binding.resolve())])
-        process = subprocess.Popen(supervisor + ["--"] + cmd, env=env, start_new_session=True)
+        process = subprocess.Popen(supervisor + ["--"] + cmd, env=env, start_new_session=True,
+                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        tail = deque(maxlen=1000)
         try:
+            for line in process.stdout:
+                sys.stderr.buffer.write(line)
+                sys.stderr.buffer.flush()
+                tail.append(line[-8192:].decode("utf-8", errors="replace"))
             code = process.wait()
             if code:
-                raise subprocess.CalledProcessError(code, cmd)
+                diagnostic = document_load_failure("".join(tail)) if code > 0 else None
+                raise ConversionFailure(diagnostic or f"MinerU execution exited {code}",
+                                        document_failed=diagnostic is not None, engine_exit=code)
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -171,10 +215,7 @@ def run_mineru(args: argparse.Namespace, work_dir: Path) -> None:
             "set MINERU_COMMAND, pass --mineru-command, or pass --from-mineru-output.",
             file=sys.stderr,
         )
-        raise SystemExit(127)
-    except subprocess.CalledProcessError as exc:
-        print(f"MinerU conversion failed with exit code {exc.returncode}.", file=sys.stderr)
-        raise SystemExit(exc.returncode)
+        raise ConversionFailure("MinerU executable is unavailable", engine_exit=127)
 
 
 def api_url(base_url: str, path: str) -> str:
@@ -1162,7 +1203,14 @@ def main() -> int:
                 run_mineru_api(args, mineru_root)
             else:
                 run_mineru(args, mineru_root)
-        except (RuntimeError, TimeoutError, ValueError) as exc:
+        except ConversionFailure as exc:
+            write_conversion_result(args, bundle_dir,
+                "document_failed" if exc.document_failed else "runtime_failed",
+                reason=str(exc), engine_exit=exc.engine_exit)
+            print(str(exc), file=sys.stderr)
+            return 4 if exc.document_failed else 1
+        except (RuntimeError, TimeoutError, ValueError, OSError) as exc:
+            write_conversion_result(args, bundle_dir, "runtime_failed", reason=str(exc))
             print(str(exc), file=sys.stderr)
             return 1
 
@@ -1178,6 +1226,8 @@ def main() -> int:
 
     if not content_list_path:
         if not markdown_path:
+            write_conversion_result(args, bundle_dir, "runtime_failed",
+                                    reason="MinerU produced no Markdown or content list")
             print(f"No MinerU Markdown or flat content list found under: {mineru_root}", file=sys.stderr)
             return 1
         document_text = markdown_path.read_text(encoding="utf-8")
@@ -1325,6 +1375,7 @@ def main() -> int:
     print(f"Sections: {len(outline['sections'])}")
     print(f"Images: {len(images)}")
     print(f"Tables: {len(tables)}")
+    write_conversion_result(args, bundle_dir, "converted")
     return 0 if manifest["quality"]["status"] != "fail" else 3
 
 

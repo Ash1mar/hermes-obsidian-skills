@@ -498,6 +498,18 @@ class IngestKanbanAdapter:
             "error_code": code, "reason": message, "source_failed": False,
             "state": "execution_blocked"})
 
+    def _projection_failure(self, workflow_id: str, node: Node, task_id: str,
+                            code: str, message: str) -> str:
+        """Retry a changed trusted projection; keep worker failure reports strict."""
+        with _exclusive_lock(self.workflow._lock(workflow_id)):
+            current = self.workflow.status(workflow_id)
+            latest = next((item for item in desired_graph(self.workflow, current)
+                           if item.name == node.name), None)
+            if latest is None or latest.input_fingerprint != node.input_fingerprint:
+                _fail('REVISION_CONFLICT', 'domain inputs changed during failure projection')
+            return self.execution_failure({'workflow_id':workflow_id, 'node':node.name,
+                                           'task_id':task_id}, code, message)
+
     @staticmethod
     def validate_worker_request(request: Mapping[str, Any], *, beginning: bool = False) -> None:
         required = ("workflow_id", "node", "task_id") + (() if beginning else ("template_hash",))
@@ -745,7 +757,15 @@ class IngestKanbanAdapter:
                                    if node.kind in ("source-prepare", "exact-plan") else None),
                                "instructions": templates.get(node.kind)},
                               ensure_ascii=False, sort_keys=True)
-            task_id = self.kanban.create_node(
+            # Native create ignores archived idempotency keys. Reuse the Vault's
+            # current failed binding until an explicit
+            # repair changes the input identity. Never mint a new card under an
+            # immutable binding file merely because its predecessor is archived.
+            previous = next((item for item in value['kanban']['task_map']
+                             if value['kanban']['board_id'] == slug
+                             and item['node'] == node.name and item['idempotency_key'] == key
+                             and self._failed_card(workflow_id, node)), None)
+            task_id = previous['task_id'] if previous else self.kanban.create_node(
                 slug, node, key, [ids[parent] for parent in node.parents], body,
                 enable_workers=False)  # bind the complete graph before releasing cards
             ids[node.name] = task_id
@@ -806,7 +826,7 @@ class IngestKanbanAdapter:
         for record in artifact_conflicts:
             node = next(n for n in nodes if n.name == record['node'])
             if not self._failed_card(workflow_id, node):
-                self.execution_failure(record, 'DISPATCH_ARTIFACT_CHANGED',
+                self._projection_failure(workflow_id, node, record['task_id'], 'DISPATCH_ARTIFACT_CHANGED',
                     'canonical dispatcher binding differs; trusted repair required')
         cooldown = (self.workflow.knowledge._batch(updated["batch_id"]).get("cooldown_until")
                     if updated["batch_id"] else None)
@@ -816,8 +836,8 @@ class IngestKanbanAdapter:
             failed_parent = next((p for p in nodes if p.name in node.parents
                                   and self._execution_blocked(workflow_id, p)), None)
             if failed_parent and not domain_completed(self.workflow, updated, node) and not self._failed_card(workflow_id, node):
-                self.execution_failure({"workflow_id":workflow_id, "node":node.name,
-                    "task_id":ids[node.name]}, "DEPENDENCY_EXECUTION_BLOCKED", failed_parent.name)
+                self._projection_failure(workflow_id, node, ids[node.name],
+                                         "DEPENDENCY_EXECUTION_BLOCKED", failed_parent.name)
             if not domain_completed(self.workflow, updated, node) and hasattr(self.kanban, "task_snapshot"):
                 snapshot = self.kanban.task_snapshot(slug, ids[node.name])
                 ended = [r for r in snapshot.get("runs", []) if r.get("ended_at")]
@@ -832,8 +852,7 @@ class IngestKanbanAdapter:
                         except (KeyError, TypeError, ValueError):
                             pass
                 if ended and not durable_slice_failure and snapshot['task']['status'] not in ('running', 'archived') and not self._failed_card(workflow_id, node):
-                    self.execution_failure({"workflow_id": workflow_id, "node": node.name,
-                        "task_id": ids[node.name]}, "NATIVE_WORKER_STOPPED",
+                    self._projection_failure(workflow_id, node, ids[node.name], "NATIVE_WORKER_STOPPED",
                         str(ended[-1].get("error") or ended[-1].get("summary") or "worker ended without a Vault outcome"))
             if domain_completed(self.workflow, updated, node):
                 summary = "Authoritative Vault outcome already committed"
@@ -857,8 +876,8 @@ class IngestKanbanAdapter:
                     if any(parent in affected for parent in dependent.parents):
                         affected.add(dependent.name)
                         if not self._failed_card(workflow_id, dependent):
-                            self.execution_failure({'workflow_id':workflow_id, 'node':dependent.name,
-                                'task_id':ids[dependent.name]}, 'DEPENDENCY_EXECUTION_BLOCKED', node.name)
+                            self._projection_failure(workflow_id, dependent, ids[dependent.name],
+                                                     'DEPENDENCY_EXECUTION_BLOCKED', node.name)
                 for dependent in reversed(nodes):
                     if dependent.name in affected and dependent.name != node.name:
                         self.kanban.archive(slug, ids[dependent.name])

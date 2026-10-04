@@ -148,10 +148,26 @@ calls the Kanban CLI. Local conversion retains the shared host gate and cancella
 Only this workflow/source's deterministic attempt directories are automatically resumed; use
 `bundle` for explicitly requested existing Bundle reuse. Already current units are validated
 against the assigned raw hash and identity before reuse. A validation failure allows one supported
-pipeline retry with both attempts preserved. Missing output or runtime/config errors stop for review;
-they are not automatically recorded as damaged PDF. Failed helper execution persists a typed
+pipeline retry with both attempts preserved. The converter writes `conversion-result.json`
+(`hermes-conversion-result/v1`) bound to raw SHA-256 and backend. A nonzero local engine
+exit with a terminal typed PDFium document-load exception for format, password or security
+can report `document_failed`; arbitrary log words, file-access errors, model errors, signals,
+supervisor failures and missing output are execution failures. Only two proven document
+failures close the assigned source as `CONVERSION_FAILED`, retaining both diagnostics and logs.
+Runtime/config/unknown errors and unresolved Bundle validation leave the source pending.
+Attempt directories and logs are scoped to the binding generation; repair preserves previous evidence.
+Failed helper execution persists a typed
 execution blocker; the trusted reconciler closes the native card and dependent subtree. Do not
 restart the same failed binding or manufacture a missing request field.
+Sync retains the current Vault-bound failed card even if native Kanban has archived it; native create
+does not deduplicate archived keys. An explicit pre-batch cancel/repair/resume creates a new
+generation and invalidates old workers. Use the operator helper
+`python3 "<skill-dir>/scripts/repair_preparation.py" --vault "<vault>" --workflow-id "<id>" --repair-id "<repair-id>" --evidence-ref "<failure-report>"`
+to preview the request, then repeat with `--apply`. It leaves the workflow cancelled.
+For pending sources use no reset selector: ready and failed outcomes are preserved. Resetting
+a failed source additionally requires its exact `--reset-source-sha256` and an existing typed
+failed outcome; the request pins the outcome digest and the service verifies unchanged raw bytes.
+Repair is an explicit operator operation, never an automatic response to source damage or a resume.
 Completing one source does not enable exact planning/Canary until the remaining sources finish.
 Changing installed templates never updates an existing workflow's pinned pack automatically.
 

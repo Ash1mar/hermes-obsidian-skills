@@ -300,6 +300,22 @@ def main():
             if canary.exists():
                 outcome = json.loads(canary.read_text())
                 assert outcome['ok'] and outcome['execution_mode']==('auto_full' if args.verify_pauses else 'canary_only')
+                # New material failures must carry actual converter evidence;
+                # historical source gaps copied into this run are not retested.
+                initial_outcomes = {item['path']:item for item in old.get('source_outcomes', [])}
+                conversion_evidence = []
+                for item in value['source_outcomes']:
+                    if item['path'] in initial_outcomes or item.get('error_code') != 'CONVERSION_FAILED':
+                        continue
+                    refs = [ref for ref in item['artifact_refs'] if ref.endswith('/conversion-result.json')]
+                    diagnostics = [json.loads((vault/ref).read_text()) for ref in refs]
+                    assert len(diagnostics) == 2
+                    assert {d['backend'] for d in diagnostics} == {'hybrid-engine', 'pipeline'}
+                    assert all(d['schema_version'] == 'hermes-conversion-result/v1'
+                               and d['status'] == 'document_failed' and d['error_code'] == 'CONVERSION_FAILED'
+                               and d['source_sha256'] == item['content_sha256'] for d in diagnostics)
+                    conversion_evidence.append({'source_sha256':item['content_sha256'], 'diagnostics':refs})
+                evidence['new_conversion_failure_evidence'] = conversion_evidence
                 assert len(set(outcome['slice_ids']))==8
                 snapshots = [native.task_snapshot(value['kanban']['board_id'],c['task_id'])
                              for c in value['kanban']['task_map']
