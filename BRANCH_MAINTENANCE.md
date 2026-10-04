@@ -89,19 +89,34 @@ intranet Provider adapter。共享 Skill 和脚本不得重新硬编码这些值
 Worktree 只用于用户明确要求的并行隔离任务，或普通的干净切换流程确实无法执行时；它不是双分支
 日常同步机制。
 
-涉及 ingest 调度、锁或 worker 契约的发布，还须运行
+涉及 ingest 调度、锁或 worker 契约的发布，还须取得真实原生八片证据。验证方式见
+[摄取验收合同](INGEST_VALIDATION.md)：默认采用隔离验收；workspace 规则和用户授权
+选择正式流程实测时，可先完成回归并提交候选，限定范围部署为“待原生验证”，再由
+正式 workflow 分段验证。当前 workspace 为 HBTest2 选择此方式；其他 Vault 不自动适用。
+正式实测的有效八片结果保留在同一 workflow，后续继续剩余任务，不重复摄取一遍。
+该候选部署是常规发布顺序的明确例外；原生证据通过之后，仍按本合同验证/推送 `main`，
+在干净工作树 merge 并验证/推送 `intranet`。规则更新本身不授权部署或恢复流程。
+
+采用隔离方式时运行
 `hermes-source-units/tools/accept_governed_canary.py`。使用实际 Hermes Python 环境，提供
 `--source-vault`、`--workflow-id` 和 `--output`。此门槛把实际 ready 来源、原生 Gateway、
 模型 worker、隔离终端及后台 reconciler 放在同一运行中，检查预算完整覆盖、自动原生收尾、
 真实八切片 Pass 和 canary-only 停止。测试 Vault 与来源 Vault 使用相同文件系统；
 HERMES_HOME、Kanban 及 HERMES_GATEWAY_LOCK_DIR 必须全部隔离并验证实际 Gateway PID。
 不能以直接 helper 的规模测试、小型派发测试或测试脚本代完成卡片替代这个门槛。
-失败报告必须保留，并阻止部署及正式流程恢复；单元测试通过仅说明回归通过。
+失败报告必须保留，并阻止一般发布及未授权的正式流程恢复；单元测试通过仅说明回归通过。
+隔离验收未通过不阻止已明确选定的 HBTest2 正式候选实测，但不能据此声称原生验收通过。
+正式实测发生阻塞时，保存证据并停止；只有按合同修复、验证候选和恢复绑定后，才能执行
+已获授权的受影响阶段。不得绕过安全检查、篡改 ledger 或手工代做 worker。
 
-涉及阶段暂停与继续授权的变更，还须为同一门槛提供 `--verify-pauses`。此模式在隔离 Vault
+涉及阶段暂停与继续授权的变更，隔离方式还须为同一门槛提供 `--verify-pauses`。此模式在隔离 Vault
 验证 exact-plan 后无 Pass 写入、resume 保持暂停、显式 continue 后才运行八片，并在 canary
 后保持剩余 Pass 和全部下游节点未运行；生产 ledger 和原件仍必须不变。
 
-涉及 Pass 草稿预校验的变更，还须提供 `--verify-preflight`。此模式从八个实际
+涉及 Pass 草稿预校验的变更，隔离方式还须提供 `--verify-preflight`。此模式从八个实际
 Kanban worker 的原生 session 记录中验证绑定的 `batch-pass --validate-only` 调用及
 成功工具结果；不能以 worker 的文字声明或单元测试代替原生调用证据。
+
+正式方式核对相同预算、原生八片、绑定预校验和持久化暂停证据；每个暂停单独验收，
+等待显式 continue 授权。正式 ledger 按本阶段契约写入，原件和未授权范围保持不变。
+阶段通过不自动释放暂停，也不代表全流程或 Provider 同步完成。

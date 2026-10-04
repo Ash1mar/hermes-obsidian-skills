@@ -8,11 +8,14 @@ See [`DOCUMENTATION.md`](DOCUMENTATION.md) for a file-by-file documentation map 
 
 Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): implement shared work on
 `main`, then merge `main` into `intranet` while preserving checked-in deployment configuration.
+Native ingest evidence may come from isolated acceptance or an explicitly authorized
+staged real workflow, as defined in [`INGEST_VALIDATION.md`](INGEST_VALIDATION.md).
+This workspace selects real HBTest2 validation and retains accepted work for continuation.
 
 ## Skills
 
 - `hermes-obsidian-governed-ingest-orchestrator/`
-  - Thin persistent ingest entry point: one start request, Vault-pinned versioned worker templates, recoverable Kanban projection and two human checkpoints. Autonomous worker dispatch remains disabled until canary validation.
+  - Thin persistent ingest entry point: one start request, Vault-pinned worker templates, recoverable Kanban projection, verified checkpoints and durable stage pauses. In a staged full run, eight native canary slices precede remaining Pass; explicit continuation releases each pause.
   - `compact-3` and `diagnostic-6` are read-only status views over the same workflow graph; older prompt-book stage files now point to this entry point.
 
 - `hermes-obsidian-controlled-ingest/`
