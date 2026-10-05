@@ -246,6 +246,10 @@ class FileIngestWorkflowService(PassRevisionMixin, WorkflowPauseMixin):
             "mode": "disabled", "slice_ids": [], "selection_digest": None})
         result["source_coverage"] = self.source_coverage(value)
         result["pause"] = self.pause_status(value)
+        if value.get('pass_revision'):
+            revision = value['pass_revision']
+            result['pass_revision'] = {key: revision[key] for key in
+                ('revision_id', 'state', 'boundary', 'slice_ids', 'tasks', 'request_ref')}
         return result
 
     @staticmethod

@@ -97,6 +97,7 @@ def test_append_revision_preserves_history_and_waits_for_review(paused, vault):
     assert not result['background_dispatch']
     current = adapter.workflow.status(value['workflow_id'])
     assert current['pass_revision']['state'] == 'awaiting_review'
+    assert adapter.workflow.status(current['workflow_id'], compact=True)['pass_revision']['state'] == 'awaiting_review'
     assert current['pause_control']['boundary'] == 'pass'
     assert current['pause_control']['evidence_digest'] != before['pause_control']['evidence_digest']
     assert all((vault/ref).read_bytes() == data for ref,data in old_bytes.items())
