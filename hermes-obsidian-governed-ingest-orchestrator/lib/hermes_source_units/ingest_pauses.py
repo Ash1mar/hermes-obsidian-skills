@@ -146,6 +146,11 @@ class WorkflowPauseMixin:
                 pin(ref)
         for pinning in value["template_pins"]:
             pin(pinning["path"])
+        for revision in [*value.get('pass_revision_history', []), *([value['pass_revision']] if value.get('pass_revision') else [])]:
+            self.revision_instructions({**value, 'pass_revision': revision})
+            for ref in (revision['request_ref'], revision['before_ref'], revision['template_ref'],
+                        *[item['ref'] for item in revision['evidence_hashes']]):
+                pin(ref)
         if boundary in ("canary", "pass"):
             chosen = (value["dispatch_policy"]["slice_ids"] if boundary == "canary"
                       else [s["slice_id"] for s in self.knowledge._slices(value["batch_id"])])
@@ -217,6 +222,8 @@ class WorkflowPauseMixin:
                     return value  # Does not release a later boundary.
             value = self._mutation(request)
             control = value.get("pause_control", {})
+            if value.get('pass_revision') and value['pass_revision']['state'] != 'accepted':
+                _fail('REVISION_REVIEW_REQUIRED', 'semantic revision must be reviewed before continuation')
             if value["cancel_requested"] or value["state"] in ("completed", "partial", "failed"):
                 _fail("WORKFLOW_STOPPED", "stopped workflow cannot continue")
             boundary = control.get("boundary")

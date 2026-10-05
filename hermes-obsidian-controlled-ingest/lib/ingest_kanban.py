@@ -52,7 +52,9 @@ def pass_node(workflow, value):
     return Node('pass-slice:' + value['slice_id'], 'pass-slice', (),
                 node_identity(workflow, 'pass-slice', {
                     'slice_id':value['slice_id'], 'input_fingerprint':value['input_fingerprint'],
-                    'template_hash':value['template_hash']}, []))
+                    'template_hash':value['template_hash'],
+                    **({'revision_digest': workflow['pass_revision']['input_digest']}
+                       if workflow.get('pass_revision') and value['slice_id'] in workflow['pass_revision']['slice_ids'] else {})}, []))
 
 
 def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any]) -> list[Node]:
@@ -85,6 +87,9 @@ def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any
         return nodes
 
     batch = service.knowledge._batch(batch_id)
+    if workflow.get('pass_revision') and workflow['pass_revision']['state'] == 'running':
+        return [pass_node(workflow, service.knowledge._slice(batch_id, sid))
+                for sid in workflow['pass_revision']['slice_ids']]
     staged = bool(workflow['scope'].get('pause_after'))
     if staged and service.pending_pause(workflow) == 'exact_plan':
         return []  # Slice manifests are the plan; unopened phases need no native cards.
@@ -96,9 +101,7 @@ def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any
     pass_nodes: dict[str, str] = {}
     for item in slices:
         name = f"pass-slice:{item['slice_id']}"
-        add(name, "pass-slice", (), {"slice_id": item["slice_id"],
-                                    "input_fingerprint": item["input_fingerprint"],
-                                    "template_hash": item["template_hash"]})
+        nodes.append(pass_node(workflow, item))
         for task_id in item["task_ids"]:
             pass_nodes[task_id] = name
 
@@ -520,6 +523,8 @@ class IngestKanbanAdapter:
             _fail("INVALID_SCHEMA", "missing worker request fields: " + ", ".join(missing))
 
     def _canary_allows(self, workflow: Mapping[str, Any], node: Node, *, completing: bool = False) -> bool:
+        if self.workflow.revision_allows(workflow, node.name):
+            return True
         if not completing and self.workflow.pending_pause(workflow):
             return False
         if node.kind == "source-prepare":
@@ -591,6 +596,10 @@ class IngestKanbanAdapter:
         value = self.workflow.continue_workflow(request)
         return self.sync(self._mutation(value))
 
+    def revise_passes(self, request):
+        value = self.workflow.revise_passes(request)
+        return self.sync(self._mutation(value))
+
     def arm_canary(self, request: Mapping[str, Any]) -> dict[str, Any]:
         value = self.workflow.arm_canary(request)
         followup = {"workflow_id": value["workflow_id"], "actor": value["actor"],
@@ -635,8 +644,10 @@ class IngestKanbanAdapter:
             if not batch.get("slices_initialized"):
                 self.workflow.knowledge.initialize_slices(
                     value["batch_id"], actor, batch["revision"])
+            self.workflow.prepare_pass_revision(value)
+            value = self.workflow.finish_pass_revision(self._mutation(value))
             value = self.workflow.latch_pause(self._mutation(value))
-            if not self.workflow.pending_pause(value):
+            if not self.workflow.pending_pause(value) or (value.get('pass_revision') and value['pass_revision']['state'] == 'running'):
                 self.workflow.knowledge.reclaim_expired_slices(value["batch_id"])
                 self.workflow.knowledge.refresh_ready_slices(value["batch_id"], actor)
             if (value["scope"].get("execution_mode") in ("canary_only", "auto_full")
@@ -755,7 +766,10 @@ class IngestKanbanAdapter:
                                    "--vault", str(self.workflow.vault), "--binding", str(_vault_path(self.workflow.vault,
                                    f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json"))])
                                    if node.kind in ("source-prepare", "exact-plan") else None),
-                               "instructions": templates.get(node.kind)},
+                               "instructions": (self.workflow.revision_instructions(value)
+                                   if self.workflow.revision_allows(value, node.name) else templates.get(node.kind)),
+                               "citation_revision_rule": ("Historical superseded citation Passes are audit only. For candidate decisions use only citations whose pass_id is not named by a later supersedes_pass_id in that task; retain all Pass IDs as history. Never propose or omit superseded candidates."
+                                   if value.get('pass_revision') and node.kind == 'resource-reduce' else None)},
                               ensure_ascii=False, sort_keys=True)
             # Native create ignores archived idempotency keys. Reuse the Vault's
             # current failed binding until an explicit
@@ -820,6 +834,7 @@ class IngestKanbanAdapter:
                 "board_id": slug, "task_map": task_map}
         bind["input_digest"] = mutation_digest(bind)
         updated = self.workflow.bind_kanban(bind)
+        updated = self.workflow.finish_pass_revision(self._mutation(updated))
         # A worker may commit its boundary while this graph is being projected.
         # Hold successors immediately and persist the receipt before the watcher exits.
         updated = self.workflow.latch_pause(self._mutation(updated))
@@ -928,14 +943,18 @@ class IngestKanbanAdapter:
                 "revision": updated["revision"], "background_dispatch": active_canary,
                 "board_id": slug, "task_count": len(task_map),
                 "canary_complete": canary_done, "canary_report_ref": canary_report,
-                "execution_blocked": [n.name for n in nodes if self._execution_blocked(workflow_id, n)]}
+                "execution_blocked": [n.name for n in nodes if self._execution_blocked(workflow_id, n)],
+                "pass_revision": ({'revision_id': updated['pass_revision']['revision_id'],
+                                   'state': updated['pass_revision']['state']}
+                                  if updated.get('pass_revision') else None)}
 
     def _slice_worker(self, workflow_id: str, node_name: str,
                       task_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         if not self.enable_workers:
             _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
         workflow = self.workflow.status(workflow_id)
-        self.workflow.assert_not_paused(workflow)
+        if not self.workflow.revision_allows(workflow, node_name):
+            self.workflow.assert_not_paused(workflow)
         self.workflow.pinned_templates(workflow)
         policy = workflow.get("dispatch_policy", {})
         if (policy.get("mode") not in ("canary", "full") or not node_name.startswith("pass-slice:")
@@ -1282,7 +1301,10 @@ class IngestKanbanAdapter:
         return {"ok": True, "leased": True, "slice": result["slice"],
                 "template_hash": result["slice"]["template_hash"],
                 "task_ids": result["slice"]["task_ids"], **prepared,
-                "worker_request": bound}
+                "worker_request": bound,
+                **({'pass_revision': {'revision_id': workflow['pass_revision']['revision_id'],
+                    'tasks': [t for t in workflow['pass_revision']['tasks'] if t['task_id'] in value['task_ids']]}}
+                    if self.workflow.revision_allows(workflow, node_name) else {})}
 
     def worker_check(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.validate_worker_request(request)
@@ -1307,7 +1329,8 @@ class IngestKanbanAdapter:
         if expires <= datetime.now(timezone.utc):
             _fail("LEASE_EXPIRED", "slice lease expired")
         return {"ok": True, "batch_id": workflow["batch_id"],
-                "slice_id": value["slice_id"], "task_ids": value["task_ids"],
+                "slice_id": value["slice_id"], "task_ids": ([t['task_id'] for t in workflow['pass_revision']['tasks']
+                    if t['task_id'] in value['task_ids']] if self.workflow.revision_allows(workflow, request['node']) else value["task_ids"]),
                 "input_fingerprint": value["input_fingerprint"],
                 "worker_request": dict(request)}
 
@@ -1362,6 +1385,11 @@ class IngestKanbanAdapter:
                 validate_record("knowledge_pass", record)
                 records.append((path, record))
             sequences = {record["sequence"] for _, record in records}
+            if self.workflow.revision_allows(workflow, node_name):
+                target = next((t for t in workflow['pass_revision']['tasks'] if t['task_id'] == task_id), None)
+                if target and not any(record.get('revision_id') == workflow['pass_revision']['revision_id']
+                        and record.get('supersedes_pass_id') == target['pass_id'] for _, record in records):
+                    _fail('INCOMPLETE_COVERAGE', 'selected task needs its authorized revision citation')
             if (0 not in sequences or not any(sequence > 0 for sequence in sequences)
                     or sequences != set(range(max(sequences) + 1))):
                 _fail("INCOMPLETE_COVERAGE", "each slice task needs candidate and citation Passes")

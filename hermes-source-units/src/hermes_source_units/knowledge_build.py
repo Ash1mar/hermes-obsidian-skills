@@ -1410,7 +1410,13 @@ class FileKnowledgeBuildService:
                 _fail('STALE_INPUT', 'slice preparation requires the current worker lease')
             actor, registry = batch['actor'], batch['document_registry_revision']
             tasks, packages = [], []
+            from .workflow_guard import _ACTIVE
+            context = _ACTIVE.get()
+            revision = context.get('pass_revision') if context else None
             for task_id in value['task_ids']:
+                target = next((t for t in revision['tasks'] if t['task_id'] == task_id), None) if revision else None
+                if revision and target is None:
+                    continue
                 task = self._task(task_id)
                 self._verify_planned_measurement(task, actor, registry, batch.get('max_codepoints'))
                 if task['status'] == 'pending':
@@ -1418,6 +1424,11 @@ class FileKnowledgeBuildService:
                 if task['status'] != 'running' or task['actor'] != actor:
                     _fail('ACCESS_DENIED', 'leased task is not owned by the batch actor')
                 package = self._existing_reading_package(task, actor, registry)
+                if target:
+                    package = _load_json(_vault_path(self.vault,
+                        f"{BUILD_ROOT}/task-{task_id}/readings/{target['reading_package_id']}.json"))
+                    validate_record('reading_package', package)
+                    self._reading_package_fingerprint(package, target['reading_package_id'])
                 if package is None:
                     package = self.reading_material(task_id, actor, registry,
                                                    batch.get('max_codepoints'))['package']
@@ -1563,6 +1574,19 @@ class FileKnowledgeBuildService:
                 "reading_package_id": package_id,
                 "inspections": list(request["inspections"]), "candidates": list(request["candidates"]),
                 "empty_reason": str(request.get("empty_reason", "")), "actor": actor}
+        from .workflow_guard import _ACTIVE
+        context = _ACTIVE.get()
+        revision = context.get('pass_revision') if context else None
+        if revision:
+            target = next((item for item in revision['tasks'] if item['task_id'] == task_id), None)
+            if (target is None or body['sequence'] != target['sequence'] or body['pass_kind'] != 'citation'
+                    or package_id != target['reading_package_id']):
+                _fail('ACCESS_DENIED', 'revision permits only the selected next citation and original bounded package')
+            body.update(revision_id=revision['revision_id'], supersedes_pass_id=target['pass_id'])
+            prior = _load_json(_vault_path(self.vault, target['pass_ref']))
+            validate_record('knowledge_pass', prior)
+            if prior['pass_id'] != target['pass_id'] or prior['sequence'] != body['sequence'] - 1:
+                _fail('STALE_INPUT', 'revision predecessor changed')
         if batch_id is not None:
             actual_template_hash = str(template_hash or _pass_template_hash())
             if not re.fullmatch(r"[0-9a-f]{64}", actual_template_hash):
@@ -1626,6 +1650,10 @@ class FileKnowledgeBuildService:
                 *[r for c in body["candidates"] for r in c["support_refs"]]]
         units = self._live_units(refs, actor, package["document_registry_revision"])
         validate_references("knowledge_pass", body, units)
+        for candidate in body['candidates']:
+            for ref in candidate['support_refs']:
+                if not any(_covers(item, ref) for item in available):
+                    _fail('OUTSIDE_READING_PACKAGE', 'candidate support is outside bounded materials')
         if validate_only:
             return {"ok": True, "created": False, "validated": True, "pass": body,
                     "task": task, "idempotency_key": body.get("idempotency_key"),
@@ -1709,8 +1737,21 @@ class FileKnowledgeBuildService:
                 if record["task_id"] != task_id:
                     _fail("IDENTITY_MISMATCH", "pass repository path and task_id disagree")
                 by_task.setdefault(task_id, []).append(record)
-                for candidate in record["candidates"]:
-                    result[(record["pass_id"], candidate["candidate_id"])] = (record, candidate)
+            records = by_task.get(task_id, [])
+            superseded = set()
+            for record in records:
+                old_id = record.get('supersedes_pass_id')
+                if old_id:
+                    prior = next((p for p in records if p['pass_id'] == old_id), None)
+                    if (not record.get('revision_id') or not prior or prior['pass_kind'] != 'citation'
+                            or record['pass_kind'] != 'citation' or prior['sequence'] >= record['sequence']
+                            or old_id in superseded):
+                        _fail('INVALID_PASS', 'invalid or competing citation revision chain')
+                    superseded.add(old_id)
+            for record in records:
+                if record['pass_id'] not in superseded:
+                    for candidate in record['candidates']:
+                        result[(record['pass_id'], candidate['candidate_id'])] = (record, candidate)
         return result, by_task
 
     def _decision_task_outputs(self, run: Mapping[str, Any]) -> dict[str, set[str]]:
@@ -1908,7 +1949,7 @@ class FileKnowledgeBuildService:
                                       "sequence": item["sequence"],
                                       "pass_kind": item["pass_kind"],
                                       "candidate_ids": candidate_ids})
-                    if item["pass_kind"] == "citation":
+                    if item["pass_kind"] == "citation" and any((item['pass_id'], cid) in candidates for cid in candidate_ids):
                         available.update((item["pass_id"], candidate_id)
                                          for candidate_id in candidate_ids)
 
