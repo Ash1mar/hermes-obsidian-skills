@@ -447,7 +447,12 @@ class IngestKanbanAdapter:
                 f"_system/ledgers/ingest-workflows/{workflow_id}/reports/failed-{fingerprint(binding['node'])[:16]}.json")
             if report_path.is_file():
                 report = _load_json(report_path)
-                if binding['idempotency_key'].endswith(':' + report.get('input_fingerprint', 'INVALID')):
+                completed_elsewhere = (binding['node'].startswith('pass-slice:') and value['batch_id']
+                    and self.workflow.knowledge._slice(value['batch_id'], binding['node'].partition(':')[2])['state'] == 'completed'
+                    and report.get('task_id') != binding['task_id'])
+                if completed_elsewhere:
+                    card['historical_projection_report_ref'] = report_path.relative_to(self.workflow.vault).as_posix()
+                elif binding['idempotency_key'].endswith(':' + report.get('input_fingerprint', 'INVALID')):
                     card.update(native_state=card['state'], state=('execution_blocked' if report.get('error_code') else 'validation_blocked'),
                         error_code=report.get('error_code'), reason=report.get('reason'),
                         report_ref=report_path.relative_to(self.workflow.vault).as_posix())
@@ -477,7 +482,55 @@ class IngestKanbanAdapter:
         path = _vault_path(self.workflow.vault,
             f"_system/ledgers/ingest-workflows/{workflow_id}/reports/"
             f"failed-{fingerprint(node.name)[:16]}.json")
-        return path.is_file() and _load_json(path).get("input_fingerprint") == node.input_fingerprint
+        if not path.is_file():
+            return False
+        report = _load_json(path)
+        if report.get('input_fingerprint') != node.input_fingerprint:
+            return False
+        value = self.workflow.status(workflow_id)
+        current = next((c for c in value['kanban']['task_map'] if c['node'] == node.name), None)
+        return not (node.kind == 'pass-slice' and domain_completed(self.workflow, value, node)
+                    and current and report.get('task_id') != current['task_id'])
+
+    def _completed_pass_binding(self, value, node, key):
+        """Reuse a verified completed native identity, including an archived one."""
+        if node.kind != 'pass-slice' or not domain_completed(self.workflow, value, node):
+            return None
+        path = _vault_path(self.workflow.vault,
+            f"_system/ledgers/ingest-workflows/{value['workflow_id']}/bindings/{fingerprint(key)}.json")
+        if not path.is_file():
+            return None
+        try:
+            record = _load_json(path)
+            task_id = record['task_id']
+            expected = {'workflow_id':value['workflow_id'], 'node':node.name, 'task_id':task_id,
+                'actor':value['actor'], 'input_fingerprint':node.input_fingerprint,
+                'template_hash':self.workflow.knowledge._slice(value['batch_id'], node.name.partition(':')[2])['template_hash'],
+                'worker_id':'ingest-worker-' + task_id}
+            if record != expected:
+                return None
+            current = next((c for c in value['kanban']['task_map'] if c['node']==node.name and c['idempotency_key']==key), None)
+            if current and current['task_id']==task_id:
+                return task_id
+            snapshot = self.kanban.task_snapshot(value['kanban']['board_id'], task_id)
+            native = snapshot['task']; body = json.loads(native['body'])
+            if (native['id']!=task_id or native['status'] not in ('done','archived')
+                    or native.get('created_by')!='ingest-workflow'
+                    or any(body.get(k)!=v for k,v in {'workflow_id':value['workflow_id'], 'node':node.name,
+                        'input_fingerprint':node.input_fingerprint,'vault':str(self.workflow.vault),
+                        'worker_binding':str(path),'slice_template_hash':expected['template_hash']}.items())):
+                return None
+            if self.workflow.pending_pause(value):
+                self.workflow._verify_pause_snapshot(value)
+            self._report(value, 'projection-recovery-' + fingerprint(key)[:16], {
+                'node':node.name,'input_fingerprint':node.input_fingerprint,'restored_task_id':task_id,
+                'previous_task_id':current['task_id'] if current else None,
+                'binding_ref':path.relative_to(self.workflow.vault).as_posix(),
+                'binding_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+                'domain_outcome':'completed','native_state':native['status'],'rerun':False})
+            return task_id
+        except (KeyError, TypeError, ValueError, OSError, AttributeError):
+            return None
 
     def _execution_blocked(self, workflow_id: str, node: Node) -> bool:
         path = _vault_path(self.workflow.vault,
@@ -779,9 +832,10 @@ class IngestKanbanAdapter:
                              if value['kanban']['board_id'] == slug
                              and item['node'] == node.name and item['idempotency_key'] == key
                              and self._failed_card(workflow_id, node)), None)
-            task_id = previous['task_id'] if previous else self.kanban.create_node(
+            completed_task = self._completed_pass_binding(value, node, key)
+            task_id = completed_task or (previous['task_id'] if previous else self.kanban.create_node(
                 slug, node, key, [ids[parent] for parent in node.parents], body,
-                enable_workers=False)  # bind the complete graph before releasing cards
+                enable_workers=False))  # bind the complete graph before releasing cards
             ids[node.name] = task_id
             if pin:
                 record = {"workflow_id": workflow_id, "node": node.name, "task_id": task_id,
@@ -808,9 +862,25 @@ class IngestKanbanAdapter:
             task_map.append({"node": node.name, "idempotency_key": key,
                              "task_id": task_id})
         value = self.workflow.status(workflow_id)
+        # A revision narrows the dispatch graph without retiring valid native
+        # outcomes. Keep their identities so later projection cannot recreate
+        # archived cards under an immutable binding.
+        projected_names = {item['node'] for item in task_map}
+        for previous in value['kanban']['task_map']:
+            if previous['node'] in projected_names or not previous['node'].startswith('pass-slice:'):
+                continue
+            item = self.workflow.knowledge._slice(value['batch_id'], previous['node'].partition(':')[2])
+            node = pass_node(value, item)
+            key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
+            if previous['idempotency_key']==key and self._completed_pass_binding(value, node, key)==previous['task_id']:
+                task_map.append(dict(previous))
         current_keys = {item["idempotency_key"] for item in task_map}
         if value["kanban"]["board_id"] == slug:
             for previous in value["kanban"]["task_map"]:
+                replacement = next((c for c in task_map if c['idempotency_key']==previous['idempotency_key']), None)
+                if replacement and replacement.get('task_id') != previous.get('task_id'):
+                    self.kanban.archive(slug, previous['task_id'])
+                    continue
                 if (previous.get("task_id")
                         and previous["idempotency_key"] not in current_keys):
                     if previous["node"] == "exact-plan" and value["batch_id"] is not None:

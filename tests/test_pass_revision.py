@@ -14,10 +14,34 @@ def sync(adapter, wid):
     return adapter.sync(workflow_request(workflow_id=wid, actor='agent', expected_revision=value['revision']))
 
 
+class ArchivedKeyKanban(FakeKanban):
+    """Native creation ignores archived keys; snapshots retain old identities."""
+    def __init__(self):
+        super().__init__(True)
+        self.by_id = {}
+
+    def create_node(self, slug, node, key, parent_ids, body, *, enable_workers):
+        current = self.tasks.get(key)
+        if current and self.waited.get(current['id']) != 'archived':
+            return current['id']
+        item = {'id':f'task-{len(self.by_id)+1}', 'node':node.name, 'parents':parent_ids,
+                'gate':node.gate, 'enabled':enable_workers, 'body':json.loads(body)}
+        self.tasks[key] = item
+        self.by_id[item['id']] = item
+        return item['id']
+
+    def task_snapshot(self, slug, task_id):
+        item = self.by_id[task_id]
+        state = ('archived' if self.waited.get(task_id)=='archived' else
+                 'done' if task_id in self.completed else self.waited.get(task_id,'blocked'))
+        return {'task':{'id':task_id,'status':state,'body':json.dumps(item['body']),
+                       'created_by':'ingest-workflow'}, 'runs':[]}
+
+
 @pytest.fixture
 def paused(vault):
-    batch = plan_sliced_batch(vault, 3, 'revision-batch')
-    adapter = IngestKanbanAdapter(vault, FakeKanban(True), enable_workers=True)
+    batch = plan_sliced_batch(vault, 4, 'revision-batch')
+    adapter = IngestKanbanAdapter(vault, ArchivedKeyKanban(), enable_workers=True)
     value = start_and_pin(vault, workflow_request(workflow_id='ingest-revisions', actor='agent',
         expected_revision=0, profile='compact-3', batch_id='revision-batch',
         scope={'source_paths': [], 'knowledge_selector': 'all-current', 'execution_mode': 'auto_full',
@@ -26,13 +50,13 @@ def paused(vault):
     adapter.workflow._write(value)
     sync(adapter, value['workflow_id'])
     value = adapter.workflow.status(value['workflow_id'])
-    card = value['kanban']['task_map'][0]
-    bound = {'workflow_id':value['workflow_id'], 'node':card['node'], 'task_id':card['task_id'], 'worker_id':'first'}
-    begun = adapter.worker_begin(bound)
-    bound = begun['worker_request']
-    for task, package in zip(begun['task_snapshots'], begun['reading_packages']):
-        for seq in (0,1):
-            draft = {'batch_id': value['batch_id'], 'passes': [{
+    for card in value['kanban']['task_map']:
+        bound = {'workflow_id':value['workflow_id'], 'node':card['node'], 'task_id':card['task_id'], 'worker_id':'first'}
+        begun = adapter.worker_begin(bound)
+        bound = begun['worker_request']
+        for task, package in zip(begun['task_snapshots'], begun['reading_packages']):
+            for seq in (0,1):
+                draft = {'batch_id': value['batch_id'], 'passes': [{
                 'task_id':task['task_id'], 'actor':'agent', 'expected_revision':batch._task(task['task_id'])['revision'],
                 'registry_revision':1, 'reading_package_id':package['reading_package_id'],
                 'pass_kind':'candidate' if seq == 0 else 'citation', 'sequence':seq,
@@ -40,13 +64,13 @@ def paused(vault):
                 'candidates':[{'candidate_id':'claim','name':'Claim','kind':'fact','identity_rationale':'exact evidence',
                     'finding':'Source claim','applicability':'bounded source','conditions':[],'exceptions':[],
                     'support_refs':[task['target_refs'][0]]}], 'empty_reason':''}]}
-            with worker_binding(bound), workflow_write_guard(vault, kinds=('pass-slice',)):
-                assert batch.record_pass_batch(draft)['ok']
-    adapter.worker_complete(bound)
+                with worker_binding(bound), workflow_write_guard(vault, kinds=('pass-slice',)):
+                    assert batch.record_pass_batch(draft)['ok']
+        adapter.worker_complete(bound)
     sync(adapter, value['workflow_id'])
     value = adapter.workflow.status(value['workflow_id'])
     assert value['pause_control']['boundary'] == 'pass'
-    task_id = begun['task_snapshots'][0]['task_id']
+    task_id = batch._batch(value['batch_id'])['task_ids'][0]
     prior = batch._pass_index([task_id])[1][task_id][-1]
     review = vault/'_system/reports/revision-review.json'
     review.write_text(json.dumps({'task_id':task_id,'reason':'claim requires citation review'}))
@@ -64,6 +88,8 @@ def test_append_revision_preserves_history_and_waits_for_review(paused, vault):
     adapter.revise_passes(request)
     assert adapter.workflow.revise_passes(request)['pass_revision']['state'] == 'running'
     value = adapter.workflow.status(before['workflow_id'])
+    assert before['kanban']['task_map'][1] in value['kanban']['task_map']
+    assert adapter.kanban.waited.get(before['kanban']['task_map'][1]['task_id']) != 'archived'
     assert value['pause_control'] == before['pause_control']
     with pytest.raises(ContractError, match='REVISION_REVIEW_REQUIRED'):
         adapter.continue_workflow(workflow_request(workflow_id=value['workflow_id'], actor='agent',
@@ -96,6 +122,8 @@ def test_append_revision_preserves_history_and_waits_for_review(paused, vault):
     result = sync(adapter, value['workflow_id'])
     assert not result['background_dispatch']
     current = adapter.workflow.status(value['workflow_id'])
+    assert before['kanban']['task_map'][1] in current['kanban']['task_map']
+    assert len(adapter.kanban.by_id) == 3  # two originals plus one selected revision
     assert current['pass_revision']['state'] == 'awaiting_review'
     assert adapter.workflow.status(current['workflow_id'], compact=True)['pass_revision']['state'] == 'awaiting_review'
     assert current['pause_control']['boundary'] == 'pass'
@@ -114,6 +142,36 @@ def test_append_revision_preserves_history_and_waits_for_review(paused, vault):
     assert adapter.workflow.accept_pass_revision(accept)['revision'] == accepted['revision']
     assert accepted['pause_control']['boundary'] == 'pass'
     assert not sync(adapter, current['workflow_id'])['background_dispatch']
+
+
+@pytest.mark.parametrize('tamper', [False, True])
+def test_completed_binding_recovers_archived_projection_without_rerun(paused, vault, tamper):
+    adapter, before, request, prior = paused
+    from ingest_kanban import desired_graph
+    from hermes_source_units.validation import fingerprint
+    node = desired_graph(adapter.workflow, before)[1]
+    original = before['kanban']['task_map'][1]
+    adapter.kanban.archive(before['kanban']['board_id'], original['task_id'])
+    duplicate = adapter.kanban.create_node(before['kanban']['board_id'], node, original['idempotency_key'], [],
+        json.dumps(adapter.kanban.by_id[original['task_id']]['body']), enable_workers=False)
+    broken = copy.deepcopy(before)
+    broken['kanban']['task_map'][1]['task_id'] = duplicate
+    adapter.workflow._write(broken)
+    adapter._projection_failure(before['workflow_id'], node, duplicate, 'DISPATCH_ARTIFACT_CHANGED', 'immutable binding differs')
+    if tamper:
+        adapter.kanban.by_id[original['task_id']]['body']['input_fingerprint'] = 'foreign'
+    old_bytes = {p:p.read_bytes() for p in (vault/'_system/knowledge-builds').rglob('*.json')}
+    result = sync(adapter, before['workflow_id'])
+    current = adapter.workflow.status(before['workflow_id'])
+    binding = next(c for c in current['kanban']['task_map'] if c['node']==node.name)
+    assert binding['task_id'] == (duplicate if tamper else original['task_id'])
+    assert not result['background_dispatch'] and all(p.read_bytes()==b for p,b in old_bytes.items())
+    assert adapter._failed_card(before['workflow_id'], node) is tamper
+    if not tamper:
+        assert adapter.kanban.waited[duplicate]=='archived'
+        recovery = vault/f"_system/ledgers/ingest-workflows/{before['workflow_id']}/reports/projection-recovery-{fingerprint(original['idempotency_key'])[:16]}.json"
+        assert json.loads(recovery.read_text())['rerun'] is False
+        assert not sync(adapter, before['workflow_id'])['background_dispatch']
 
 
 @pytest.mark.parametrize('change,code',[('actor','ACTOR_MISMATCH'),('revision','REVISION_CONFLICT'),
