@@ -17,7 +17,7 @@ INGEST = ROOT / "hermes-obsidian-controlled-ingest"
 
 
 def execute(script: Path, *arguments: object, expected: int = 0):
-    result = subprocess.run([sys.executable, "-I", "-S", str(script), *map(str, arguments)],
+    result = subprocess.run([sys.executable, "-I", "-S", "-X", "utf8", str(script), *map(str, arguments)],
                             cwd=script.parent, capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == expected, result.stdout + result.stderr
     stream = result.stdout if expected == 0 else result.stderr
@@ -44,7 +44,7 @@ def register(vault: Path, source_sha: str, *, active: bool = True) -> None:
 
 def lint_report(vault: Path) -> dict:
     result = subprocess.run(
-        [sys.executable, "-I", "-S", str(LINT), "--vault", str(vault),
+        [sys.executable, "-I", "-S", "-X", "utf8", str(LINT), "--vault", str(vault),
          "--profile", "post-ingest", "--ingest-skill-path", str(INGEST), "--json"],
         capture_output=True, text=True,
     )
@@ -63,7 +63,7 @@ def runtime(tmp_path: Path):
     config_path = tmp_path / "source-config.json"
     config_path.write_text(json.dumps(config), encoding="utf-8")
     vault = tmp_path / "vault"
-    result = subprocess.run([sys.executable, "-I", "-S", str(BOOTSTRAP), "--vault-path", str(vault),
+    result = subprocess.run([sys.executable, "-I", "-S", "-X", "utf8", str(BOOTSTRAP), "--vault-path", str(vault),
                              "--source-unit-config", str(config_path)], capture_output=True, text=True,
                             encoding="utf-8")
     assert result.returncode == 0, result.stderr

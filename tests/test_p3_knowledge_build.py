@@ -36,7 +36,7 @@ ORCHESTRATOR_MANAGE_CLI = ROOT / "hermes-obsidian-governed-ingest-orchestrator/s
 def vault(tmp_path: Path) -> Path:
     target = tmp_path / "vault"
     result = subprocess.run(
-        [sys.executable, "-I", "-S", str(BOOTSTRAP), "--vault-path", str(target)],
+        [sys.executable, "-I", "-S", "-X", "utf8", str(BOOTSTRAP), "--vault-path", str(target)],
         capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
     return target
@@ -226,7 +226,7 @@ def test_cross_source_pass_reduce_finalize_and_stable_identity(vault: Path):
     assert moved["current_path"] == "30_Cards/equipment/pump-x.md"
     assert service.validate_run("run-cross-source")["ok"]
     assert service.validate_run("run-move")["ok"]
-    lint = subprocess.run([sys.executable, "-I", "-S", str(LINT), "--vault", str(vault),
+    lint = subprocess.run([sys.executable, "-I", "-S", "-X", "utf8", str(LINT), "--vault", str(vault),
                            "--profile", "post-ingest", "--json"],
                           capture_output=True, text=True)
     lint_result = json.loads(lint.stdout)
@@ -2003,7 +2003,7 @@ def test_global_reduce_rejects_unproposed_candidates_and_duplicate_task_ownershi
 
 
 def test_p3_cli_runs_from_embedded_skill_runtime(vault: Path):
-    result = subprocess.run([sys.executable, "-I", "-S", str(KNOWLEDGE_CLI),
+    result = subprocess.run([sys.executable, "-I", "-S", "-X", "utf8", str(KNOWLEDGE_CLI),
                              "--vault", str(vault), "identities"],
                             capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
@@ -2017,18 +2017,18 @@ def test_p3_cli_runs_from_embedded_skill_runtime(vault: Path):
         "tasks": [{"task_id": "cli-batch-task", "target_refs": [ref],
                    "expected_revision": 0}],
     }), encoding="utf-8")
-    measured = subprocess.run([sys.executable, "-I", "-S", str(KNOWLEDGE_CLI),
+    measured = subprocess.run([sys.executable, "-I", "-S", "-X", "utf8", str(KNOWLEDGE_CLI),
                                "--vault", str(vault), "batch-measure", "--request", str(request)],
                               capture_output=True, text=True, encoding="utf-8")
     assert measured.returncode == 0, measured.stdout + measured.stderr
     assert json.loads(measured.stdout)["results"][0]["measurement"]["fits"] is True
-    planned = subprocess.run([sys.executable, "-I", "-S", str(KNOWLEDGE_CLI),
+    planned = subprocess.run([sys.executable, "-I", "-S", "-X", "utf8", str(KNOWLEDGE_CLI),
                               "--vault", str(vault), "batch-plan", "--request", str(request),
                               "--exact-reading-budget"],
                              capture_output=True, text=True, encoding="utf-8")
     assert planned.returncode == 0, planned.stdout + planned.stderr
     assert json.loads(planned.stdout)["batch"]["task_ids"] == ["cli-batch-task"]
-    status = subprocess.run([sys.executable, "-I", "-S", str(KNOWLEDGE_CLI),
+    status = subprocess.run([sys.executable, "-I", "-S", "-X", "utf8", str(KNOWLEDGE_CLI),
                              "--vault", str(vault), "batch-status", "--batch-id", "cli-batch",
                              "--compact"],
                             capture_output=True, text=True, encoding="utf-8")
@@ -2036,14 +2036,14 @@ def test_p3_cli_runs_from_embedded_skill_runtime(vault: Path):
     assert json.loads(status.stdout)["task_counts"] == {"pending": 1}
     assert "tasks" not in json.loads(status.stdout)
     assert json.loads(status.stdout)["coverage"]["total_tasks"] == 1
-    leased = subprocess.run([sys.executable, "-I", "-S", str(KNOWLEDGE_CLI),
+    leased = subprocess.run([sys.executable, "-I", "-S", "-X", "utf8", str(KNOWLEDGE_CLI),
                              "--vault", str(vault), "batch-next-slice",
                              "--batch-id", "cli-batch", "--worker-id", "cli-worker"],
                             capture_output=True, text=True, encoding="utf-8")
     assert leased.returncode == 0, leased.stdout + leased.stderr
     leased_slice = json.loads(leased.stdout)["slice"]
     heartbeat = subprocess.run([
-        sys.executable, "-I", "-S", str(KNOWLEDGE_CLI), "--vault", str(vault),
+        sys.executable, "-I", "-S", "-X", "utf8", str(KNOWLEDGE_CLI), "--vault", str(vault),
         "slice-heartbeat", "--batch-id", "cli-batch", "--slice-id", leased_slice["slice_id"],
         "--worker-id", "cli-worker", "--expected-revision", str(leased_slice["revision"]),
     ], capture_output=True, text=True, encoding="utf-8")
@@ -2056,7 +2056,7 @@ def test_p3_cli_runs_from_embedded_skill_runtime(vault: Path):
         "result_refs": ["cli-pass-result"],
     }), encoding="utf-8")
     completed = subprocess.run([
-        sys.executable, "-I", "-S", str(KNOWLEDGE_CLI), "--vault", str(vault),
+        sys.executable, "-I", "-S", "-X", "utf8", str(KNOWLEDGE_CLI), "--vault", str(vault),
         "slice-complete", "--request", str(complete_request),
     ], capture_output=True, text=True, encoding="utf-8")
     assert completed.returncode == 0, completed.stdout + completed.stderr

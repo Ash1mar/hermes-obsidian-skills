@@ -23,7 +23,7 @@ def test_operator_repair_preview_requires_failure_report_evidence(tmp_path):
     report = target / report_ref
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text('{"error_code":"LOCK_BUSY","source_failed":false}')
-    command = [sys.executable, '-I', '-S', str(ROOT /
+    command = [sys.executable, '-I', '-S', '-X', 'utf8', str(ROOT /
         'hermes-obsidian-governed-ingest-orchestrator/scripts/repair_preparation.py'),
         '--vault', str(target), '--workflow-id', value['workflow_id'], '--repair-id', 'lock-repair']
     missing = subprocess.run(command, capture_output=True, text=True)
@@ -165,7 +165,7 @@ def test_dispatcher_artifact_runs_exact_helper_in_isolated_terminal(vault):
     assert record['task_id'] == card['task_id'] and record['template_hash']
     env = {**os.environ, 'HERMES_DELEGATED_CHILD_CONTEXT':'1'}
     env.pop('HERMES_KANBAN_TASK', None)
-    result = subprocess.run([sys.executable, '-I', '-S', str(ROOT /
+    result = subprocess.run([sys.executable, '-I', '-S', '-X', 'utf8', str(ROOT /
         'hermes-obsidian-governed-ingest-orchestrator/scripts/run_preparation_worker.py'),
         '--vault', str(vault), '--binding', str(binding)], capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stderr
