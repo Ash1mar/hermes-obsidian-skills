@@ -85,7 +85,8 @@ def workflow_write_guard(vault, *, kinds=("source-prepare",), actor=None,
         value = service.status(workflow_id)
         if value["cancel_requested"] or value["state"] in TERMINAL:
             _fail("WORKFLOW_STOPPED", "domain write rejected: workflow is stopped")
-        service.assert_not_paused(value)
+        if not (binding is not None and service.revision_allows(value, binding['node'])):
+            service.assert_not_paused(value)
         if actor is not None and actor != value["actor"]:
             _fail("ACTOR_MISMATCH", "domain writer differs from workflow actor")
         cards = [item for item in value["kanban"]["task_map"] if item.get("task_id") == task_id]
@@ -130,6 +131,8 @@ def workflow_write_guard(vault, *, kinds=("source-prepare",), actor=None,
             _fail("STALE_INPUT", "source changed or already has an outcome")
         context = {"vault": str(vault), "kind": kind, "source": source,
                    "workflow_id": workflow_id, "actor": value["actor"]}
+        if service.revision_allows(value, card['node']):
+            context['pass_revision'] = value['pass_revision']
         token = _ACTIVE.set(context)
         try:
             yield context

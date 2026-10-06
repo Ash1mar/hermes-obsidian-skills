@@ -18,6 +18,7 @@ from .source_units import (_exclusive_lock, _json_bytes, _load_json,
 from .validation import ContractError, fingerprint, validate_record
 from .file_locks import kernel_lock, process_exists, host_identity
 from .ingest_pauses import WorkflowPauseMixin
+from .pass_revision import PassRevisionMixin
 
 WORKFLOW_ROOT = "_system/ledgers/ingest-workflows"
 WORKFLOW_CONTRACT = "hermes-ingest-workflow/v1"
@@ -77,7 +78,7 @@ def display_phase(value: Mapping[str, Any]) -> dict[str, Any]:
     _fail("INVALID_SCHEMA", "workflow stage has no display phase")
 
 
-class FileIngestWorkflowService(WorkflowPauseMixin):
+class FileIngestWorkflowService(PassRevisionMixin, WorkflowPauseMixin):
     def __init__(self, vault_root: str | Path):
         self.knowledge = FileKnowledgeBuildService(vault_root)
         self.vault = self.knowledge.vault
@@ -245,6 +246,10 @@ class FileIngestWorkflowService(WorkflowPauseMixin):
             "mode": "disabled", "slice_ids": [], "selection_digest": None})
         result["source_coverage"] = self.source_coverage(value)
         result["pause"] = self.pause_status(value)
+        if value.get('pass_revision'):
+            revision = value['pass_revision']
+            result['pass_revision'] = {key: revision[key] for key in
+                ('revision_id', 'state', 'boundary', 'slice_ids', 'tasks', 'request_ref')}
         return result
 
     @staticmethod

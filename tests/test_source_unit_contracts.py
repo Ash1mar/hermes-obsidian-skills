@@ -254,12 +254,13 @@ def test_copied_module_runs_with_no_site_packages_or_pythonpath(tmp_path):
         encoding="utf-8",
     )
     env = dict(os.environ, PYTHONPATH=str(PACKAGE / "src"))
-    command = [sys.executable, "-I", "-S", str(entry), "knowledge_build",
+    base_command = [sys.executable, "-I", "-S", "-X", "utf8", str(entry)]
+    command = [*base_command, "knowledge_build",
                str(fixtures / "knowledge-build.json"), "--units", str(fixtures / "units.json")]
     result = subprocess.run(command, cwd=tmp_path, env=env, capture_output=True, text=True)
     assert result.returncode == 0, result.stderr
     assert json.loads(result.stdout)["ok"]
-    result = subprocess.run([*command[:4], "unit", str(fixtures / "invalid/missing-unit-id.json")],
+    result = subprocess.run([*base_command, "unit", str(fixtures / "invalid/missing-unit-id.json")],
                             cwd=tmp_path, env=env, capture_output=True, text=True)
     assert result.returncode == 2, result.stderr
     assert json.loads(result.stdout)["code"] == "INVALID_SCHEMA"

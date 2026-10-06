@@ -23,7 +23,7 @@ def test_operator_repair_preview_requires_failure_report_evidence(tmp_path):
     report = target / report_ref
     report.parent.mkdir(parents=True, exist_ok=True)
     report.write_text('{"error_code":"LOCK_BUSY","source_failed":false}')
-    command = [sys.executable, '-I', '-S', str(ROOT /
+    command = [sys.executable, '-I', '-S', '-X', 'utf8', str(ROOT /
         'hermes-obsidian-governed-ingest-orchestrator/scripts/repair_preparation.py'),
         '--vault', str(target), '--workflow-id', value['workflow_id'], '--repair-id', 'lock-repair']
     missing = subprocess.run(command, capture_output=True, text=True)
@@ -84,6 +84,57 @@ def test_failure_archives_binding_and_dependents_and_denies_domain_write(tmp_pat
     assert adapter.worker_begin({**req,'task_id':replacement['task_id']})
 
 
+def test_native_archived_keys_do_not_recreate_failed_bindings(tmp_path, monkeypatch):
+    target, adapter, value, req = setup_worker(tmp_path)
+    adapter.execution_failure(req, 'PREPARATION_RUNTIME_FAILED', 'execution stopped')
+    adapter._sync_current(value['workflow_id'])
+    before = adapter.workflow._path(value['workflow_id']).read_bytes()
+    bindings = {p: p.read_bytes() for p in target.glob('_system/ledgers/ingest-workflows/*/bindings/*.json')}
+    # Native create excludes archived keys. Reconciliation must not call it for
+    # the currently bound failed node or its archived dependent.
+    create = adapter.kanban.create_node
+    def native_create(slug, node, *args, **kwargs):
+        if adapter._failed_card(value['workflow_id'], node):
+            pytest.fail('recreated an archived failed binding')
+        return create(slug, node, *args, **kwargs)
+    monkeypatch.setattr(adapter.kanban, 'create_node', native_create)
+    for _ in range(3):
+        result = adapter._sync_current(value['workflow_id'])
+        assert req['node'] in result['execution_blocked']
+        assert adapter.workflow._path(value['workflow_id']).read_bytes() == before
+        assert all(p.read_bytes() == content for p, content in bindings.items())
+    with pytest.raises(ContractError, match='STALE_INPUT'):
+        adapter.execution_failure({**req, 'task_id':'unbound'}, 'OTHER', 'old worker')
+
+
+def test_source_completion_during_failure_projection_retries_fresh_graph(tmp_path, monkeypatch):
+    _, adapter, value, req = setup_worker(tmp_path)
+    adapter.execution_failure(req, 'PREPARATION_RUNTIME_FAILED', 'pending source')
+    second = next(card for card in value['kanban']['task_map']
+                  if card['node'].startswith('source-prepare:') and card['node'] != req['node'])
+    second_req = {'workflow_id':value['workflow_id'], 'node':second['node'], 'task_id':second['task_id']}
+    begun = adapter.worker_begin(second_req)
+    create = adapter.kanban.create_node
+    changed = []
+    def concurrent(slug, node, *args, **kwargs):
+        if node.name == 'exact-plan' and not changed:
+            changed.append(True)
+            adapter.worker_fail({**second_req, 'template_hash':begun['template_hash'],
+                                 'code':'CONVERSION_FAILED', 'message':'proven document failure'})
+        return create(slug, node, *args, **kwargs)
+    monkeypatch.setattr(adapter.kanban, 'create_node', concurrent)
+    result = adapter._sync_current(value['workflow_id'])
+    assert changed and req['node'] in result['execution_blocked']
+    assert 'exact-plan' in result['execution_blocked']
+    latest = adapter.workflow.status(value['workflow_id'])
+    assert len(latest['source_outcomes']) == 1
+    # An old exact-plan worker still receives STALE_INPUT, not a trusted retry.
+    old_exact = next(card for card in value['kanban']['task_map'] if card['node']=='exact-plan')
+    with pytest.raises(ContractError, match='STALE_INPUT'):
+        adapter.execution_failure({'workflow_id':value['workflow_id'], 'node':'exact-plan',
+                                   'task_id':old_exact['task_id']}, 'OLD', 'obsolete worker')
+
+
 def test_dispatcher_artifact_runs_exact_helper_in_isolated_terminal(vault):
     refs = publish_sources(vault, ['# Evidence\nSupported material.\n'])
     adapter = IngestKanbanAdapter(vault, FakeKanban(True), enable_workers=True)
@@ -114,7 +165,7 @@ def test_dispatcher_artifact_runs_exact_helper_in_isolated_terminal(vault):
     assert record['task_id'] == card['task_id'] and record['template_hash']
     env = {**os.environ, 'HERMES_DELEGATED_CHILD_CONTEXT':'1'}
     env.pop('HERMES_KANBAN_TASK', None)
-    result = subprocess.run([sys.executable, '-I', '-S', str(ROOT /
+    result = subprocess.run([sys.executable, '-I', '-S', '-X', 'utf8', str(ROOT /
         'hermes-obsidian-governed-ingest-orchestrator/scripts/run_preparation_worker.py'),
         '--vault', str(vault), '--binding', str(binding)], capture_output=True, text=True, env=env)
     assert result.returncode == 0, result.stderr

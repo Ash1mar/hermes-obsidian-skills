@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]/'lib'))
 from hermes_source_units import ContractError, FileIngestWorkflowService, mutation_digest
 from hermes_source_units.source_units import _vault_path
 from hermes_source_units.validation import fingerprint
+from hermes_source_units.ingest_workflow import SOURCE_FAILURE_CODES
 from ingest_kanban import KanbanCLI
 from orchestration import worker_pack
 
@@ -23,8 +24,8 @@ def prepare(vault, workflow_id, hashes, repair_id, evidence_refs):
         raise ContractError('INVALID_TRANSITION','$','repair requires cancelled workflow with no batch')
     selected = [item for item in value.get('source_outcomes', []) if item['content_sha256'] in hashes]
     if (len(selected) != len(set(hashes)) or any(item['status']!='failed' or
-            item['error_code']!='SOURCE_UNIT_VALIDATION_FAILED' for item in selected)):
-        raise ContractError('STALE_INPUT','$','select existing failed SourceUnit outcomes by exact raw SHA-256')
+            item['error_code'] not in SOURCE_FAILURE_CODES for item in selected)):
+        raise ContractError('STALE_INPUT','$','select existing typed failed-source outcomes by exact raw SHA-256')
     refs = sorted({*evidence_refs, *(ref for item in selected for ref in item['artifact_refs'])})
     if not refs:
         raise ContractError('ARTIFACT_REQUIRED','$','repair requires explicit Vault evidence when no source is reset')
@@ -32,7 +33,7 @@ def prepare(vault, workflow_id, hashes, repair_id, evidence_refs):
         raise ContractError('ARTIFACT_REQUIRED','$','repair evidence must exist in the Vault')
     request = {'workflow_id':workflow_id,'actor':value['actor'],
         'expected_revision':value['revision'],'repair_id':repair_id,
-        'reason':'Install validated current worker contracts; preserve outcomes except explicitly selected SourceUnit engine failures',
+        'reason':'Install validated current worker contracts; preserve outcomes except explicitly selected failed sources',
         'evidence_refs':refs,'templates':worker_pack(),
         'reset_sources':[{'path':item['path'],'outcome_digest':'sha256:'+fingerprint(item)} for item in selected]}
     request['input_digest'] = mutation_digest(request)

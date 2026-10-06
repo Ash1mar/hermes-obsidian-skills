@@ -1,14 +1,19 @@
-# v7 worker dispatch acceptance
+# Native worker dispatch acceptance
 
-The dispatch contract covers real Gateway workers and isolated terminals. Passing
+The dispatch contract covers real Gateway workers and their bound terminals. Passing
 unit tests or invoking the planner directly is insufficient deployment evidence.
 Hermes core and persistent host configuration are outside this change.
+The current validation routes and release requirements are defined in
+[`INGEST_VALIDATION.md`](INGEST_VALIDATION.md). This workspace selects staged
+validation in the real HBTest2 workflow, retaining its accepted results for later
+continuation. The isolated fault-injection gates and dated evidence below remain
+valid for isolated testing; do not run destructive probes against the real Vault.
 In `canary_only`, the batch still plans the full ready scope, while the native
 projection creates only its eight selected Pass cards. Unselected tasks and
 Reduce/release nodes stay in the Vault plan until full execution is authorized;
 this avoids hundreds of unnecessary native CLI calls during a bounded trial.
 
-## Gates
+## Isolated dispatch and recovery gates
 
 1. Rejected missing fields, aliases, wrong hashes/tasks, cancelled/superseded
    bindings and execution blockers must not commit domain state. Same valid
@@ -57,9 +62,6 @@ The scale helper completed within 280 seconds including kill/restart observation
 The audit script's initial wrong output filename was corrected before checking
 the persisted `plan-request.json`; it did not change the committed plan.
 
-Deployment follows main validation/commit/push, a clean same-worktree merge to
-intranet preserving its six deployment configurations, intranet validation/push,
-then main Skill overwrite without backups. Migrate the original pre-batch
-workflow through cancel → repair without source resets → resume. Run the original
-generic prompt to obtain a separate eight-slice Canary result; exact-plan
-acceptance alone does not assert Canary completion.
+Those records prove the runs described above, not the current candidate or current
+workflow. Follow the current validation route and branch contract for new work.
+Exact-plan acceptance alone does not assert eight-slice Canary completion.

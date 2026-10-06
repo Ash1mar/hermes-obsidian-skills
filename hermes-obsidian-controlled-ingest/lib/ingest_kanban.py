@@ -49,10 +49,14 @@ def node_identity(workflow, kind, inputs, parent_keys):
 
 
 def pass_node(workflow, value):
+    revision = next((r for r in reversed([*workflow.get('pass_revision_history', []),
+        *([workflow['pass_revision']] if workflow.get('pass_revision') else [])])
+        if value['slice_id'] in r['slice_ids']), None)
     return Node('pass-slice:' + value['slice_id'], 'pass-slice', (),
                 node_identity(workflow, 'pass-slice', {
                     'slice_id':value['slice_id'], 'input_fingerprint':value['input_fingerprint'],
-                    'template_hash':value['template_hash']}, []))
+                    'template_hash':value['template_hash'],
+                    **({'revision_digest': revision['input_digest']} if revision else {})}, []))
 
 
 def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any]) -> list[Node]:
@@ -85,6 +89,9 @@ def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any
         return nodes
 
     batch = service.knowledge._batch(batch_id)
+    if workflow.get('pass_revision') and workflow['pass_revision']['state'] == 'running':
+        return [pass_node(workflow, service.knowledge._slice(batch_id, sid))
+                for sid in workflow['pass_revision']['slice_ids']]
     staged = bool(workflow['scope'].get('pause_after'))
     if staged and service.pending_pause(workflow) == 'exact_plan':
         return []  # Slice manifests are the plan; unopened phases need no native cards.
@@ -96,9 +103,7 @@ def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any
     pass_nodes: dict[str, str] = {}
     for item in slices:
         name = f"pass-slice:{item['slice_id']}"
-        add(name, "pass-slice", (), {"slice_id": item["slice_id"],
-                                    "input_fingerprint": item["input_fingerprint"],
-                                    "template_hash": item["template_hash"]})
+        nodes.append(pass_node(workflow, item))
         for task_id in item["task_ids"]:
             pass_nodes[task_id] = name
 
@@ -444,7 +449,12 @@ class IngestKanbanAdapter:
                 f"_system/ledgers/ingest-workflows/{workflow_id}/reports/failed-{fingerprint(binding['node'])[:16]}.json")
             if report_path.is_file():
                 report = _load_json(report_path)
-                if binding['idempotency_key'].endswith(':' + report.get('input_fingerprint', 'INVALID')):
+                completed_elsewhere = (binding['node'].startswith('pass-slice:') and value['batch_id']
+                    and self.workflow.knowledge._slice(value['batch_id'], binding['node'].partition(':')[2])['state'] == 'completed'
+                    and report.get('task_id') != binding['task_id'])
+                if completed_elsewhere:
+                    card['historical_projection_report_ref'] = report_path.relative_to(self.workflow.vault).as_posix()
+                elif binding['idempotency_key'].endswith(':' + report.get('input_fingerprint', 'INVALID')):
                     card.update(native_state=card['state'], state=('execution_blocked' if report.get('error_code') else 'validation_blocked'),
                         error_code=report.get('error_code'), reason=report.get('reason'),
                         report_ref=report_path.relative_to(self.workflow.vault).as_posix())
@@ -474,7 +484,55 @@ class IngestKanbanAdapter:
         path = _vault_path(self.workflow.vault,
             f"_system/ledgers/ingest-workflows/{workflow_id}/reports/"
             f"failed-{fingerprint(node.name)[:16]}.json")
-        return path.is_file() and _load_json(path).get("input_fingerprint") == node.input_fingerprint
+        if not path.is_file():
+            return False
+        report = _load_json(path)
+        if report.get('input_fingerprint') != node.input_fingerprint:
+            return False
+        value = self.workflow.status(workflow_id)
+        current = next((c for c in value['kanban']['task_map'] if c['node'] == node.name), None)
+        return not (node.kind == 'pass-slice' and domain_completed(self.workflow, value, node)
+                    and current and report.get('task_id') != current['task_id'])
+
+    def _completed_pass_binding(self, value, node, key):
+        """Reuse a verified completed native identity, including an archived one."""
+        if node.kind != 'pass-slice' or not domain_completed(self.workflow, value, node):
+            return None
+        path = _vault_path(self.workflow.vault,
+            f"_system/ledgers/ingest-workflows/{value['workflow_id']}/bindings/{fingerprint(key)}.json")
+        if not path.is_file():
+            return None
+        try:
+            record = _load_json(path)
+            task_id = record['task_id']
+            expected = {'workflow_id':value['workflow_id'], 'node':node.name, 'task_id':task_id,
+                'actor':value['actor'], 'input_fingerprint':node.input_fingerprint,
+                'template_hash':self.workflow.knowledge._slice(value['batch_id'], node.name.partition(':')[2])['template_hash'],
+                'worker_id':'ingest-worker-' + task_id}
+            if record != expected:
+                return None
+            current = next((c for c in value['kanban']['task_map'] if c['node']==node.name and c['idempotency_key']==key), None)
+            if current and current['task_id']==task_id:
+                return task_id
+            snapshot = self.kanban.task_snapshot(value['kanban']['board_id'], task_id)
+            native = snapshot['task']; body = json.loads(native['body'])
+            if (native['id']!=task_id or native['status'] not in ('done','archived')
+                    or native.get('created_by')!='ingest-workflow'
+                    or any(body.get(k)!=v for k,v in {'workflow_id':value['workflow_id'], 'node':node.name,
+                        'input_fingerprint':node.input_fingerprint,'vault':str(self.workflow.vault),
+                        'worker_binding':str(path),'slice_template_hash':expected['template_hash']}.items())):
+                return None
+            if self.workflow.pending_pause(value):
+                self.workflow._verify_pause_snapshot(value)
+            self._report(value, 'projection-recovery-' + fingerprint(key)[:16], {
+                'node':node.name,'input_fingerprint':node.input_fingerprint,'restored_task_id':task_id,
+                'previous_task_id':current['task_id'] if current else None,
+                'binding_ref':path.relative_to(self.workflow.vault).as_posix(),
+                'binding_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+                'domain_outcome':'completed','native_state':native['status'],'rerun':False})
+            return task_id
+        except (KeyError, TypeError, ValueError, OSError, AttributeError):
+            return None
 
     def _execution_blocked(self, workflow_id: str, node: Node) -> bool:
         path = _vault_path(self.workflow.vault,
@@ -498,6 +556,18 @@ class IngestKanbanAdapter:
             "error_code": code, "reason": message, "source_failed": False,
             "state": "execution_blocked"})
 
+    def _projection_failure(self, workflow_id: str, node: Node, task_id: str,
+                            code: str, message: str) -> str:
+        """Retry a changed trusted projection; keep worker failure reports strict."""
+        with _exclusive_lock(self.workflow._lock(workflow_id)):
+            current = self.workflow.status(workflow_id)
+            latest = next((item for item in desired_graph(self.workflow, current)
+                           if item.name == node.name), None)
+            if latest is None or latest.input_fingerprint != node.input_fingerprint:
+                _fail('REVISION_CONFLICT', 'domain inputs changed during failure projection')
+            return self.execution_failure({'workflow_id':workflow_id, 'node':node.name,
+                                           'task_id':task_id}, code, message)
+
     @staticmethod
     def validate_worker_request(request: Mapping[str, Any], *, beginning: bool = False) -> None:
         required = ("workflow_id", "node", "task_id") + (() if beginning else ("template_hash",))
@@ -508,6 +578,8 @@ class IngestKanbanAdapter:
             _fail("INVALID_SCHEMA", "missing worker request fields: " + ", ".join(missing))
 
     def _canary_allows(self, workflow: Mapping[str, Any], node: Node, *, completing: bool = False) -> bool:
+        if self.workflow.revision_allows(workflow, node.name):
+            return True
         if not completing and self.workflow.pending_pause(workflow):
             return False
         if node.kind == "source-prepare":
@@ -579,6 +651,10 @@ class IngestKanbanAdapter:
         value = self.workflow.continue_workflow(request)
         return self.sync(self._mutation(value))
 
+    def revise_passes(self, request):
+        value = self.workflow.revise_passes(request)
+        return self.sync(self._mutation(value))
+
     def arm_canary(self, request: Mapping[str, Any]) -> dict[str, Any]:
         value = self.workflow.arm_canary(request)
         followup = {"workflow_id": value["workflow_id"], "actor": value["actor"],
@@ -623,8 +699,10 @@ class IngestKanbanAdapter:
             if not batch.get("slices_initialized"):
                 self.workflow.knowledge.initialize_slices(
                     value["batch_id"], actor, batch["revision"])
+            self.workflow.prepare_pass_revision(value)
+            value = self.workflow.finish_pass_revision(self._mutation(value))
             value = self.workflow.latch_pause(self._mutation(value))
-            if not self.workflow.pending_pause(value):
+            if not self.workflow.pending_pause(value) or (value.get('pass_revision') and value['pass_revision']['state'] == 'running'):
                 self.workflow.knowledge.reclaim_expired_slices(value["batch_id"])
                 self.workflow.knowledge.refresh_ready_slices(value["batch_id"], actor)
             if (value["scope"].get("execution_mode") in ("canary_only", "auto_full")
@@ -743,11 +821,23 @@ class IngestKanbanAdapter:
                                    "--vault", str(self.workflow.vault), "--binding", str(_vault_path(self.workflow.vault,
                                    f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json"))])
                                    if node.kind in ("source-prepare", "exact-plan") else None),
-                               "instructions": templates.get(node.kind)},
+                               "instructions": (self.workflow.revision_instructions(value)
+                                   if self.workflow.revision_allows(value, node.name) else templates.get(node.kind)),
+                               "citation_revision_rule": ("Historical superseded citation Passes are audit only. For candidate decisions use only citations whose pass_id is not named by a later supersedes_pass_id in that task; retain all Pass IDs as history. Never propose or omit superseded candidates."
+                                   if value.get('pass_revision') and node.kind == 'resource-reduce' else None)},
                               ensure_ascii=False, sort_keys=True)
-            task_id = self.kanban.create_node(
+            # Native create ignores archived idempotency keys. Reuse the Vault's
+            # current failed binding until an explicit
+            # repair changes the input identity. Never mint a new card under an
+            # immutable binding file merely because its predecessor is archived.
+            previous = next((item for item in value['kanban']['task_map']
+                             if value['kanban']['board_id'] == slug
+                             and item['node'] == node.name and item['idempotency_key'] == key
+                             and self._failed_card(workflow_id, node)), None)
+            completed_task = self._completed_pass_binding(value, node, key)
+            task_id = completed_task or (previous['task_id'] if previous else self.kanban.create_node(
                 slug, node, key, [ids[parent] for parent in node.parents], body,
-                enable_workers=False)  # bind the complete graph before releasing cards
+                enable_workers=False))  # bind the complete graph before releasing cards
             ids[node.name] = task_id
             if pin:
                 record = {"workflow_id": workflow_id, "node": node.name, "task_id": task_id,
@@ -774,9 +864,25 @@ class IngestKanbanAdapter:
             task_map.append({"node": node.name, "idempotency_key": key,
                              "task_id": task_id})
         value = self.workflow.status(workflow_id)
+        # A revision narrows the dispatch graph without retiring valid native
+        # outcomes. Keep their identities so later projection cannot recreate
+        # archived cards under an immutable binding.
+        projected_names = {item['node'] for item in task_map}
+        for previous in value['kanban']['task_map']:
+            if previous['node'] in projected_names or not previous['node'].startswith('pass-slice:'):
+                continue
+            item = self.workflow.knowledge._slice(value['batch_id'], previous['node'].partition(':')[2])
+            node = pass_node(value, item)
+            key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
+            if previous['idempotency_key']==key and self._completed_pass_binding(value, node, key)==previous['task_id']:
+                task_map.append(dict(previous))
         current_keys = {item["idempotency_key"] for item in task_map}
         if value["kanban"]["board_id"] == slug:
             for previous in value["kanban"]["task_map"]:
+                replacement = next((c for c in task_map if c['idempotency_key']==previous['idempotency_key']), None)
+                if replacement and replacement.get('task_id') != previous.get('task_id'):
+                    self.kanban.archive(slug, previous['task_id'])
+                    continue
                 if (previous.get("task_id")
                         and previous["idempotency_key"] not in current_keys):
                     if previous["node"] == "exact-plan" and value["batch_id"] is not None:
@@ -800,13 +906,14 @@ class IngestKanbanAdapter:
                 "board_id": slug, "task_map": task_map}
         bind["input_digest"] = mutation_digest(bind)
         updated = self.workflow.bind_kanban(bind)
+        updated = self.workflow.finish_pass_revision(self._mutation(updated))
         # A worker may commit its boundary while this graph is being projected.
         # Hold successors immediately and persist the receipt before the watcher exits.
         updated = self.workflow.latch_pause(self._mutation(updated))
         for record in artifact_conflicts:
             node = next(n for n in nodes if n.name == record['node'])
             if not self._failed_card(workflow_id, node):
-                self.execution_failure(record, 'DISPATCH_ARTIFACT_CHANGED',
+                self._projection_failure(workflow_id, node, record['task_id'], 'DISPATCH_ARTIFACT_CHANGED',
                     'canonical dispatcher binding differs; trusted repair required')
         cooldown = (self.workflow.knowledge._batch(updated["batch_id"]).get("cooldown_until")
                     if updated["batch_id"] else None)
@@ -816,8 +923,8 @@ class IngestKanbanAdapter:
             failed_parent = next((p for p in nodes if p.name in node.parents
                                   and self._execution_blocked(workflow_id, p)), None)
             if failed_parent and not domain_completed(self.workflow, updated, node) and not self._failed_card(workflow_id, node):
-                self.execution_failure({"workflow_id":workflow_id, "node":node.name,
-                    "task_id":ids[node.name]}, "DEPENDENCY_EXECUTION_BLOCKED", failed_parent.name)
+                self._projection_failure(workflow_id, node, ids[node.name],
+                                         "DEPENDENCY_EXECUTION_BLOCKED", failed_parent.name)
             if not domain_completed(self.workflow, updated, node) and hasattr(self.kanban, "task_snapshot"):
                 snapshot = self.kanban.task_snapshot(slug, ids[node.name])
                 ended = [r for r in snapshot.get("runs", []) if r.get("ended_at")]
@@ -832,8 +939,7 @@ class IngestKanbanAdapter:
                         except (KeyError, TypeError, ValueError):
                             pass
                 if ended and not durable_slice_failure and snapshot['task']['status'] not in ('running', 'archived') and not self._failed_card(workflow_id, node):
-                    self.execution_failure({"workflow_id": workflow_id, "node": node.name,
-                        "task_id": ids[node.name]}, "NATIVE_WORKER_STOPPED",
+                    self._projection_failure(workflow_id, node, ids[node.name], "NATIVE_WORKER_STOPPED",
                         str(ended[-1].get("error") or ended[-1].get("summary") or "worker ended without a Vault outcome"))
             if domain_completed(self.workflow, updated, node):
                 summary = "Authoritative Vault outcome already committed"
@@ -857,8 +963,8 @@ class IngestKanbanAdapter:
                     if any(parent in affected for parent in dependent.parents):
                         affected.add(dependent.name)
                         if not self._failed_card(workflow_id, dependent):
-                            self.execution_failure({'workflow_id':workflow_id, 'node':dependent.name,
-                                'task_id':ids[dependent.name]}, 'DEPENDENCY_EXECUTION_BLOCKED', node.name)
+                            self._projection_failure(workflow_id, dependent, ids[dependent.name],
+                                                     'DEPENDENCY_EXECUTION_BLOCKED', node.name)
                 for dependent in reversed(nodes):
                     if dependent.name in affected and dependent.name != node.name:
                         self.kanban.archive(slug, ids[dependent.name])
@@ -909,14 +1015,18 @@ class IngestKanbanAdapter:
                 "revision": updated["revision"], "background_dispatch": active_canary,
                 "board_id": slug, "task_count": len(task_map),
                 "canary_complete": canary_done, "canary_report_ref": canary_report,
-                "execution_blocked": [n.name for n in nodes if self._execution_blocked(workflow_id, n)]}
+                "execution_blocked": [n.name for n in nodes if self._execution_blocked(workflow_id, n)],
+                "pass_revision": ({'revision_id': updated['pass_revision']['revision_id'],
+                                   'state': updated['pass_revision']['state']}
+                                  if updated.get('pass_revision') else None)}
 
     def _slice_worker(self, workflow_id: str, node_name: str,
                       task_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
         if not self.enable_workers:
             _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
         workflow = self.workflow.status(workflow_id)
-        self.workflow.assert_not_paused(workflow)
+        if not self.workflow.revision_allows(workflow, node_name):
+            self.workflow.assert_not_paused(workflow)
         self.workflow.pinned_templates(workflow)
         policy = workflow.get("dispatch_policy", {})
         if (policy.get("mode") not in ("canary", "full") or not node_name.startswith("pass-slice:")
@@ -1263,7 +1373,10 @@ class IngestKanbanAdapter:
         return {"ok": True, "leased": True, "slice": result["slice"],
                 "template_hash": result["slice"]["template_hash"],
                 "task_ids": result["slice"]["task_ids"], **prepared,
-                "worker_request": bound}
+                "worker_request": bound,
+                **({'pass_revision': {'revision_id': workflow['pass_revision']['revision_id'],
+                    'tasks': [t for t in workflow['pass_revision']['tasks'] if t['task_id'] in value['task_ids']]}}
+                    if self.workflow.revision_allows(workflow, node_name) else {})}
 
     def worker_check(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self.validate_worker_request(request)
@@ -1288,7 +1401,8 @@ class IngestKanbanAdapter:
         if expires <= datetime.now(timezone.utc):
             _fail("LEASE_EXPIRED", "slice lease expired")
         return {"ok": True, "batch_id": workflow["batch_id"],
-                "slice_id": value["slice_id"], "task_ids": value["task_ids"],
+                "slice_id": value["slice_id"], "task_ids": ([t['task_id'] for t in workflow['pass_revision']['tasks']
+                    if t['task_id'] in value['task_ids']] if self.workflow.revision_allows(workflow, request['node']) else value["task_ids"]),
                 "input_fingerprint": value["input_fingerprint"],
                 "worker_request": dict(request)}
 
@@ -1343,6 +1457,11 @@ class IngestKanbanAdapter:
                 validate_record("knowledge_pass", record)
                 records.append((path, record))
             sequences = {record["sequence"] for _, record in records}
+            if self.workflow.revision_allows(workflow, node_name):
+                target = next((t for t in workflow['pass_revision']['tasks'] if t['task_id'] == task_id), None)
+                if target and not any(record.get('revision_id') == workflow['pass_revision']['revision_id']
+                        and record.get('supersedes_pass_id') == target['pass_id'] for _, record in records):
+                    _fail('INCOMPLETE_COVERAGE', 'selected task needs its authorized revision citation')
             if (0 not in sequences or not any(sequence > 0 for sequence in sequences)
                     or sequences != set(range(max(sequences) + 1))):
                 _fail("INCOMPLETE_COVERAGE", "each slice task needs candidate and citation Passes")

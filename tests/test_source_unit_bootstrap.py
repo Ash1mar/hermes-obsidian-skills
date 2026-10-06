@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def run(script, *args):
-    return subprocess.run([sys.executable, "-I", "-S", str(script), *map(str, args)],
+    return subprocess.run([sys.executable, "-I", "-S", "-X", "utf8", str(script), *map(str, args)],
                           cwd=script.parent, capture_output=True, text=True)
 
 

@@ -30,7 +30,7 @@ QUERY_RETRIEVE = ROOT / "hermes-obsidian-controlled-query/scripts/retrieve_candi
 def vault(tmp_path: Path) -> Path:
     target = tmp_path / "vault"
     result = subprocess.run(
-        [sys.executable, "-I", "-S", str(BOOTSTRAP), "--vault-path", str(target)],
+        [sys.executable, "-I", "-S", "-X", "utf8", str(BOOTSTRAP), "--vault-path", str(target)],
         capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
     return target
@@ -171,7 +171,7 @@ def test_release_is_auditable_idempotent_and_creates_safe_move_redirect(vault: P
     assert service.validate("release-1")["ok"]
     assert service.validate("release-2")["ok"]
     assert service.status()["applied_build_runs"] == ["run-initial", "run-move"]
-    lint = subprocess.run([sys.executable, "-I", "-S", str(LINT), "--vault", str(vault),
+    lint = subprocess.run([sys.executable, "-I", "-S", "-X", "utf8", str(LINT), "--vault", str(vault),
                            "--profile", "post-ingest", "--json"],
                           capture_output=True, text=True)
     report = json.loads(lint.stdout)
@@ -284,7 +284,7 @@ def test_apply_recovers_when_manifest_last_write_was_interrupted(vault: Path, mo
 
 
 def test_p4_cli_uses_only_its_embedded_runtime(vault: Path):
-    result = subprocess.run([sys.executable, "-I", "-S", str(FINALIZE_CLI), str(vault), "status"],
+    result = subprocess.run([sys.executable, "-I", "-S", "-X", "utf8", str(FINALIZE_CLI), str(vault), "status"],
                             capture_output=True, text=True, encoding="utf-8")
     assert result.returncode == 0, result.stdout + result.stderr
     assert json.loads(result.stdout)["contract"] == "hermes-knowledge-release-state/v1"

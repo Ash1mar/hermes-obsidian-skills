@@ -36,6 +36,8 @@
 | [`docs/HERMES_WIKI_FROM_FILES_TO_KNOWLEDGE.md`](docs/HERMES_WIKI_FROM_FILES_TO_KNOWLEDGE.md) | 当前从文件到来源单元、知识 release 和检索的解释性说明。 |
 | [`charts.md`](charts.md) | Mermaid 端到端流程图：`main`/`intranet` 环境差异、建库、摄取、Lint、单遍 Query Session、Provider 与 Vault 的读写关系。 |
 | [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md) | 双分支维护合同：共享变更先进入 `main`，再 merge 到 `intranet`；定义受保护配置、冲突处理、验证和推送顺序。 |
+| [`INGEST_VALIDATION.md`](INGEST_VALIDATION.md) | 原生摄取验收：隔离与正式流程分段验证的选择、候选部署边界、阶段证据、暂停授权和结果复用。 |
+| [`INGEST_WORKER_ACCEPTANCE.md`](INGEST_WORKER_ACCEPTANCE.md) | 原生 worker 派发与隔离恢复门槛，以及明确标注日期的历史证据；现行验证方式由摄取验收合同定义。 |
 | [`RETRIEVAL_PROVIDER_OPERATIONS.md`](RETRIEVAL_PROVIDER_OPERATIONS.md) | 检索 Provider 运维说明：三层配置、Query/Finalize 独立开关、release sync 门禁和验证命令。 |
 | [`MINERU_WSL_ENVIRONMENT_RUNBOOK.md`](MINERU_WSL_ENVIRONMENT_RUNBOOK.md) | MinerU 在 WSL2 中的安装、模型缓存、离线配置、迁移、pipeline/hybrid 验证、CUDA/vLLM 排障经验。它是环境运行手册，不是 Bundle 摄取步骤。 |
 

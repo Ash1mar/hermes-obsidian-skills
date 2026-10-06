@@ -29,7 +29,7 @@ def test_pass_cli_uses_bound_lease_and_rejects_other_task(vault):
     env = {**os.environ,'HERMES_DELEGATED_CHILD_CONTEXT':'1',
            'HERMES_KANBAN_WORKSPACE':str(workspace)}
     env.pop('HERMES_KANBAN_TASK', None)
-    dispatcher = [sys.executable,'-I','-S',str(ROOT/'hermes-obsidian-governed-ingest-orchestrator/scripts/dispatch_ingest_workflow.py'),
+    dispatcher = [sys.executable,'-I','-S','-X','utf8',str(ROOT/'hermes-obsidian-governed-ingest-orchestrator/scripts/dispatch_ingest_workflow.py'),
                   '--vault',str(vault)]
     begin = dispatcher+['worker-begin','--request',str(source_binding),'--request-output',str(vault/'outside.json')]
     rejected = subprocess.run(begin,capture_output=True,text=True,env=env)
@@ -76,7 +76,7 @@ def test_pass_cli_uses_bound_lease_and_rejects_other_task(vault):
     assert json.loads(binding_path.read_text()) == binding
     assert json.loads(check.stdout)['worker_request'] == binding
     assert before_check == {str(path):path.read_bytes() for path in (vault/'_system/ledgers').rglob('*.json')}
-    command = [sys.executable,'-I','-S',str(ROOT/'hermes-obsidian-controlled-ingest/scripts/manage_knowledge_build.py'),
+    command = [sys.executable,'-I','-S','-X','utf8',str(ROOT/'hermes-obsidian-controlled-ingest/scripts/manage_knowledge_build.py'),
         '--vault',str(vault),'--worker-binding',str(binding_path),'batch-pass','--request',str(request_path)]
     request_path.write_text(json.dumps(req))
     result = subprocess.run(command,capture_output=True,text=True,env=env)
