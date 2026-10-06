@@ -49,12 +49,14 @@ def node_identity(workflow, kind, inputs, parent_keys):
 
 
 def pass_node(workflow, value):
+    revision = next((r for r in reversed([*workflow.get('pass_revision_history', []),
+        *([workflow['pass_revision']] if workflow.get('pass_revision') else [])])
+        if value['slice_id'] in r['slice_ids']), None)
     return Node('pass-slice:' + value['slice_id'], 'pass-slice', (),
                 node_identity(workflow, 'pass-slice', {
                     'slice_id':value['slice_id'], 'input_fingerprint':value['input_fingerprint'],
                     'template_hash':value['template_hash'],
-                    **({'revision_digest': workflow['pass_revision']['input_digest']}
-                       if workflow.get('pass_revision') and value['slice_id'] in workflow['pass_revision']['slice_ids'] else {})}, []))
+                    **({'revision_digest': revision['input_digest']} if revision else {})}, []))
 
 
 def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any]) -> list[Node]:

@@ -189,3 +189,47 @@ def test_revision_authorization_rejects_stale_or_worker_requests(paused, vault, 
     before = adapter.workflow._path(value['workflow_id']).read_bytes()
     with pytest.raises(ContractError, match=code): adapter.revise_passes(request)
     assert adapter.workflow._path(value['workflow_id']).read_bytes() == before
+
+
+def test_later_revision_preserves_earlier_revised_slice_identity(paused, vault):
+    adapter, before, request, prior = paused
+    from ingest_kanban import pass_node
+    def finish(request):
+        adapter.revise_passes(request)
+        current = adapter.workflow.status(before['workflow_id'])
+        target = current['pass_revision']['tasks'][0]
+        sid = current['pass_revision']['slice_ids'][0]
+        card = next(c for c in current['kanban']['task_map'] if c['node']=='pass-slice:'+sid)
+        begun = adapter.worker_begin({'workflow_id':current['workflow_id'], 'node':card['node'],
+            'task_id':card['task_id'], 'worker_id':'reviewer-worker'})
+        bound = begun['worker_request']
+        previous = json.loads((vault/target['pass_ref']).read_text())
+        draft = {k:copy.deepcopy(previous[k]) for k in
+            ('task_id','actor','reading_package_id','inspections','candidates','empty_reason')}
+        draft.update(expected_revision=begun['task_snapshots'][0]['revision'], registry_revision=1,
+            pass_kind='citation', sequence=target['sequence'])
+        with worker_binding(bound), workflow_write_guard(vault, kinds=('pass-slice',)):
+            checked = adapter.workflow.knowledge.record_pass_batch({'batch_id':current['batch_id'],'passes':[draft]}, validate_only=True)
+            assert checked['ok'] and checked['validated']
+            assert adapter.workflow.knowledge.record_pass_batch({'batch_id':current['batch_id'],'passes':[draft]})['ok']
+        adapter.worker_complete(bound)
+        sync(adapter, current['workflow_id'])
+        return adapter.workflow.status(current['workflow_id'])
+    first = finish(request)
+    assert first['pass_revision']['state']=='awaiting_review'
+    sid = first['pass_revision']['slice_ids'][0]
+    original = next(c for c in first['kanban']['task_map'] if c['node']=='pass-slice:'+sid)
+    identity = pass_node(first, adapter.workflow.knowledge._slice(first['batch_id'], sid)).input_fingerprint
+    tid = adapter.workflow.knowledge._batch(first['batch_id'])['task_ids'][-1]
+    latest = adapter.workflow.knowledge._pass_index([tid])[1][tid][-1]
+    review = vault/'_system/reports/second-review.json'; review.write_text('Review the other completed slice')
+    second = workflow_request(workflow_id=first['workflow_id'],actor='agent',expected_revision=first['revision'],
+        revision_id='review-two',evidence_digest=first['pause_control']['evidence_digest'],
+        tasks=[{'task_id':tid,'pass_id':latest['pass_id'],'reason':'Review another completed task'}],
+        reason='Second semantic review',evidence_refs=['_system/reports/second-review.json'],worker_template=request['worker_template'])
+    current = finish(second)
+    assert original in current['kanban']['task_map']
+    assert pass_node(current, adapter.workflow.knowledge._slice(current['batch_id'],sid)).input_fingerprint==identity
+    assert adapter.kanban.waited.get(original['task_id'])!='archived'
+    assert current['pass_revision']['state']=='awaiting_review' and len(current['pass_revision_history'])==1
+    assert len(adapter.kanban.by_id)==4  # two originals and two authorized revision cards
