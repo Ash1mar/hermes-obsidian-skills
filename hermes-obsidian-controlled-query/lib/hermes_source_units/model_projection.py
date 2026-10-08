@@ -7,7 +7,8 @@ import hashlib
 from .source_units import _json_bytes, _load_json, _vault_path, _write_atomic
 from .validation import ContractError, canonical_json, fingerprint, validate_record
 
-RENDERER = 'bounded-model-input/v1'
+PACKET_RENDERER = 'bounded-model-packet/v1'
+RENDERER = PACKET_RENDERER
 BEGIN_ENVELOPE_RESERVE = 2048
 
 
@@ -99,30 +100,56 @@ class ModelProjectionMixin:
             'reason': package['window']['reason']}}
         identity = {'renderer': RENDERER, 'task_id': task_id,
                     'package_id': package['package_id'], 'package_hash': package_hash,
-                    'qa_hashes': qa_hashes, 'view': view, 'mapping': mapping}
+                    'qa_hashes': qa_hashes, 'view': copy.deepcopy(view), 'mapping': mapping}
         input_id = fingerprint(identity)
         # Historical Passes are context, not new evidence. Resolve them through
         # the same bounded mapping, never include hashes/full UnitRefs in the view.
         root = _vault_path(self.vault, f'_system/knowledge-builds/task-{task_id}/passes')
         records = [_load_json(p) for p in sorted(root.glob('*.json'))] if root.exists() else []
-        previous = []
         for record in records:
             validate_record('knowledge_pass', record)
             if fingerprint({k:v for k,v in record.items() if k != 'pass_id'}) != record['pass_id']:
                 fail('SOURCE_CHANGED', 'historical Pass fingerprint changed')
             if record['reading_package_id'] != package['package_id']:
                 fail('STALE_INPUT', 'existing Pass uses a different reading package')
-            previous.append({'sequence': record['sequence'], 'pass_kind': record['pass_kind'],
-                'inspections': [{**i, 'source_ref': self._model_handle(i['source_ref'], mapping)}
-                                for i in record['inspections']],
-                'candidates': [{**c, 'support_refs': [self._model_handle(r, mapping) for r in c['support_refs']]}
-                               for c in record['candidates']], 'empty_reason': record['empty_reason']})
-        sequences = [p['sequence'] for p in previous]
+            # Validate every retained reference even when its historical narrative
+            # is not needed by the current step.
+            for inspection in record['inspections']:
+                self._model_handle(inspection['source_ref'], mapping)
+            for candidate in record['candidates']:
+                for ref in candidate['support_refs']:
+                    self._model_handle(ref, mapping)
+        sequences = [p['sequence'] for p in records]
         if sequences != list(range(len(sequences))):
             fail('INVALID_PASS', 'existing Pass sequence is not contiguous')
-        view.update(input_id=input_id, next_sequence=len(previous))
-        if previous:
-            view['previous_passes'] = previous
+        view.update(input_id=input_id, next_sequence=len(records))
+        continuation = {'action':'candidate_then_citation'}
+        if len(records) == 1:
+            candidate = records[0]
+            continuation = {'action':'citation', 'candidate': {'sequence':0,
+                'candidates':[{**c, 'support_refs':[self._model_handle(r, mapping) for r in c['support_refs']]}
+                              for c in candidate['candidates']], 'empty_reason':candidate['empty_reason']}}
+            qualifications = [{**i,'source_ref':self._model_handle(i['source_ref'],mapping)}
+                for i in candidate['inspections'] if i['qa'] != 'usable' or i['qa_note'].strip()]
+            if qualifications:
+                continuation['candidate']['qualifications'] = qualifications
+        elif len(records) > 1:
+            effective = records[-1]
+            if effective['pass_kind'] != 'citation':
+                fail('INVALID_PASS', 'resumable completion lacks a final citation')
+            pass_sequences = {p['pass_id']:p['sequence'] for p in records}
+            revisions = []
+            for p in records:
+                prior = p.get('supersedes_pass_id')
+                if prior:
+                    if prior not in pass_sequences or pass_sequences[prior] >= p['sequence']:
+                        fail('INVALID_PASS', 'citation revision has an invalid predecessor')
+                    revisions.append({'sequence':p['sequence'],'supersedes_sequence':pass_sequences[prior]})
+            continuation = {'action':'complete', 'effective_citation': {'sequence':effective['sequence'],
+                'candidates':[{'candidate_id':c['candidate_id'],
+                    'support_refs':[self._model_handle(r,mapping) for r in c['support_refs']]}
+                    for c in effective['candidates']]}, 'revision_relations':revisions}
+        view['continuation'] = continuation
         # Also hash the actual presentation, including resumable prior results.
         manifest = {**identity, 'input_id': input_id, 'view_hash': fingerprint(view)}
         ref = f'_system/knowledge-builds/task-{task_id}/model-inputs/{input_id}-{manifest["view_hash"]}.json'
@@ -137,8 +164,67 @@ class ModelProjectionMixin:
                 fail('IDEMPOTENCY_CONFLICT', 'model mapping identity has different content')
             if not manifest_path.exists():
                 _write_atomic(manifest_path, _json_bytes(manifest))
-        return {'input_id': input_id, 'view': view, 'mapping': mapping,
+        return {'task_id':task_id, 'input_id': input_id, 'view': view, 'mapping': mapping,
                 'codepoints': len(canonical_json(view).decode('utf-8')) + 1, 'path': ref}
+
+    def model_packet(self, projections, batch_id, *, persist=False):
+        """Share presentation bytes, never task identity or evidence permission."""
+        texts, text_ids, headings, heading_ids, qa, qa_ids, tasks, bindings = {}, {}, [], {}, {}, {}, [], {}
+        raw_text_codepoints = 0
+        for ordinal, projection in enumerate(projections, 1):
+            alias = f't{ordinal}'
+            view = projection['view']
+            materials = []
+            for material in view['materials']:
+                item = {k:copy.deepcopy(v) for k,v in material.items()
+                        if k not in ('text','heading','qa_restrictions','qa_qualification')}
+                text = material['text']
+                item['text_ref'] = None
+                if text is not None:
+                    raw_text_codepoints += len(text)
+                    if text not in text_ids:
+                        handle = f'c{len(texts)+1}'
+                        text_ids[text] = handle
+                        texts[handle] = text
+                    item['text_ref'] = text_ids[text]
+                heading = tuple(view['headings'][material['heading']])
+                if heading not in heading_ids:
+                    heading_ids[heading] = len(headings)
+                    headings.append(list(heading))
+                item['heading'] = heading_ids[heading]
+                if material.get('qa_restrictions'):
+                    key = canonical_json(material['qa_restrictions'])
+                    if key not in qa_ids:
+                        handle = f'q{len(qa)+1}'
+                        qa_ids[key] = handle
+                        qa[handle] = copy.deepcopy(material['qa_restrictions'])
+                    item['qa_ref'] = qa_ids[key]
+                if material.get('qa_qualification'):
+                    item['qa_qualification'] = True
+                materials.append(item)
+            tasks.append({'task':alias,'input_id':projection['input_id'],
+                'next_sequence':view['next_sequence'],'materials':materials,
+                'limits':copy.deepcopy(view['limits']), 'continuation':copy.deepcopy(view['continuation'])})
+            bindings[alias] = {'task_id':projection['task_id'],'input_id':projection['input_id'],
+                               'mapping':projection['mapping']}
+        packet = {'contract':PACKET_RENDERER,'texts':texts,'headings':headings,'tasks':tasks}
+        if qa:
+            packet['qa'] = qa
+        if any(m.get('qa_qualification') for t in tasks for m in t['materials']):
+            packet['qa_rule'] = 'Review the actual applicable QA restrictions before treating affected claims as authoritative.'
+        packet_id = fingerprint({'view':packet,'bindings':bindings})
+        ref = f'_system/knowledge-builds/model-packets/{batch_id}/{packet_id}.json'
+        manifest = {'contract':PACKET_RENDERER,'packet_id':packet_id,'batch_id':batch_id,
+                    'view_hash':fingerprint(packet),'bindings':bindings}
+        if persist:
+            for path,value,data in ((_vault_path(self.vault,ref),packet,canonical_json(packet)+b'\n'),
+                    (_vault_path(self.vault,ref).with_suffix('.manifest.json'),manifest,_json_bytes(manifest))):
+                if path.exists() and _load_json(path) != value:
+                    fail('IDEMPOTENCY_CONFLICT', 'shared packet identity has different content')
+                if not path.exists():
+                    _write_atomic(path,data)
+        return {'view':packet,'path':ref,'codepoints':len(canonical_json(packet).decode('utf-8'))+1,
+                'shared_text_codepoints_saved':raw_text_codepoints-sum(len(t) for t in texts.values())}
 
     @staticmethod
     def _model_handle(ref, mapping):

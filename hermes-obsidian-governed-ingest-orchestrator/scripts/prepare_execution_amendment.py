@@ -18,7 +18,7 @@ def main():
     parser.add_argument('--workflow-id', required=True)
     parser.add_argument('--amendment-id', required=True)
     parser.add_argument('--reason', required=True)
-    parser.add_argument('--max-tasks', type=int, default=6)
+    parser.add_argument('--max-tasks', type=int, default=12)
     parser.add_argument('--max-input-codepoints', type=int, default=30000)
     parser.add_argument('--output', required=True, help='Request file in the operator workspace, outside the Vault')
     args = parser.parse_args()

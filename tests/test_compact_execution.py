@@ -90,6 +90,10 @@ def begin_amended(adapter,value,request):
     return current,begun
 
 
+def packet_views(vault,begun):
+    return json.loads((vault/begun['model_input']['path']).read_text(encoding='utf-8'))['tasks']
+
+
 def test_dry_run_apply_preserves_results_and_completed_native_identity(stopped,vault):
     adapter,value,request=stopped
     old_files={p:p.read_bytes() for p in (vault/'_system/knowledge-builds').rglob('*.json')}
@@ -114,11 +118,10 @@ def test_dry_run_apply_preserves_results_and_completed_native_identity(stopped,v
     resumed,begun=begin_amended(adapter,value,request)
     assert binding in resumed['kanban']['task_map']
     assert 'task_snapshots' not in begun and 'reading_packages' not in begun
-    assert len(begun['model_inputs'])==6
+    assert begun['model_input']['task_count']==6
     assert all(p.read_bytes()==data for p,data in old_files.items())
-    for descriptor in begun['model_inputs']:
-        view=json.loads((vault/descriptor['path']).read_text())
-        assert 'unit_ref' not in json.dumps(view) and 'sha256' not in json.dumps(view)
+    packet=json.loads((vault/begun['model_input']['path']).read_text())
+    assert 'unit_ref' not in json.dumps(packet) and 'sha256' not in json.dumps(packet)
 
 
 def test_compact_round_trip_preflight_idempotent_write_and_partial_resume(stopped,vault):
@@ -126,9 +129,8 @@ def test_compact_round_trip_preflight_idempotent_write_and_partial_resume(stoppe
     current,begun=begin_amended(adapter,value,request)
     bound=begun['worker_request'];service=adapter.workflow.knowledge
     checked=adapter.worker_check(bound)
-    descriptor=begun['model_inputs'][0]
-    view=json.loads((vault/descriptor['path']).read_text())
-    assert view['next_sequence']==1 and view['previous_passes'][0]['sequence']==0
+    view=packet_views(vault,begun)[0]
+    assert view['next_sequence']==1 and view['continuation']['candidate']['sequence']==0
     model={'passes':[semantic_draft(view)]}
     with worker_binding(bound),workflow_write_guard(vault,kinds=('pass-slice',)):
         expanded=service.expand_model_passes(model,checked['task_ids'],'agent',current['batch_id'])
@@ -148,14 +150,15 @@ def test_compact_round_trip_preflight_idempotent_write_and_partial_resume(stoppe
 
 
 @pytest.mark.parametrize('change,code',[('handle','OUTSIDE_READING_PACKAGE'),('input','STALE_INPUT'),
-    ('task','INVALID_SCHEMA'),('range','INVALID_RANGE')])
+    ('task','INVALID_SCHEMA'),('range','INVALID_RANGE'),('pool','OUTSIDE_READING_PACKAGE')])
 def test_compact_rejects_foreign_handles_and_identity(stopped,vault,change,code):
     adapter,value,request=stopped
     current,begun=begin_amended(adapter,value,request)
     bound=begun['worker_request'];checked=adapter.worker_check(bound)
-    view=json.loads((vault/begun['model_inputs'][0]['path']).read_text())
+    view=packet_views(vault,begun)[0]
     model={'passes':[semantic_draft(view)]}
     if change=='handle':model['passes'][0]['candidates'][0]['support_refs']=['m999']
+    if change=='pool':model['passes'][0]['candidates'][0]['support_refs']=['c1']
     if change=='input':model['passes'][0]['input_id']='foreign'
     if change=='task':model['passes'][0]['task']='t999'
     if change=='range':model['passes'][0]['inspections'][0]['source_ref']={'ref':'m1','span':{'start':1,'end':0}}
@@ -198,7 +201,7 @@ def test_real_cli_compact_receipt_does_not_echo_batch_or_mapping(stopped,vault):
     adapter,value,request=stopped
     current,begun=begin_amended(adapter,value,request)
     binding=vault/'binding.json';binding.write_text(json.dumps(begun['worker_request']))
-    view=json.loads((vault/begun['model_inputs'][0]['path']).read_text())
+    view=packet_views(vault,begun)[0]
     draft_path=vault/'draft.json';draft_path.write_text(json.dumps({'passes':[semantic_draft(view)]}))
     result=subprocess.run([sys.executable,'-X','utf8',str(KNOWLEDGE_CLI),'--vault',str(vault),
         '--worker-binding',str(binding),'batch-pass','--compact','--validate-only','--request',str(draft_path)],
@@ -217,7 +220,7 @@ def test_amended_pass_finishes_once_and_holds_reduce(stopped,vault):
     preserved={ref:(vault/ref).read_bytes() for ref in old_completed['result_refs']}
     for ordinal in range(2):
         bound=begun['worker_request'];checked=adapter.worker_check(bound)
-        views=[json.loads((vault/d['path']).read_text()) for d in begun['model_inputs']]
+        views=packet_views(vault,begun)
         with worker_binding(bound),workflow_write_guard(vault,kinds=('pass-slice',)):
             for sequence in (0,1):
                 drafts=[semantic_draft(view,f't{i}',sequence) for i,view in enumerate(views,1)
@@ -229,7 +232,7 @@ def test_amended_pass_finishes_once_and_holds_reduce(stopped,vault):
                     result=service.record_pass_batch(payload)
                     assert result['ok'] and preview['ok']
                     assert [r['pass_id'] for r in result['results']]==[r['pass_id'] for r in preview['results']]
-        actual=sum(len((vault/d['path']).read_text(encoding='utf-8')) for d in begun['model_inputs'])
+        actual=len((vault/begun['model_input']['path']).read_text(encoding='utf-8'))
         actual+=len(json.dumps(begun,ensure_ascii=False,indent=2))+1
         assert actual==begun['input_codepoints']<=request['max_input_codepoints']
         adapter.worker_complete(bound)
@@ -250,6 +253,35 @@ def test_amended_pass_finishes_once_and_holds_reduce(stopped,vault):
     # Observation and resume do not release the newly reached durable pause.
     adapter.resume(workflow_request(workflow_id=current['workflow_id'],actor='agent',expected_revision=current['revision']))
     assert adapter.workflow.status(current['workflow_id'])['pause_control']['boundary']=='pass'
+    # A subsequent semantic revision uses the existing revision contract, even
+    # when the completed slice originally consumed a shared compact packet.
+    current=adapter.workflow.status(current['workflow_id'])
+    tid=checked['task_ids'][0]
+    prior=service._pass_index([tid])[1][tid][-1]
+    evidence=vault/'_system/reports/compact-revision-review.json'
+    evidence.write_text(json.dumps({'task_id':tid,'reason':'review a compact task citation'}))
+    revision=workflow_request(workflow_id=current['workflow_id'],actor='agent',expected_revision=current['revision'],
+        revision_id='compact-review',evidence_digest=current['pause_control']['evidence_digest'],
+        tasks=[{'task_id':tid,'pass_id':prior['pass_id'],'reason':'review current citation'}],
+        reason='bounded semantic revision',evidence_refs=['_system/reports/compact-revision-review.json'],
+        worker_template=(ROOT/'hermes-obsidian-governed-ingest-orchestrator/references/pass-revision-worker.md').read_text())
+    adapter.revise_passes(revision)
+    current=adapter.workflow.status(current['workflow_id'])
+    sid=current['pass_revision']['slice_ids'][0]
+    card=next(c for c in current['kanban']['task_map'] if c['node']=='pass-slice:'+sid)
+    revised=adapter.worker_begin({'workflow_id':current['workflow_id'],'node':card['node'],
+        'task_id':card['task_id'],'worker_id':'revision-worker'})
+    assert 'model_input' not in revised and len(revised['reading_packages'])==1
+    bound=revised['worker_request']
+    revised_draft=draft(service,tid,prior['reading_package_id'],2)
+    with worker_binding(bound),workflow_write_guard(vault,kinds=('pass-slice',)):
+        assert service.record_pass_batch({'batch_id':current['batch_id'],'passes':[revised_draft]})['ok']
+    adapter.worker_complete(bound)
+    sync(adapter,current['workflow_id'])
+    projection=service.model_input(tid,service._existing_reading_package(service._task(tid),'agent',1))
+    assert projection['view']['continuation']['revision_relations']==[{'sequence':2,'supersedes_sequence':1}]
+    assert projection['view']['continuation']['effective_citation']['sequence']==2
+    assert 'previous_passes' not in projection['view']
 
 
 @pytest.mark.parametrize('active',['attempt','ready-card'])
@@ -315,6 +347,10 @@ def test_projection_preserves_protected_text_headings_roles_and_actual_qa(vault)
     assert any(q.get('code')=='oversized-protected-structure' for q in restrictions)
     assert len((vault/projection['path']).read_text(encoding='utf-8'))==projection['codepoints']
     assert (vault/projection['path']).with_suffix('.manifest.json').exists()
+    packet=service.model_packet([projection],'qa-model')['view']
+    for material,original in zip(packet['tasks'][0]['materials'],view['materials']):
+        if original.get('qa_restrictions'):
+            assert packet['qa'][material['qa_ref']]==original['qa_restrictions']
     for material in view['materials']:
         ref=service._expand_model_ref(material['ref'],projection['mapping'])
         assert ref==next(m['source_ref'] for m in package['materials'] if m['source_ref']==ref)
@@ -331,7 +367,7 @@ def test_prepare_helper_saves_reusable_request_without_vault_changes(stopped,vau
     result=subprocess.run(command,capture_output=True,text=True,encoding='utf-8')
     assert result.returncode==0,result.stdout+result.stderr
     payload=json.loads(output.read_text(encoding='utf-8'))
-    assert payload['expected_revision']==value['revision'] and payload['max_tasks']==6
+    assert payload['expected_revision']==value['revision'] and payload['max_tasks']==12
     assert payload['worker_template']==TEMPLATE.read_text(encoding='utf-8')
     assert adapter.amend_execution(payload,dry_run=True)['ok']
     assert {p:p.read_bytes() for p in vault.rglob('*.json')}==before
@@ -375,3 +411,53 @@ def test_whole_binary_asset_is_readable_without_expanding_linked_asset_permissio
     assert asset['asset']['media_type']=='image/png'
     linked=next(m for v in views for m in v['materials'] if m.get('linked_assets'))
     assert 'asset' not in linked and all(a['content_provided'] is False for a in linked['linked_assets'])
+
+
+def test_shared_packet_preserves_each_task_role_scope_and_source_identity(vault):
+    text='# Shared\nparent text\n\n## Clause\n'+'Exact shared conditions AND exceptions. '*16+'\n'
+    refs=publish_sources(vault,[text,text])
+    service=FileKnowledgeBuildService(vault)
+    unit=refs[1]['unit_ref']
+    _,units,_=service.source._load_set(unit['resource_id'],unit['unit_set_id'])
+    child=next(u for u in units if u['locator']['kind']=='text' and u['ref']!=unit)
+    first=refs[0]['unit_ref']
+    _,first_units,_=service.source._load_set(first['resource_id'],first['unit_set_id'])
+    first_child=next(u for u in first_units if u['locator']['kind']=='text' and u['ref']!=first)
+    targets=[{'unit_ref':first_child['ref'],'span':None},{'unit_ref':child['ref'],'span':None},refs[1]]
+    service.plan_batch({'batch_id':'shared-packet','actor':'agent','registry_revision':1,'exact_reading_budget':True,
+        'tasks':[{'task_id':f'shared-{i}','target_refs':[ref]} for i,ref in enumerate(targets)]})
+    assert service.prepare_batch('shared-packet','agent',1)['ok']
+    projections=[service.model_input(f'shared-{i}',service._existing_reading_package(service._task(f'shared-{i}'),'agent',1))
+                 for i in range(3)]
+    packet=service.model_packet(projections,'shared-packet',persist=True)
+    value=packet['view']
+    assert packet['shared_text_codepoints_saved']>0 and packet['codepoints']<sum(p['codepoints'] for p in projections)
+    assert len((vault/packet['path']).read_text(encoding='utf-8'))==packet['codepoints']
+    assert len(value['headings'])<sum(len(p['view']['headings']) for p in projections)
+    for task,projection in zip(value['tasks'],projections):
+        for material,original in zip(task['materials'],projection['view']['materials']):
+            assert value['texts'][material['text_ref']]==original['text']
+            assert material['role']==original['role'] and material['source_span']==original['source_span']
+            assert value['headings'][material['heading']]==projection['view']['headings'][original['heading']]
+    core=value['tasks'][2]['materials'][0]
+    assert any(m['text_ref']==core['text_ref'] and m['role']=='context' for m in value['tasks'][0]['materials'])
+    assert projections[0]['input_id']!=projections[1]['input_id']
+    foreign=semantic_draft(value['tasks'][0],'t2')
+    with pytest.raises(ContractError,match='STALE_INPUT'):
+        service.expand_model_passes({'passes':[foreign]},['shared-0','shared-1'],'agent','shared-packet')
+    complete=service.model_input('shared-0',service._existing_reading_package(service._task('shared-0'),'agent',1))
+    assert complete['view']['continuation']['action']=='candidate_then_citation'
+
+
+def test_citation_continuation_keeps_original_inspection_qualification(vault):
+    service=plan_sliced_batch(vault,1,'qualified-candidate')
+    prepared=service.prepare_batch('qualified-candidate','agent',1)
+    tid=prepared['results'][0]['task_id']
+    candidate=draft(service,tid,prepared['results'][0]['reading_package_id'],0)
+    candidate['inspections'][0].update(qa='needs-qa',qa_note='A symbol is uncertain; verify before citation.')
+    assert service.record_pass_batch({'batch_id':'qualified-candidate','passes':[candidate]})['ok']
+    projection=service.model_input(tid,service._existing_reading_package(service._task(tid),'agent',1))
+    context=projection['view']['continuation']['candidate']
+    assert context['qualifications'][0]['qa_note']==candidate['inspections'][0]['qa_note']
+    assert context['qualifications'][0]['source_ref']=='m1'
+    assert 'previous_passes' not in projection['view'] and 'inspections' not in context

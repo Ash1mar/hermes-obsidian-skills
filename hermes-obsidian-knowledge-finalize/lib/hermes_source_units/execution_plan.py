@@ -96,7 +96,12 @@ class ExecutionPlanMixin:
         protected = {}
         def protect(path):
             protected[path.relative_to(self.vault).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
-        groups, current, total, partial = [], [], BEGIN_ENVELOPE_RESERVE, []
+        groups, current, partial, projections = [], [], [], {}
+        def packet_size(group):
+            packet = service.model_packet([projections[t['task_id']] for t in group], batch['batch_id'])
+            descriptor = {'path':packet['path'],'input_codepoints':packet['codepoints'],'task_count':len(group)}
+            size = packet['codepoints'] + len(json.dumps(descriptor,ensure_ascii=False,indent=2)) + BEGIN_ENVELOPE_RESERVE
+            return size, packet['shared_text_codepoints_saved']
         for tid in batch['task_ids']:
             task = service._task(tid)
             protect(service._task_path(tid))
@@ -121,17 +126,18 @@ class ExecutionPlanMixin:
             if task['status'] not in ('pending', 'running'):
                 fail('INVALID_STATE', 'uncompleted task is not resumable')
             projection = service.preview_model_input(tid, batch)
-            descriptor = {'task':'t32', 'path':projection['path'], 'input_codepoints':projection['codepoints']}
-            size = projection['codepoints'] + len(json.dumps(descriptor, ensure_ascii=False, indent=2)) + 32
-            if size + BEGIN_ENVELOPE_RESERVE > config['slice_max_input_codepoints']:
-                fail('READING_WINDOW_OVERSIZE', 'one compact task exceeds execution input budget')
+            projections[tid] = projection
             if records.get(tid):
                 partial.append(tid)
-            item = {'task_id':tid, 'codepoints':size, 'input_id':projection['input_id'],
+            item = {'task_id':tid, 'codepoints':projection['codepoints'], 'input_id':projection['input_id'],
+                    'presentation_hash':fingerprint(projection['view']),
                     'canonical_fingerprint':service._slice_task_input(batch, task, remeasure=True)['fingerprint']}
-            if current and (len(current) >= config['slice_max_tasks'] or total+size > config['slice_max_input_codepoints']):
-                groups.append(current); current, total = [], BEGIN_ENVELOPE_RESERVE
-            current.append(item); total += size
+            if current and (len(current) >= config['slice_max_tasks'] or
+                    packet_size([*current,item])[0] > config['slice_max_input_codepoints']):
+                groups.append(current); current = []
+            current.append(item)
+            if packet_size(current)[0] > config['slice_max_input_codepoints']:
+                fail('READING_WINDOW_OVERSIZE', 'one shared-packet task exceeds execution input budget')
         if current:
             groups.append(current)
         for value in completed:
@@ -147,7 +153,7 @@ class ExecutionPlanMixin:
             sid = f'pass-amend-{ordinal:04d}-{digest[-12:]}'
             new_slices.append({'contract':'hermes-knowledge-build-slice/v1', 'slice_id':sid,
                 'batch_id':batch['batch_id'], 'task_ids':[t['task_id'] for t in group],
-                'input_codepoints':sum(t['codepoints'] for t in group) + BEGIN_ENVELOPE_RESERVE, 'input_fingerprint':digest,
+                'input_codepoints':packet_size(group)[0], 'input_fingerprint':digest,
                 'template_id':RENDERER, 'template_hash':template_hash, 'state':'cancelled', 'attempt':0,
                 'lease':{'worker_id':None,'claimed_at':None,'heartbeat_at':None,'expires_at':None},
                 'retry_at':None, 'result_refs':[], 'last_error':None, 'reslice_count':0, 'revision':1})
@@ -160,6 +166,7 @@ class ExecutionPlanMixin:
             'task_ids_unchanged':True, 'old_slice_count':len(slices),
             'new_slice_count':len(completed)+len(new_slices), 'pending_slice_count':len(new_slices),
             'model_input_codepoints':sum(s['input_codepoints'] for s in new_slices),
+            'shared_text_codepoints_saved':sum(packet_size(group)[1] for group in groups),
             'pause_control_unchanged':True}
         return batch, completed, new_slices, groups, config, protected, summary
 
@@ -251,7 +258,8 @@ class ExecutionPlanMixin:
             for group in manifest['slice_inputs'].values():
                 for expected in group:
                     observed = self.knowledge.preview_model_input(expected['task_id'], journal['batch'])
-                    if observed['input_id'] != expected['input_id']:
+                    if (observed['input_id'] != expected['input_id'] or
+                            fingerprint(observed['view']) != expected['presentation_hash']):
                         fail('SOURCE_CHANGED', 'planned model evidence changed during interrupted amendment')
             if fingerprint(workflow) not in (journal['workflow_before'], fingerprint(journal['workflow'])):
                 fail('REVISION_CONFLICT', 'workflow changed during interrupted amendment')

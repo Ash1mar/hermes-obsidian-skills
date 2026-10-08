@@ -1415,24 +1415,24 @@ class IngestKanbanAdapter:
             prepared = self.workflow.knowledge.prepare_leased_slice(
                 workflow['batch_id'], value['slice_id'], worker_id, result['slice']['revision'],
                 check=lambda: self.worker_check(bound), timeout=WORKER_LOCK_TIMEOUT)
-            if self.workflow.execution_template(workflow, value['slice_id']) is not None:
+            if (self.workflow.execution_template(workflow, value['slice_id']) is not None
+                    and not self.workflow.revision_allows(workflow, node_name)):
                 from hermes_source_units.model_projection import RENDERER
                 if result['slice']['template_id'] == RENDERER:
-                    inputs = []
-                    for index, descriptor in enumerate(prepared['reading_packages'], 1):
+                    projections = []
+                    for descriptor in prepared['reading_packages']:
                         package = _load_json(_vault_path(self.workflow.vault, descriptor['path']))
-                        view = self.workflow.knowledge.model_input(descriptor['task_id'], package, persist=True)
-                        inputs.append({'task':f't{index}', 'path':view['path'],
-                                       'input_codepoints':view['codepoints']})
+                        projections.append(self.workflow.knowledge.model_input(descriptor['task_id'], package))
+                    packet = self.workflow.knowledge.model_packet(projections, workflow['batch_id'], persist=True)
                     # Canonical packages and task snapshots never reach the model.
-                    receipt = {'ok':True, 'leased':True, 'model_inputs':inputs,
+                    receipt = {'ok':True, 'leased':True, 'model_input':{'path':packet['path'],
+                        'input_codepoints':packet['codepoints'],'task_count':len(projections)},
                                'input_codepoints':0, 'worker_request':bound}
                     # Count the actual UTF-8 JSON presentation (codepoints), not
                     # an unformatted proxy. The renderer writes compact view files.
-                    actual = sum(i['input_codepoints'] for i in inputs)
-                    receipt['input_codepoints'] = actual
+                    receipt['input_codepoints'] = packet['codepoints']
                     while True:
-                        measured = sum(i['input_codepoints'] for i in inputs) + len(json.dumps(receipt, ensure_ascii=False, indent=2)) + 1
+                        measured = packet['codepoints'] + len(json.dumps(receipt, ensure_ascii=False, indent=2)) + 1
                         if measured == receipt['input_codepoints']:
                             break
                         receipt['input_codepoints'] = measured
