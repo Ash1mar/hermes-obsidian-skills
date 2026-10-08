@@ -252,10 +252,16 @@ def test_amended_pass_finishes_once_and_holds_reduce(stopped,vault):
     assert adapter.workflow.status(current['workflow_id'])['pause_control']['boundary']=='pass'
 
 
-def test_blocked_native_card_with_running_attempt_prevents_amendment(stopped,monkeypatch):
+@pytest.mark.parametrize('active',['attempt','ready-card'])
+def test_native_consumer_prevents_amendment(stopped,monkeypatch,active):
     adapter,value,request=stopped
     original=adapter.kanban.task_snapshot
-    monkeypatch.setattr(adapter.kanban,'task_snapshot',lambda *a:{**original(*a),'runs':[{'status':'running'}]})
+    def snapshot(*args):
+        result=original(*args)
+        if active=='attempt':result['runs']=[{'status':'running'}]
+        else:result['task']['status']='ready'
+        return result
+    monkeypatch.setattr(adapter.kanban,'task_snapshot',snapshot)
     with pytest.raises(ContractError,match='WORKER_ACTIVE'):
         adapter.amend_execution(request,dry_run=True)
     assert not adapter.workflow._execution_journal(value['workflow_id']).exists()

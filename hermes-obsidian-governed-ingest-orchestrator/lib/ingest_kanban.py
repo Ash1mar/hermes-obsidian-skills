@@ -668,6 +668,8 @@ class IngestKanbanAdapter:
             if hasattr(self.kanban, 'task_snapshot') and value['kanban']['board_id']:
                 for card in value['kanban']['task_map']:
                     snapshot = self.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
+                    if snapshot.get('task', {}).get('status') in ('running','ready','scheduled','todo'):
+                        _fail('WORKER_ACTIVE', 'native card remains dispatchable before execution amendment')
                     if any(run.get('status') == 'running' for run in snapshot.get('runs', [])):
                         _fail('WORKER_ACTIVE', 'native run must finish before execution amendment')
             return self.workflow.amend_execution(request, dry_run=dry_run)
