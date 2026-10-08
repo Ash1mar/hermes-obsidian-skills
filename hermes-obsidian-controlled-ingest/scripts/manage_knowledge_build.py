@@ -17,6 +17,12 @@ def load(path: str):
 
 def run(args):
     service = FileKnowledgeBuildService(args.vault)
+    if args.command in ('batch-submit', 'batch-confirm-citations'):
+        if not args.worker_binding:
+            raise ContractError('ACCESS_DENIED', '$', 'typed submission requires a checked worker binding')
+        from bound_pass_submission import submit_bound
+        return submit_bound(args.vault, load(args.worker_binding), load(args.request),
+                            confirmation=args.command == 'batch-confirm-citations')
     if args.worker_binding:
         if args.command != 'batch-pass':
             raise ContractError('ACCESS_DENIED', '$', 'Pass binding permits only batch-pass')
@@ -137,6 +143,9 @@ def main() -> int:
     parser.add_argument("--vault", required=True)
     parser.add_argument("--worker-binding", help="explicit dispatcher/lease binding for isolated batch-pass")
     sub = parser.add_subparsers(dest="command", required=True)
+    for name in ('batch-submit', 'batch-confirm-citations'):
+        command = sub.add_parser(name)
+        command.add_argument('--request', required=True, help='typed semantic payload; validates and commits in one guarded call')
     for name in ("plan", "pass", "reduce", "finalize"):
         command = sub.add_parser(name)
         command.add_argument("--request", required=True, help="JSON request file")

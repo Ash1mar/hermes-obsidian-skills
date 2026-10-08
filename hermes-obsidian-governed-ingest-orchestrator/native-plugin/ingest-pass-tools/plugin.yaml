@@ -1,0 +1,9 @@
+name: ingest-pass-tools
+version: 1.0.0
+description: Typed semantic Pass submission for isolated, bound Hermes Kanban workers.
+author: hermes-obsidian-skills
+kind: backend
+provides_tools:
+  - ingest_submit_passes
+  - ingest_confirm_citations
+  - ingest_pass_heartbeat

@@ -109,3 +109,19 @@ def test_pass_cli_uses_bound_lease_and_rejects_other_task(vault):
     assert heartbeat['worker_request']['expected_revision']>begun['worker_request']['expected_revision']
     assert json.loads(binding_path.read_text())==heartbeat['worker_request']
     assert adapter.worker_check(heartbeat['worker_request'])['ok']
+    # Omitted output must refresh the same safe file, never leave a stale lease.
+    refreshed = subprocess.run(dispatcher+['worker-heartbeat','--request',str(binding_path)],
+        capture_output=True,text=True,env=env)
+    assert refreshed.returncode == 0, refreshed.stderr
+    automatic = json.loads(refreshed.stdout)
+    assert json.loads(binding_path.read_text()) == automatic['worker_request']
+    assert automatic['worker_request']['expected_revision'] > heartbeat['worker_request']['expected_revision']
+    # A canonical/outside request is not an automatic rewrite target; reject
+    # before renewing the lease and preserve its bytes.
+    outside = vault/'outside-current-binding.json'
+    outside.write_text(json.dumps(automatic['worker_request']))
+    rejected = subprocess.run(dispatcher+['worker-heartbeat','--request',str(outside)],
+        capture_output=True,text=True,env=env)
+    assert rejected.returncode == 2 and 'worker workspace' in rejected.stderr
+    assert adapter.worker_check(automatic['worker_request'])['ok']
+    assert json.loads(outside.read_text()) == automatic['worker_request']

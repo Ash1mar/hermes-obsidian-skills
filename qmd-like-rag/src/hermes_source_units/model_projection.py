@@ -126,7 +126,7 @@ class ModelProjectionMixin:
         continuation = {'action':'candidate_then_citation'}
         if len(records) == 1:
             candidate = records[0]
-            continuation = {'action':'citation', 'candidate': {'sequence':0,
+            continuation = {'action':'citation', 'candidate': {'sequence':0, 'candidate_pass_id':candidate['pass_id'],
                 'candidates':[{**c, 'support_refs':[self._model_handle(r, mapping) for r in c['support_refs']]}
                               for c in candidate['candidates']], 'empty_reason':candidate['empty_reason']}}
             qualifications = [{**i,'source_ref':self._model_handle(i['source_ref'],mapping)}
@@ -258,6 +258,8 @@ class ModelProjectionMixin:
 
     def expand_model_passes(self, request, task_ids, actor, batch_id):
         """Expand a model-authored draft; never invent semantic fields."""
+        from .semantic_submission import validate_submission
+        validate_submission(request)
         if set(request) != {'passes'} or not isinstance(request['passes'], list) or not request['passes']:
             fail('INVALID_SCHEMA', 'compact draft requires a nonempty passes array')
         aliases = {f't{i}': tid for i, tid in enumerate(task_ids, 1)}
@@ -299,3 +301,42 @@ class ModelProjectionMixin:
                 'pass_kind': 'candidate' if sequence == 0 else 'citation', 'sequence': sequence,
                 'inspections': inspections, 'candidates': candidates, 'empty_reason': draft['empty_reason']})
         return {'batch_id': batch_id, 'passes': expanded}
+
+    def expand_citation_confirmations(self, request, task_ids, actor, batch_id):
+        """Copy an unchanged candidate only after a model's explicit review."""
+        from .semantic_submission import validate_submission
+        validate_submission(request, confirmation=True)
+        aliases = {f't{i}': tid for i, tid in enumerate(task_ids, 1)}
+        drafts, reviews, seen = [], [], set()
+        for confirmation in request['confirmations']:
+            alias = confirmation['task']
+            if alias not in aliases or alias in seen or not confirmation['review_note'].strip():
+                fail('INVALID_SCHEMA', 'confirmation needs a unique bound task and an actual review note')
+            seen.add(alias)
+            tid = aliases[alias]
+            task = self._task(tid)
+            package = self._existing_reading_package(task, actor, self._batch(batch_id)['document_registry_revision'])
+            if package is None:
+                fail('STALE_INPUT', 'confirmation has no current reading package')
+            projection = self.model_input(tid, package)
+            if projection['input_id'] != confirmation['input_id']:
+                fail('STALE_INPUT', 'confirmation input changed')
+            root = _vault_path(self.vault, f'_system/knowledge-builds/task-{tid}/passes')
+            paths = list(root.glob('0000-*.json'))
+            if len(paths) != 1:
+                fail('INVALID_PASS', 'confirmation requires exactly one persisted candidate')
+            candidate = _load_json(paths[0])
+            if candidate['pass_id'] != confirmation['candidate_pass_id']:
+                fail('STALE_INPUT', 'reviewed candidate identity changed')
+            # Sequence 1 only: a revision requires an authored citation, not an
+            # implicit approval of a prior result. Replay is idempotent.
+            if projection['view']['next_sequence'] not in (1, 2):
+                fail('INVALID_PASS', 'confirmation is for the first citation only')
+            mapping = projection['mapping']
+            drafts.append({'task': alias, 'input_id': confirmation['input_id'], 'sequence': 1,
+                'inspections': [{**i, 'source_ref': self._model_handle(i['source_ref'], mapping)}
+                                for i in candidate['inspections']],
+                'candidates': [{**c, 'support_refs': [self._model_handle(r, mapping) for r in c['support_refs']]}
+                               for c in candidate['candidates']], 'empty_reason': candidate['empty_reason']})
+            reviews.append({'task_id': tid, **confirmation})
+        return self.expand_model_passes({'passes': drafts}, task_ids, actor, batch_id), reviews

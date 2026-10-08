@@ -34,6 +34,12 @@ def main() -> int:
     args = parser.parse_args()
     temporary = None
     try:
+        request = json.loads(Path(args.request).read_text(encoding="utf-8-sig"))
+        # A Pass heartbeat changes the lease revision. Never renew it while
+        # leaving the sole request file stale just because an option was omitted.
+        if args.command == 'worker-heartbeat' and str(request.get('node', '')).startswith('pass-slice:'):
+            if not args.request_output:
+                args.request_output = str(Path(args.request).absolute())
         output = None
         if getattr(args, "request_output", None):
             workspace = os.environ.get("HERMES_KANBAN_WORKSPACE")
@@ -48,7 +54,6 @@ def main() -> int:
             fd, name = tempfile.mkstemp(prefix=".worker-request-", dir=output.parent)
             temporary = Path(name)
             os.close(fd)
-        request = json.loads(Path(args.request).read_text(encoding="utf-8-sig"))
         if output is not None and not str(request.get("node", "")).startswith("pass-slice:"):
             raise ValueError("request output is only supported for Pass slice workers")
         result = dispatch(args.vault, args.command, request, dry_run=getattr(args, 'dry_run', False))

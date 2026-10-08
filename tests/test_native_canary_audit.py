@@ -13,7 +13,8 @@ spec.loader.exec_module(gate)
 
 
 @pytest.mark.parametrize('missing', [None, 'bound_command', 'tool_result'])
-def test_preflight_audit_requires_all_eight_native_workers(tmp_path, missing):
+@pytest.mark.parametrize('interface', ['legacy', 'fused', 'native'])
+def test_preflight_audit_requires_all_eight_native_workers(tmp_path, missing, interface):
     database = tmp_path / 'state.db'
     snapshots = []
     with sqlite3.connect(database) as connection:
@@ -28,11 +29,19 @@ def test_preflight_audit_requires_all_eight_native_workers(tmp_path, missing):
             lease = json.dumps({'worker_request': {'worker_id': 'ingest-worker-' + task_id}})
             connection.execute('INSERT INTO messages VALUES (?, ?, ?, ?)', (session, 'tool', lease, None))
             command = 'python3 domain.py --worker-binding lease.json batch-pass --request draft.json --validate-only'
+            if interface == 'fused':
+                command = command.replace('batch-pass', 'batch-submit').replace(' --validate-only', '')
             if index == 7 and missing == 'bound_command':
                 command = command.replace('--worker-binding lease.json ', '')
             calls = json.dumps([{'function': {'name': 'terminal', 'arguments': {'command': command}}}])
+            if interface == 'native':
+                calls = json.dumps([{'function': {'name': 'ingest_submit_passes', 'arguments': {'vault': 'fixture', 'passes': []}}}])
+                if index == 7 and missing == 'bound_command':
+                    calls = '[]'
             connection.execute('INSERT INTO messages VALUES (?, ?, ?, ?)', (session, 'assistant', '', calls))
             response = json.dumps({'output': json.dumps({'validated': True, 'batch': {}, 'results': [], 'failures': []})})
+            if interface != 'legacy':
+                response = json.dumps({'validated': True, 'results': [{'preflight_ref': 'audit.json', 'pass_id': 'a'*64}], 'failures': []})
             role = 'assistant' if index == 7 and missing == 'tool_result' else 'tool'
             connection.execute('INSERT INTO messages VALUES (?, ?, ?, ?)', (session, role, response, None))
     before = database.read_bytes()

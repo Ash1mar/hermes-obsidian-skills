@@ -1565,7 +1565,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         return all(left.get(field) == right.get(field) for field in fields)
 
     def record_pass(self, request: Mapping[str, Any], *, batch_id: str | None = None,
-                    template_hash: str | None = None, validate_only: bool = False) -> dict[str, Any]:
+                    template_hash: str | None = None, validate_only: bool = False,
+                    pre_commit_check=None, submission_audit=None) -> dict[str, Any]:
         task_id, actor = str(request["task_id"]), str(request["actor"])
         task = self._task(task_id)
         expected_revision = int(request["expected_revision"])
@@ -1625,6 +1626,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             validate_record("knowledge_pass", existing)
             if existing == body or (existing.get("idempotency_key") is None
                                     and self._same_pass_payload(existing, body)):
+                if pre_commit_check:
+                    pre_commit_check()
                 return {"ok": True, "created": False, "pass": existing, "task": task,
                         "idempotency_key": body.get("idempotency_key"),
                         "path": existing_path.relative_to(self.vault).as_posix()}
@@ -1667,6 +1670,18 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             return {"ok": True, "created": False, "validated": True, "pass": body,
                     "task": task, "idempotency_key": body.get("idempotency_key"),
                     "path": path.relative_to(self.vault).as_posix()}
+        if pre_commit_check:
+            pre_commit_check()
+        preflight_ref = None
+        if submission_audit is not None:
+            evidence = {'contract': 'hermes-bound-pass-preflight/v1',
+                'binding': dict(submission_audit), 'draft_digest': fingerprint(request),
+                'pass_id': body['pass_id'], 'task_revision': task['revision'],
+                'reading_package_fingerprint': package_fingerprint,
+                'template_hash': body.get('template_hash'), 'validated': True}
+            receipt_id = fingerprint(evidence)
+            preflight_ref = f'{BUILD_ROOT}/task-{task_id}/preflights/{receipt_id}.json'
+            _write_atomic(_vault_path(self.vault, preflight_ref), _json_bytes(evidence))
         _write_atomic(path, _json_bytes(body))
         owned_inspections = [item for item in body["inspections"]
                              if any(_covers(target, item["source_ref"]) for target in task["target_refs"])]
@@ -1675,11 +1690,12 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         validate_references("work", task, units)
         _write_atomic(self._task_path(task_id), _json_bytes(task))
         return {"ok": True, "created": True, "pass": body, "task": task,
+                "preflight_ref": preflight_ref,
                 "idempotency_key": body.get("idempotency_key"),
                 "path": path.relative_to(self.vault).as_posix()}
 
     def record_pass_batch(self, request: Mapping[str, Any], *, lock_timeout: float = 0,
-                          lock_check=None, validate_only: bool = False) -> dict[str, Any]:
+                          lock_check=None, validate_only: bool = False, submission_audit=None) -> dict[str, Any]:
         """Persist model-produced Pass records for a batch with per-task recovery."""
         self.source.enable_session_cache()
         batch_id = str(request["batch_id"])
@@ -1716,6 +1732,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                     recorded = self.record_pass(
                         item, batch_id=batch_id,
                         validate_only=validate_only,
+                        pre_commit_check=lock_check,
+                        submission_audit=submission_audit,
                         template_hash=(selected["template_hash"] if selected is not None
                                        else str(requested_template or _pass_template_hash())))
                     results.append({"task_id": task_id, "created": recorded["created"],
@@ -1724,6 +1742,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                                     "idempotency_key": recorded["idempotency_key"],
                                     "path": recorded["path"],
                                     "task_revision": recorded["task"]["revision"]})
+                    if recorded.get('preflight_ref'):
+                        results[-1]['preflight_ref'] = recorded['preflight_ref']
                 except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
                     failures.append(self._failure("pass", task_id, exc))
             updated = (batch if validate_only else self._store_batch(
