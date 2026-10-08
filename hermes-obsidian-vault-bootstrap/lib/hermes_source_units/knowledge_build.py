@@ -141,7 +141,10 @@ def _overlaps(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
     return a["start"] < b["end"] and b["start"] < a["end"]
 
 
-class FileKnowledgeBuildService:
+from .model_projection import ModelProjectionMixin
+
+
+class FileKnowledgeBuildService(ModelProjectionMixin):
     """One-Vault P3 repository. Semantic judgments arrive as explicit requests."""
 
     def __init__(self, vault_root: str | Path):
@@ -215,13 +218,19 @@ class FileKnowledgeBuildService:
 
     def _slices(self, batch_id: str) -> list[dict[str, Any]]:
         root = self._slice_root(batch_id)
+        batch = self._batch(batch_id)
+        active = set(batch['slice_ids']) if batch.get('execution_plan_ref') else None
         values = []
         for path in sorted(root.glob("*.json")) if root.exists() else []:
+            if active is not None and path.stem not in active:
+                continue  # Superseded cancelled slices remain immutable audit evidence.
             value = _load_json(path)
             validate_record("knowledge_slice", value)
             if value["batch_id"] != batch_id:
                 _fail("INVALID_SCHEMA", "slice directory contains a foreign batch")
             values.append(value)
+        if active is not None and {v['slice_id'] for v in values} != active:
+            _fail('INCOMPLETE_COVERAGE', 'active execution slice manifest is missing')
         return values
 
     def _write_slice(self, value: Mapping[str, Any]) -> None:

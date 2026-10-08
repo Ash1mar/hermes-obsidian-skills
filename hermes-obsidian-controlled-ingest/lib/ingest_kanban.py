@@ -246,6 +246,11 @@ class KanbanCLI:
     def task_snapshot(self, slug: str, task_id: str) -> dict[str, Any]:
         return json.loads(self.command("kanban", "--board", slug, "show", task_id, "--json"))
 
+    def task_states(self, slug: str) -> dict[str, str]:
+        result = json.loads(self.command('kanban', '--board', slug, 'list', '--json'))
+        rows = result.get('tasks', []) if isinstance(result, dict) else result
+        return {row['id']: row['status'] for row in rows}
+
     def task_log(self, slug: str, task_id: str) -> str:
         return self.command("kanban", "--board", slug, "log", task_id, "--tail", "65536")
 
@@ -647,6 +652,26 @@ class IngestKanbanAdapter:
         followup["input_digest"] = mutation_digest(followup)
         return self.sync(followup)
 
+    def amend_execution(self, request, *, dry_run=False):
+        if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
+            _fail('ACCESS_DENIED', 'execution amendment requires a trusted operator')
+        self.workflow._check_request(request)
+        wid = str(request['workflow_id'])
+        lock = _vault_path(self.workflow.vault, f'_system/ledgers/ingest-workflows/.dispatch-locks/{wid}.lock')
+        with _exclusive_lock(lock):
+            value = self.workflow.status(wid)
+            if hasattr(self.kanban, 'task_states') and value['kanban']['board_id']:
+                states = self.kanban.task_states(value['kanban']['board_id'])
+                if any(states.get(c.get('task_id')) in ('running','ready','scheduled','todo')
+                       for c in value['kanban']['task_map']):
+                    _fail('WORKER_ACTIVE', 'native consumers must stop before execution amendment')
+            if hasattr(self.kanban, 'task_snapshot') and value['kanban']['board_id']:
+                for card in value['kanban']['task_map']:
+                    snapshot = self.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
+                    if any(run.get('status') == 'running' for run in snapshot.get('runs', [])):
+                        _fail('WORKER_ACTIVE', 'native run must finish before execution amendment')
+            return self.workflow.amend_execution(request, dry_run=dry_run)
+
     def continue_workflow(self, request: Mapping[str, Any]) -> dict[str, Any]:
         value = self.workflow.continue_workflow(request)
         return self.sync(self._mutation(value))
@@ -683,6 +708,7 @@ class IngestKanbanAdapter:
     def _sync_locked(self, request: Mapping[str, Any]) -> dict[str, Any]:
         workflow_id, actor = str(request["workflow_id"]), str(request["actor"])
         value = self.workflow.status(workflow_id)
+        self.workflow.assert_execution_ready(value)
         if value["actor"] != actor:
             _fail("ACTOR_MISMATCH", "workflow actor differs")
         if value["revision"] != request["expected_revision"]:
@@ -822,7 +848,9 @@ class IngestKanbanAdapter:
                                    f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json"))])
                                    if node.kind in ("source-prepare", "exact-plan") else None),
                                "instructions": (self.workflow.revision_instructions(value)
-                                   if self.workflow.revision_allows(value, node.name) else templates.get(node.kind)),
+                                   if self.workflow.revision_allows(value, node.name) else
+                                   (self.workflow.execution_template(value, node.name.partition(':')[2])
+                                    if node.kind == 'pass-slice' else None) or templates.get(node.kind)),
                                "citation_revision_rule": ("Historical superseded citation Passes are audit only. For candidate decisions use only citations whose pass_id is not named by a later supersedes_pass_id in that task; retain all Pass IDs as history. Never propose or omit superseded candidates."
                                    if value.get('pass_revision') and node.kind == 'resource-reduce' else None)},
                               ensure_ascii=False, sort_keys=True)
@@ -1025,6 +1053,7 @@ class IngestKanbanAdapter:
         if not self.enable_workers:
             _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
         workflow = self.workflow.status(workflow_id)
+        self.workflow.assert_execution_ready(workflow)
         if not self.workflow.revision_allows(workflow, node_name):
             self.workflow.assert_not_paused(workflow)
         self.workflow.pinned_templates(workflow)
@@ -1057,7 +1086,21 @@ class IngestKanbanAdapter:
             if measured["blocking_code"]:
                 _fail("STALE_INPUT", "slice task no longer fits its reading window")
             inputs.append({"task_id": task_id, "fingerprint": measured["fingerprint"]})
-        if not value.get("reslice_count"):
+        from hermes_source_units.model_projection import RENDERER
+        if value['template_id'] == RENDERER:
+            plan, group = self.workflow.execution_slice(workflow, value['slice_id'])
+            if [i['task_id'] for i in group] != value['task_ids']:
+                _fail('STALE_INPUT', 'compact slice task ownership changed')
+            for expected, measured in zip(group, inputs):
+                projection = self.workflow.knowledge.preview_model_input(expected['task_id'], batch)
+                if (measured['fingerprint'] != expected['canonical_fingerprint'] or
+                        projection['input_id'] != expected['input_id']):
+                    _fail('STALE_INPUT', 'canonical or model input changed after execution planning')
+            observed = 'sha256:' + fingerprint({'amendment_id':plan['amendment_id'], 'tasks':group,
+                'config':plan['config'], 'renderer':RENDERER,'template_hash':value['template_hash']})
+            if observed != value['input_fingerprint']:
+                _fail('STALE_INPUT', 'compact execution fingerprint changed')
+        elif not value.get("reslice_count"):
             observed = "sha256:" + fingerprint({
                 "batch_id": workflow["batch_id"], "task_inputs": inputs,
                 "slice_config": batch["slice_config"],
@@ -1366,10 +1409,35 @@ class IngestKanbanAdapter:
             if not result["leased"]:
                 return result
             bound = {**request, 'expected_revision':result['slice']['revision'],
-                     'template_hash':result['slice']['template_hash']}
+                     'template_hash':result['slice']['template_hash'], 'actor':workflow['actor']}
             prepared = self.workflow.knowledge.prepare_leased_slice(
                 workflow['batch_id'], value['slice_id'], worker_id, result['slice']['revision'],
                 check=lambda: self.worker_check(bound), timeout=WORKER_LOCK_TIMEOUT)
+            if self.workflow.execution_template(workflow, value['slice_id']) is not None:
+                from hermes_source_units.model_projection import RENDERER
+                if result['slice']['template_id'] == RENDERER:
+                    inputs = []
+                    for index, descriptor in enumerate(prepared['reading_packages'], 1):
+                        package = _load_json(_vault_path(self.workflow.vault, descriptor['path']))
+                        view = self.workflow.knowledge.model_input(descriptor['task_id'], package, persist=True)
+                        inputs.append({'task':f't{index}', 'path':view['path'],
+                                       'input_codepoints':view['codepoints']})
+                    # Canonical packages and task snapshots never reach the model.
+                    receipt = {'ok':True, 'leased':True, 'model_inputs':inputs,
+                               'input_codepoints':0, 'worker_request':bound}
+                    # Count the actual UTF-8 JSON presentation (codepoints), not
+                    # an unformatted proxy. The renderer writes compact view files.
+                    actual = sum(i['input_codepoints'] for i in inputs)
+                    receipt['input_codepoints'] = actual
+                    while True:
+                        measured = sum(i['input_codepoints'] for i in inputs) + len(json.dumps(receipt, ensure_ascii=False, indent=2)) + 1
+                        if measured == receipt['input_codepoints']:
+                            break
+                        receipt['input_codepoints'] = measured
+                    config = self.workflow.knowledge._batch(workflow['batch_id'])['slice_config']
+                    if receipt['input_codepoints'] > config['slice_max_input_codepoints']:
+                        _fail('READING_WINDOW_OVERSIZE', 'actual compact worker input exceeds budget')
+                    return receipt
         return {"ok": True, "leased": True, "slice": result["slice"],
                 "template_hash": result["slice"]["template_hash"],
                 "task_ids": result["slice"]["task_ids"], **prepared,

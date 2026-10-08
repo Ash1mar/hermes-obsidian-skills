@@ -30,6 +30,11 @@ def run(args):
         request = load(args.request)
         with worker_binding(binding), workflow_write_guard(args.vault, kinds=('pass-slice',), actor=binding.get('actor')):
             checked = adapter.worker_check(binding)
+            if args.compact:
+                from hermes_source_units.model_projection import RENDERER
+                if service._slice(checked['batch_id'], checked['slice_id'])['template_id'] != RENDERER:
+                    raise ContractError('ACCESS_DENIED', '$', 'compact drafts require an amended compact slice')
+                request = service.expand_model_passes(request, checked['task_ids'], binding['actor'], checked['batch_id'])
             if request['batch_id'] != checked['batch_id']:
                 raise ContractError('ACCESS_DENIED', '$', 'Pass belongs to a different batch')
             canonical = {'slice_id':checked['slice_id'], 'worker_id':binding['worker_id'],
@@ -41,10 +46,18 @@ def run(args):
                 if item['task_id'] not in checked['task_ids'] or item['actor'] != binding['actor']:
                     raise ContractError('ACCESS_DENIED', '$', 'Pass task or actor exceeds the bound slice')
             from hermes_source_units.workflow_guard import WORKER_LOCK_TIMEOUT
-            return service.record_pass_batch({**request, **canonical},
+            result = service.record_pass_batch({**request, **canonical},
                 lock_timeout=WORKER_LOCK_TIMEOUT, lock_check=lambda: adapter.worker_check(binding),
                 validate_only=args.validate_only)
+            if args.compact:
+                aliases = {tid:f't{i}' for i,tid in enumerate(checked['task_ids'],1)}
+                return {'ok':result['ok'], 'validated':result.get('validated', False),
+                        'results':[{**r, 'task':aliases[r['task_id']], 'next_sequence':r['sequence']+1}
+                                   for r in result['results']], 'failures':result['failures']}
+            return result
     if args.command == 'batch-pass':
+        if args.compact:
+            raise ContractError('ACCESS_DENIED', '$', 'compact drafts require an explicit worker binding')
         from hermes_source_units.workflow_guard import workflow_write_guard
         # An active workflow or isolated worker cannot omit its binding.
         with workflow_write_guard(args.vault, kinds=('pass-slice',)):
@@ -169,6 +182,7 @@ def main() -> int:
         if name == "batch-plan":
             command.add_argument("--exact-reading-budget", action="store_true")
         if name == "batch-pass":
+            command.add_argument('--compact', action='store_true', help='expand bounded model handles under the checked worker lease')
             command.add_argument("--validate-only", action="store_true",
                                  help="check draft evidence without writing Pass/task/batch records")
     for name in ("batch-resource-reduce", "batch-global-reduce"):

@@ -19,6 +19,7 @@ from .validation import ContractError, fingerprint, validate_record
 from .file_locks import kernel_lock, process_exists, host_identity
 from .ingest_pauses import WorkflowPauseMixin
 from .pass_revision import PassRevisionMixin
+from .execution_plan import ExecutionPlanMixin
 
 WORKFLOW_ROOT = "_system/ledgers/ingest-workflows"
 WORKFLOW_CONTRACT = "hermes-ingest-workflow/v1"
@@ -78,7 +79,7 @@ def display_phase(value: Mapping[str, Any]) -> dict[str, Any]:
     _fail("INVALID_SCHEMA", "workflow stage has no display phase")
 
 
-class FileIngestWorkflowService(PassRevisionMixin, WorkflowPauseMixin):
+class FileIngestWorkflowService(ExecutionPlanMixin, PassRevisionMixin, WorkflowPauseMixin):
     def __init__(self, vault_root: str | Path):
         self.knowledge = FileKnowledgeBuildService(vault_root)
         self.vault = self.knowledge.vault
@@ -718,6 +719,7 @@ class FileIngestWorkflowService(PassRevisionMixin, WorkflowPauseMixin):
     def resume(self, request: Mapping[str, Any]) -> dict[str, Any]:
         with _exclusive_lock(self._lock(str(request["workflow_id"]))):
             value = self._mutation(request)
+            self.assert_execution_ready(value)
             if value["state"] not in TERMINAL:
                 return value  # recovery reads the authoritative ledger; dispatch is phase 6
             if value["state"] != "cancelled" or not value["cancel_requested"]:

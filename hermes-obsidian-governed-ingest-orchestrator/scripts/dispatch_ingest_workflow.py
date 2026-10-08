@@ -28,6 +28,9 @@ def main() -> int:
         command.add_argument("--request", required=True)
         if name in ("worker-begin", "worker-check", "worker-heartbeat"):
             command.add_argument("--request-output")
+    amendment = sub.add_parser('amend-execution')
+    amendment.add_argument('--request', required=True)
+    amendment.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     temporary = None
     try:
@@ -48,7 +51,7 @@ def main() -> int:
         request = json.loads(Path(args.request).read_text(encoding="utf-8-sig"))
         if output is not None and not str(request.get("node", "")).startswith("pass-slice:"):
             raise ValueError("request output is only supported for Pass slice workers")
-        result = dispatch(args.vault, args.command, request)
+        result = dispatch(args.vault, args.command, request, dry_run=getattr(args, 'dry_run', False))
         if output is not None:
             bound = result.get("worker_request")
             if not isinstance(bound, dict):
