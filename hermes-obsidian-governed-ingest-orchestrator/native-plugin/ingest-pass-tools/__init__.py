@@ -68,3 +68,23 @@ def register(ctx):
             return invoke(args,_action,_schema,_check)
         ctx.register_tool(name=name,toolset='ingest_workflow' if check is operator_available else 'ingest_pass',
             schema={'name':name,'description':description,'parameters':schema},handler=handler,check_fn=check)
+
+    def setup_program_dispatch(parser):
+        parser.add_argument('--vault', required=True)
+        parser.add_argument('--workflow-id', required=True)
+
+    def program_dispatch(args):
+        from ingest_kanban import IngestKanbanAdapter
+        from native_program_dispatch import dispatch_programs
+        try:
+            if not operator_available():
+                raise RuntimeError('program dispatcher requires a trusted operator context')
+            spawned = dispatch_programs(IngestKanbanAdapter(args.vault, enable_workers=True), args.workflow_id)
+            print(json.dumps({'ok':True, 'spawned':spawned}))
+            return 0
+        except (ValueError, OSError, RuntimeError, KeyError) as exc:
+            print(json.dumps({'ok':False, 'error':str(exc)}), file=sys.stderr)
+            return 2
+
+    ctx.register_cli_command('ingest-program-dispatch',
+        'Dispatch bound program cards without a model session', setup_program_dispatch, program_dispatch)
