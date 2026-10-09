@@ -149,7 +149,12 @@ def workflow_status(vault, workflow_id=None, *, runtime=False):
         values = [_load_json(p) for p in (service.vault/'_system/ledgers/ingest-workflows').glob('*.json')]
         values = [v for v in values if v.get('state') not in ('completed','partial','failed')]
         if len(values) != 1:
-            fail('AMBIGUOUS_WORKFLOW', 'provide workflow_id; no unique existing workflow in this Vault')
+            return {'ok':False,'code':'AMBIGUOUS_WORKFLOW',
+                    'error':'Select an observed workflow_id using the user-authorized scope and existing handoff.',
+                    'candidates':[{'workflow_id':v['workflow_id'],'state':v['state'],
+                        'stage':v['current_stage'],'batch_id':v.get('batch_id'),
+                        'execution_mode':v['scope'].get('execution_mode'),
+                        'source_paths':v['scope'].get('source_paths',[])} for v in values]}
         workflow_id = values[0]['workflow_id']
     value = service.status(workflow_id)
     coverage = service.source_coverage(value)

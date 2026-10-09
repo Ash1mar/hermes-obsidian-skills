@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
-from test_compact_execution import stopped, vault, begin_amended, packet_views, semantic_draft, workflow_request
+from test_compact_execution import stopped, vault, begin_amended, packet_views, semantic_draft, workflow_request, start_and_pin
 from hermes_source_units import ContractError
 from hermes_source_units.model_presentation import present_model_packet
 from native_ingest import control_workflow, read_pass_input, worker_action, workflow_status
@@ -98,3 +98,15 @@ def test_control_builds_current_request_and_replays_without_dispatch(stopped,vau
     assert len(calls)==1
     with pytest.raises(ContractError,match='IDEMPOTENCY_CONFLICT'):
         control_workflow(vault,value['workflow_id'],'resume','one-operation')
+
+
+def test_ambiguous_discovery_lists_scope_without_mutation(stopped,vault):
+    adapter,value,amendment = stopped
+    start_and_pin(vault,workflow_request(workflow_id='other-workflow',actor='agent',expected_revision=0,
+        profile='compact-3',batch_id='compact-batch',scope={'source_paths':[],
+        'knowledge_selector':'all-current','execution_mode':'auto_full','pause_after':['pass']}))
+    before={p:p.read_bytes() for p in vault.rglob('*.json')}
+    observed=workflow_status(vault)
+    assert observed['code']=='AMBIGUOUS_WORKFLOW'
+    assert {c['workflow_id'] for c in observed['candidates']}=={value['workflow_id'],'other-workflow'}
+    assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
