@@ -1,5 +1,6 @@
 """Closed semantic outputs. IDs, revisions, leases and run assignment stay in code."""
 import copy
+from functools import lru_cache
 
 from hermes_source_units.semantic_submission import closed, native_submission_schema
 from hermes_source_units.validation import _check_shape, load_schema
@@ -19,7 +20,8 @@ def definition(name):
     return inline(defs[name])
 
 
-def schema(phase):
+@lru_cache(maxsize=8)
+def _schema(phase):
     draft = native_submission_schema()['properties']['passes']['items']
     for name in ('input_id','sequence'):
         draft['properties'].pop(name)
@@ -39,14 +41,23 @@ def schema(phase):
         proposal['properties']['candidate_refs'] = {**REFS,'minItems':1}
         result = closed({'proposals':{'type':'array','items':proposal},
             'omitted_candidate_refs':REFS,'reason':TEXT})
-    elif phase == 'global-reduce':
+    elif phase in ('global-reduce','global-plan'):
         page = closed({'candidate_refs':{**REFS,'minItems':1},
             'identity':definition('resource_identity_hint'),
             'path':{'type':'string','minLength':1,'format':'vault-relative-path'},'content':TEXT})
+        if phase=='global-plan':
+            page['properties'].pop('content'); page['required'].remove('content')
         result = closed({'pages':{'type':'array','items':page},'omitted_candidate_refs':REFS,'reason':TEXT})
+    elif phase=='page-write':
+        result=closed({'content':TEXT})
+    elif phase=='page-review':
+        result=closed({'decision':{'type':'string','enum':['approved','revision_required']},'review_note':TEXT})
     else: raise ValueError('unknown fixed semantic phase')
     return {'oneOf':[result,closed({'blocked_reason':TEXT})]}
 
+
+def schema(phase):
+    return copy.deepcopy(_schema(phase))
 
 def validate(phase, value):
     _check_shape(schema(phase),value,{},'$')

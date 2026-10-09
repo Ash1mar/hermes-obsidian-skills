@@ -1,19 +1,15 @@
 # build-finalize
 
-- `WORKFLOW_PAUSED` is a durable operator boundary. Stop without bypassing it, requesting continuation, cancelling the workflow or recording a failed source. A boundary owner with an already durable result may submit only `worker-complete`; the trusted reconciler acknowledges that result while holding successors.
+<!-- hermes-fixed-semantic/v1 -->
 
-- Worker commands commit Vault results only. A response with `kanban_reconciliation_pending` leaves Kanban completion, failure status and successor dispatch to the trusted workflow reconciler. Do not invoke `hermes kanban` from this worker terminal or remove Hermes isolation markers.
+The native fixed semantic executor owns input preparation, hashes, requests and
+completion. Each model session reviews one bounded page against citation facts,
+conditions, exceptions, QA and its checked parent. Return only the closed semantic
+decision and an actual review note. No Skill lookup, search tools, command assembly,
+identity copying, heartbeat, retry choice or workflow control is a model task.
 
-- Dispatcher: use the absolute `dispatcher_script` from the card: `python3 "<dispatcher_script>" --vault "<vault>" <worker-command> --request "<request.json>"`. Never resolve a bare filename or select another Skill's dispatcher. Read the canonical JSON at the card's `worker_binding` path and copy it to one new workspace request file. Keep its workflow/node/task/hash identity unchanged. Call worker-begin before any worker-check. For a Pass slice the binding already provides worker_id and the slice template_hash; add only the lease revision returned by begin. Never copy worker_template_hash or reconstruct identity from environment variables.
-- Stop immediately on failed worker-check or heartbeat, cancellation, stale binding or template mismatch. Do not import internal services to bypass a failed command, resume/cancel the whole workflow, alter pinned contracts, or clear worker environment variables. Report runtime/contract failures on this card; they are not evidence of damaged source material.
-
-- Role / sole objective: finalize all approved draft runs in the pinned batch, serially.
-- Allowed inputs: approved checkpoint-1 record, batch/draft-run IDs, reductions and validation evidence.
-- Allowed commands: controlled-ingest `manage_knowledge_build.py` Build Finalize/status commands for pinned runs only.
-- Fixed IDs / hashes: workflow, batch, draft-run IDs, checkpoint approval digest and node fingerprint; verify revisions.
-- Bounds: one run at a time, only runs in this batch; do not parallelize final writes.
-- Heartbeat: Kanban heartbeat between runs; stop on changed approval/input.
-- Output JSON schema: `{"ok":boolean,"batch_id":string,"completed_run_ids":string[],"failed_run_ids":string[],"error_code":string|null}`.
-- Complete when every eligible run has durable completed state or an explicit failure is reported.
-- Prohibited: new Pass/Reduce, release apply, Provider sync or checkpoint-2 approval.
-- Call `dispatch_ingest_workflow.py worker-begin` first. Finalize all pinned runs serially with recorded page reviews, then call `worker-complete` with the returned template hash. On failure call `worker-fail`. The adapter checks every run is completed before opening release planning.
+The program submits only genuinely approved reviews after current input/hash,
+ownership, source permission and checkpoint checks. Failed review or stale input
+holds affected work; it never auto-approves or regenerates valid products.
+Trusted reconciliation and durable pauses remain unchanged. Publication,
+Provider synchronization and pause continuation require separate authorization.

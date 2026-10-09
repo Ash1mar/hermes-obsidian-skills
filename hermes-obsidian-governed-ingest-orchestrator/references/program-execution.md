@@ -22,9 +22,9 @@ configuration never launches a command/model/index and cannot count as a
 successful requested sync. Provider output must identify the exact ready
 release and hash before its status is committed.
 
-Pass and resource/global Reduce now use the fixed semantic executor when their
-pinned template authorizes it; see `fixed-semantic.md`. Build-finalize page review
-retains its model contract. Finalize cannot infer or manufacture review notes, page hashes,
+Pass, resource/global Reduce and Build-finalize page review use the fixed semantic
+executor when their pinned template authorizes it; see `fixed-semantic.md`.
+Finalize cannot infer or manufacture review notes, page hashes,
 parent hashes or semantic approvals. Program release planning uses only this
 workflow's completed batch runs, not every unapplied run in the Vault.
 
