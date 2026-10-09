@@ -83,7 +83,9 @@ class HermesCaller:
                 return super()._interruptible_streaming_api_call(api_kwargs, *args, **kwargs)
         self.db = SessionDB()
         fields = {k:self.runtime[k] for k in ('provider','api_mode','base_url','api_key','acp_command','acp_args') if k in self.runtime}
-        agent = FixedAgent(**fields,model=self.model,enabled_toolsets=[],max_iterations=1,
+        # Native workers inherit lifecycle tools unless explicitly disabled.
+        # The program owns that lifecycle; retain its identity/isolation env.
+        agent = FixedAgent(**fields,model=self.model,enabled_toolsets=[],disabled_toolsets=['kanban'],max_iterations=1,
             max_tokens=8192,run_budget_seconds=600,quiet_mode=True,
             skip_context_files=True,skip_memory=True,skip_background_review=True,
             load_soul_identity=False,fallback_model=None,session_db=self.db,platform='kanban',
