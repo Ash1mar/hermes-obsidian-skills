@@ -20,19 +20,24 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
     # signature-checked invocation cache before expansion, retaining ACL and
     # live pre-commit checks, instead of enabling it only during persistence.
     service.source.enable_session_cache()
+    checked = adapter.worker_check(binding)
+    workflow = adapter.workflow.status(binding['workflow_id'])
+    effective = (adapter.workflow.execution_template(workflow, checked['slice_id'])
+                 or adapter.workflow.pinned_templates(workflow)['pass-slice'])
+    if (service._slice(checked['batch_id'], checked['slice_id'])['template_id'] != RENDERER
+            and not semantic_template('pass-slice', effective)):
+        raise ContractError('ACCESS_DENIED', '$', 'typed submission requires a bounded model slice')
+    # Pure reading/identity expansion does not need the shared cancellation lock.
+    # Persistence still verifies live source/ACL, task revision and current lease.
+    reviews = []
+    if confirmation:
+        expanded, reviews = service.expand_citation_confirmations(request, checked['task_ids'], binding['actor'], checked['batch_id'])
+    else:
+        expanded = service.expand_model_passes(request, checked['task_ids'], binding['actor'], checked['batch_id'])
     with worker_binding(binding), workflow_write_guard(vault, kinds=('pass-slice',), actor=binding['actor']):
-        checked = adapter.worker_check(binding)
-        workflow = adapter.workflow.status(binding['workflow_id'])
-        effective = (adapter.workflow.execution_template(workflow, checked['slice_id'])
-                     or adapter.workflow.pinned_templates(workflow)['pass-slice'])
-        if (service._slice(checked['batch_id'], checked['slice_id'])['template_id'] != RENDERER
-                and not semantic_template('pass-slice', effective)):
-            raise ContractError('ACCESS_DENIED', '$', 'typed submission requires a bounded model slice')
-        reviews = []
-        if confirmation:
-            expanded, reviews = service.expand_citation_confirmations(request, checked['task_ids'], binding['actor'], checked['batch_id'])
-        else:
-            expanded = service.expand_model_passes(request, checked['task_ids'], binding['actor'], checked['batch_id'])
+        live = adapter.worker_check(binding)
+        if live != checked:
+            raise ContractError('STALE_INPUT', '$', 'bound slice changed after read-only expansion')
         audit = {'worker_request_digest': fingerprint(binding), 'workflow_id': binding['workflow_id'],
                  'node': binding['node'], 'worker_id': binding['worker_id'],
                  'lease_revision': binding['expected_revision'], 'semantic_request_digest': fingerprint(request)}

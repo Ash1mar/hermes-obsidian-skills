@@ -68,7 +68,7 @@ def snapshot(adapter, binding):
             key = fingerprint({'kind':subject['kind'],'identity_key':subject['identity_key']})
             backend['existing_pages'][key]={'subject':subject,'page':page,'sha256':page['authored_sha256']}
             view['existing_pages'].append({'identity':{k:subject[k] for k in ('kind','identity_key','canonical_name','aliases')},
-                'path':subject['current_path'],'content':path.read_text(encoding='utf-8'),
+                'path':subject['current_path'],
                 'qa_status':page['qa_status'],'business_status':page['business_status'],'visibility':page['visibility']})
     result = {'contract':'fixed-reduce-input/v1','binding':dict(binding),'view':view,'backend':backend}
     result['input_id']=fingerprint(result)
@@ -81,6 +81,24 @@ def prepare(adapter, binding):
     ref = f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-inputs/{value['input_id']}.json"
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(value))
     return ref,value
+
+
+def page_view(adapter, value, page):
+    """Exact selected prior content, never a model-controlled file lookup."""
+    backend=value['backend']; identity=page['identity']
+    key=fingerprint({'kind':identity['kind'],'identity_key':identity['identity_key']})
+    old=backend['existing_pages'].get(key); parent=None
+    if old:
+        path=_vault_path(adapter.workflow.vault,old['subject']['current_path'])
+        raw=path.read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=old['sha256']: fail('STALE_INPUT','selected parent changed after planning')
+        parent={'identity':{k:old['subject'][k] for k in ('kind','identity_key','canonical_name','aliases')},
+            'path':old['subject']['current_path'],'content':raw.decode('utf-8'),
+            'qa_status':old['page']['qa_status'],'business_status':old['page']['business_status'],
+            'visibility':old['page']['visibility']}
+    handles=set(page['candidate_refs'])
+    return {'identity':identity,'path':page['path'],'candidates':[c for c in value['view']['candidates'] if c['candidate'] in handles],
+        'existing_page':parent}
 
 
 def expand(value, draft):

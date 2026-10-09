@@ -37,7 +37,7 @@ def program_template(kind, content):
     return kind in PROGRAM_KINDS and '<!-- hermes-program-worker/v1 -->' in (content or '')
 
 
-SEMANTIC_KINDS = frozenset(('pass-slice', 'resource-reduce', 'global-reduce'))
+SEMANTIC_KINDS = frozenset(('pass-slice', 'resource-reduce', 'global-reduce', 'build-finalize'))
 
 
 def semantic_template(kind, content):

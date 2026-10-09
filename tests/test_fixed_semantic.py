@@ -27,6 +27,14 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
     monkeypatch.setenv('HERMES_KANBAN_WORKSPACE',str(workspace))
     before={p:p.read_bytes() for p in (vault/'_system/knowledge-builds').glob('task-*/passes/*.json')}
     calls=[]
+    from hermes_source_units.knowledge_build import FileKnowledgeBuildService
+    from hermes_source_units.workflow_guard import _ACTIVE
+    original=FileKnowledgeBuildService.expand_model_passes
+    expansion_guards=[]
+    def expand_outside_lock(self,*args,**kwargs):
+        expansion_guards.append(_ACTIVE.get())
+        return original(self,*args,**kwargs)
+    monkeypatch.setattr(FileKnowledgeBuildService,'expand_model_passes',expand_outside_lock)
     def caller(phase,view,output_schema,correction):
         calls.append(phase)
         assert '"input_id"' not in json.dumps(view) and '"candidate_pass_id"' not in json.dumps(view)
@@ -34,7 +42,8 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
         if phase=='candidate':
             drafts=[]
             for task in view['tasks']:
-                draft=semantic_draft({**task,'input_id':'fixture-only'},task['task'])
+                assert not {'next_sequence','continuation','limits'} & set(task)
+                draft=semantic_draft({**task,'input_id':'fixture-only','next_sequence':0},task['task'])
                 draft.pop('input_id'); draft.pop('sequence'); drafts.append(draft)
             return fixture_response({'drafts':drafts})
         assert phase=='citation'
@@ -42,6 +51,7 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
             'review_note':'Isolated fixture reviewed source conditions.'} for t in view['tasks']]})
     result=fixed.run_pass(adapter,binding,caller)
     assert result['domain_complete'] and calls==['candidate','citation']
+    assert expansion_guards and all(g is None for g in expansion_guards)
     assert all(p.read_bytes()==raw for p,raw in before.items())
     assert not adapter.workflow.knowledge._slice(current['batch_id'],binding['node'].partition(':')[2])['lease']['worker_id']
     audits=list((vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls").glob('*.json'))
@@ -58,7 +68,7 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
     adapter=IngestKanbanAdapter(vault,FakeKanban(True),enable_workers=True)
     value=start_and_pin(vault,workflow_request(workflow_id='ingest-fixed',actor='agent',expected_revision=0,
         profile='compact-3',batch_id='fixed-reduce',scope={'source_paths':[],
-        'knowledge_selector':'all-current','execution_mode':'auto_full','provider':'skip','pause_after':['checkpoint_1']}))
+        'knowledge_selector':'all-current','execution_mode':'auto_full','provider':'skip','pause_after':['checkpoint_1','build_finalize']}))
     value['dispatch_policy']={'mode':'full','slice_ids':[],'selection_digest':None}; adapter.workflow._write(value)
     def sync():
         current=adapter.workflow.status(value['workflow_id'])
@@ -106,3 +116,73 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
     assert service._batch('fixed-reduce')['global_reduction_id']
     assert len(service._batch('fixed-reduce')['run_ids'])==1
     assert not list((vault/'_system/reports/retrieval').glob('*'))
+    # The page reviewer receives semantics, never Finalize request identities.
+    from program_worker import execute as program_execute
+    def binding_path(kind):
+        current=adapter.workflow.status(value['workflow_id'])
+        card=next(c for c in current['kanban']['task_map'] if c['node']==kind)
+        return next(r['body']['worker_binding'] for r in adapter.kanban.tasks.values() if r['id']==card['task_id'])
+    assert program_execute(adapter,binding_path('checkpoint-1-validate'))['ok']; sync()
+    current=adapter.workflow.status(value['workflow_id'])
+    assert current['pause_control']['boundary']=='checkpoint_1'
+    assert not any(c['node']=='build-finalize' for c in current['kanban']['task_map'])
+    adapter.continue_workflow(workflow_request(workflow_id=current['workflow_id'],actor='agent',
+        expected_revision=current['revision'],continue_id='isolated-review',boundary='checkpoint_1',
+        evidence_digest=current['pause_control']['evidence_digest'])); sync()
+    def reviewer(phase,view,output_schema,correction):
+        assert phase=='page-review' and correction is None
+        assert view['citation_evidence'] and 'filtered fluid' in view['content']
+        assert not {'run_id','page_id','authored_sha256','expected_revision'} & set(view)
+        return fixture_response({'decision':'approved','review_note':'Isolated semantic review preserved both source conditions.'})
+    assert fixed.execute(adapter,binding_path('build-finalize'),reviewer)['ok']; sync()
+    current=adapter.workflow.status(value['workflow_id'])
+    assert current['pause_control']['boundary']=='build_finalize'
+    assert (vault/'30_Cards/fixed-pump.md').exists()
+
+
+def test_lean_inputs_keep_permissions_and_select_only_exact_parent(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    packet={'contract':'fixture','texts':{'c1':'necessary AND condition','c2':'unrelated '*200},
+        'headings':[['Necessary'],['Unrelated']], 'qa':{'q1':['read qualification'],'q2':['other']},
+        'tasks':[{'task':'t1','next_sequence':0,'limits':{},'continuation':{'action':'candidate_then_citation'},
+        'materials':[{'ref':'m1','text_ref':'c1','heading':0,'qa_ref':'q1','role':'core'}]}]}
+    lean=fixed.subset(packet,packet['tasks'],'candidate')
+    assert lean['texts']=={'c1':packet['texts']['c1']} and lean['headings']=={'0':['Necessary']}
+    assert lean['qa']=={'q1':['read qualification']} and lean['tasks'][0]['materials']==packet['tasks'][0]['materials']
+    assert len(json.dumps(lean))<len(json.dumps(packet))/2
+    import hashlib
+    parent=tmp_path/'30_Cards/prior.md'; parent.parent.mkdir(); parent.write_text('Existing pump: keep AND conditions.')
+    identity={'kind':'entity','identity_key':'pump','canonical_name':'Pump','aliases':[]}
+    key=fingerprint({'kind':'entity','identity_key':'pump'})
+    value={'view':{'candidates':[{'candidate':'c1','finding':'Pump fact'},{'candidate':'c2','finding':'Other fact'}],
+        'existing_pages':[{'identity':identity,'path':'30_Cards/prior.md'}]},
+        'backend':{'kind':'global-reduce','batch_id':'fixture','actor':'fixture','tasks':[],
+            'mapping':{'c1':[{'pass_id':'a'*64,'candidate_id':'a'}],'c2':[{'pass_id':'b'*64,'candidate_id':'b'}]},
+            'reductions':[],'identities':{'revision':1},'document_registry_revision':1,
+            'existing_pages':{key:{'subject':{**identity,'current_path':'30_Cards/prior.md'},
+                'sha256':hashlib.sha256(parent.read_bytes()).hexdigest(),
+                'page':{'qa_status':'usable','business_status':'active','visibility':'released'}}}},'input_id':'a'*64}
+    binding={'workflow_id':'ingest-fixture','node':'global-reduce','task_id':'fixture'}
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path),worker_check=lambda b:{'ok':True},worker_complete=lambda b:{'ok':True})
+    monkeypatch.setattr(fixed,'canonical_binding',lambda *a,**k:(binding,{}))
+    monkeypatch.setattr(fixed_reduce,'prepare',lambda *a:('fixture',value))
+    submissions=[]
+    def submit(*args):
+        submissions.append(fixed_reduce.expand(value,args[-1])); return {'validated':True}
+    monkeypatch.setattr(fixed_reduce,'submit',submit)
+    phases=[]
+    def caller(phase,view,output_schema,correction):
+        phases.append(phase); assert correction is None
+        if phase=='global-plan':
+            assert all('content' not in p for p in view['existing_pages'])
+            return fixture_response({'pages':[{'candidate_refs':['c1'],'identity':identity,'path':'30_Cards/prior.md'}],
+                'omitted_candidate_refs':['c2'],'reason':'Isolated explicit unrelated omission'})
+        assert phase=='page-write' and len(view['candidates'])==1
+        assert view['existing_page']['content']==parent.read_text() and view['candidates'][0]['candidate']=='c1'
+        return fixture_response({'content':'Existing pump: keep AND conditions. Pump fact.'})
+    assert fixed.execute(adapter,'fixture',caller)['ok']
+    assert phases==['global-plan','page-write']
+    assert submissions[0]['runs'][0]['decisions'][0]['action']=='update'
+    parent.write_text('changed after observation')
+    with pytest.raises(ContractError,match='STALE_INPUT'):
+        fixed_reduce.page_view(adapter,value,{'identity':identity,'path':'30_Cards/prior.md','candidate_refs':['c1']})
