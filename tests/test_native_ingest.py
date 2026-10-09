@@ -112,5 +112,8 @@ def test_ambiguous_discovery_lists_scope_without_mutation(stopped,vault):
     assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
     current=workflow_status(vault,value['workflow_id'])
     assert current['ok'] and current['current_pass_revision']==value.get('pass_revision')
-    assert current['execution_config'] is not None
+    assert current['execution_config'] is None
     assert current['execution_journal_pending'] is False
+    assert adapter.amend_execution(amendment)['applied']
+    current=workflow_status(vault,value['workflow_id'])
+    assert current['execution_config']['slice_max_tasks']==amendment['max_tasks']
