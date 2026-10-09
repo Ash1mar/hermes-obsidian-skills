@@ -106,9 +106,12 @@ def test_native_plugin_schema_and_automatic_binding_refresh(stopped, vault, monk
     workspace.mkdir()
     binding_path = workspace/'worker-request.json'
     binding_path.write_text(json.dumps(begun['worker_request']))
+    (workspace/'pass-input-descriptor.json').write_text(json.dumps(begun['model_input']))
     monkeypatch.setenv('HERMES_KANBAN_WORKSPACE', str(workspace))
     monkeypatch.setenv('HERMES_KANBAN_TASK', begun['worker_request']['task_id'])
     monkeypatch.setenv('HERMES_DELEGATED_CHILD_CONTEXT', '1')
+    from native_ingest import read_pass_input
+    assert read_pass_input(vault)['ok']
     plugin = ROOT/'hermes-obsidian-governed-ingest-orchestrator/native-plugin/ingest-pass-tools/__init__.py'
     spec = importlib.util.spec_from_file_location('typed_native_plugin', plugin)
     module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
@@ -123,8 +126,12 @@ def test_native_plugin_schema_and_automatic_binding_refresh(stopped, vault, monk
     item = tool['schema']['parameters']['properties']['passes']['items']
     assert item['properties']['candidates']['items']['properties']['conditions']['type'] == 'array'
     assert 'worker_id' not in item['properties'] and tool['check_fn']()
+    assert 'input_id' not in item['required']
+    confirmation_item = ctx.tools['ingest_confirm_citations']['schema']['parameters']['properties']['confirmations']['items']
+    assert 'candidate_pass_id' not in confirmation_item['required']
     old_revision = begun['worker_request']['expected_revision']
     payload = {'vault': str(vault), 'passes': [semantic_draft(packet_views(vault, begun)[1], 't2')]}
+    payload['passes'][0].pop('input_id')
     invalid = copy.deepcopy(payload); invalid['passes'][0]['candidates'][0]['conditions'] = 'not an array'
     assert not json.loads(tool['handler'](invalid))['ok']
     assert json.loads(binding_path.read_text())['expected_revision'] == old_revision

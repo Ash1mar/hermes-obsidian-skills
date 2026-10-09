@@ -47,3 +47,19 @@ def submission_schema(*, confirmation=False):
 
 def validate_submission(request, *, confirmation=False):
     _check_shape(submission_schema(confirmation=confirmation), request, {}, '$')
+
+
+def native_submission_schema(*, confirmation=False):
+    """Native handles resolve identities; legacy explicit identities stay checked."""
+    schema = submission_schema(confirmation=confirmation)
+    key = 'confirmations' if confirmation else 'passes'
+    item = schema['properties'][key]['items']
+    for field in ('input_id', 'candidate_pass_id'):
+        if field in item['required']:
+            item['required'].remove(field)
+            item['properties'][field]['description'] = 'Legacy compatibility only. Omit: the program resolves the observed identity.'
+    return schema
+
+
+def validate_native_submission(request, *, confirmation=False):
+    _check_shape(native_submission_schema(confirmation=confirmation), request, {}, '$')

@@ -7,11 +7,13 @@ import re
 
 from hermes_source_units import ContractError, FileIngestWorkflowService, mutation_digest
 from hermes_source_units.model_presentation import present_model_packet
-from hermes_source_units.semantic_submission import validate_submission
+from hermes_source_units.semantic_submission import validate_native_submission
 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _vault_path, _write_atomic
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.workflow_guard import WORKER_LOCK_TIMEOUT
 from ingest_kanban import IngestKanbanAdapter
+from native_pass_identity import (bind_payload, capture_context, load_context,
+    remember_candidates, verified_packet, visible_packet, evidence_packet, pass_failure)
 
 
 def fail(code, message):
@@ -69,8 +71,29 @@ def read_pass_input(vault, *, begin=False):
     fresh = False
     if begin and not binding_path.exists():
         result = adapter.worker_begin(binding)
-        if not result.get('leased') or not result.get('model_input'):
-            fail('INVALID_TRANSITION', 'input tool requires a leased bounded model slice')
+        if not result.get('leased'):
+            reason = result.get('reason', 'not_leased')
+            stopped = reason == 'batch_cancelled'
+            waiting = reason in ('batch_cooldown','concurrency_limit','slice_leased')
+            code = 'PASS_ADMISSION_WAIT' if waiting else 'PASS_ADMISSION_RECOVERY'
+            receipt = {'ok':True,'state':'stopped' if stopped else 'waiting' if waiting else 'recovery_required',
+                'reason':reason,'code':code,'next_action':'end_worker',
+                'recovery_owner':'trusted_operator','retry_same_request':False}
+            if not stopped:
+                # Park this exact native binding; never take another worker's lease.
+                receipt['report_ref'] = adapter.execution_failure(binding, code, reason)
+            return receipt
+        if not result.get('model_input'):
+            bound = result.get('worker_request')
+            if bound:
+                outcome = adapter.worker_fail({**bound,'code':'NATIVE_INPUT_UNAVAILABLE',
+                    'message':'leased worker has no bounded model input; supported recovery required'})
+                receipt = pass_failure(ContractError('NATIVE_INPUT_UNAVAILABLE','$',
+                    'leased worker has no bounded model input'))
+                receipt.update(lease_released=outcome['ok'],
+                    kanban_reconciliation_pending=outcome['kanban_reconciliation_pending'])
+                return receipt
+            fail('NATIVE_INPUT_UNAVAILABLE', 'leased worker has no bounded model input')
         save_binding(binding_path, result['worker_request'])
         binding = result['worker_request']
         _write_atomic(descriptor_path, _json_bytes(result['model_input']))
@@ -79,8 +102,7 @@ def read_pass_input(vault, *, begin=False):
     if descriptor_path.is_symlink() or not descriptor_path.is_file():
         fail('STALE_INPUT', 'missing original bounded packet descriptor; do not reconstruct it')
     descriptor = _load_json(descriptor_path)
-    packet_path = _vault_path(adapter.workflow.vault, descriptor['path'])
-    packet = _load_json(packet_path)
+    packet_path, packet = verified_packet(adapter.workflow.vault, descriptor, checked)
     service = adapter.workflow.knowledge
     if not fresh:
         # Replay never trusts a model-editable descriptor as reading authority.
@@ -91,13 +113,21 @@ def read_pass_input(vault, *, begin=False):
         projections = [service.model_input(p['task_id'], _load_json(_vault_path(service.vault, p['path'])))
                        for p in prepared['reading_packages']]
         live = service.model_packet(projections, checked['batch_id'])
-        if live['view'] != packet:
+        # Semantic progress may change continuation, never reading authority.
+        if evidence_packet(live['view']) != evidence_packet(packet):
             fail('STALE_INPUT', 'bounded presentation changed; do not replace its evidence silently')
-    text = present_model_packet(packet)
+    context = capture_context(adapter.workflow.vault, binding, packet_path, packet)
+    presented = packet if fresh else live['view']
+    if not fresh:
+        remember_candidates(context, {'results':[{'task':t['task'],'sequence':0,
+            'pass_id':t['continuation']['candidate']['candidate_pass_id']}
+            for t in presented['tasks'] if t['continuation']['action']=='citation']})
+    text = present_model_packet(visible_packet(presented))
     limit = service._batch(checked['batch_id'])['slice_config']['slice_max_input_codepoints']
     import json
     receipt = {'ok':True,'renderer':packet['contract'],'task_count':len(packet['tasks']),
-               'input_codepoints':0,'packet_sha256':hashlib.sha256(packet_path.read_bytes()).hexdigest()}
+               'input_codepoints':0,'packet_sha256':hashlib.sha256(packet_path.read_bytes()).hexdigest(),
+               'presentation_sha256':hashlib.sha256(text.encode('utf-8')).hexdigest()}
     while True:
         size = len(text)+len(json.dumps(receipt,ensure_ascii=False))+1
         if receipt['input_codepoints']==size:
@@ -108,21 +138,31 @@ def read_pass_input(vault, *, begin=False):
     return {**receipt,'content':text}
 
 
-def compact_semantic_receipt(vault, binding, result):
+def compact_semantic_receipt(vault, binding, result, task_ids):
     ref = (f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/worker-receipts/"
            f"{fingerprint(result)}.json")
     _write_atomic(_vault_path(Path(vault).resolve(), ref), _json_bytes(result))
-    keep = ('task','created','pass_id','sequence','pass_kind','next_sequence','next_action','preflight_ref','review_ref')
-    return {'ok':result['ok'], 'validated':result.get('validated', result['ok']),
+    keep = ('task','created','sequence','pass_kind','next_sequence','next_action')
+    aliases = {tid:f't{i}' for i,tid in enumerate(task_ids,1)}
+    receipt = {'ok':result['ok'], 'validated':result.get('validated', result['ok']),
             'results':[{k:r[k] for k in keep if k in r} for r in result['results']],
-            'failures':result['failures'], 'receipt_ref':ref}
+            'failures':[{**{k:v for k,v in f.items() if k != 'item_id'},
+                'task':aliases.get(f.get('item_id'))} for f in result['failures']], 'receipt_ref':ref}
+    if not result['ok']:
+        decisions = [pass_failure(ContractError(f['code'],'$',f['message']),semantic=True) for f in result['failures']]
+        decision = next((d for d in decisions if d['state']!='draft_rejected'),decisions[0])
+        receipt.update({k:decision[k] for k in ('state','next_action','recovery_owner','retry_same_request')})
+    return receipt
 
 
-def worker_action(vault, action, payload=None):
+def _worker_action(vault, action, payload=None):
     if action in ('begin','read'):
         return read_pass_input(vault, begin=action=='begin')
     if action in ('submit','confirm'):
-        validate_submission(payload, confirmation=action=='confirm')
+        try:
+            validate_native_submission(payload, confirmation=action=='confirm')
+        except ContractError as exc:
+            return pass_failure(exc,semantic=True)
     adapter, workspace, binding_path, binding = worker_context(vault)
     if action == 'complete':
         result = adapter.worker_complete(binding)
@@ -132,6 +172,15 @@ def worker_action(vault, action, payload=None):
         return {'ok':result['ok'], 'domain_complete':True, 'result_ref_count':len(result['result_refs']),
                 'receipt_ref':ref, 'kanban_reconciliation_pending':result['kanban_reconciliation_pending'],
                 'next_action':'end_worker'}
+    if action in ('submit','confirm'):
+        checked = adapter.worker_check(binding)
+        context_path, context = load_context(adapter.workflow.vault, binding, checked)
+        try:
+            payload = bind_payload(payload, context, confirmation=action=='confirm')
+        except ContractError as exc:
+            if exc.code == 'INVALID_SCHEMA':
+                return pass_failure(exc,semantic=True)
+            raise
     refreshed = adapter.worker_heartbeat(binding)
     binding = refreshed['worker_request']
     save_binding(binding_path, binding)
@@ -139,7 +188,35 @@ def worker_action(vault, action, payload=None):
         return {'ok':True, 'lease_revision':binding['expected_revision']}
     from bound_pass_submission import submit_bound
     result = submit_bound(vault, binding, payload, confirmation=action=='confirm', adapter=adapter)
-    return compact_semantic_receipt(vault, binding, result)
+    remember_candidates(context_path, result)
+    receipt = compact_semantic_receipt(vault, binding, result, checked['task_ids'])
+    if not receipt['ok'] and receipt['state'] != 'draft_rejected':
+        try:
+            failure = next(f for f in result['failures'] if pass_failure(
+                ContractError(f['code'],'$',f['message']),semantic=True)['state'] != 'draft_rejected')
+            outcome = adapter.worker_fail({**binding,'code':failure['code'],'message':failure['message']})
+            receipt['lease_released'] = outcome['ok']
+        except (ContractError,OSError,ValueError,TypeError,KeyError):
+            receipt['lease_released'] = False
+    return receipt
+
+
+def worker_action(vault, action, payload=None):
+    try:
+        return _worker_action(vault, action, payload)
+    except (ContractError,OSError,ValueError,TypeError,KeyError) as exc:
+        receipt = pass_failure(exc)
+        if receipt['state'] not in ('draft_rejected','stopped'):
+            try:
+                adapter, workspace, path, binding = worker_context(vault)
+                # Only a checked current lease can be failed. Stale/stopped
+                # bindings cannot be repaired, refreshed or rewritten here.
+                outcome = adapter.worker_fail({**binding,'code':receipt['code'],'message':str(exc)})
+                receipt['lease_released'] = outcome['ok']
+                receipt['kanban_reconciliation_pending'] = outcome['kanban_reconciliation_pending']
+            except (ContractError,OSError,ValueError,TypeError,KeyError):
+                receipt['lease_released'] = False
+        return receipt
 
 
 def workflow_status(vault, workflow_id=None, *, runtime=False):

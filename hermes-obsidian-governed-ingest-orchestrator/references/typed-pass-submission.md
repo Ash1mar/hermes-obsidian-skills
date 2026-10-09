@@ -27,8 +27,9 @@ Use the existing deployment rules: quiesce consumers, record old/new remote SHAs
 and fingerprints, integrate host-only changes, retain no old-code backup.
 
 After loading, inspect native tool availability and actual registered schemas.
-Do not assume copying a plugin enables it in every profile. The CLI fallback is
-fully supported but does not give the model a native typed tool schema.
+Do not assume copying a plugin enables it in every profile. Legacy bound CLI
+operations remain supported for their explicit contracts; an execution failure
+in a native worker does not authorize switching to CLI or reconstructing binding.
 
 Worker templates in existing workflows are immutable snapshots. A new install
 does not update them. On a cancelled Pass workflow, the authorized operator uses
@@ -41,7 +42,8 @@ is not native acceptance or authorization to resume.
 
 Native workers prefer ingest_begin_pass(vault) to obtain their checked binding and
 readable authorized material in one call. Source text appears once, while every
-task retains its own input identity, evidence handles, roles, spans, QA and assets.
+task retains its evidence handles, roles, spans, QA and assets. Long input and
+candidate identities remain in the checked backend snapshot, not the model packet.
 No model-written Python expansion or canonical-package reads are needed. The
 presentation is checked against the slice's actual codepoint budget.
 
@@ -68,10 +70,11 @@ redispatch. Resume cannot release a persistent pause. CLI bridge equivalents use
 python3 "<orchestrator-skill>/scripts/native_ingest.py" --action status|control
 with a UTF-8 JSON request on stdin; do not reconstruct private identity fields.
 
-ingest_submit_passes accepts vault and passes. Each Pass has task, input_id,
+ingest_submit_passes accepts vault and passes. Each native Pass has task,
 sequence, inspections, candidates, empty_reason. Conditions, exceptions and
-support_refs are arrays; kind and qa are constrained enums. The input_id is the
-observed presentation identity, not a field to fabricate. One Pass per task per
+support_refs are arrays; kind and qa are constrained enums. Omit input_id: the
+program supplies it from the native worker's original verified input snapshot.
+One Pass per task per
 submission; batch candidates before citation review. Bound CLI equivalent:
 
 ```bash
@@ -92,18 +95,21 @@ No externally supplied "validated" flag can skip freshness or authorization.
 After actual review, ingest_confirm_citations accepts vault and confirmations:
 
 ```json
-{"confirmations":[{"task":"t1","input_id":"<observed input_id>",
-"candidate_pass_id":"<persisted candidate ID>","decision":"confirmed_unchanged",
+{"confirmations":[{"task":"t1","decision":"confirmed_unchanged",
 "review_note":"<actual bounded evidence/logic/QA review>"}]}
 ```
 
-Use the exact candidate ID returned by submission or continuation.candidate.
+The program binds the original candidate actually shown in the input or persisted
+by this worker's submission. The model supplies no candidate_pass_id. Neither
+identity is silently refreshed from newer evidence. Legacy explicit identity
+fields remain accepted only when they match this observed snapshot; the bound CLI
+retains its original explicit-identity contract.
 The backend copies the verified candidate's inspections, QA qualifications,
 candidates and empty_reason into the first citation, validates all ordinary
 contracts, and saves a linked citation-reviews record. Confirmation never happens
 merely because JSON is identical. It is not an independent review or permission
 to skip reading. Changed semantics and later revisions use full authored Passes.
-CLI equivalent is batch-confirm-citations with the same bound arguments.
+The legacy CLI is batch-confirm-citations with explicit checked identities.
 
 Both native submission tools renew/save the current checked binding internally.
 Use ingest_pass_heartbeat while reading between submissions. CLI Pass heartbeat
@@ -115,3 +121,25 @@ The old validate-only API remains for diagnostics, not a required extra model tu
 Native acceptance records the real tool/CLI invocation, successful validation
 receipt, canonical Pass, native completion and durable stage pause. Regression
 tests or a successfully installed plugin alone do not satisfy native acceptance.
+
+## Native execution outcomes
+
+Native tools distinguish `waiting`, `recovery_required`, `stopped`, and
+`draft_rejected`. Only `draft_rejected` / `correct_semantic_draft` permits one
+bounded semantic correction; successful records from a partial batch stay valid.
+Other states return `end_worker` and a trusted recovery owner. Do not repeat begin,
+reconstruct request/descriptor files, search implementations, or use CLI fallback.
+
+Admission refusal preserves the underlying reason (`concurrency_limit`,
+`slice_leased`, `batch_cooldown`, or `slice_not_ready`) and parks the exact native
+binding with a durable execution report. It does not steal or clear another lease.
+A leased worker lacking bounded input is failed through the supported adapter,
+releasing only its checked lease. Changed input and interface failures preserve
+Pass records and request trusted recovery; no source reset or automatic semantic
+retry is authorized. Existing workflow pauses remain enforced.
+
+`native-inputs/` stores the worker-owned original packet identity and observed
+candidate IDs. Canonical packet manifests, ordered task ownership, source hashes,
+live preflight, lease checks and Pass fingerprints remain authoritative. A model
+sees short task/material handles; original long identities and complete submission
+receipts remain in the backend audit records.
