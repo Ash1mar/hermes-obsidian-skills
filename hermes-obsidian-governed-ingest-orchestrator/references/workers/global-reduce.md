@@ -1,19 +1,15 @@
-# global-reduce
+# Fixed global-reduce
 
-- `WORKFLOW_PAUSED` is a durable operator boundary. Stop without bypassing it, requesting continuation, cancelling the workflow or recording a failed source. A boundary owner with an already durable result may submit only `worker-complete`; the trusted reconciler acknowledges that result while holding successors.
+<!-- hermes-fixed-semantic/v1 -->
 
-- Worker commands commit Vault results only. A response with `kanban_reconciliation_pending` leaves Kanban completion, failure status and successor dispatch to the trusted workflow reconciler. Do not invoke `hermes kanban` from this worker terminal or remove Hermes isolation markers.
+The trusted native executor owns binding, bounded input, phase order, lease heartbeat, structural validation, submission and completion. It calls Hermes one-turn model sessions with no tools, Skill reads, context files or conversation history. The model performs only the assigned semantic task and returns its closed JSON output.
 
-- Dispatcher: use the absolute `dispatcher_script` from the card: `python3 "<dispatcher_script>" --vault "<vault>" <worker-command> --request "<request.json>"`. Never resolve a bare filename or select another Skill's dispatcher. Read the canonical JSON at the card's `worker_binding` path and copy it to one new workspace request file. Keep its workflow/node/task/hash identity unchanged. Call worker-begin before any worker-check. For a Pass slice the binding already provides worker_id and the slice template_hash; add only the lease revision returned by begin. Never copy worker_template_hash or reconstruct identity from environment variables.
-- Stop immediately on failed worker-check or heartbeat, cancellation, stale binding or template mismatch. Do not import internal services to bypass a failed command, resume/cancel the whole workflow, alter pinned contracts, or clear worker environment variables. Report runtime/contract failures on this card; they are not evidence of damaged source material.
+Pass uses a candidate phase followed by actual citation review of the persisted candidate and original evidence/QA. The program supplies task/material handles and assigns sequence and long identity. Citation review may confirm unchanged with a real review note or author a revised draft. No confirmation is invented by code.
 
-- Role / sole objective: aggregate the batch's completed resource reductions once.
-- Allowed inputs: pinned batch ID, complete resource reduction IDs and their summaries/candidate references; no raw reading packages.
-- Allowed commands: controlled-ingest `manage_knowledge_build.py batch-global-reduce`.
-- Fixed IDs / hashes: workflow, batch, reduction ID set and node fingerprint; verify all resources have exactly one valid reduction.
-- Bounds: one batch global reduction; no new Pass or resource reduction.
-- Heartbeat: Kanban heartbeat; fail on changed resource set.
-- Output JSON schema: `{"ok":boolean,"batch_id":string,"global_reduction_id":string|null,"draft_run_ids":string[],"error_code":string|null}`.
-- Complete when the global request owns stable identity, output path and draft-run assignment.
-- Prohibited: direct legacy Reduce for a new plan, Build Finalize, release or checkpoint approval.
-- Call `dispatch_ingest_workflow.py worker-begin` before the global reduction. After its durable draft runs exist call `worker-complete` with the returned template hash; on failure call `worker-fail`. The adapter validates the authoritative reduction before dispatching checkpoint 1.
+Reduce consumes only authorized current citation candidates, original semantic conditions/exceptions/QA, resource proposals and necessary committed-page context. Exact duplicate semantics and QA may share a short candidate handle; distinct applicability, conditions or QA remain distinct. The model decides grouping, meaning and content. Program assigns task revisions, candidate references, run/proposal IDs and write requests.
+
+Each phase includes its schema and bounded material up front. Oversized input is blocked, never silently truncated. One schema/semantic correction is allowed only with a new concrete error; accepted partial results are retained. Changed inputs, cancellation, permission or runtime failure ends affected work for supported recovery. No model-chosen retry or open agent fallback.
+
+Native sessions, exact model-input/response hashes, actual preflight receipts and domain results form the audit trail. A test fixture or program acknowledgement is not a semantic model result. No step releases a durable pause or skips later page review.
+
+Assigned node: global-reduce.

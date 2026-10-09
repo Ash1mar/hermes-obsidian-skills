@@ -22,8 +22,11 @@ from program_worker import canonical_binding, execute
 def run(vault, binding):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kc, kanban_db_dispatch as kd
     adapter = IngestKanbanAdapter(vault, enable_workers=True)
-    request, value = canonical_binding(adapter, binding)
-    if (os.environ.get('HERMES_INGEST_EXECUTOR') != 'program-v1'
+    executor = os.environ.get('HERMES_INGEST_EXECUTOR')
+    if executor not in ('program-v1','semantic-v1'):
+        raise RuntimeError('unsupported native executor grant')
+    request, value = canonical_binding(adapter, binding, executor=executor)
+    if (os.environ.get('HERMES_INGEST_EXECUTOR') != executor
             or os.environ.get('HERMES_KANBAN_TASK') != request['task_id']
             or os.environ.get('HERMES_KANBAN_BOARD') != value['kanban']['board_id']):
         raise RuntimeError('program execution requires its native dispatcher grant')
@@ -47,7 +50,10 @@ def run(vault, binding):
             try:
                 with contextlib.closing(kc.connect(board=board)) as conn:
                     alive = own_run() and kd.heartbeat_worker(conn, request['task_id'], expected_run_id=run_id,
-                        note='program executor; no model session')
+                        note='fixed semantic executor' if executor=='semantic-v1' else 'program executor; no model session')
+                if alive and executor=='semantic-v1' and request['node'].startswith('pass-slice:') and not completed.is_set():
+                    from fixed_semantic import heartbeat as pass_heartbeat
+                    pass_heartbeat(vault)
             except Exception:
                 alive = False
             if not alive:
@@ -58,11 +64,15 @@ def run(vault, binding):
     thread.start()
     progress = Path(binding).with_suffix('.execution.json')
     try:
-        _write_atomic(progress, _json_bytes({'state':'running', 'executor':'program-v1', 'run_id':run_id}))
-        result = execute(adapter, binding)
+        _write_atomic(progress, _json_bytes({'state':'running', 'executor':executor, 'run_id':run_id}))
+        if executor=='semantic-v1':
+            from fixed_semantic import execute as semantic_execute
+            result=semantic_execute(adapter,binding)
+        else:
+            result = execute(adapter, binding)
         completed.set()
         _write_atomic(progress, _json_bytes({'state':'completed' if result.get('ok') else 'blocked',
-            'executor':'program-v1', 'run_id':run_id, 'result':result}))
+            'executor':executor, 'run_id':run_id, 'result':result}))
         # The trusted reconciler acknowledges the durable result and holds
         # successors at pauses. Keep the native PID alive until it does so.
         deadline = time.monotonic() + 120
@@ -71,8 +81,19 @@ def run(vault, binding):
         return result
     except (ContractError, OSError, ValueError, KeyError, RuntimeError) as exc:
         completed.set()
+        if executor=='semantic-v1' and request['node'].startswith('pass-slice:'):
+            from fixed_semantic import ACTION_LOCK
+            with ACTION_LOCK:
+                path=Path(os.environ['HERMES_KANBAN_WORKSPACE'])/'worker-request.json'
+                if path.is_file():
+                    from hermes_source_units.source_units import _load_json
+                    try:
+                        live=_load_json(path); adapter.worker_check(live)
+                        adapter.worker_fail({**live,'code':getattr(exc,'code','MODEL_REQUEST_FAILED'),'message':str(exc)})
+                    except (ContractError,OSError,ValueError,KeyError):
+                        pass  # A changed/stopped/foreign lease is never refreshed.
         ref = adapter.execution_failure(request, getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED'), str(exc))
-        _write_atomic(progress, _json_bytes({'state':'execution_blocked', 'executor':'program-v1',
+        _write_atomic(progress, _json_bytes({'state':'execution_blocked', 'executor':executor,
             'run_id':run_id, 'report_ref':ref, 'code':getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED')}))
         raise
     finally:

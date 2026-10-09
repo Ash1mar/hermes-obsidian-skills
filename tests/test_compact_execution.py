@@ -49,7 +49,14 @@ def stopped(vault):
         begun=adapter.worker_begin({'workflow_id':value['workflow_id'],'node':card['node'],
             'task_id':card['task_id'],'worker_id':f'old-{index}'})
         bound=begun['worker_request']
-        for descriptor in begun['reading_packages'][:None if index==0 else 1]:
+        # Current fixed semantic workers expose only model_input. This isolated
+        # fixture creates prior results through canonical packages, never by
+        # widening a real worker's model view.
+        packages=begun.get('reading_packages')
+        if packages is None:
+            packages=service.prepare_leased_slice(value['batch_id'],bound['node'].partition(':')[2],
+                bound['worker_id'],bound['expected_revision'],check=lambda:adapter.worker_check(bound),timeout=2)['reading_packages']
+        for descriptor in packages[:None if index==0 else 1]:
             for sequence in ([0,1] if index==0 else [0]):
                 with worker_binding(bound),workflow_write_guard(vault,kinds=('pass-slice',)):
                     result=service.record_pass_batch({'batch_id':value['batch_id'],'passes':[

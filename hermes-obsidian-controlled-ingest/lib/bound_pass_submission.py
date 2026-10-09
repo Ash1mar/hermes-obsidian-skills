@@ -5,7 +5,7 @@ from hermes_source_units.semantic_submission import validate_submission
 from hermes_source_units.source_units import _vault_path, _write_atomic, _json_bytes
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard, WORKER_LOCK_TIMEOUT
-from ingest_kanban import IngestKanbanAdapter
+from ingest_kanban import IngestKanbanAdapter, semantic_template
 
 
 def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
@@ -22,7 +22,11 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
     service.source.enable_session_cache()
     with worker_binding(binding), workflow_write_guard(vault, kinds=('pass-slice',), actor=binding['actor']):
         checked = adapter.worker_check(binding)
-        if service._slice(checked['batch_id'], checked['slice_id'])['template_id'] != RENDERER:
+        workflow = adapter.workflow.status(binding['workflow_id'])
+        effective = (adapter.workflow.execution_template(workflow, checked['slice_id'])
+                     or adapter.workflow.pinned_templates(workflow)['pass-slice'])
+        if (service._slice(checked['batch_id'], checked['slice_id'])['template_id'] != RENDERER
+                and not semantic_template('pass-slice', effective)):
             raise ContractError('ACCESS_DENIED', '$', 'typed submission requires a bounded model slice')
         reviews = []
         if confirmation:

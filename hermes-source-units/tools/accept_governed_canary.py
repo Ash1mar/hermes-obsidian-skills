@@ -22,7 +22,7 @@ def sha(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def native_preflight_evidence(home, snapshots):
+def native_preflight_evidence(home, snapshots, adapter=None, workflow=None):
     """Read native terminal transcripts; never run or manufacture a Pass."""
     import re
     database = home/'state.db'
@@ -31,6 +31,14 @@ def native_preflight_evidence(home, snapshots):
         claimed = set()
         for snapshot in snapshots:
             task_id = snapshot['task']['id']
+            if adapter is not None:
+                from fixed_semantic_evidence import pass_evidence
+                fixed=pass_evidence(home,adapter,workflow,task_id)
+                if fixed is not None:
+                    ids=set(fixed['session_ids'])
+                    if claimed.intersection(ids):
+                        raise RuntimeError('native fixed semantic sessions are shared across cards')
+                    claimed.update(ids); result.append(fixed); continue
             # task.session_id is nullable even while the native worker has a
             # durable session. Compaction may also create linked child sessions.
             # Bind to the native task prompt or canonical lease tool response.
@@ -341,7 +349,7 @@ def main():
                 selected = [service.knowledge._slice(value['batch_id'],sid) for sid in outcome['slice_ids']]
                 assert all(s['state']=='completed' and s['result_refs'] for s in selected)
                 if args.verify_preflight:
-                    evidence['native_preflight'] = native_preflight_evidence(home, snapshots)
+                    evidence['native_preflight'] = native_preflight_evidence(home, snapshots, adapter, value)
                     evidence['native_preflight_verified'] = True
                 if args.verify_pauses:
                     value = quiescent_pause('canary')

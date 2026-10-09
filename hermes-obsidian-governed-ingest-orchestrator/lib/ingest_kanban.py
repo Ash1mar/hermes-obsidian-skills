@@ -37,6 +37,17 @@ def program_template(kind, content):
     return kind in PROGRAM_KINDS and '<!-- hermes-program-worker/v1 -->' in (content or '')
 
 
+SEMANTIC_KINDS = frozenset(('pass-slice', 'resource-reduce', 'global-reduce'))
+
+
+def semantic_template(kind, content):
+    return kind in SEMANTIC_KINDS and '<!-- hermes-fixed-semantic/v1 -->' in (content or '')
+
+
+def executor_for(kind, content):
+    return 'program-v1' if program_template(kind, content) else 'semantic-v1' if semantic_template(kind, content) else 'model'
+
+
 @dataclass(frozen=True)
 class Node:
     name: str
@@ -231,7 +242,7 @@ class KanbanCLI:
         executor = json.loads(body).get('executor')
         argv = ["kanban", "--board", slug, "create", node.name,
                 "--body", body, "--idempotency-key", key,
-                "--created-by", "ingest-workflow", "--assignee", PROGRAM_ASSIGNEE if executor == 'program-v1' else "default",
+                "--created-by", "ingest-workflow", "--assignee", PROGRAM_ASSIGNEE if executor in ('program-v1', 'semantic-v1') else "default",
                 "--max-retries", "1", "--json"]
         for parent in parent_ids:
             argv.extend(("--parent", parent))
@@ -839,9 +850,13 @@ class IngestKanbanAdapter:
             slice_template_hash = (self.workflow.knowledge._slice(
                 value["batch_id"], node.name.partition(":")[2])["template_hash"]
                 if node.kind == "pass-slice" else None)
-            program = program_template(node.kind, templates.get(node.kind))
+            instructions = (self.workflow.revision_instructions(value)
+                if self.workflow.revision_allows(value, node.name) else
+                (self.workflow.execution_template(value, node.name.partition(':')[2])
+                if node.kind == 'pass-slice' else None) or templates.get(node.kind))
+            executor = executor_for(node.kind, instructions)
             body = json.dumps({"workflow_id": workflow_id, "node": node.name,
-                               "executor": "program-v1" if program else "model",
+                               "executor": executor,
                                "kind": node.kind,
                                "input_fingerprint": node.input_fingerprint,
                                "vault": str(self.workflow.vault),
@@ -861,10 +876,7 @@ class IngestKanbanAdapter:
                                    "--vault", str(self.workflow.vault), "--binding", str(_vault_path(self.workflow.vault,
                                    f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json"))])
                                    if node.kind in ("source-prepare", "exact-plan") else None),
-                               "instructions": (self.workflow.revision_instructions(value)
-                                   if self.workflow.revision_allows(value, node.name) else
-                                   (self.workflow.execution_template(value, node.name.partition(':')[2])
-                                    if node.kind == 'pass-slice' else None) or templates.get(node.kind)),
+                               "instructions": instructions,
                                "citation_revision_rule": ("Historical superseded citation Passes are audit only. For candidate decisions use only citations whose pass_id is not named by a later supersedes_pass_id in that task; retain all Pass IDs as history. Never propose or omit superseded candidates."
                                    if value.get('pass_revision') and node.kind == 'resource-reduce' else None)},
                               ensure_ascii=False, sort_keys=True)
@@ -1055,7 +1067,10 @@ class IngestKanbanAdapter:
                 "state": "paused" if self.workflow.pending_pause(updated) else updated["state"],
                 "pause": self.workflow.pause_status(updated),
                 "revision": updated["revision"], "background_dispatch": active_canary,
-                "program_dispatch": any(program_template(n.kind, templates.get(n.kind))
+                "program_dispatch": any(executor_for(n.kind, self.workflow.revision_instructions(updated)
+                    if self.workflow.revision_allows(updated, n.name) else
+                    (self.workflow.execution_template(updated, n.name.partition(':')[2])
+                    if n.kind == 'pass-slice' else None) or templates.get(n.kind)) != 'model'
                     and not domain_completed(self.workflow, updated, n)
                     and not self._failed_card(workflow_id, n)
                     and self._eligible(updated, n, nodes) for n in nodes),
@@ -1431,10 +1446,13 @@ class IngestKanbanAdapter:
             prepared = self.workflow.knowledge.prepare_leased_slice(
                 workflow['batch_id'], value['slice_id'], worker_id, result['slice']['revision'],
                 check=lambda: self.worker_check(bound), timeout=WORKER_LOCK_TIMEOUT)
-            if (self.workflow.execution_template(workflow, value['slice_id']) is not None
-                    and not self.workflow.revision_allows(workflow, node_name)):
+            effective = (self.workflow.execution_template(workflow, value['slice_id'])
+                         or self.workflow.pinned_templates(workflow)['pass-slice'])
+            if ((self.workflow.execution_template(workflow, value['slice_id']) is not None
+                    and not self.workflow.revision_allows(workflow, node_name))
+                    or semantic_template('pass-slice', effective)):
                 from hermes_source_units.model_projection import RENDERER
-                if result['slice']['template_id'] == RENDERER:
+                if result['slice']['template_id'] == RENDERER or semantic_template('pass-slice', effective):
                     projections = []
                     for descriptor in prepared['reading_packages']:
                         package = _load_json(_vault_path(self.workflow.vault, descriptor['path']))
