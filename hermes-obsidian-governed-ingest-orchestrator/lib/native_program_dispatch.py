@@ -1,0 +1,93 @@
+"""Pull program cards through Hermes' native claims and process registry.
+
+The non-profile assignee is intentionally skipped by the model dispatcher.
+Only this trusted workflow reconciler can start its fixed, installed entrypoint.
+"""
+from __future__ import annotations
+
+import contextlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+from program_worker import ASSIGNEE, canonical_binding
+
+
+def dispatch_programs(adapter, workflow_id):
+    if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
+        raise RuntimeError('program dispatcher requires a trusted operator process')
+    from hermes_cli import kanban_db as kb, kanban_db_dispatch as kd, kanban_db_workspace as kw
+    from hermes_cli.profiles import profile_exists
+    value = adapter.workflow.status(workflow_id)
+    if value['cancel_requested'] or adapter.workflow.pending_pause(value):
+        return []
+    # A profile with this name would allow Gateway to launch a model instead.
+    if profile_exists(ASSIGNEE):
+        raise RuntimeError('ingest-program is a reserved non-profile assignee')
+    board = value['kanban']['board_id']
+    if not board:
+        return []
+    spawned = []
+    with contextlib.closing(kb.connect(board=board)) as conn:
+        kd.reap_worker_zombies()
+        cap = kd.resolve_max_in_progress(kd.configured_max_in_progress())
+        pressure = kd._memory_pressure_level()
+        for card in value['kanban']['task_map']:
+            task = kb.get_task(conn, card['task_id'])
+            if not task or task.status != 'ready' or task.assignee != ASSIGNEE:
+                continue
+            if pressure == 'critical' or (pressure == 'elevated' and spawned):
+                break
+            if cap is not None and kd.count_running_tasks(conn) + kd.count_running_tasks_other_boards(board) >= cap:
+                break
+            if kd.check_respawn_guard(conn, task.id) is not None:
+                continue
+            body = json.loads(task.body)
+            if body.get('executor') != 'program-v1' or body.get('workflow_id') != workflow_id:
+                raise RuntimeError('program card lacks its executor contract')
+            request, current = canonical_binding(adapter, body['worker_binding'])
+            if (request['task_id'] != task.id or request['node'] != card['node']
+                    or current['kanban']['board_id'] != board
+                    or task.idempotency_key != card['idempotency_key']):
+                raise RuntimeError('native program card differs from the canonical binding')
+            adapter.worker_check(request)
+            # Native claim enforces parents, opens a run and uses ready->running CAS.
+            claimed = kb.claim_task(conn, task.id, claimer='ingest-program-dispatch')
+            if claimed is None:
+                continue
+            try:
+                workspace = kw.resolve_workspace(claimed, board=board)
+                kw.set_workspace_path(conn, claimed.id, str(workspace))
+                from tools.environments.local import build_subprocess_env
+                from gateway.session_context import _VAR_MAP
+                env = build_subprocess_env(inherit_profile_home=True)
+                for key in _VAR_MAP:
+                    env.pop(key, None)
+                env.pop('HERMES_DELEGATED_CHILD_CONTEXT', None)
+                env.update(HERMES_KANBAN_TASK=claimed.id,
+                    HERMES_KANBAN_RUN_ID=str(claimed.current_run_id),
+                    HERMES_KANBAN_CLAIM_LOCK=claimed.claim_lock,
+                    HERMES_KANBAN_BOARD=board, HERMES_KANBAN_DB=str(kb.kanban_db_path(board=board)),
+                    HERMES_KANBAN_WORKSPACES_ROOT=str(kb.workspaces_root(board=board)),
+                    HERMES_KANBAN_WORKSPACE=str(workspace), TERMINAL_CWD=str(workspace),
+                    HERMES_INGEST_EXECUTOR='program-v1')
+                script = Path(__file__).resolve().parents[1] / 'scripts/run_program_worker.py'
+                argv = kd._restart_safe_worker_argv(claimed, [sys.executable, str(script),
+                    '--vault', str(adapter.workflow.vault), '--binding', body['worker_binding']])
+                with kd._open_worker_log(claimed, board) as output:
+                    proc = subprocess.Popen(argv, cwd=workspace, env=env,
+                        stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                        start_new_session=True,
+                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                kd._set_worker_pid(conn, claimed.id, proc.pid)
+                if os.name == 'nt':
+                    kd._live_worker_procs[proc.pid] = proc
+                kb._fire_worker_spawned_hook(conn, claimed, str(workspace), proc.pid, board=board)
+                spawned.append(claimed.id)
+            except Exception as exc:
+                kd._record_task_failure(conn, claimed.id, str(exc), outcome='spawn_failed',
+                    failure_limit=kd.DEFAULT_FAILURE_LIMIT, release_claim=True, end_run=True)
+                adapter.execution_failure(request, 'PROGRAM_SPAWN_FAILED', str(exc))
+    return spawned

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 from pathlib import Path
 import sys
 import time
@@ -36,6 +37,14 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                     return
                 if result.get("canary_complete") and value["scope"].get("execution_mode") == "canary_only":
                     return
+                if result.get('program_dispatch') and result.get('background_dispatch'):
+                    # Hermes CLI loads its native runtime and backend plugin even
+                    # when the operator launched this watcher with system python3.
+                    dispatched = subprocess.run(['hermes', 'ingest-program-dispatch',
+                        '--vault', str(vault), '--workflow-id', workflow_id],
+                        capture_output=True, text=True, timeout=60)
+                    if dispatched.returncode:
+                        raise RuntimeError(dispatched.stderr.strip() or dispatched.stdout.strip())
             except ContractError as exc:
                 if exc.code not in ("KANBAN_UNAVAILABLE", "REVISION_CONFLICT", "LOCK_BUSY"):
                     raise

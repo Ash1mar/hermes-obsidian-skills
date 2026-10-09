@@ -1,9 +1,13 @@
 # exact-plan
 
-- `WORKFLOW_PAUSED` is a durable operator boundary. Stop without bypassing it, requesting continuation, cancelling the workflow or recording a failed source. A boundary owner with an already durable result may submit only `worker-complete`; the trusted reconciler acknowledges that result while holding successors.
+<!-- hermes-program-worker/v1 -->
 
-Run the card's complete `worker_command` unchanged, once, using terminal `background=true, notify=true`. The command reads the dispatcher's canonical binding file and performs worker-begin/check/complete internally. Do not build request JSON, call begin/check first, select another dispatcher, or infer any hash. If the card no longer contains the command, stop and report a dispatch contract error.
+Execution owner: the trusted reconciler pulls this reserved `ingest-program` card through a native Kanban claim and starts the installed program entrypoint. No conversational worker, terminal command selection, request copying, polling by a model, or CLI fallback.
 
-Poll the same process in short calls until exit; never start a duplicate process while it is alive. Hermes maintains native heartbeats. The helper verifies all ready UnitSets and live ACL/registry, measures the full ready scope at the actual serialized reading budget, saves measurements and progress, and creates or adopts the single fixed batch. Interrupted execution can reuse validated measurements through a trusted repaired binding. An indivisible oversize unit remains a typed blocker. Preserve failed source coverage gaps.
+The program reads the current canonical binding, checks task/input/template identities, executes only this node and submits its durable outcome through the existing worker contract. Native run/PID/heartbeat/failure records remain authoritative for execution; the Vault remains authoritative for domain results.
 
-Return the helper's JSON result. A failure stops this card; the trusted reconciler archives failed bindings and holds dependent cards. Do not invoke Hermes Kanban CLI, retry a failed binding, clear isolation markers, patch binding files, bypass a failed check, change pinned templates or resume/cancel the workflow. No model Pass, Reduce, Finalize or checkpoint approvals. Source conversion failure does not imply damaged original bytes.
+Cancellation, stale binding, unavailable input, disabled Provider and validation failure stop affected work through the supported failure report. Do not reconstruct identities, retry unchanged bindings, fabricate review evidence or reinterpret runtime errors as damaged source material.
+
+Durable pauses and checkpoint decisions retain their existing contracts. Only the user-authorized trusted operator may continue a pause. Completed valid results are reused after their current checks; semantic Pass, Reduce and page review are separate model work.
+
+Fixed program operation: exact-plan.

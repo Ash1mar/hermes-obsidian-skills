@@ -1,18 +1,13 @@
 # checkpoint-1-validate
 
-- `WORKFLOW_PAUSED` is a durable operator boundary. Stop without bypassing it, requesting continuation, cancelling the workflow or recording a failed source. A boundary owner with an already durable result may submit only `worker-complete`; the trusted reconciler acknowledges that result while holding successors.
+<!-- hermes-program-worker/v1 -->
 
-- Worker commands commit Vault results only. A response with `kanban_reconciliation_pending` leaves Kanban completion, failure status and successor dispatch to the trusted workflow reconciler. Do not invoke `hermes kanban` from this worker terminal or remove Hermes isolation markers.
+Execution owner: the trusted reconciler pulls this reserved `ingest-program` card through a native Kanban claim and starts the installed program entrypoint. No conversational worker, terminal command selection, request copying, polling by a model, or CLI fallback.
 
-- Dispatcher: use the absolute `dispatcher_script` from the card: `python3 "<dispatcher_script>" --vault "<vault>" <worker-command> --request "<request.json>"`. Never resolve a bare filename or select another Skill's dispatcher. Read the canonical JSON at the card's `worker_binding` path and copy it to one new workspace request file. Keep its workflow/node/task/hash identity unchanged. Call worker-begin before any worker-check. For a Pass slice the binding already provides worker_id and the slice template_hash; add only the lease revision returned by begin. Never copy worker_template_hash or reconstruct identity from environment variables.
-- Stop immediately on failed worker-check or heartbeat, cancellation, stale binding or template mismatch. Do not import internal services to bypass a failed command, resume/cancel the whole workflow, alter pinned contracts, or clear worker environment variables. Report runtime/contract failures on this card; they are not evidence of damaged source material.
+The program reads the current canonical binding, checks task/input/template identities, executes only this node and submits its durable outcome through the existing worker contract. Native run/PID/heartbeat/failure records remain authoritative for execution; the Vault remains authoritative for domain results.
 
-- Role / sole objective: validate the knowledge-build boundary and record a verifiable decision.
-- Allowed inputs: pinned batch, Pass coverage, resource/global reductions, QA and validation reports.
-- Allowed commands: `dispatch_ingest_workflow.py worker-begin`, then `worker-complete` to run batch validation and persist the report and decision. `worker-fail` records a typed failure.
-- Fixed IDs / hashes: workflow ID, batch ID, reduction IDs and node fingerprint; report current revisions.
-- Bounds: one checkpoint-1 validation, no edits to knowledge outputs.
-- Heartbeat: Kanban heartbeat while validation runs.
-- Output JSON schema: `{"ok":boolean,"checkpoint":"checkpoint_1","evidence_refs":string[],"blocking_codes":string[],"error_code":string|null}`.
-- Complete when passing validation is durable and the workflow service has rechecked and recorded the decision. A failed validation blocks this card with a report.
-- Prohibited: constructing an approval digest, editing decision evidence, Build Finalize or bypassing QA. Manual-mode approval is separate.
+Cancellation, stale binding, unavailable input, disabled Provider and validation failure stop affected work through the supported failure report. Do not reconstruct identities, retry unchanged bindings, fabricate review evidence or reinterpret runtime errors as damaged source material.
+
+Durable pauses and checkpoint decisions retain their existing contracts. Only the user-authorized trusted operator may continue a pause. Completed valid results are reused after their current checks; semantic Pass, Reduce and page review are separate model work.
+
+Fixed program operation: checkpoint-1-validate.

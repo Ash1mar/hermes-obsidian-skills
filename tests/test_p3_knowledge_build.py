@@ -869,7 +869,7 @@ class FakeKanban:
 @pytest.mark.parametrize("pause_mode", [False, True])
 @pytest.mark.parametrize("provider", ["skip", "sync"])
 def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
-        vault: Path, monkeypatch: pytest.MonkeyPatch, pause_mode: bool, provider: str):
+        vault: Path, monkeypatch: pytest.MonkeyPatch, pause_mode: bool, provider: str, program_execution=False):
     batch_id = "auto-full-batch"
     batch, _, citations, snapshots = prepare_layered_reduce_batch(vault, batch_id)
     fake = FakeKanban(True)
@@ -930,8 +930,12 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
 
     def finish(kind: str, suffix: str = "", **fields: object) -> dict:
         req, begun = card(kind, suffix)
-        result = adapter.worker_complete({**req, "template_hash": begun["template_hash"],
-                                          **fields})
+        if program_execution:
+            from program_worker import execute
+            binding = next(row['body']['worker_binding'] for row in fake.tasks.values() if row['id'] == req['task_id'])
+            result = execute(adapter, binding)
+        else:
+            result = adapter.worker_complete({**req, "template_hash": begun["template_hash"], **fields})
         assert result["ok"]
         reconcile()
         return result
@@ -1003,11 +1007,19 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
 
     release = FileVaultFinalizeService(vault)
     req, begun = card("vault-finalize-plan")
-    plan = release.plan({"release_id": "auto-full-release", "actor": "agent",
+    if program_execution:
+        from program_worker import execute
+        binding = next(row['body']['worker_binding'] for row in fake.tasks.values() if row['id'] == req['task_id'])
+        assert execute(adapter, binding)['ok']
+        release_id = adapter.workflow.status(full['workflow_id'])['release_id']
+        plan = json.loads(release._plan_path(release_id).read_text())
+    else:
+        plan = release.plan({"release_id": "auto-full-release", "actor": "agent",
                          "expected_state_revision": 0,
                          "build_run_ids": ["auto-full-run"],
                          "source_changes": [], "reason": "Automated governed release"})["plan"]
-    assert adapter.worker_complete({**req, "template_hash": begun["template_hash"],
+    if not program_execution:
+        assert adapter.worker_complete({**req, "template_hash": begun["template_hash"],
                                     "release_id": plan["release_id"],
                                     "plan_id": plan["plan_id"]})["ok"]
     reconcile()
@@ -1027,10 +1039,14 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
     assert second["current_stage"] == "applying"
     assert second["checkpoints"]["checkpoint_2"]["approved_by"] == "hermes:auto"
     req, begun = card("release-apply")
-    assert release.apply({"release_id": plan["release_id"], "actor": plan["actor"],
+    if program_execution:
+        binding = next(row['body']['worker_binding'] for row in fake.tasks.values() if row['id'] == req['task_id'])
+        assert execute(adapter, binding)['ok']
+    else:
+        assert release.apply({"release_id": plan["release_id"], "actor": plan["actor"],
                           "plan_id": plan["plan_id"],
                           "expected_revision": plan["revision"]})["ok"]
-    assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
+        assert adapter.worker_complete({**req, "template_hash": begun["template_hash"]})["ok"]
     reconcile()
     if provider == "sync":
         indexing = adapter.workflow.status(full["workflow_id"])

@@ -1,19 +1,13 @@
 # provider-sync
 
-- `WORKFLOW_PAUSED` is a durable operator boundary. Stop without bypassing it, requesting continuation, cancelling the workflow or recording a failed source. A boundary owner with an already durable result may submit only `worker-complete`; the trusted reconciler acknowledges that result while holding successors.
+<!-- hermes-program-worker/v1 -->
 
-- Worker commands commit Vault results only. A response with `kanban_reconciliation_pending` leaves Kanban completion, failure status and successor dispatch to the trusted workflow reconciler. Do not invoke `hermes kanban` from this worker terminal or remove Hermes isolation markers.
+Execution owner: the trusted reconciler pulls this reserved `ingest-program` card through a native Kanban claim and starts the installed program entrypoint. No conversational worker, terminal command selection, request copying, polling by a model, or CLI fallback.
 
-- Dispatcher: use the absolute `dispatcher_script` from the card: `python3 "<dispatcher_script>" --vault "<vault>" <worker-command> --request "<request.json>"`. Never resolve a bare filename or select another Skill's dispatcher. Read the canonical JSON at the card's `worker_binding` path and copy it to one new workspace request file. Keep its workflow/node/task/hash identity unchanged. Call worker-begin before any worker-check. For a Pass slice the binding already provides worker_id and the slice template_hash; add only the lease revision returned by begin. Never copy worker_template_hash or reconstruct identity from environment variables.
-- Stop immediately on failed worker-check or heartbeat, cancellation, stale binding or template mismatch. Do not import internal services to bypass a failed command, resume/cancel the whole workflow, alter pinned contracts, or clear worker environment variables. Report runtime/contract failures on this card; they are not evidence of damaged source material.
+The program reads the current canonical binding, checks task/input/template identities, executes only this node and submits its durable outcome through the existing worker contract. Native run/PID/heartbeat/failure records remain authoritative for execution; the Vault remains authoritative for domain results.
 
-- Role / sole objective: project the exact published release into the configured retrieval Provider.
-- Allowed inputs: pinned release ID, provider config and Vault retrieval metadata; no unpublished drafts.
-- Allowed commands: knowledge-finalize exact-release Provider sync/status commands only.
-- Fixed IDs / hashes: workflow, release, provider/model/embedding fingerprints and node fingerprint; verify target before writing.
-- Bounds: one release projection; Provider indexes remain replaceable, outside Vault by default.
-- Heartbeat: Kanban heartbeat during indexing; report unavailable Provider explicitly.
-- Output JSON schema: `{"ok":boolean,"release_id":string,"provider":string,"index_fingerprint":string|null,"error_code":string|null}`.
-- Complete when sync status for this exact release is durably auditable.
-- Prohibited: changing authoritative Vault release, QMD on intranet, indexing a different release or claiming success after skip/failure.
-- When the workflow requests Provider sync, call `dispatch_ingest_workflow.py worker-begin` first. After an auditable index manifest for the exact release is ready, call `worker-complete` with the returned template hash. The adapter rechecks release and index fingerprints; on failure call `worker-fail`.
+Cancellation, stale binding, unavailable input, disabled Provider and validation failure stop affected work through the supported failure report. Do not reconstruct identities, retry unchanged bindings, fabricate review evidence or reinterpret runtime errors as damaged source material.
+
+Durable pauses and checkpoint decisions retain their existing contracts. Only the user-authorized trusted operator may continue a pause. Completed valid results are reused after their current checks; semantic Pass, Reduce and page review are separate model work.
+
+Fixed program operation: provider-sync.
