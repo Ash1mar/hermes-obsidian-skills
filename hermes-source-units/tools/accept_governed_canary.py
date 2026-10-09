@@ -46,7 +46,10 @@ def native_preflight_evidence(home, snapshots):
             for session_id in sorted(ids):
                 for role, content, tool_calls in connection.execute(
                         'SELECT role, content, tool_calls FROM messages WHERE session_id=?', (session_id,)):
-                    if tool_calls and 'batch-pass' in tool_calls and '--validate-only' in tool_calls and '--worker-binding' in tool_calls:
+                    fused = bool(tool_calls and (('batch-submit' in tool_calls or 'batch-confirm-citations' in tool_calls)
+                        and '--worker-binding' in tool_calls or 'ingest_submit_passes' in tool_calls
+                        or 'ingest_confirm_citations' in tool_calls))
+                    if fused or (tool_calls and 'batch-pass' in tool_calls and '--validate-only' in tool_calls and '--worker-binding' in tool_calls):
                         calls += 1
                     if role == 'tool' and content:
                         # Terminal responses may encode stdout as a nested JSON string.
@@ -58,7 +61,8 @@ def native_preflight_evidence(home, snapshots):
                         if isinstance(parsed, dict):
                             texts.extend(v for v in parsed.values() if isinstance(v, str))
                         if any(re.search(r'"validated"\s*:\s*true', text)
-                               and all('"' + key + '"' in text for key in ('batch', 'results', 'failures'))
+                               and all('"' + key + '"' in text for key in ('results', 'failures'))
+                               and ('"batch"' in text or ('"preflight_ref"' in text and '"pass_id"' in text))
                                for text in texts):
                             successes += 1
             if not calls or not successes:

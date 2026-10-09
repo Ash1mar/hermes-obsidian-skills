@@ -193,10 +193,21 @@ For an already cancelled workflow without a batch, an operator can preview
 --repair-id "<stable-id>" --evidence-ref "<Vault-relative-failure-report>"`.
 The evidence ref is required when no source is reset. Add `--reset-source-sha256
 "<failed-source-raw-sha256>"` only when the selected failed SourceUnit outcome truly needs
-replacement. Add `--apply` to archive superseded bound cards, install the complete v8 pinned
+replacement. Add `--apply` to archive superseded bound cards, install the complete pinned
 pack and reset only explicitly selected failed SourceUnit outcomes. This never resumes. Use the normal governed
 `resume` command afterward with the same workflow ID. Do not invoke repair from a worker.
 The auditable repair snapshot preserves previous results; it is a workflow record, not a
 backup of installed Skills. The source helper may reuse that selected source's QA Bundle
 from the verified repair snapshot. New Bundles go under `_system/reports/source-bundles`;
 legacy Bundles may be read without rewriting `10_Raw`.
+
+## Remaining Pass input and packaging changes
+
+Use the operator-only [compact execution contract](compact-execution.md) when explicitly
+authorized to reduce model input or repack unfinished tasks in a cancelled Pass batch.
+It preserves exact-plan, canonical identities, accepted results and all continuation/pause
+records. The prepare helper creates the request; dispatcher `amend-execution --dry-run`
+previews it; `amend-execution` applies the same request and remains cancelled.
+Resume and continuation are independent authorized actions. Workers never migrate their own
+input contracts or read mapping manifests. Their compact draft still passes the ordinary
+bound preflight, canonical validation and durable write pipeline.

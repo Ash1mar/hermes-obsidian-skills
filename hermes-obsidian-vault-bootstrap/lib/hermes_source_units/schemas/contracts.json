@@ -1840,6 +1840,7 @@
     "ingest_workflow": {
       "type": "object",
       "properties": {
+        "execution_plan": {"type": "object", "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}, "required": ["path", "sha256"], "additionalProperties": false},
         "contract": {"const": "hermes-ingest-workflow/v1"},
         "workflow_id": {"type": "string", "minLength": 8, "maxLength": 160, "pattern": "^ingest-[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
         "schema_version": {"const": 1},
@@ -1881,6 +1882,7 @@
     "knowledge_batch": {
       "type": "object",
       "properties": {
+        "execution_plan_ref": {"type": "string", "minLength": 1},
         "contract": {"const": "hermes-knowledge-build-batch/v1"},
         "batch_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
         "revision": {"type": "integer", "minimum": 1},
@@ -1890,7 +1892,7 @@
         "task_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 1, "uniqueItems": true},
         "run_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 0, "uniqueItems": true},
         "state": {"enum": ["planned", "analyzing", "checkpoint_1", "finalizing", "completed", "blocked", "cancelled"]},
-        "last_operation": {"enum": ["plan", "adopt", "prepare", "pass", "resource_reduce", "global_reduce", "reduce", "validate", "finalize", "slice", "cancel"]},
+        "last_operation": {"enum": ["plan", "adopt", "prepare", "pass", "resource_reduce", "global_reduce", "reduce", "validate", "finalize", "slice", "cancel", "amend-execution"]},
         "failures": {"type": "array", "items": {"$ref": "#/$defs/knowledge_batch_failure"}, "minItems": 0},
         "slices_initialized": {"type": "boolean"},
         "slice_ids": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}, "minItems": 0, "uniqueItems": true},

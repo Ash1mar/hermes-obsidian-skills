@@ -44,11 +44,13 @@ def start_and_pin(vault: str | Path, request: Mapping[str, Any]) -> dict[str, An
     return value
 
 
-def dispatch(vault: str | Path, command: str, request: Mapping[str, Any]) -> dict[str, Any]:
+def dispatch(vault: str | Path, command: str, request: Mapping[str, Any], *, dry_run=False) -> dict[str, Any]:
     adapter = IngestKanbanAdapter(vault, enable_workers=configuration()["worker_dispatch_enabled"])
     if command == "start":
         value = start_and_pin(vault, request)
         result = adapter.sync(_mutation(value))
+    elif command == 'amend-execution':
+        result = adapter.amend_execution(request, dry_run=dry_run)
     elif command == "worker-prepare-source":
         from source_preparation import prepare_source
         result = prepare_source(adapter, request)

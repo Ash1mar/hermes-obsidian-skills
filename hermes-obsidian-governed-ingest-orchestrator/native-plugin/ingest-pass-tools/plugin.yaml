@@ -1,0 +1,14 @@
+name: ingest-pass-tools
+version: 1.2.0
+description: Bound Pass mechanics and trusted existing-workflow control.
+author: hermes-obsidian-skills
+kind: backend
+provides_tools:
+  - ingest_begin_pass
+  - ingest_read_pass_input
+  - ingest_submit_passes
+  - ingest_confirm_citations
+  - ingest_pass_heartbeat
+  - ingest_complete_pass
+  - ingest_workflow_status
+  - ingest_control_workflow

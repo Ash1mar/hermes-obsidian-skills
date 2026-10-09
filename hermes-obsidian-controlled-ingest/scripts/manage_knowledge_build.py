@@ -17,6 +17,12 @@ def load(path: str):
 
 def run(args):
     service = FileKnowledgeBuildService(args.vault)
+    if args.command in ('batch-submit', 'batch-confirm-citations'):
+        if not args.worker_binding:
+            raise ContractError('ACCESS_DENIED', '$', 'typed submission requires a checked worker binding')
+        from bound_pass_submission import submit_bound
+        return submit_bound(args.vault, load(args.worker_binding), load(args.request),
+                            confirmation=args.command == 'batch-confirm-citations')
     if args.worker_binding:
         if args.command != 'batch-pass':
             raise ContractError('ACCESS_DENIED', '$', 'Pass binding permits only batch-pass')
@@ -30,6 +36,11 @@ def run(args):
         request = load(args.request)
         with worker_binding(binding), workflow_write_guard(args.vault, kinds=('pass-slice',), actor=binding.get('actor')):
             checked = adapter.worker_check(binding)
+            if args.compact:
+                from hermes_source_units.model_projection import RENDERER
+                if service._slice(checked['batch_id'], checked['slice_id'])['template_id'] != RENDERER:
+                    raise ContractError('ACCESS_DENIED', '$', 'compact drafts require an amended compact slice')
+                request = service.expand_model_passes(request, checked['task_ids'], binding['actor'], checked['batch_id'])
             if request['batch_id'] != checked['batch_id']:
                 raise ContractError('ACCESS_DENIED', '$', 'Pass belongs to a different batch')
             canonical = {'slice_id':checked['slice_id'], 'worker_id':binding['worker_id'],
@@ -41,10 +52,18 @@ def run(args):
                 if item['task_id'] not in checked['task_ids'] or item['actor'] != binding['actor']:
                     raise ContractError('ACCESS_DENIED', '$', 'Pass task or actor exceeds the bound slice')
             from hermes_source_units.workflow_guard import WORKER_LOCK_TIMEOUT
-            return service.record_pass_batch({**request, **canonical},
+            result = service.record_pass_batch({**request, **canonical},
                 lock_timeout=WORKER_LOCK_TIMEOUT, lock_check=lambda: adapter.worker_check(binding),
                 validate_only=args.validate_only)
+            if args.compact:
+                aliases = {tid:f't{i}' for i,tid in enumerate(checked['task_ids'],1)}
+                return {'ok':result['ok'], 'validated':result.get('validated', False),
+                        'results':[{**r, 'task':aliases[r['task_id']], 'next_sequence':r['sequence']+1}
+                                   for r in result['results']], 'failures':result['failures']}
+            return result
     if args.command == 'batch-pass':
+        if args.compact:
+            raise ContractError('ACCESS_DENIED', '$', 'compact drafts require an explicit worker binding')
         from hermes_source_units.workflow_guard import workflow_write_guard
         # An active workflow or isolated worker cannot omit its binding.
         with workflow_write_guard(args.vault, kinds=('pass-slice',)):
@@ -124,6 +143,9 @@ def main() -> int:
     parser.add_argument("--vault", required=True)
     parser.add_argument("--worker-binding", help="explicit dispatcher/lease binding for isolated batch-pass")
     sub = parser.add_subparsers(dest="command", required=True)
+    for name in ('batch-submit', 'batch-confirm-citations'):
+        command = sub.add_parser(name)
+        command.add_argument('--request', required=True, help='typed semantic payload; validates and commits in one guarded call')
     for name in ("plan", "pass", "reduce", "finalize"):
         command = sub.add_parser(name)
         command.add_argument("--request", required=True, help="JSON request file")
@@ -169,6 +191,7 @@ def main() -> int:
         if name == "batch-plan":
             command.add_argument("--exact-reading-budget", action="store_true")
         if name == "batch-pass":
+            command.add_argument('--compact', action='store_true', help='expand bounded model handles under the checked worker lease')
             command.add_argument("--validate-only", action="store_true",
                                  help="check draft evidence without writing Pass/task/batch records")
     for name in ("batch-resource-reduce", "batch-global-reduce"):
