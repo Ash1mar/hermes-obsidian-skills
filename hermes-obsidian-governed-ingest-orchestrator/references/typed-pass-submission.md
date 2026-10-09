@@ -1,10 +1,10 @@
 # Typed semantic submission
 
 `native-plugin/ingest-pass-tools/` is a repository-owned Hermes plugin. It registers
-ingest_submit_passes, ingest_confirm_citations and ingest_pass_heartbeat through
-Hermes PluginContext.register_tool. It does not replace built-in tools, start a
-workflow, perform semantic work itself or release a pause. It is available only
-inside a native Kanban task with its own checked worker-request.json.
+bound input, submission, heartbeat and completion tools through Hermes
+PluginContext.register_tool. Separate operator-only tools inspect and resume/cancel
+existing workflows through supported dispatch. It never replaces built-in tools,
+starts a new workflow, authors domain semantics or releases a pause.
 
 The tool schema is generated from the canonical inspection and candidate types.
 The worker authors the actual findings, conditions, exceptions and evidence refs.
@@ -17,7 +17,9 @@ unknown refs, input drift and authorization errors fail through existing guards.
 Install the six synchronized Skills and this new plugin from the same recorded
 Git SHA. Copy the plugin directory to the host's Hermes plugins directory as
 ingest-pass-tools. Enable it in each worker profile's plugins.enabled and add the
-ingest_pass toolset to the profile if its tool selection is restricted. Configure
+ingest_pass toolset to the worker profile if its tool selection is restricted.
+Add ingest_workflow to the trusted operator's toolset. Worker contexts cannot call
+these operator tools. Configure
 plugins.entries.ingest-pass-tools.settings.skills_root to the deployed domain
 Skills directory. The default is skills/domain beneath the plugin's Hermes home;
 profiles sharing another installation must set the explicit configuration.
@@ -36,6 +38,35 @@ Amendment and resume remain separate authorized operations. Installation alone
 is not native acceptance or authorization to resume.
 
 ## Submission and evidence
+
+Native workers prefer ingest_begin_pass(vault) to obtain their checked binding and
+readable authorized material in one call. Source text appears once, while every
+task retains its own input identity, evidence handles, roles, spans, QA and assets.
+No model-written Python expansion or canonical-package reads are needed. The
+presentation is checked against the slice's actual codepoint budget.
+
+Successful receipts include pass_kind and next_action: a candidate needs actual
+review; a successfully authored citation is complete and must not be submitted as
+an original candidate to the confirmation tool. Native receipts are compact; their
+receipt_ref preserves the complete backend result for audit. The existing verified
+source cache now covers semantic expansion as well as persistence; freshness,
+permission and lease checks still run.
+
+Use ingest_complete_pass after required Passes are durable. It returns verified
+counts and a full audit receipt reference. End the worker immediately; the trusted
+reconciler owns native acknowledgement and dispatch. Do not repeat completion or
+compute decorative statistics after the workspace is cleaned.
+
+Operators use ingest_workflow_status(vault, workflow_id?, runtime?) for compact
+authoritative counts. runtime=true adds a single native task-list summary rather
+than fetching every card and log. For explicitly authorized actions use
+ingest_control_workflow(vault, workflow_id, action=resume|cancel, operation_id).
+It obtains current actor/revision and creates the digest and supported request.
+Saved requests/results bind the stable operation_id; replay returns its receipt,
+while an unknown interrupted outcome requires observation rather than blind
+redispatch. Resume cannot release a persistent pause. CLI bridge equivalents use
+python3 "<orchestrator-skill>/scripts/native_ingest.py" --action status|control
+with a UTF-8 JSON request on stdin; do not reconstruct private identity fields.
 
 ingest_submit_passes accepts vault and passes. Each Pass has task, input_id,
 sequence, inspections, candidates, empty_reason. Conditions, exceptions and

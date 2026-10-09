@@ -117,7 +117,8 @@ def test_native_plugin_schema_and_automatic_binding_refresh(stopped, vault, monk
         def get_config(self, key, default): return str(ROOT)
         def register_tool(self, **tool): self.tools[tool['name']] = tool
     ctx = Context(); module.register(ctx)
-    assert len(ctx.tools) == 3
+    assert len(ctx.tools) == 8
+    assert not ctx.tools['ingest_control_workflow']['check_fn']()
     tool = ctx.tools['ingest_submit_passes']
     item = tool['schema']['parameters']['properties']['passes']['items']
     assert item['properties']['candidates']['items']['properties']['conditions']['type'] == 'array'

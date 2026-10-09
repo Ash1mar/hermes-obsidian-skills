@@ -16,6 +16,10 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
     if not binding['node'].startswith('pass-slice:'):
         raise ContractError('ACCESS_DENIED', '$', 'semantic submission requires a Pass worker')
     service = FileKnowledgeBuildService(vault)
+    # Expansion also checks these same repositories. Enable the existing
+    # signature-checked invocation cache before expansion, retaining ACL and
+    # live pre-commit checks, instead of enabling it only during persistence.
+    service.source.enable_session_cache()
     with worker_binding(binding), workflow_write_guard(vault, kinds=('pass-slice',), actor=binding['actor']):
         checked = adapter.worker_check(binding)
         if service._slice(checked['batch_id'], checked['slice_id'])['template_id'] != RENDERER:
@@ -35,7 +39,9 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
         receipts = []
         for r in result['results']:
             root = _vault_path(service.vault, f'_system/knowledge-builds/task-{r["task_id"]}/passes')
-            receipt = {**r, 'task': aliases[r['task_id']], 'next_sequence': len(list(root.glob('*.json')))}
+            receipt = {**r, 'task': aliases[r['task_id']], 'next_sequence': len(list(root.glob('*.json'))),
+                       'pass_kind': 'candidate' if r['sequence'] == 0 else 'citation',
+                       'next_action': 'review_candidate' if r['sequence'] == 0 else 'pass_complete'}
             review = next((v for v in reviews if v['task_id'] == r['task_id']), None)
             if review:
                 evidence = {'contract': 'hermes-citation-confirmation/v1', 'binding': audit,
