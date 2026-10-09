@@ -9,12 +9,12 @@ from hermes_source_units.source_units import _load_json, _vault_path
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard
-from ingest_kanban import PROGRAM_ASSIGNEE as ASSIGNEE, PROGRAM_KINDS as KINDS, program_template
+from ingest_kanban import PROGRAM_ASSIGNEE as ASSIGNEE, PROGRAM_KINDS as KINDS, program_template, executor_for
 
 MARKER = '<!-- hermes-program-worker/v1 -->'
 
 
-def canonical_binding(adapter, binding):
+def canonical_binding(adapter, binding, *, executor='program-v1'):
     path = Path(binding).resolve()
     request = _load_json(path)
     adapter.validate_worker_request(request)
@@ -28,7 +28,11 @@ def canonical_binding(adapter, binding):
     templates = adapter.workflow.pinned_templates(value)
     # Executor changes are part of the immutable template, never inferred from
     # a newly installed script or an editable native card body.
-    if not program_template(kind, templates.get(kind)):
+    content = (adapter.workflow.revision_instructions(value)
+        if adapter.workflow.revision_allows(value, request['node']) else
+        (adapter.workflow.execution_template(value, request['node'].partition(':')[2])
+         if kind == 'pass-slice' else None) or templates.get(kind))
+    if executor_for(kind, content) != executor:
         raise ContractError('ACCESS_DENIED', '$', 'pinned contract does not authorize a program worker')
     return request, value
 

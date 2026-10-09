@@ -46,9 +46,10 @@ def dispatch_programs(adapter, workflow_id):
             if kd.check_respawn_guard(conn, task.id) is not None:
                 continue
             body = json.loads(task.body)
-            if body.get('executor') != 'program-v1' or body.get('workflow_id') != workflow_id:
+            executor = body.get('executor')
+            if executor not in ('program-v1', 'semantic-v1') or body.get('workflow_id') != workflow_id:
                 raise RuntimeError('program card lacks its executor contract')
-            request, current = canonical_binding(adapter, body['worker_binding'])
+            request, current = canonical_binding(adapter, body['worker_binding'], executor=executor)
             if (request['task_id'] != task.id or request['node'] != card['node']
                     or current['kanban']['board_id'] != board
                     or task.idempotency_key != card['idempotency_key']):
@@ -94,7 +95,7 @@ def dispatch_programs(adapter, workflow_id):
                     HERMES_KANBAN_BOARD=board, HERMES_KANBAN_DB=str(kb.kanban_db_path(board=board)),
                     HERMES_KANBAN_WORKSPACES_ROOT=str(kb.workspaces_root(board=board)),
                     HERMES_KANBAN_WORKSPACE=str(workspace), TERMINAL_CWD=str(workspace),
-                    HERMES_INGEST_EXECUTOR='program-v1')
+                    HERMES_INGEST_EXECUTOR=executor)
                 script = Path(__file__).resolve().parents[1] / 'scripts/run_program_worker.py'
                 argv = kd._restart_safe_worker_argv(claimed, [sys.executable, str(script),
                     '--vault', str(adapter.workflow.vault), '--binding', body['worker_binding']])
