@@ -136,7 +136,7 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None):
         'user_sha256':fingerprint(wire['user']),
         'input_sha256':fingerprint(wire),'schema_sha256':fingerprint(output_schema),
         'response_sha256':fingerprint(raw),'input_codepoints':size,'limit':limit,
-        'model_seconds':round(time.monotonic()-started,3),
+        'model_elapsed_ms':int(round((time.monotonic()-started)*1000)),
         'static_codepoints':len(wire['system'])+len(json.dumps(output_schema,ensure_ascii=False,separators=(',',':'))),
         'model':metadata,'receipt_refs':[]}
     ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls/{fingerprint(audit)}.json"
