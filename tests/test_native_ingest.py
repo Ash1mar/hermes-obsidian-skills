@@ -110,3 +110,7 @@ def test_ambiguous_discovery_lists_scope_without_mutation(stopped,vault):
     assert observed['code']=='AMBIGUOUS_WORKFLOW'
     assert {c['workflow_id'] for c in observed['candidates']}=={value['workflow_id'],'ingest-other-workflow'}
     assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
+    current=workflow_status(vault,value['workflow_id'])
+    assert current['ok'] and current['current_pass_revision']==value.get('pass_revision')
+    assert current['execution_config'] is not None
+    assert current['execution_journal_pending'] is False

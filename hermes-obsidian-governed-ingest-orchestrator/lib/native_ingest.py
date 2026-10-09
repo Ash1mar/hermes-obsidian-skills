@@ -158,8 +158,13 @@ def workflow_status(vault, workflow_id=None, *, runtime=False):
         workflow_id = values[0]['workflow_id']
     value = service.status(workflow_id)
     coverage = service.source_coverage(value)
-    out = {'workflow_id':value['workflow_id'], 'revision':value['revision'], 'state':value['state'],
+    revision = value.get('pass_revision')
+    plan = service.execution_plan(value)
+    out = {'ok':True, 'workflow_id':value['workflow_id'], 'revision':value['revision'], 'state':value['state'],
            'stage':value['current_stage'], 'batch_id':value['batch_id'], 'pause':service.pause_status(value),
+           'current_pass_revision':({k:revision[k] for k in ('revision_id','state')} if revision else None),
+           'execution_config':plan['config'] if plan else None,
+           'execution_journal_pending':service._execution_journal(workflow_id).exists(),
            'source_counts':{key:len(coverage[key]) for key in ('ready','failed','pending')}}
     if value['batch_id']:
         batch = service.knowledge._batch(value['batch_id'])
