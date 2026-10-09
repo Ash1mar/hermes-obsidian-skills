@@ -72,9 +72,9 @@ class HermesCaller:
                 self._check_fixed_request(api_kwargs)
                 return super()._interruptible_api_call(api_kwargs)
 
-            def _interruptible_streaming_api_call(self, api_kwargs):
+            def _interruptible_streaming_api_call(self, api_kwargs, *args, **kwargs):
                 self._check_fixed_request(api_kwargs)
-                return super()._interruptible_streaming_api_call(api_kwargs)
+                return super()._interruptible_streaming_api_call(api_kwargs, *args, **kwargs)
         self.db = SessionDB()
         fields = {k:self.runtime[k] for k in ('provider','api_mode','base_url','api_key','acp_command','acp_args') if k in self.runtime}
         agent = FixedAgent(**fields,model=self.model,enabled_toolsets=[],max_iterations=1,
