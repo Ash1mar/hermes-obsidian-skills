@@ -57,10 +57,16 @@ class HermesCaller:
                 messages=api_kwargs.get('messages',[])
                 def plain(value):
                     if isinstance(value,str): return value
-                    if isinstance(value,list) and all(isinstance(v,dict) and v.get('type')=='text' for v in value):
+                    if isinstance(value,list) and all(isinstance(v,dict) and isinstance(v.get('text'),str)
+                            and v.get('type','text') in ('text','input_text')
+                            and not set(v)-{'type','text','cache_control'} for v in value):
                         return ''.join(v.get('text','') for v in value)
                     return None
                 expected=[('system',self.fixed_request['system']),('user',self.fixed_request['user'])]
+                if 'instructions' in api_kwargs:
+                    messages=[{'role':'system','content':api_kwargs['instructions']},*api_kwargs.get('input',[])]
+                elif 'system' in api_kwargs:
+                    messages=[{'role':'system','content':api_kwargs['system']},*messages]
                 actual=[(m.get('role'),plain(m.get('content'))) for m in messages]
                 if api_kwargs.get('tools') or actual!=expected:
                     raise RuntimeError('fixed semantic request contains extra tools, context or messages')

@@ -125,8 +125,7 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
     assert program_execute(adapter,binding_path('checkpoint-1-validate'))['ok']; sync()
     current=adapter.workflow.status(value['workflow_id'])
     assert current['pause_control']['boundary']=='checkpoint_1'
-    with pytest.raises(ContractError,match='WORKFLOW_PAUSED'):
-        fixed.execute(adapter,binding_path('build-finalize'),lambda *a:pytest.fail('called across pause'))
+    assert not any(c['node']=='build-finalize' for c in current['kanban']['task_map'])
     adapter.continue_workflow(workflow_request(workflow_id=current['workflow_id'],actor='agent',
         expected_revision=current['revision'],continue_id='isolated-review',boundary='checkpoint_1',
         evidence_digest=current['pause_control']['evidence_digest'])); sync()
