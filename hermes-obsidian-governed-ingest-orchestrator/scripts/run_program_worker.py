@@ -20,7 +20,7 @@ from program_worker import canonical_binding, execute
 
 
 def run(vault, binding):
-    from hermes_cli import kanban_db as kb, kanban_db_dispatch as kd
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kc, kanban_db_dispatch as kd
     adapter = IngestKanbanAdapter(vault, enable_workers=True)
     request, value = canonical_binding(adapter, binding)
     if (os.environ.get('HERMES_INGEST_EXECUTOR') != 'program-v1'
@@ -30,7 +30,7 @@ def run(vault, binding):
     run_id = int(os.environ['HERMES_KANBAN_RUN_ID'])
     board = value['kanban']['board_id']
     def own_run():
-        with contextlib.closing(kb.connect(board=board)) as conn:
+        with contextlib.closing(kc.connect(board=board)) as conn:
             task = kb.get_task(conn, request['task_id'])
             return (task is not None and task.status == 'running' and task.current_run_id == run_id
                 and task.claim_lock == os.environ.get('HERMES_KANBAN_CLAIM_LOCK') and bool(task.worker_pid))
@@ -45,7 +45,7 @@ def run(vault, binding):
     def heartbeat():
         while not stop.wait(30):
             try:
-                with contextlib.closing(kb.connect(board=board)) as conn:
+                with contextlib.closing(kc.connect(board=board)) as conn:
                     alive = own_run() and kd.heartbeat_worker(conn, request['task_id'], expected_run_id=run_id,
                         note='program executor; no model session')
             except Exception:

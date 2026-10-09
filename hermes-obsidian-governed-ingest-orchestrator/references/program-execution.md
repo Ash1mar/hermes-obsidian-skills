@@ -38,3 +38,9 @@ Validate the installed native executor in an isolated board/Vault, and use only
 missing/invalidated authorized real work for later stage acceptance. A program
 run's lack of a model session is mechanism evidence, not a measurement of total
 end-to-end cost. Track semantic calls and static context separately.
+
+A predecessor may finish during projection. If the current desired graph has
+changed, admission records `program_admission_deferred` without claiming the
+old native card; the next trusted reconciliation binds the new graph. Stable
+contract failures still require supported recovery. No identity is refreshed
+inside a worker to suppress a real stale-input error.

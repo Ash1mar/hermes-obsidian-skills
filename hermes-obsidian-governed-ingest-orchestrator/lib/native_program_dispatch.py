@@ -13,12 +13,13 @@ import subprocess
 import sys
 
 from program_worker import ASSIGNEE, canonical_binding
+from hermes_source_units import ContractError
 
 
 def dispatch_programs(adapter, workflow_id):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise RuntimeError('program dispatcher requires a trusted operator process')
-    from hermes_cli import kanban_db as kb, kanban_db_dispatch as kd, kanban_db_workspace as kw
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kc, kanban_db_dispatch as kd, kanban_db_workspace as kw
     from hermes_cli.profiles import profile_exists
     value = adapter.workflow.status(workflow_id)
     if value['cancel_requested'] or adapter.workflow.pending_pause(value):
@@ -30,7 +31,7 @@ def dispatch_programs(adapter, workflow_id):
     if not board:
         return []
     spawned = []
-    with contextlib.closing(kb.connect(board=board)) as conn:
+    with contextlib.closing(kc.connect(board=board)) as conn:
         kd.reap_worker_zombies()
         cap = kd.resolve_max_in_progress(kd.configured_max_in_progress())
         pressure = kd._memory_pressure_level()
@@ -52,7 +53,28 @@ def dispatch_programs(adapter, workflow_id):
                     or current['kanban']['board_id'] != board
                     or task.idempotency_key != card['idempotency_key']):
                 raise RuntimeError('native program card differs from the canonical binding')
-            adapter.worker_check(request)
+            try:
+                adapter.worker_check(request)
+            except ContractError as exc:
+                if exc.code in ('WORKFLOW_PAUSED', 'WORKFLOW_STOPPED'):
+                    return spawned
+                if exc.code == 'STALE_INPUT':
+                    from ingest_kanban import desired_graph
+                    latest = adapter.workflow.status(workflow_id)
+                    node = next((n for n in desired_graph(adapter.workflow, latest)
+                        if n.name == request['node']), None)
+                    if node is None or node.input_fingerprint != request['input_fingerprint']:
+                        # A predecessor can commit during the projection tick.
+                        # The next trusted sync retires this unclaimed card and
+                        # binds the new graph. Never claim/retry the old identity.
+                        with kb.write_txn(conn):
+                            kb._append_event(conn, task.id, 'program_admission_deferred',
+                                {'reason':'projection_changed', 'node':request['node']})
+                        return spawned
+                # Stable-graph contract failures require actual recovery, not
+                # repeated admission or whole-workflow cancellation.
+                adapter.execution_failure(request, exc.code, str(exc))
+                return spawned
             # Native claim enforces parents, opens a run and uses ready->running CAS.
             claimed = kb.claim_task(conn, task.id, claimer='ingest-program-dispatch')
             if claimed is None:
