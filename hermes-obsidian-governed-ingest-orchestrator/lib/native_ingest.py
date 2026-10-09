@@ -10,6 +10,7 @@ from hermes_source_units.model_presentation import present_model_packet
 from hermes_source_units.semantic_submission import validate_submission
 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _vault_path, _write_atomic
 from hermes_source_units.validation import fingerprint
+from hermes_source_units.workflow_guard import WORKER_LOCK_TIMEOUT
 from ingest_kanban import IngestKanbanAdapter
 
 
@@ -85,7 +86,8 @@ def read_pass_input(vault, *, begin=False):
         # Replay never trusts a model-editable descriptor as reading authority.
         service.source.enable_session_cache()
         prepared = service.prepare_leased_slice(checked['batch_id'], checked['slice_id'],
-            binding['worker_id'], binding['expected_revision'], check=lambda: adapter.worker_check(binding))
+            binding['worker_id'], binding['expected_revision'], check=lambda: adapter.worker_check(binding),
+            timeout=WORKER_LOCK_TIMEOUT)
         projections = [service.model_input(p['task_id'], _load_json(_vault_path(service.vault, p['path'])))
                        for p in prepared['reading_packages']]
         live = service.model_packet(projections, checked['batch_id'])

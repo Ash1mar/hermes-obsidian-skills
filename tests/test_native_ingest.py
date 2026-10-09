@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 import pytest
-from test_compact_execution import stopped, vault, begin_amended, packet_views, semantic_draft
+from test_compact_execution import stopped, vault, begin_amended, packet_views, semantic_draft, workflow_request
 from hermes_source_units import ContractError
 from hermes_source_units.model_presentation import present_model_packet
 from native_ingest import control_workflow, read_pass_input, worker_action, workflow_status
@@ -60,6 +60,26 @@ def test_worker_cannot_call_operator_controls(stopped,vault,monkeypatch):
     with pytest.raises(ContractError,match='ACCESS_DENIED'):
         control_workflow(vault,value['workflow_id'],'resume','unauthorized')
     assert adapter.workflow.status(value['workflow_id'])==before
+
+
+def test_native_begin_resolves_only_own_binding_and_saves_input(stopped,vault,monkeypatch):
+    adapter,value,amendment = stopped
+    assert adapter.amend_execution(amendment)['applied']
+    current = adapter.workflow.status(value['workflow_id'])
+    adapter.resume(workflow_request(workflow_id=current['workflow_id'],actor=current['actor'],expected_revision=current['revision']))
+    current = adapter.workflow.status(current['workflow_id'])
+    card = next(c for c in current['kanban']['task_map'] if adapter.workflow.knowledge._slice(
+        current['batch_id'],c['node'].split(':')[1])['state']=='ready')
+    workspace = vault/'begin-space'; workspace.mkdir()
+    monkeypatch.setenv('HERMES_KANBAN_TASK',card['task_id'])
+    monkeypatch.setenv('HERMES_KANBAN_WORKSPACE',str(workspace))
+    result = read_pass_input(vault,begin=True)
+    assert result['ok'] and result['task_count']>0 and 'BEGIN TEXT' in result['content']
+    binding = json.loads((workspace/'worker-request.json').read_text())
+    assert binding['task_id']==card['task_id'] and adapter.worker_check(binding)['ok']
+    (workspace/'pass-input-descriptor.json').write_text(json.dumps({'path':'_system/vault.json'}))
+    with pytest.raises(ContractError,match='STALE_INPUT'):
+        read_pass_input(vault)
 
 
 def test_control_builds_current_request_and_replays_without_dispatch(stopped,vault,monkeypatch):
