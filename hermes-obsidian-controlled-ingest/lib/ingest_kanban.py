@@ -28,6 +28,15 @@ def _fail(code: str, message: str) -> None:
     raise ContractError(code, "$", message)
 
 
+PROGRAM_ASSIGNEE = 'ingest-program'
+PROGRAM_KINDS = frozenset(('source-prepare', 'exact-plan', 'checkpoint-1-validate',
+    'vault-finalize-plan', 'checkpoint-2-validate', 'release-apply', 'provider-sync', 'acceptance'))
+
+
+def program_template(kind, content):
+    return kind in PROGRAM_KINDS and '<!-- hermes-program-worker/v1 -->' in (content or '')
+
+
 @dataclass(frozen=True)
 class Node:
     name: str
@@ -219,9 +228,10 @@ class KanbanCLI:
     def create_node(self, slug: str, node: Node, key: str,
                     parent_ids: list[str], body: str,
                     *, enable_workers: bool) -> str:
+        executor = json.loads(body).get('executor')
         argv = ["kanban", "--board", slug, "create", node.name,
                 "--body", body, "--idempotency-key", key,
-                "--created-by", "ingest-workflow", "--assignee", "default",
+                "--created-by", "ingest-workflow", "--assignee", PROGRAM_ASSIGNEE if executor == 'program-v1' else "default",
                 "--max-retries", "1", "--json"]
         for parent in parent_ids:
             argv.extend(("--parent", parent))
@@ -829,7 +839,9 @@ class IngestKanbanAdapter:
             slice_template_hash = (self.workflow.knowledge._slice(
                 value["batch_id"], node.name.partition(":")[2])["template_hash"]
                 if node.kind == "pass-slice" else None)
+            program = program_template(node.kind, templates.get(node.kind))
             body = json.dumps({"workflow_id": workflow_id, "node": node.name,
+                               "executor": "program-v1" if program else "model",
                                "kind": node.kind,
                                "input_fingerprint": node.input_fingerprint,
                                "vault": str(self.workflow.vault),
@@ -1043,6 +1055,10 @@ class IngestKanbanAdapter:
                 "state": "paused" if self.workflow.pending_pause(updated) else updated["state"],
                 "pause": self.workflow.pause_status(updated),
                 "revision": updated["revision"], "background_dispatch": active_canary,
+                "program_dispatch": any(program_template(n.kind, templates.get(n.kind))
+                    and not domain_completed(self.workflow, updated, n)
+                    and not self._failed_card(workflow_id, n)
+                    and self._eligible(updated, n, nodes) for n in nodes),
                 "board_id": slug, "task_count": len(task_map),
                 "canary_complete": canary_done, "canary_report_ref": canary_report,
                 "execution_blocked": [n.name for n in nodes if self._execution_blocked(workflow_id, n)],

@@ -9,15 +9,9 @@ from hermes_source_units.source_units import _load_json, _vault_path
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard
+from ingest_kanban import PROGRAM_ASSIGNEE as ASSIGNEE, PROGRAM_KINDS as KINDS, program_template
 
 MARKER = '<!-- hermes-program-worker/v1 -->'
-ASSIGNEE = 'ingest-program'
-KINDS = frozenset(('source-prepare', 'exact-plan', 'checkpoint-1-validate',
-    'vault-finalize-plan', 'checkpoint-2-validate', 'release-apply', 'provider-sync', 'acceptance'))
-
-
-def program_template(kind, content):
-    return kind in KINDS and MARKER in (content or '')
 
 
 def canonical_binding(adapter, binding):
