@@ -102,11 +102,11 @@ def test_control_builds_current_request_and_replays_without_dispatch(stopped,vau
 
 def test_ambiguous_discovery_lists_scope_without_mutation(stopped,vault):
     adapter,value,amendment = stopped
-    start_and_pin(vault,workflow_request(workflow_id='other-workflow',actor='agent',expected_revision=0,
+    start_and_pin(vault,workflow_request(workflow_id='ingest-other-workflow',actor='agent',expected_revision=0,
         profile='compact-3',batch_id='compact-batch',scope={'source_paths':[],
         'knowledge_selector':'all-current','execution_mode':'auto_full','pause_after':['pass']}))
     before={p:p.read_bytes() for p in vault.rglob('*.json')}
     observed=workflow_status(vault)
     assert observed['code']=='AMBIGUOUS_WORKFLOW'
-    assert {c['workflow_id'] for c in observed['candidates']}=={value['workflow_id'],'other-workflow'}
+    assert {c['workflow_id'] for c in observed['candidates']}=={value['workflow_id'],'ingest-other-workflow'}
     assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
