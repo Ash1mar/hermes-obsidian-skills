@@ -12,7 +12,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from program_worker import ASSIGNEE, canonical_binding
+from program_worker import ASSIGNEE, canonical_binding, admission_check
 from hermes_source_units import ContractError
 
 
@@ -55,9 +55,9 @@ def dispatch_programs(adapter, workflow_id):
                     or task.idempotency_key != card['idempotency_key']):
                 raise RuntimeError('native program card differs from the canonical binding')
             try:
-                adapter.worker_check(request)
+                admission_check(adapter, request)
             except ContractError as exc:
-                if exc.code in ('WORKFLOW_PAUSED', 'WORKFLOW_STOPPED'):
+                if exc.code in ('WORKFLOW_PAUSED', 'WORKFLOW_STOPPED', 'PASS_ADMISSION_WAIT'):
                     return spawned
                 if exc.code == 'STALE_INPUT':
                     from ingest_kanban import desired_graph

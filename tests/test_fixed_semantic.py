@@ -10,6 +10,31 @@ from hermes_source_units import ContractError
 from hermes_source_units.validation import fingerprint
 import fixed_semantic as fixed
 import fixed_reduce
+from program_worker import admission_check
+
+
+def test_fixed_pass_admission_precedes_lease_and_preserves_runtime_guard(stopped,vault):
+    from pathlib import Path
+    from hermes_source_units import mutation_digest
+    adapter,value,amendment=stopped
+    amendment['worker_template']=(Path(fixed.__file__).parents[1]/'references/workers/pass-slice-compact.md').read_text()
+    amendment['input_digest']=mutation_digest(amendment)
+    assert adapter.amend_execution(amendment)['applied']
+    current=adapter.workflow.status(value['workflow_id'])
+    adapter.resume(workflow_request(workflow_id=current['workflow_id'],actor=current['actor'],expected_revision=current['revision']))
+    current=adapter.workflow.status(current['workflow_id'])
+    card=next(c for c in current['kanban']['task_map'] if adapter.workflow.knowledge._slice(
+        current['batch_id'],c['node'].split(':')[1])['state']=='ready')
+    path=vault/f"_system/ledgers/ingest-workflows/{current['workflow_id']}/bindings/{fingerprint(card['idempotency_key'])}.json"
+    binding=json.loads(path.read_text())
+    before={p:p.read_bytes() for p in vault.rglob('*.json')}
+    assert admission_check(adapter,binding)['ok']
+    assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
+    with pytest.raises(ContractError,match='STALE_INPUT'):
+        adapter.worker_check(binding)
+    assert adapter.worker_begin(binding)['leased']
+    with pytest.raises(ContractError,match='PASS_ADMISSION_WAIT'):
+        admission_check(adapter,binding)
 
 
 def fixture_response(value):

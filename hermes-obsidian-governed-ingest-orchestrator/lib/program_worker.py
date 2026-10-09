@@ -14,6 +14,17 @@ from ingest_kanban import PROGRAM_ASSIGNEE as ASSIGNEE, PROGRAM_KINDS as KINDS, 
 MARKER = '<!-- hermes-program-worker/v1 -->'
 
 
+def admission_check(adapter, request):
+    """Check a ready card's authority before claim; no lease exists yet."""
+    if not request['node'].startswith('pass-slice:'):
+        return adapter.worker_check(request)
+    adapter.validate_worker_request(request, beginning=True)
+    workflow, value = adapter._slice_worker(request['workflow_id'], request['node'], request['task_id'])
+    if value['state'] != 'ready':
+        raise ContractError('PASS_ADMISSION_WAIT', '$', 'Pass admission waits for a ready unleased slice')
+    return {'ok':True, 'node':request['node'], 'batch_id':workflow['batch_id'], 'slice_id':value['slice_id']}
+
+
 def canonical_binding(adapter, binding, *, executor='program-v1'):
     path = Path(binding).resolve()
     request = _load_json(path)
