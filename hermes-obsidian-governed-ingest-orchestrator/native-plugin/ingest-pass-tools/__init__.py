@@ -43,10 +43,7 @@ def register(ctx):
             _check_shape(schema,args,{},'$')
             result = subprocess.run([sys.executable,str(bridge),'--action',action],
                 input=json.dumps(args,ensure_ascii=False),capture_output=True,text=True,encoding='utf-8',timeout=600)
-            output = result.stdout.strip() or result.stderr.strip()
-            # Operator outcomes are structured data. Native failure classification
-            # must not treat a historical count key such as "failed" as a refusal.
-            return json.loads(output) if action in ('status','control') else output
+            return result.stdout.strip() or result.stderr.strip()
         except (ValueError,OSError,KeyError,TypeError,subprocess.TimeoutExpired) as exc:
             result = {'ok':False,'error':str(exc)}
             if hasattr(exc,'code'):
