@@ -379,10 +379,26 @@ def merge_citation_review(adapter,review,packet):
         raise ContractError('INVALID_SCHEMA','$','citation inspection changes must be unique')
     inspections=[copy.deepcopy(by_ref.pop(fingerprint(i['source_ref']),i)) for i in inspections]
     inspections.extend(copy.deepcopy(list(by_ref.values())))
-    if candidates and review['empty_reason'].strip():
-        raise ContractError('INVALID_SCHEMA','$','nonempty citation cannot claim an empty result')
     return {'task':alias,'decision':'revised','review_note':review['review_note'],
-        'candidates':candidates,'inspections':inspections,'empty_reason':review['empty_reason']}
+        'candidates':candidates,'inspections':inspections,
+        'empty_reason':review['empty_reason'] if not candidates else ''}
+
+
+def prepare_pass_items(adapter,draft,packet,tasks,phase):
+    sequences={t['task']:t['next_sequence'] for t in tasks}
+    authored=[];confirmations=[];failures=list(draft.get('slot_failures',[]))
+    for item in draft['drafts' if phase=='candidate' else 'reviews']:
+        if item.get('decision')=='confirmed_unchanged':
+            confirmations.append({k:item[k] for k in ('task','decision','review_note')})
+            continue
+        try:
+            if phase=='citation': item=merge_citation_review(adapter,item,packet)
+            authored.append({**{k:v for k,v in item.items() if k not in ('decision','review_note')},
+                             'sequence':sequences[item['task']]})
+        except ContractError as exc:
+            if exc.code not in ('INVALID_SCHEMA','UNRESOLVED_REFERENCE','UNINSPECTED_SUPPORT','INCOMPLETE_COVERAGE'):raise
+            failures.append({'task':item['task'],'code':exc.code,'message':str(exc)[:500]})
+    return authored,confirmations,failures
 
 
 def run_pass(adapter,binding,caller):
@@ -424,18 +440,7 @@ def run_pass(adapter,binding,caller):
                         draft['slot_failures']=[{'task':t['task'],'code':'INCOMPLETE_COVERAGE','message':'no reusable audited result; obtain remaining semantic work'} for t in remaining]
                     else:
                         draft,call_ref=model_call(adapter,binding,phase,view,caller,limit,correction)
-                    items=draft['drafts' if phase=='candidate' else 'reviews']
-                    sequences={t['task']:t['next_sequence'] for t in tasks}
-                    authored=[]; confirmations=[]
-                    for item in items:
-                        if item.get('decision')=='confirmed_unchanged':
-                            confirmations.append({k:item[k] for k in ('task','decision','review_note')})
-                        else:
-                            if phase=='citation':
-                                item=merge_citation_review(adapter,item,packet)
-                            authored.append({**{k:v for k,v in item.items() if k not in ('decision','review_note')},
-                                'sequence':sequences[item['task']]})
-                    failures=list(draft.get('slot_failures',[]))
+                    authored,confirmations,failures=prepare_pass_items(adapter,draft,packet,tasks,phase)
                     for action,key,payload in (('submit','passes',authored),('confirm','confirmations',confirmations)):
                         if not payload: continue
                         result=pass_action(adapter.workflow.vault,action,{key:payload}); attach_receipt(adapter,call_ref,result)

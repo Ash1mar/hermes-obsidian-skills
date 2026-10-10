@@ -79,3 +79,9 @@ Heartbeats check lifecycle identity without rebuilding semantic input; submissio
 still validates live source/ACL and canonical output. Genuine audited responses
 can be reused only for the same task with identical fresh input and instructions,
 with original native provenance linked explicitly and current bound preflight.
+
+The program derives whether a merged citation is empty. For a nonempty result,
+the canonical empty-reason field is empty without requesting another semantic
+generation; an actually empty result still needs the model's genuine reason.
+Delta validation failures remain local to their slot. Other valid slots are
+submitted before requesting correction, while stale authority stops execution.

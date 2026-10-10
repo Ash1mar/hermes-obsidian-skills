@@ -73,6 +73,20 @@ def test_fixed_slots_preserve_valid_reviews_and_target_missing_tasks():
     assert [r['task'] for r in spoof['reviews']]==['t4']
 
 
+def test_citation_merge_error_isolated_to_its_task(monkeypatch):
+    tasks=[{'task':'t1','next_sequence':1},{'task':'t2','next_sequence':1}]
+    draft={'reviews':[{'task':'t1','decision':'revised'},{'task':'t2','decision':'confirmed_unchanged','review_note':'Source reviewed.'}]}
+    def invalid(*args):raise ContractError('INVALID_SCHEMA','$','invalid removal identity')
+    monkeypatch.setattr(fixed,'merge_citation_review',invalid)
+    authored,confirmed,failures=fixed.prepare_pass_items(None,draft,{},tasks,'citation')
+    assert not authored and [r['task'] for r in confirmed]==['t2']
+    assert [f['task'] for f in failures]==['t1']
+    def stale(*args):raise ContractError('STALE_INPUT','$','reading identity changed')
+    monkeypatch.setattr(fixed,'merge_citation_review',stale)
+    with pytest.raises(ContractError,match='STALE_INPUT'):
+        fixed.prepare_pass_items(None,draft,{},tasks,'citation')
+
+
 def test_image_budget_preserves_nine_complete_images_and_reports_actual_limits():
     from fixed_semantic_media import require_images_fit,image_budget
     nine=[{'bytes':35000} for _ in range(9)]
@@ -209,7 +223,8 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
                 candidate=copy.deepcopy(task['candidate']['candidates'][0])
                 candidate['finding']+=' (source fidelity checked)'
                 reviews.append({'task':task['task'],'decision':'revised','review_note':'Checked conditions and support.',
-                    'candidates':[candidate],'removed_candidate_ids':[],'inspections':[],'empty_reason':''})
+                    'candidates':[candidate],'removed_candidate_ids':[],'inspections':[],
+                    'empty_reason':'No additional candidates needed.'})
             return fixture_response({'reviews':reviews})
         return fixture_response({'reviews':[{'task':t['task'],'decision':'confirmed_unchanged',
             'review_note':'Isolated fixture reviewed source conditions.'} for t in view['tasks']]})
