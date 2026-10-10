@@ -22,6 +22,10 @@ def admission_check(adapter, request):
     workflow, value = adapter._slice_worker(request['workflow_id'], request['node'], request['task_id'])
     if value['state'] != 'ready':
         raise ContractError('PASS_ADMISSION_WAIT', '$', 'Pass admission waits for a ready unleased slice')
+    slices=adapter.workflow.knowledge._slices(workflow['batch_id'])
+    capacity=adapter.workflow.knowledge._batch(workflow['batch_id'])['slice_config']['pass_worker_concurrency']
+    if sum(bool(s['lease']['worker_id']) for s in slices)>=capacity:
+        raise ContractError('PASS_ADMISSION_WAIT','$','Pass waits for domain capacity before native claim')
     return {'ok':True, 'node':request['node'], 'batch_id':workflow['batch_id'], 'slice_id':value['slice_id']}
 
 

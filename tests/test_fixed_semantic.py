@@ -42,6 +42,36 @@ def fixture_response(value):
     return raw,{'origin':'isolated_fixture','response_sha256':fingerprint(raw)}
 
 
+def test_pass_groups_bound_output_without_dropping_semantic_limits():
+    tasks=[{'task':f't{i}','materials':[{'ref':f'm{i}','role':'core','text_ref':f'x{i}'}],
+        'limits':{'context_truncated':True,'omitted_material_count':2,'reason':'context budget'},
+        'continuation':{'action':'candidate_then_citation'},'next_sequence':0} for i in range(1,9)]
+    packet={'tasks':tasks,'texts':{f'x{i}':'条件与例外。'*800 for i in range(1,9)},'headings':[]}
+    before=copy.deepcopy(packet)
+    groups=fixed.pass_groups(packet,tasks,'candidate',200000)
+    assert len(groups)>1 and [t['task'] for g in groups for t in g]==[t['task'] for t in tasks]
+    for group in groups:
+        assert fixed.estimate_pass_output_tokens(packet,group)<=fixed.OUTPUT_TOKENS-fixed.OUTPUT_RESERVE
+        view=fixed.subset(packet,group,'candidate')
+        assert all(t['limits']==before['tasks'][0]['limits'] for t in view['tasks'])
+        assert all(t['materials']==o['materials'] for t,o in zip(view['tasks'],group))
+    assert packet==before
+    packet['texts']['x1']='事实。'*30000
+    with pytest.raises(ContractError,match='SEMANTIC_OUTPUT_OVERSIZE'):
+        fixed.pass_groups(packet,[tasks[0]],'candidate',200000)
+
+
+def test_pass_admission_holds_live_domain_capacity_without_claiming():
+    from types import SimpleNamespace
+    slices=[{'lease':{'worker_id':'already-owned'}}]
+    knowledge=SimpleNamespace(_slices=lambda b:slices,_batch=lambda b:{'slice_config':{'pass_worker_concurrency':1}})
+    adapter=SimpleNamespace(validate_worker_request=lambda *a,**k:None,
+        _slice_worker=lambda *a:({'batch_id':'fixture'},{'state':'ready'}),workflow=SimpleNamespace(knowledge=knowledge))
+    with pytest.raises(ContractError,match='PASS_ADMISSION_WAIT'):
+        admission_check(adapter,{'node':'pass-slice:next','workflow_id':'fixture','task_id':'next'})
+    assert slices==[{'lease':{'worker_id':'already-owned'}}]
+
+
 def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypatch):
     adapter,value,amendment=stopped
     current,begun=begin_amended(adapter,value,amendment)
@@ -67,7 +97,8 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
         if phase=='candidate':
             drafts=[]
             for task in view['tasks']:
-                assert not {'next_sequence','continuation','limits'} & set(task)
+                assert not {'next_sequence','continuation'} & set(task)
+                assert 'limits' in task
                 draft=semantic_draft({**task,'input_id':'fixture-only','next_sequence':0},task['task'])
                 draft.pop('input_id'); draft.pop('sequence'); drafts.append(draft)
             return fixture_response({'drafts':drafts})

@@ -10,6 +10,10 @@ Reduce consumes only authorized current citation candidates, original semantic c
 
 Each phase includes its schema and bounded material up front. Oversized input is blocked, never silently truncated. One schema/semantic correction is allowed only with a new concrete error; accepted partial results are retained. Changed inputs, cancellation, permission or runtime failure ends affected work for supported recovery. No model-chosen retry or open agent fallback.
 
+The native program retains card ownership across all semantic phases. Each model call uses a delegated child context with the same parent identity and isolation, so SDK turn finalization cannot complete or fail the parent card. The program heartbeats and closes its own current lease; trusted reconciliation acknowledges durable completion.
+
+Every task retains its material roles, original QA and semantic limits, including omitted-context status and reason. Grouping respects both the actual input budget and a conservative output estimate with a response reserve. Groups keep entire authorized tasks and original handles; an oversized single task is held without dropping evidence or splitting its window.
+
 Native sessions, exact model-input/response hashes, actual preflight receipts and domain results form the audit trail. A test fixture or program acknowledgement is not a semantic model result. No step releases a durable pause or skips later page review.
 
 Assigned node: pass-slice.

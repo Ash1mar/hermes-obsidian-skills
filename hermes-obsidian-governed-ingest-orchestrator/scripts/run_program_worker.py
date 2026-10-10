@@ -61,6 +61,9 @@ def run(vault, binding):
                     os.kill(os.getpid(), signal.SIGTERM)
                 return
     thread = threading.Thread(target=heartbeat, daemon=True)
+    def terminated(signum,frame):
+        raise ContractError('NATIVE_WORKER_STOPPED','$','native program was stopped; preserve valid partial results')
+    previous_handler=signal.signal(signal.SIGTERM,terminated)
     thread.start()
     progress = Path(binding).with_suffix('.execution.json')
     try:
@@ -99,6 +102,7 @@ def run(vault, binding):
     finally:
         stop.set()
         thread.join(timeout=2)
+        signal.signal(signal.SIGTERM,previous_handler)
 
 
 def main():

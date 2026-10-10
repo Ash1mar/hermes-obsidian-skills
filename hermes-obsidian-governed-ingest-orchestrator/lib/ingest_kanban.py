@@ -830,19 +830,20 @@ class IngestKanbanAdapter:
         pass_window = set()
         if value['batch_id']:
             capacity = self.workflow.knowledge._batch(value['batch_id'])['slice_config']['pass_worker_concurrency']
+            held={'pass-slice:'+s['slice_id'] for s in self.workflow.knowledge._slices(value['batch_id']) if s['lease']['worker_id']}
             candidates = [node for node in nodes if node.kind == 'pass-slice'
                           and self._canary_allows(value, node)
                           and not self._failed_card(workflow_id, node)
                           and self.workflow.knowledge._slice(value['batch_id'], node.name.partition(':')[2])['state']
-                          in ('ready', 'leased')]
-            candidates.sort(key=lambda n: self.workflow.knowledge._slice(
-                value['batch_id'], n.name.partition(':')[2])['state'] != 'leased')
-            pass_window = {n.name for n in candidates[:capacity]}
+                          == 'ready']
+            # A failed native card does not make its live domain lease free.
+            pass_window = held | {n.name for n in candidates[:max(0,capacity-len(held))]}
         slug = board_slug(workflow_id)
         self.kanban.ensure_board(slug)
         ids: dict[str, str] = {}
         task_map: list[dict[str, str]] = []
         artifact_conflicts: list[dict[str, Any]] = []
+        native_states=self.kanban.task_states(slug) if hasattr(self.kanban,'task_states') else {}
         for node in nodes:
             key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
             pin = next((item for item in value.get("template_pins", [])
@@ -889,7 +890,9 @@ class IngestKanbanAdapter:
                              and item['node'] == node.name and item['idempotency_key'] == key
                              and self._failed_card(workflow_id, node)), None)
             completed_task = self._completed_pass_binding(value, node, key)
-            task_id = completed_task or (previous['task_id'] if previous else self.kanban.create_node(
+            existing=next((c for c in value['kanban']['task_map'] if c['node']==node.name and c['idempotency_key']==key
+                and native_states.get(c['task_id']) not in (None,'archived')),None)
+            task_id = completed_task or (previous['task_id'] if previous else existing['task_id'] if existing else self.kanban.create_node(
                 slug, node, key, [ids[parent] for parent in node.parents], body,
                 enable_workers=False))  # bind the complete graph before releasing cards
             ids[node.name] = task_id
