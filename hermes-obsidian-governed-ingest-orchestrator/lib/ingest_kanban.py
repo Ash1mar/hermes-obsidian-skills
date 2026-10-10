@@ -594,6 +594,60 @@ class IngestKanbanAdapter:
             return self.execution_failure({'workflow_id':workflow_id, 'node':node.name,
                                            'task_id':task_id}, code, message)
 
+    def _settle_ended_pass_leases(self, value):
+        """Trusted native termination settles its exact lease before capacity selection.
+
+        Uses the existing failure transition, preserves partial Passes and never
+        refreshes an expired, foreign or still-running grant. No new task state.
+        """
+        if not hasattr(self.kanban,'task_snapshot'):
+            return
+        for leased in self.workflow.knowledge._slices(value['batch_id']):
+            if leased['state']!='leased':
+                continue
+            node_name='pass-slice:'+leased['slice_id']
+            card=next((c for c in value['kanban']['task_map'] if c['node']==node_name),None)
+            if not card or leased['lease']['worker_id']!='ingest-worker-'+card['task_id']:
+                continue
+            snapshot=self.kanban.task_snapshot(value['kanban']['board_id'],card['task_id'])
+            task=snapshot['task']
+            if (task.get('id')!=card['task_id'] or task.get('status') not in ('archived','blocked','done')
+                    or task.get('worker_pid') or any(not r.get('ended_at') for r in snapshot.get('runs',[]))):
+                continue
+            body=json.loads(task['body'])
+            binding_path=_vault_path(self.workflow.vault,
+                f"_system/ledgers/ingest-workflows/{value['workflow_id']}/bindings/{fingerprint(card['idempotency_key'])}.json")
+            progress_path=binding_path.with_suffix('.execution.json')
+            if not progress_path.is_file():
+                continue
+            progress=_load_json(progress_path)
+            ended=next((r for r in snapshot.get('runs',[]) if r.get('id')==progress.get('run_id')
+                and r.get('ended_at')),None)
+            if ended is None or task.get('current_run_id') not in (None,ended['id']):
+                continue
+            claim_at=datetime.fromisoformat(leased['lease']['claimed_at'].replace('Z','+00:00')).timestamp()
+            if not float(ended['started_at'])<=claim_at<=float(ended['ended_at']):
+                continue
+            if (task.get('created_by')!='ingest-workflow'
+                    or any(body.get(k)!=v for k,v in {'workflow_id':value['workflow_id'],
+                        'node':node_name,'vault':str(self.workflow.vault),'worker_binding':str(binding_path),
+                        'input_fingerprint':leased['input_fingerprint']}.items())):
+                _fail('STALE_INPUT','ended worker identity differs from its domain lease')
+            binding=_load_json(binding_path)
+            if (binding.get('task_id')!=card['task_id'] or binding.get('node')!=node_name
+                    or binding.get('worker_id')!=leased['lease']['worker_id']
+                    or binding.get('input_fingerprint')!=leased['input_fingerprint']):
+                _fail('STALE_INPUT','ended worker binding differs from its lease')
+            node=pass_node(value,leased)
+            if domain_completed(self.workflow,value,node):
+                continue  # Completion acknowledgement owns valid finished products.
+            if not self._failed_card(value['workflow_id'],node):
+                self.execution_failure(binding,'NATIVE_WORKER_STOPPED',
+                    str(ended.get('error') or ended.get('summary') or 'native run ended without completion'))
+            self.workflow.knowledge.slice_fail({'batch_id':value['batch_id'],'slice_id':leased['slice_id'],
+                'worker_id':leased['lease']['worker_id'],'expected_revision':leased['revision'],
+                'code':'NATIVE_WORKER_STOPPED','message':'Trusted native termination; retain partial results and require supported recovery'})
+
     @staticmethod
     def validate_worker_request(request: Mapping[str, Any], *, beginning: bool = False) -> None:
         required = ("workflow_id", "node", "task_id") + (() if beginning else ("template_hash",))
@@ -753,6 +807,7 @@ class IngestKanbanAdapter:
             value = self.workflow.latch_pause(self._mutation(value))
             if not self.workflow.pending_pause(value) or (value.get('pass_revision') and value['pass_revision']['state'] == 'running'):
                 self.workflow.knowledge.reclaim_expired_slices(value["batch_id"])
+                self._settle_ended_pass_leases(value)
                 self.workflow.knowledge.refresh_ready_slices(value["batch_id"], actor)
             if (value["scope"].get("execution_mode") in ("canary_only", "auto_full")
                     and not self.workflow.pending_pause(value)

@@ -5,18 +5,15 @@ import copy
 import json
 import os
 from pathlib import Path
-import subprocess
-import sys
-import tempfile
 import threading
 import time
 import uuid
 
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _vault_path, _write_atomic, _json_bytes
-from hermes_source_units.validation import fingerprint
+from hermes_source_units.validation import fingerprint, validate_record
 from native_ingest import worker_action, read_pass_input
-from native_pass_identity import visible_packet
+from native_pass_identity import visible_packet, load_context
 from program_worker import canonical_binding
 from fixed_semantic_schema import schema, validate
 import fixed_reduce
@@ -25,7 +22,7 @@ from fixed_semantic_media import image_catalog, select_images, images_fit, messa
 
 RULES = {
     'candidate':'Each task object defines an independent assignment through its materials and their core/context roles. Extract source-grounded facts, requirements and procedures from its core, grouping only statements with compatible conditions and scope. Inspect every core material; use context to interpret it, not to expand the assignment. Preserve exact facts, AND/OR, units, applicability, conditions and exceptions. Report uncertainty from QA and limits; omitted context is not evidence. Unread linked assets do not authorize invented facts. Shared text/QA handles are not citation targets. Use only assigned tN and authorized mN refs. Empty candidates need an actual empty_reason.',
-    'citation':'Review the supplied original candidates against the assigned evidence and original QA. Confirm unchanged only after actual review, with an actual review_note. If facts, conditions, support or QA require changes, return a revised draft. Do not mechanically confirm, soften requirements or infer unread table contents.',
+    'citation':'Check original candidates against all assigned core evidence, necessary context and original QA: factual support, applicability, conditions, exceptions, AND/OR and important omissions. Do not regroup pages or polish wording. Confirm unchanged only after actual review with a concise review_note. Otherwise return only changed/new candidates, removed candidate IDs and changed inspections; unchanged content is retained by the program. Keep existing candidate IDs when changing them and use new IDs only for additions. Do not mechanically confirm, soften requirements or infer unread table contents.',
     'resource-reduce':'Group this resource\'s citation candidates semantically. Keep incompatible scope, AND/OR, conditions, exceptions and QA distinct. Each cN must appear exactly once in proposals or explicit omissions. Supply semantic identity/path hints, not hashes or task assignments. No raw-source search or cross-resource work.',
     'global-reduce':'Coordinate the provided resource proposals and citation candidates into draft pages. Compare existing exact identities and reviewed page content; similar names alone do not justify merging. Preserve conditions, exceptions, conflicts and original QA. Each cN must be used once or explicitly omitted. Return readable Markdown without unresolved short-handle links. Existing page updates still require later page review; do not publish or approve them.'}
 RULES.update({
@@ -100,28 +97,16 @@ class HermesCaller:
         return agent
 
     def __call__(self, phase, view, output_schema, correction=None):
-        if os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
-            # A fixed semantic call is a child of the program-owned native run.
-            # Hermes' documented child marker stops SDK finalizers from closing
-            # the parent's card. Keep all identity/isolation env in that child;
-            # never toggle process-wide env while the parent heartbeats/writes.
-            with tempfile.TemporaryDirectory(prefix='fixed-semantic-') as directory:
-                request=Path(directory)/'request.json'; output=Path(directory)/'result.json'
-                request.write_text(json.dumps({'phase':phase,'view':view,'schema':output_schema,
-                    'correction':correction,'input_limit':self.input_limit,
-                    'images':self.images,
-                    'native_task_id':os.environ['HERMES_KANBAN_TASK'],
-                    'native_run_id':os.environ['HERMES_KANBAN_RUN_ID']},ensure_ascii=False))
-                script=Path(__file__).resolve().parents[1]/'scripts/run_fixed_semantic_call.py'
-                try:
-                    result=subprocess.run([sys.executable,str(script),'--request',str(request),'--output',str(output)],
-                        env={**os.environ,'HERMES_DELEGATED_CHILD_CONTEXT':'1'},capture_output=True,text=True,timeout=660)
-                except subprocess.TimeoutExpired as exc:
-                    raise RuntimeError('fixed semantic child exceeded its bounded runtime') from exc
-                if result.returncode or not output.is_file():
-                    raise RuntimeError('fixed semantic child failed: '+result.stderr[-1000:])
-                value=json.loads(output.read_text())
-                return value['response'],value['metadata']
+        # SDK-supported context-local isolation: no process-wide environment
+        # changes and no second process/PID to coordinate with the parent lease.
+        from agent.delegation_context import delegated_child_context
+        with delegated_child_context():
+            raw,metadata=self._call(phase,view,output_schema,correction)
+        metadata.update(call_ownership='fixed_model_call',
+            parent_native_run_id=os.environ.get('HERMES_KANBAN_RUN_ID'))
+        return raw,metadata
+
+    def _call(self, phase, view, output_schema, correction=None):
         agent = self.make_agent()
         prompt = wire_prompt(phase,view,output_schema,correction)
         content=message_content(prompt['user'],self.images)
@@ -323,6 +308,47 @@ def pass_groups(packet,tasks,phase,limit,images=None):
     return groups
 
 
+def merge_citation_review(adapter,review,packet):
+    """Merge semantic changes into the exact observed candidate, not a new draft."""
+    with ACTION_LOCK:
+        binding=_load_json(Path(os.environ['HERMES_KANBAN_WORKSPACE'])/'worker-request.json')
+        checked=adapter.worker_check(binding)
+        _,context=load_context(adapter.workflow.vault,binding,checked)
+    alias=review['task']
+    task_id=dict(zip((f't{i}' for i in range(1,len(checked['task_ids'])+1)),checked['task_ids']))[alias]
+    paths=list((adapter.workflow.vault/f'_system/knowledge-builds/task-{task_id}/passes').glob('0000-*.json'))
+    if len(paths)!=1:
+        raise ContractError('STALE_INPUT','$','citation requires its observed original candidate')
+    prior=_load_json(paths[0]);validate_record('knowledge_pass',prior)
+    if (prior['pass_id']!=context['candidates'].get(alias)
+            or fingerprint({k:v for k,v in prior.items() if k!='pass_id'})!=prior['pass_id']):
+        raise ContractError('STALE_INPUT','$','reviewed candidate changed')
+    task=next(t for t in packet['tasks'] if t['task']==alias)
+    candidates=copy.deepcopy(task['continuation']['candidate']['candidates'])
+    updates={c['candidate_id']:c for c in review['candidates']}
+    removed=set(review['removed_candidate_ids'])
+    existing={c['candidate_id'] for c in candidates}
+    if (len(updates)!=len(review['candidates']) or not removed<=existing or removed & updates.keys()):
+        raise ContractError('INVALID_SCHEMA','$','citation changes need unique IDs; removals must name original candidates')
+    candidates=[copy.deepcopy(updates.pop(c['candidate_id'],c)) for c in candidates if c['candidate_id'] not in removed]
+    candidates.extend(copy.deepcopy(list(updates.values())))
+    # Restore the original inspected material set using existing short-ref expansion.
+    service=adapter.workflow.knowledge
+    package=service._existing_reading_package(service._task(task_id),binding['actor'],
+        service._batch(checked['batch_id'])['document_registry_revision'])
+    mapping=service.model_input(task_id,package)['mapping']
+    inspections=[{**i,'source_ref':service._model_handle(i['source_ref'],mapping)} for i in prior['inspections']]
+    by_ref={fingerprint(i['source_ref']):i for i in review['inspections']}
+    if len(by_ref)!=len(review['inspections']):
+        raise ContractError('INVALID_SCHEMA','$','citation inspection changes must be unique')
+    inspections=[copy.deepcopy(by_ref.pop(fingerprint(i['source_ref']),i)) for i in inspections]
+    inspections.extend(copy.deepcopy(list(by_ref.values())))
+    if candidates and review['empty_reason'].strip():
+        raise ContractError('INVALID_SCHEMA','$','nonempty citation cannot claim an empty result')
+    return {'task':alias,'decision':'revised','review_note':review['review_note'],
+        'candidates':candidates,'inspections':inspections,'empty_reason':review['empty_reason']}
+
+
 def run_pass(adapter,binding,caller):
     PASS_DONE.clear()
     with ACTION_LOCK:
@@ -357,6 +383,8 @@ def run_pass(adapter,binding,caller):
                         if item.get('decision')=='confirmed_unchanged':
                             confirmations.append({k:item[k] for k in ('task','decision','review_note')})
                         else:
+                            if phase=='citation':
+                                item=merge_citation_review(adapter,item,packet)
                             authored.append({**{k:v for k,v in item.items() if k not in ('decision','review_note')},
                                 'sequence':sequences[item['task']]})
                     failures=[]

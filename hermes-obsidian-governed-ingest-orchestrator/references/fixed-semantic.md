@@ -8,7 +8,11 @@ Pass executes candidate extraction followed by a separate citation review.
 The program resolves tN/mN identities, refreshes its own checked lease, assigns
 sequence numbers, validates and persists results, then completes the worker.
 The model must actually review candidates and original QA before confirming;
-changed facts, conditions or support require a revised draft. Already valid
+changed facts, conditions or support require only changed/new candidate entries,
+removed candidate IDs and changed inspections. The program merges them into the
+exact observed original and subjects the complete result to existing validation.
+Citation checks source fidelity and important omissions, not grouping or prose
+polish. Unchanged entries are retained; an absent review is never approval. Already valid
 partial Passes are preserved. A rejected semantic draft permits one bounded
 correction for the failed scope. Stale evidence, cancelled grants, unavailable
 bindings and material contract failures end execution without automatic rebind.
@@ -43,6 +47,13 @@ Read-only identity expansion happens before the shared workflow commit lock;
 live lease, source, ACL, revision and persistence checks still run under the lock.
 Call audits measure input/static codepoints and elapsed model time. These counts
 and basic checks do not establish full semantic acceptance or total cost savings.
+
+Calls use the SDK's context-local delegated-child scope in the owning program;
+no per-call subprocess or process-wide identity changes are needed. Model turn
+finalization cannot terminate the parent card. Native execution identity, lease
+settlement and durable completion remain program responsibilities. The trusted
+reconciler settles a terminated current run's exact lease before selecting new
+capacity, using the existing failure transition and retaining partial results.
 
 Semantic call audits link actual native session/output hashes to program receipts
 and bound preflights. Acceptance checks real transcripts and persisted Passes;

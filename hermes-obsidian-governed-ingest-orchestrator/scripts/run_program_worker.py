@@ -85,17 +85,9 @@ def run(vault, binding):
         return result
     except Exception as exc:
         completed.set()
-        if executor=='semantic-v1' and request['node'].startswith('pass-slice:'):
-            from fixed_semantic import ACTION_LOCK
-            with ACTION_LOCK:
-                path=Path(os.environ['HERMES_KANBAN_WORKSPACE'])/'worker-request.json'
-                if path.is_file():
-                    from hermes_source_units.source_units import _load_json
-                    try:
-                        live=_load_json(path); adapter.worker_check(live)
-                        adapter.worker_fail({**live,'code':getattr(exc,'code','MODEL_REQUEST_FAILED'),'message':str(exc)})
-                    except (ContractError,OSError,ValueError,KeyError):
-                        pass  # A changed/stopped/foreign lease is never refreshed.
+        # Record the cause. The trusted reconciler settles this exact ended
+        # native run's lease; failure cleanup does not depend on live input
+        # checks or compete with the worker heartbeat for a new revision.
         ref = adapter.execution_failure(request, getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED'), str(exc))
         _write_atomic(progress, _json_bytes({'state':'execution_blocked', 'executor':executor,
             'run_id':run_id, 'report_ref':ref, 'code':getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED')}))

@@ -82,7 +82,8 @@ def test_pass_admission_holds_live_domain_capacity_without_claiming():
 
 
 @pytest.mark.parametrize('aggregate_rejected',[False,True])
-def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypatch,aggregate_rejected):
+@pytest.mark.parametrize('citation_changes',[False,True])
+def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypatch,aggregate_rejected,citation_changes):
     from pathlib import Path
     from hermes_source_units import mutation_digest
     adapter,value,amendment=stopped
@@ -134,6 +135,14 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
                 draft.pop('input_id'); draft.pop('sequence'); drafts.append(draft)
             return fixture_response({'drafts':drafts})
         assert phase=='citation'
+        if citation_changes:
+            reviews=[]
+            for task in view['tasks']:
+                candidate=copy.deepcopy(task['candidate']['candidates'][0])
+                candidate['finding']+=' (source fidelity checked)'
+                reviews.append({'task':task['task'],'decision':'revised','review_note':'Checked conditions and support.',
+                    'candidates':[candidate],'removed_candidate_ids':[],'inspections':[],'empty_reason':''})
+            return fixture_response({'reviews':reviews})
         return fixture_response({'reviews':[{'task':t['task'],'decision':'confirmed_unchanged',
             'review_note':'Isolated fixture reviewed source conditions.'} for t in view['tasks']]})
     result=fixed.run_pass(adapter,binding,caller)
@@ -144,6 +153,14 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
     audits=[json.loads(p.read_text()) for p in (vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls").glob('*.json')]
     assert len(audits)==(3 if aggregate_rejected else 2)
     assert sum(a.get('validated',False) for a in audits)==2
+    if citation_changes:
+        for task_id in begun['task_ids']:
+            paths=sorted((vault/f'_system/knowledge-builds/task-{task_id}/passes').glob('*.json'))
+            records=[json.loads(p.read_text()) for p in paths]
+            assert records[1]['inspections']==records[0]['inspections']
+            assert records[1]['candidates'][0]['finding'].endswith('(source fidelity checked)')
+            assert records[1]['candidates'][0]['conditions']==records[0]['candidates'][0]['conditions']
+            assert records[1]['candidates'][1:]==records[0]['candidates'][1:]
     if aggregate_rejected:
         rejection=next(a for a in audits if not a['validated'])
         assert len(rejection['receipt_refs'])==1
@@ -154,6 +171,36 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
         fixed.model_call(adapter,binding,'candidate',{},lambda *a:pytest.fail('called'),1)
     with pytest.raises(ContractError):
         fixed.model_call(adapter,binding,'candidate',{},lambda *a:pytest.fail('called'),30000)
+
+
+@pytest.mark.parametrize('live',[False,True])
+def test_trusted_termination_settles_only_ended_current_lease(stopped,vault,monkeypatch,live):
+    from datetime import datetime
+    from pathlib import Path
+    from hermes_source_units import mutation_digest
+    adapter,value,amendment=stopped
+    amendment['worker_template']=(Path(fixed.__file__).parents[1]/'references/workers/pass-slice-compact.md').read_text()
+    amendment['input_digest']=mutation_digest(amendment)
+    current,begun=begin_amended(adapter,value,amendment,native_worker=True)
+    binding=begun['worker_request']
+    card=next(c for c in current['kanban']['task_map'] if c['task_id']==binding['task_id'])
+    path=vault/f"_system/ledgers/ingest-workflows/{current['workflow_id']}/bindings/{fingerprint(card['idempotency_key'])}.json"
+    path.with_suffix('.execution.json').write_text(json.dumps({'state':'execution_blocked','run_id':17}))
+    leased=adapter.workflow.knowledge._slice(current['batch_id'],binding['node'].partition(':')[2])
+    stamp=datetime.fromisoformat(leased['lease']['claimed_at'].replace('Z','+00:00')).timestamp()
+    row=next(r for r in adapter.kanban.by_id.values() if r['id']==binding['task_id'])
+    snapshot={'task':{'id':binding['task_id'],'status':'running' if live else 'archived',
+        'worker_pid':123 if live else None,'current_run_id':17 if live else None,
+        'created_by':'ingest-workflow','body':json.dumps(row['body'])},
+        'runs':[{'id':17,'started_at':stamp-1,'ended_at':None if live else stamp+1}]}
+    monkeypatch.setattr(adapter.kanban,'task_snapshot',lambda *a:snapshot)
+    adapter.execution_failure(binding,'LOCK_TIMEOUT','isolated shared lock failure')
+    adapter._settle_ended_pass_leases(current)
+    after=adapter.workflow.knowledge._slice(current['batch_id'],leased['slice_id'])
+    assert bool(after['lease']['worker_id'])==live
+    if not live:
+        assert after['state']=='blocked'
+        adapter._settle_ended_pass_leases(current)  # Idempotent after settlement.
 
 
 def test_multimodal_framing_is_exact_and_image_groups_keep_authority():

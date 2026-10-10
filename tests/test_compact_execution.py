@@ -84,7 +84,7 @@ def semantic_draft(view, alias='t1', sequence=None):
             'exceptions':[],'support_refs':[ref]}], 'empty_reason':''}
 
 
-def begin_amended(adapter,value,request):
+def begin_amended(adapter,value,request,*,native_worker=False):
     assert adapter.amend_execution(request)['applied']
     current=adapter.workflow.status(value['workflow_id'])
     adapter.resume(workflow_request(workflow_id=current['workflow_id'],actor='agent',expected_revision=current['revision']))
@@ -93,7 +93,7 @@ def begin_amended(adapter,value,request):
     card=next(c for c in current['kanban']['task_map'] if
         service._slice(current['batch_id'],c['node'].partition(':')[2])['state']!='completed')
     begun=adapter.worker_begin({'workflow_id':current['workflow_id'],'node':card['node'],
-        'task_id':card['task_id'],'worker_id':'compact-worker'})
+        'task_id':card['task_id'],'worker_id':'ingest-worker-'+card['task_id'] if native_worker else 'compact-worker'})
     return current,begun
 
 

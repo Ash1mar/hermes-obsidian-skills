@@ -32,6 +32,9 @@ def _schema(phase):
         confirmation = closed({'task':draft['properties']['task'],
             'decision':{'const':'confirmed_unchanged'},'review_note':TEXT})
         rewritten = copy.deepcopy(draft)
+        rewritten['properties']['removed_candidate_ids']={'type':'array','items':TEXT,'uniqueItems':True}
+        rewritten['required'].append('removed_candidate_ids')
+        rewritten['properties']['inspections'].pop('minItems',None)
         rewritten['properties'].update(decision={'const':'revised'},review_note=TEXT)
         rewritten['required'].extend(('decision','review_note'))
         result = closed({'reviews':{'type':'array','items':{'oneOf':[confirmation,rewritten]},'minItems':1}})
