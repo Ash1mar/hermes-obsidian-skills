@@ -3,5 +3,6 @@
   "template_version": "v12",
   "worker_dispatch_enabled": true,
   "source_prepare_concurrency": 2,
+  "semantic_images": {"max_images": 16, "max_bytes": 16777216},
   "activation_note": "In auto_full, dispatch source preparation, exact plan, an eight-slice canary, remaining Pass slices and all downstream nodes. Advance both checkpoints only after durable validation and rechecked hashed decisions."
 }

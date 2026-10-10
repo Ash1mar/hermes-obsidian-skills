@@ -1,14 +1,34 @@
 """Deliver only registered whole images already authorized by a checked packet."""
 import base64
 import hashlib
+import json
+from pathlib import Path
 from pathlib import PurePosixPath
 
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _vault_path
 
-MAX_IMAGES = 8
+MAX_IMAGES = 16
 MAX_IMAGE_BYTES = 16 * 1024 * 1024
 IMAGE_TYPES = {'image/png','image/jpeg','image/webp','image/gif'}
+
+
+def image_budget():
+    config=json.loads((Path(__file__).parents[1]/'config/orchestration.json').read_text())
+    budget=config.get('semantic_images',{'max_images':MAX_IMAGES,'max_bytes':MAX_IMAGE_BYTES})
+    if set(budget)!={'max_images','max_bytes'} or any(type(v)!=int or v<=0 for v in budget.values()):
+        raise ContractError('INVALID_SCHEMA','$','semantic image budget requires positive integer limits')
+    return budget
+
+
+def image_usage(images):
+    return {'image_count':len(images),'image_bytes':sum(i['bytes'] for i in images),
+            'largest_image_bytes':max((i['bytes'] for i in images),default=0),**image_budget()}
+
+
+def require_images_fit(images):
+    if not images_fit(images):
+        raise ContractError('SEMANTIC_IMAGE_OVERSIZE','$',json.dumps(image_usage(images),sort_keys=True))
 
 
 def image_catalog(adapter, packet):
@@ -35,8 +55,8 @@ def image_catalog(adapter, packet):
             if registered['media_type'] not in IMAGE_TYPES:
                 raise ContractError('UNSUPPORTED_SEMANTIC_ASSET','$','whole asset needs a supported semantic content transport')
             path=_vault_path(adapter.workflow.vault,relative)
-            if path.stat().st_size>MAX_IMAGE_BYTES:
-                raise ContractError('SEMANTIC_IMAGE_OVERSIZE','$','one whole image exceeds the payload budget')
+            if path.stat().st_size>image_budget()['max_bytes']:
+                require_images_fit([{'bytes':path.stat().st_size}])
             data=path.read_bytes()
             digest=hashlib.sha256(data).hexdigest()
             if digest!=registered['sha256']:
@@ -61,7 +81,8 @@ def select_images(tasks, catalog):
 
 
 def images_fit(images):
-    return len(images)<=MAX_IMAGES and sum(i['bytes'] for i in images)<=MAX_IMAGE_BYTES
+    budget=image_budget()
+    return len(images)<=budget['max_images'] and sum(i['bytes'] for i in images)<=budget['max_bytes']
 
 
 def message_content(text, images):

@@ -15,10 +15,10 @@ from hermes_source_units.validation import fingerprint, validate_record
 from native_ingest import worker_action, read_pass_input
 from native_pass_identity import visible_packet, load_context
 from program_worker import canonical_binding
-from fixed_semantic_schema import schema, validate
+from fixed_semantic_schema import schema, validate, slot_schema, slot_results, strict_schema
 import fixed_reduce
 import fixed_review
-from fixed_semantic_media import image_catalog, select_images, images_fit, message_content, normalize_content
+from fixed_semantic_media import image_catalog, select_images, images_fit, message_content, normalize_content, require_images_fit
 
 RULES = {
     'candidate':'Each task object defines an independent assignment through its materials and their core/context roles. Extract source-grounded facts, requirements and procedures from its core, grouping only statements with compatible conditions and scope. Inspect every core material; use context to interpret it, not to expand the assignment. Preserve exact facts, AND/OR, units, applicability, conditions and exceptions. Report uncertainty from QA and limits; omitted context is not evidence. Unread linked assets do not authorize invented facts. Shared text/QA handles are not citation targets. Use only assigned tN and authorized mN refs. Empty candidates need an actual empty_reason.',
@@ -68,19 +68,33 @@ class HermesCaller:
                 actual=[(m.get('role'),normalize_content(m.get('content'))) for m in messages]
                 if api_kwargs.get('tools') or actual!=expected:
                     raise RuntimeError('fixed semantic request contains extra tools, context or messages')
-                if len(json.dumps(self.fixed_text_request,ensure_ascii=False,separators=(',',':')))>self.fixed_limit:
+                format_schema=getattr(self,'fixed_output_schema',None)
+                schema_size=len(json.dumps(strict_schema(format_schema),ensure_ascii=False,separators=(',',':'))) if format_schema else 0
+                if len(json.dumps(self.fixed_text_request,ensure_ascii=False,separators=(',',':')))+schema_size>self.fixed_limit:
                     raise RuntimeError('actual fixed semantic request exceeds its input bound')
                 if not images_fit(self.fixed_images):
                     raise RuntimeError('actual fixed semantic image payload exceeds its bound')
                 self.fixed_request_checks+=1
 
             def _interruptible_api_call(self, api_kwargs):
+                self._apply_fixed_format(api_kwargs)
                 self._check_fixed_request(api_kwargs)
                 return super()._interruptible_api_call(api_kwargs)
 
             def _interruptible_streaming_api_call(self, api_kwargs, *args, **kwargs):
+                self._apply_fixed_format(api_kwargs)
                 self._check_fixed_request(api_kwargs)
                 return super()._interruptible_streaming_api_call(api_kwargs, *args, **kwargs)
+
+            def _apply_fixed_format(self, api_kwargs):
+                if getattr(self,'fixed_output_schema',None) is None: return
+                output={'type':'json_schema','name':'semantic_task_slots','strict':True,
+                        'schema':strict_schema(self.fixed_output_schema)}
+                if 'instructions' in api_kwargs:
+                    api_kwargs['text']={**api_kwargs.get('text',{}),'format':output}
+                else:
+                    api_kwargs['response_format']={'type':'json_schema','json_schema':{k:v for k,v in output.items() if k!='type'}}
+                self.fixed_structured_requests+=1
         self.db = SessionDB()
         fields = {k:self.runtime[k] for k in ('provider','api_mode','base_url','api_key','acp_command','acp_args') if k in self.runtime}
         # Native workers inherit lifecycle tools unless explicitly disabled.
@@ -94,6 +108,7 @@ class HermesCaller:
             agent.close(); self.db.close()
             raise RuntimeError('fixed semantic session unexpectedly exposes tools')
         agent.fixed_request_checks=0; agent.fixed_limit=self.input_limit
+        agent.fixed_structured_requests=0
         return agent
 
     def __call__(self, phase, view, output_schema, correction=None):
@@ -114,6 +129,7 @@ class HermesCaller:
         text=normalize_content(content)[0]
         agent.fixed_text_request={**prompt,'user':text}
         agent.fixed_images=self.images
+        agent.fixed_output_schema=output_schema if 'results' in output_schema.get('properties',{}) else None
         try:
             result=agent.run_conversation(content,system_message=prompt['system'])
             if result.get('error') or result.get('partial'):
@@ -125,6 +141,7 @@ class HermesCaller:
                 'model':agent.model,'provider':agent.provider,
                 'api_calls':result.get('api_calls'),'response_sha256':fingerprint(raw),
                 'fixed_request_checks':agent.fixed_request_checks,'tools':0,
+                'structured_output_requests':agent.fixed_structured_requests,
                 'image_count':len(self.images),'image_bytes':sum(i['bytes'] for i in self.images),
                 'system_codepoints':len(prompt['system']),'extra_context_codepoints':0}
         finally:
@@ -134,20 +151,26 @@ class HermesCaller:
 def wire_prompt(phase,view,output_schema,correction=None):
     # Native task identity is metadata, not a model-built request field.
     body={'phase':phase,'input':view,'output_schema':output_schema}
+    if phase in ('candidate','citation'):
+        # The actual request carries the schema once at the API boundary.
+        body.pop('output_schema')
+        body['required_result_slots']=[t['task'] for t in view.get('tasks',[])]
     if correction: body['correction'] = correction
     return {'system':COMMON+'\n'+RULES[phase],
         'user':'Native task '+os.environ.get('HERMES_KANBAN_TASK','isolated-test')+'\n'+json.dumps(body,ensure_ascii=False,separators=(',',':'))}
 
 
 def model_call(adapter,binding,phase,view,caller,limit,correction=None):
-    output_schema=schema(phase); wire=wire_prompt(phase,view,output_schema,correction)
+    output_schema=slot_schema(phase,view.get('tasks',[])) if phase in ('candidate','citation') else schema(phase)
+    wire=wire_prompt(phase,view,output_schema,correction)
     images=[]
     if isinstance(caller,HermesCaller):
         images=select_images(view.get('tasks',[]),getattr(caller,'image_catalog',{}))
         caller.images=images
         content=message_content(wire['user'],images)
         wire={**wire,'user':normalize_content(content)[0]}
-    size=len(json.dumps(wire,ensure_ascii=False,separators=(',',':')))
+    schema_size=len(json.dumps(strict_schema(output_schema),ensure_ascii=False,separators=(',',':'))) if phase in ('candidate','citation') else 0
+    size=len(json.dumps(wire,ensure_ascii=False,separators=(',',':')))+schema_size
     if size>limit:
         raise ContractError('READING_WINDOW_OVERSIZE','$','fixed task instructions/schema/materials exceed the bound; no truncation or model call')
     with ACTION_LOCK:
@@ -167,12 +190,17 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None):
         'response_sha256':fingerprint(raw),'input_codepoints':size,'limit':limit,
         'model_elapsed_ms':int(round((time.monotonic()-started)*1000)),
         'static_codepoints':len(wire['system'])+len(json.dumps(output_schema,ensure_ascii=False,separators=(',',':'))),
+        'structured_schema_codepoints':schema_size,
         'model':metadata,'receipt_refs':[]}
     if images:
         audit['image_inputs']=[{k:v for k,v in image.items() if k!='url'} for image in images]
     if phase in ('candidate','citation'):
+        with ACTION_LOCK:
+            current_binding=_load_json(Path(os.environ['HERMES_KANBAN_WORKSPACE'])/'worker-request.json')
+            identity=adapter.worker_check(current_binding,verify_inputs=False)
         audit.update(output_token_limit=OUTPUT_TOKENS,output_planning_reserve=OUTPUT_RESERVE,
-            estimated_output_tokens=estimate_pass_output_tokens(view,view['tasks']),task_count=len(view['tasks']))
+            estimated_output_tokens=estimate_pass_output_tokens(view,view['tasks']),task_count=len(view['tasks']),
+            task_identities={f't{i}':tid for i,tid in enumerate(identity['task_ids'],1)})
     ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls/{fingerprint(audit)}.json"
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(audit))
     try:
@@ -181,6 +209,8 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None):
             audit.update(response_transport_normalization=normalization,
                 semantic_response_sha256=fingerprint(value))
             _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(audit))
+        if phase in ('candidate','citation'):
+            return slot_results(phase,value,view['tasks']),ref
         validate(phase,value)
         if 'blocked_reason' in value: raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',value['blocked_reason'])
         return value,ref
@@ -202,7 +232,13 @@ def decode_semantic_response(raw):
         text=text[len('<final>'):-len('</final>')].strip();normalization='final_channel_envelope'
     elif text.endswith('</final>'):
         text=text[:-len('</final>')].strip();normalization='final_channel_terminator'
-    return json.loads(text),normalization
+    def unique_object(pairs):
+        value={}
+        for key,item in pairs:
+            if key in value: raise json.JSONDecodeError('duplicate object key: '+key,text,0)
+            value[key]=item
+        return value
+    return json.loads(text,object_pairs_hook=unique_object),normalization
 
 
 def attach_receipt(adapter,ref,receipt):
@@ -289,10 +325,10 @@ def pass_groups(packet,tasks,phase,limit,images=None):
     for task in tasks:
         trial=[*group,task]
         def size_of(items):
-            prompt=wire_prompt(phase,subset(packet,items,phase),schema(phase))
+            prompt=wire_prompt(phase,subset(packet,items,phase),slot_schema(phase,items))
             if images is not None:
                 prompt['user']=normalize_content(message_content(prompt['user'],select_images(items,images)))[0]
-            return len(json.dumps(prompt,ensure_ascii=False,separators=(',',':')))
+            return len(json.dumps(prompt,ensure_ascii=False,separators=(',',':')))+len(json.dumps(strict_schema(slot_schema(phase,items)),ensure_ascii=False,separators=(',',':')))
         size=size_of(trial)
         image_over=images is not None and not images_fit(select_images(trial,images))
         if group and (size>limit-512 or estimate_pass_output_tokens(packet,trial)>OUTPUT_TOKENS-OUTPUT_RESERVE or image_over):
@@ -301,7 +337,7 @@ def pass_groups(packet,tasks,phase,limit,images=None):
         if estimate_pass_output_tokens(packet,group)>OUTPUT_TOKENS-OUTPUT_RESERVE:
             raise ContractError('SEMANTIC_OUTPUT_OVERSIZE','$','one authorized task exceeds the output planning budget; no material is truncated')
         if images is not None and not images_fit(select_images(group,images)):
-            raise ContractError('SEMANTIC_IMAGE_OVERSIZE','$','one authorized task exceeds the whole-image budget')
+            require_images_fit(select_images(group,images))
         if size_of(group)>limit:
             raise ContractError('READING_WINDOW_OVERSIZE','$','one authorized task exceeds the input budget; no material is truncated')
     if group:groups.append(group)
@@ -370,13 +406,22 @@ def run_pass(adapter,binding,caller):
         groups=pass_groups(packet,pending,phase,limit,images)
         for tasks in groups:
             correction=None
-            for attempt in range(2):
+            recovery_checked=False;attempt=0
+            while attempt<2:
+                recovered=None
                 try:
-                    draft,call_ref=model_call(adapter,binding,phase,subset(packet,tasks,phase),caller,limit,correction)
+                    view=subset(packet,tasks,phase)
+                    from fixed_semantic_recovery import recover
+                    recovered=recover(adapter,binding,phase,view,decode_semantic_response,COMMON+'\n'+RULES[phase]) if isinstance(caller,HermesCaller) and not recovery_checked else None
+                    recovery_checked=True
+                    if recovered:
+                        draft,call_ref=recovered
+                        found={i['task'] for i in draft['drafts' if phase=='candidate' else 'reviews']}
+                        remaining=[t for t in tasks if t['task'] not in found]
+                        draft['slot_failures']=[{'task':t['task'],'code':'INCOMPLETE_COVERAGE','message':'no reusable audited result; obtain remaining semantic work'} for t in remaining]
+                    else:
+                        draft,call_ref=model_call(adapter,binding,phase,view,caller,limit,correction)
                     items=draft['drafts' if phase=='candidate' else 'reviews']
-                    expected={t['task'] for t in tasks}
-                    if len(items)!=len(expected) or {d['task'] for d in items}!=expected:
-                        raise ContractError('INVALID_SCHEMA','$','return each assigned task exactly once')
                     sequences={t['task']:t['next_sequence'] for t in tasks}
                     authored=[]; confirmations=[]
                     for item in items:
@@ -387,7 +432,7 @@ def run_pass(adapter,binding,caller):
                                 item=merge_citation_review(adapter,item,packet)
                             authored.append({**{k:v for k,v in item.items() if k not in ('decision','review_note')},
                                 'sequence':sequences[item['task']]})
-                    failures=[]
+                    failures=list(draft.get('slot_failures',[]))
                     for action,key,payload in (('submit','passes',authored),('confirm','confirmations',confirmations)):
                         if not payload: continue
                         result=pass_action(adapter.workflow.vault,action,{key:payload}); attach_receipt(adapter,call_ref,result)
@@ -402,7 +447,10 @@ def run_pass(adapter,binding,caller):
                 except ContractError as exc:
                     if exc.code not in ('INVALID_SCHEMA','UNRESOLVED_REFERENCE','UNINSPECTED_SUPPORT','INCOMPLETE_COVERAGE'): raise
                     correction={'code':exc.code,'message':str(exc)[:500]}
-                if attempt:
+                if recovered:
+                    continue  # Mechanical replay consumes no semantic correction budget.
+                attempt+=1
+                if attempt>=2:
                     raise ContractError('SEMANTIC_DRAFT_REJECTED','$','one bounded semantic correction was exhausted; preserve valid partial Passes')
     return pass_action(adapter.workflow.vault,'complete')
 

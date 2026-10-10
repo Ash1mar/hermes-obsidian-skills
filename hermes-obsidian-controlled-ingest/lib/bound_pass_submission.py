@@ -35,7 +35,7 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
     else:
         expanded = service.expand_model_passes(request, checked['task_ids'], binding['actor'], checked['batch_id'])
     with worker_binding(binding), workflow_write_guard(vault, kinds=('pass-slice',), actor=binding['actor']):
-        live = adapter.worker_check(binding)
+        live = adapter.worker_check(binding, verify_inputs=False)
         if live != checked:
             raise ContractError('STALE_INPUT', '$', 'bound slice changed after read-only expansion')
         audit = {'worker_request_digest': fingerprint(binding), 'workflow_id': binding['workflow_id'],
@@ -43,7 +43,7 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
                  'lease_revision': binding['expected_revision'], 'semantic_request_digest': fingerprint(request)}
         result = service.record_pass_batch({**expanded, 'slice_id': checked['slice_id'],
             'worker_id': binding['worker_id'], 'template_hash': binding['template_hash']},
-            lock_timeout=WORKER_LOCK_TIMEOUT, lock_check=lambda: adapter.worker_check(binding), submission_audit=audit)
+            lock_timeout=WORKER_LOCK_TIMEOUT, lock_check=lambda: adapter.worker_check(binding, verify_inputs=False), submission_audit=audit)
         aliases = {tid: f't{i}' for i, tid in enumerate(checked['task_ids'], 1)}
         receipts = []
         for r in result['results']:

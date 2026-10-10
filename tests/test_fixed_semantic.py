@@ -38,6 +38,10 @@ def test_fixed_pass_admission_precedes_lease_and_preserves_runtime_guard(stopped
 
 
 def fixture_response(value):
+    for key in ('drafts','reviews'):
+        if key in value:
+            value={'results':{item['task']:{k:v for k,v in item.items() if k!='task'} for item in value[key]}}
+            break
     raw=json.dumps(value)
     return raw,{'origin':'isolated_fixture','response_sha256':fingerprint(raw)}
 
@@ -47,8 +51,71 @@ def test_semantic_transport_preserves_strings_and_rejects_extra_content():
     for wire in (raw,raw+'</final>','<final>'+raw+'</final>'):
         value,_=fixed.decode_semantic_response(wire)
         assert value=={'review_note':'source literally contains </final>'}
-    for wire in (raw+' commentary',raw+'{}',raw+'{}</final>','```json\n'+raw+'\n```'):
+    for wire in (raw+' commentary',raw+'{}',raw+'{}</final>','```json\n'+raw+'\n```','{"t1":{},"t1":{}}'):
         with pytest.raises(json.JSONDecodeError):fixed.decode_semantic_response(wire)
+
+
+def test_fixed_slots_preserve_valid_reviews_and_target_missing_tasks():
+    from fixed_semantic_schema import slot_schema,slot_results,strict_schema
+    tasks=[{'task':'t1'},{'task':'t4'}]
+    output=slot_schema('citation',tasks)
+    assert output['properties']['results']['required']==['t1','t4']
+    strict=strict_schema(output)
+    assert strict['type']=='object' and strict['additionalProperties'] is False
+    unchanged={'decision':'confirmed_unchanged','review_note':'Checked source conditions.'}
+    partial=slot_results('citation',{'results':{'t1':unchanged}},tasks)
+    assert partial['reviews']==[{'task':'t1',**unchanged}]
+    assert [f['task'] for f in partial['slot_failures']]==['t4']
+    assert slot_results('citation',{'results':{'t1':unchanged,'t4':unchanged}},tasks)['slot_failures']==[]
+    with pytest.raises(ContractError,match='unexpected task slots'):
+        slot_results('citation',{'results':{'t2':unchanged}},tasks)
+    spoof=slot_results('citation',{'results':{'t1':{**unchanged,'task':'t4'},'t4':unchanged}},tasks)
+    assert [r['task'] for r in spoof['reviews']]==['t4']
+
+
+def test_image_budget_preserves_nine_complete_images_and_reports_actual_limits():
+    from fixed_semantic_media import require_images_fit,image_budget
+    nine=[{'bytes':35000} for _ in range(9)]
+    require_images_fit(nine)
+    budget=image_budget()
+    with pytest.raises(ContractError,match='image_count'):
+        require_images_fit([{'bytes':1} for _ in range(budget['max_images']+1)])
+    with pytest.raises(ContractError,match='largest_image_bytes'):
+        require_images_fit([{'bytes':budget['max_bytes']+1}])
+
+
+def test_audited_recovery_requires_same_task_input_and_native_response(tmp_path):
+    import sqlite3
+    from types import SimpleNamespace
+    from fixed_semantic_recovery import recover
+    home=tmp_path/'isolated-home';home.mkdir()
+    wid='isolated-workflow'
+    binding={'workflow_id':wid,'task_id':'fresh-native','node':'pass-slice:new','template_hash':'current'}
+    task={'task':'t1','materials':[{'ref':'m1','role':'core','text_ref':'c1','heading':0}],
+          'candidate':{'candidates':[]},'limits':{}}
+    view={'tasks':[task],'texts':{'c1':'Condition AND exception.'},'headings':{'0':['Scope']}}
+    user='Native task prior-native\n'+json.dumps({'phase':'citation','input':view})
+    raw=json.dumps({'reviews':[{'task':'t1','decision':'confirmed_unchanged','review_note':'Source reviewed.'}]})
+    db=sqlite3.connect(home/'state.db')
+    db.executescript('CREATE TABLE sessions(id TEXT,source TEXT);CREATE TABLE messages(session_id TEXT,role TEXT,content TEXT,tool_calls TEXT);')
+    db.execute('INSERT INTO sessions VALUES (?,?)',('fixture','kanban'))
+    db.executemany('INSERT INTO messages VALUES (?,?,?,?)',[('fixture',r,c,None) for r,c in [('system','fixed system'),('user',user),('assistant',raw)]])
+    db.commit();db.close()
+    root=tmp_path/'_system/ledgers/ingest-workflows'/wid/'semantic-calls';root.mkdir(parents=True)
+    audit={'workflow_id':wid,'phase':'citation','native_task_id':'prior-native','node':'pass-slice:old',
+           'user_sha256':fingerprint(user),'response_sha256':fingerprint(raw),
+           'model':{'origin':'hermes_native_model','session_id':'fixture','response_sha256':fingerprint(raw)}}
+    (root/'old.json').write_text(json.dumps(audit))
+    adapter=SimpleNamespace(worker_check=lambda b:{'batch_id':'b','task_ids':['same-task']},
+        workflow=SimpleNamespace(vault=tmp_path,knowledge=SimpleNamespace(_slice=lambda *a:{'task_ids':['same-task']})))
+    result= recover(adapter,binding,'citation',view,fixed.decode_semantic_response,'fixed system',home=home)
+    assert result[0]['reviews'][0]['task']=='t1'
+    changed=copy.deepcopy(view);changed['texts']['c1']='Changed OR scope.'
+    assert recover(adapter,binding,'citation',changed,fixed.decode_semantic_response,'fixed system',home=home) is None
+    assert recover(adapter,binding,'citation',view,fixed.decode_semantic_response,'changed instructions',home=home) is None
+    audit['response_sha256']=fingerprint('tampered')
+    (root/'old.json').write_text(json.dumps(audit))
+    assert recover(adapter,binding,'citation',view,fixed.decode_semantic_response,'fixed system',home=home) is None
 
 
 def test_pass_groups_bound_output_without_dropping_semantic_limits():
@@ -168,9 +235,9 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
         assert receipt['code']=='INVALID_SCHEMA' and receipt['state']=='draft_rejected'
     # No budget overflow call and no automatic stale-lease repair.
     with pytest.raises(ContractError,match='READING_WINDOW_OVERSIZE'):
-        fixed.model_call(adapter,binding,'candidate',{},lambda *a:pytest.fail('called'),1)
+        fixed.model_call(adapter,binding,'candidate',{'tasks':[]},lambda *a:pytest.fail('called'),1)
     with pytest.raises(ContractError):
-        fixed.model_call(adapter,binding,'candidate',{},lambda *a:pytest.fail('called'),30000)
+        fixed.model_call(adapter,binding,'candidate',{'tasks':[]},lambda *a:pytest.fail('called'),30000)
 
 
 @pytest.mark.parametrize('live',[False,True])

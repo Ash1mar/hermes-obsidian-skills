@@ -60,3 +60,22 @@ and bound preflights. Acceptance checks real transcripts and persisted Passes;
 it does not require a model execution-tool call or count fixtures as native proof.
 An unexpected exception is recorded for operator diagnosis, not routed to an
 open agent inside the worker. Existing pause and separate authorization rules apply.
+
+Pass return keys are fixed by the program. Strict structured schema is sent at
+the Responses/Chat boundary, counted in the input budget, and not copied again
+into prompt text. Local canonical validation remains authoritative. Missing or
+invalid slots cannot complete a slice; valid slots are submitted once and only
+affected slots receive the bounded correction. Duplicate JSON keys are rejected.
+
+Image count and total bytes are configured in `config/orchestration.json`.
+Whole evidence remains intact; oversize reports include actual count, total and
+largest bytes plus configured limits. This local budget is not a claim about all
+providers' capacities; native acceptance must establish the active route.
+
+Shared lock owners and independent host diagnostics record PID, operation, wait,
+hold time and exit reason. Preparation measures outside the workflow commit lock
+and rechecks snapshot signatures and current task/lease authority before writes.
+Heartbeats check lifecycle identity without rebuilding semantic input; submission
+still validates live source/ACL and canonical output. Genuine audited responses
+can be reused only for the same task with identical fresh input and instructions,
+with original native provenance linked explicitly and current bound preflight.

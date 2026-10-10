@@ -430,6 +430,7 @@ class IngestKanbanAdapter:
     def __init__(self, vault: str | Path, kanban: KanbanCLI | None = None,
                  *, enable_workers: bool = False):
         self.workflow = FileIngestWorkflowService(vault)
+        self.workflow.knowledge.source.enable_session_cache()
         self.kanban = kanban or KanbanCLI()
         self.enable_workers = enable_workers
         config = _load_json(Path(__file__).resolve().parents[2] /
@@ -1143,7 +1144,7 @@ class IngestKanbanAdapter:
                                   if updated.get('pass_revision') else None)}
 
     def _slice_worker(self, workflow_id: str, node_name: str,
-                      task_id: str) -> tuple[dict[str, Any], dict[str, Any]]:
+                      task_id: str, *, verify_inputs: bool = True) -> tuple[dict[str, Any], dict[str, Any]]:
         if not self.enable_workers:
             _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
         workflow = self.workflow.status(workflow_id)
@@ -1176,7 +1177,7 @@ class IngestKanbanAdapter:
         inputs = []
         for task_id in value["task_ids"]:
             task = self.workflow.knowledge._task(task_id)
-            measured = self.workflow.knowledge._slice_task_input(batch, task, remeasure=True)
+            measured = self.workflow.knowledge._slice_task_input(batch, task, remeasure=verify_inputs)
             if measured["blocking_code"]:
                 _fail("STALE_INPUT", "slice task no longer fits its reading window")
             inputs.append({"task_id": task_id, "fingerprint": measured["fingerprint"]})
@@ -1186,9 +1187,9 @@ class IngestKanbanAdapter:
             if [i['task_id'] for i in group] != value['task_ids']:
                 _fail('STALE_INPUT', 'compact slice task ownership changed')
             for expected, measured in zip(group, inputs):
-                projection = self.workflow.knowledge.preview_model_input(expected['task_id'], batch)
+                projection = self.workflow.knowledge.preview_model_input(expected['task_id'], batch) if verify_inputs else None
                 if (measured['fingerprint'] != expected['canonical_fingerprint'] or
-                        projection['input_id'] != expected['input_id']):
+                        projection is not None and projection['input_id'] != expected['input_id']):
                     _fail('STALE_INPUT', 'canonical or model input changed after execution planning')
             observed = 'sha256:' + fingerprint({'amendment_id':plan['amendment_id'], 'tasks':group,
                 'config':plan['config'], 'renderer':RENDERER,'template_hash':value['template_hash']})
@@ -1499,14 +1500,16 @@ class IngestKanbanAdapter:
             result = self.workflow.knowledge.batch_next_slice(
                 workflow["batch_id"], worker_id, slice_id=value["slice_id"],
                 lock_timeout=WORKER_LOCK_TIMEOUT,
-                lock_check=lambda: self._slice_worker(workflow_id, node_name, str(request['task_id'])))
+                lock_check=lambda: self._slice_worker(workflow_id, node_name, str(request['task_id']), verify_inputs=False))
             if not result["leased"]:
                 return result
             bound = {**request, 'expected_revision':result['slice']['revision'],
                      'template_hash':result['slice']['template_hash'], 'actor':workflow['actor']}
+        with worker_binding(dict(bound)):
             prepared = self.workflow.knowledge.prepare_leased_slice(
                 workflow['batch_id'], value['slice_id'], worker_id, result['slice']['revision'],
-                check=lambda: self.worker_check(bound), timeout=WORKER_LOCK_TIMEOUT)
+                check=lambda: self.worker_check(bound, verify_inputs=False), timeout=WORKER_LOCK_TIMEOUT,
+                write_guard=lambda: workflow_write_guard(self.workflow.vault,kinds=('pass-slice',),actor=workflow['actor']))
             effective = (self.workflow.execution_template(workflow, value['slice_id'])
                          or self.workflow.pinned_templates(workflow)['pass-slice'])
             if ((self.workflow.execution_template(workflow, value['slice_id']) is not None
@@ -1518,7 +1521,10 @@ class IngestKanbanAdapter:
                     for descriptor in prepared['reading_packages']:
                         package = _load_json(_vault_path(self.workflow.vault, descriptor['path']))
                         projections.append(self.workflow.knowledge.model_input(descriptor['task_id'], package))
-                    packet = self.workflow.knowledge.model_packet(projections, workflow['batch_id'], persist=True)
+                    self.worker_check(bound)
+                    with workflow_write_guard(self.workflow.vault,kinds=('pass-slice',),actor=workflow['actor']):
+                        self.worker_check(bound, verify_inputs=False)
+                        packet = self.workflow.knowledge.model_packet(projections, workflow['batch_id'], persist=True)
                     # Canonical packages and task snapshots never reach the model.
                     receipt = {'ok':True, 'leased':True, 'model_input':{'path':packet['path'],
                         'input_codepoints':packet['codepoints'],'task_count':len(projections)},
@@ -1543,7 +1549,7 @@ class IngestKanbanAdapter:
                     'tasks': [t for t in workflow['pass_revision']['tasks'] if t['task_id'] in value['task_ids']]}}
                     if self.workflow.revision_allows(workflow, node_name) else {})}
 
-    def worker_check(self, request: Mapping[str, Any]) -> dict[str, Any]:
+    def worker_check(self, request: Mapping[str, Any], *, verify_inputs: bool = True) -> dict[str, Any]:
         self.validate_worker_request(request)
         if str(request["node"]).startswith("source-prepare:") or request["node"] == "exact-plan":
             workflow, node, source = self._pre_worker(request)
@@ -1556,7 +1562,7 @@ class IngestKanbanAdapter:
                     "input_fingerprint": node.input_fingerprint}
         workflow, value = self._slice_worker(str(request["workflow_id"]),
                                              str(request["node"]),
-                                             str(request["task_id"]))
+                                             str(request["task_id"]), verify_inputs=verify_inputs)
         if (value["state"] != "leased"
                 or value["lease"]["worker_id"] != request["worker_id"]
                 or value["revision"] != request["expected_revision"]
@@ -1574,13 +1580,13 @@ class IngestKanbanAdapter:
     def worker_heartbeat(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if not str(request["node"]).startswith("pass-slice:"):
             return self.worker_check(request)
-        checked = self.worker_check(request)
+        checked = self.worker_check(request, verify_inputs=False)
         with worker_binding(dict(request)), workflow_write_guard(
                 self.workflow.vault, kinds=('pass-slice',)):
             result = self.workflow.knowledge.slice_heartbeat(
                 checked["batch_id"], checked["slice_id"],
                 str(request["worker_id"]), int(request["expected_revision"]),
-                lock_timeout=WORKER_LOCK_TIMEOUT, lock_check=lambda: self.worker_check(request))
+                lock_timeout=WORKER_LOCK_TIMEOUT, lock_check=lambda: self.worker_check(request, verify_inputs=False))
         result["worker_request"] = {**request,
                                     "expected_revision": result["slice"]["revision"]}
         return result

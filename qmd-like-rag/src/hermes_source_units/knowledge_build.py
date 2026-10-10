@@ -1407,8 +1407,25 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             return {"ok": not failures, "batch": updated, "results": results, "failures": failures}
 
     def prepare_leased_slice(self, batch_id: str, slice_id: str, worker_id: str,
-                             expected_revision: int, *, check, timeout: float) -> dict[str, Any]:
+                             expected_revision: int, *, check, timeout: float,
+                             write_guard=None, _verified=None) -> dict[str, Any]:
         """Prepare only a checked lease's tasks, never scan the whole batch."""
+        # Verify full immutable reading authority outside the workflow/batch locks.
+        # Before writes, recheck signatures, lease, task revisions and live policy.
+        if write_guard is not None:
+            with self.source.reading_snapshot():
+                batch,value=self._batch(batch_id),self._slice(batch_id,slice_id)
+                before={};verified={}
+                for task_id in value['task_ids']:
+                    task=self._task(task_id);before[task_id]=task
+                    verified[task_id]=self._verify_planned_measurement(task,batch['actor'],
+                        batch['document_registry_revision'],batch.get('max_codepoints'))
+                with write_guard():
+                    self.source.assert_reading_snapshot_current()
+                    if any(self._task(tid)!=task for tid,task in before.items()):
+                        _fail('STALE_INPUT','task changed during preparation')
+                    return self.prepare_leased_slice(batch_id,slice_id,worker_id,expected_revision,
+                        check=check,timeout=timeout,_verified=verified)
         self.source.enable_session_cache()
         with _exclusive_lock(self._batch_lock_path(batch_id), timeout=timeout, check=check):
             check()
@@ -1427,7 +1444,11 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 if revision and target is None:
                     continue
                 task = self._task(task_id)
-                self._verify_planned_measurement(task, actor, registry, batch.get('max_codepoints'))
+                if _verified is None:
+                    self._verify_planned_measurement(task, actor, registry, batch.get('max_codepoints'))
+                elif _verified.get(task_id) != task.get('reading_measurement'):
+                    _fail('STALE_INPUT','planned measurement changed during preparation')
+                self.source.assert_reading_snapshot_current()
                 if task['status'] == 'pending':
                     task = self.claim_task(task_id, actor, task['revision'])['task']
                 if task['status'] != 'running' or task['actor'] != actor:
