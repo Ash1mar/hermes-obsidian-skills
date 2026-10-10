@@ -154,7 +154,7 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
     assert len(audits)==(3 if aggregate_rejected else 2)
     assert sum(a.get('validated',False) for a in audits)==2
     if citation_changes:
-        for task_id in begun['task_ids']:
+        for task_id in adapter.workflow.knowledge._slice(current['batch_id'],binding['node'].partition(':')[2])['task_ids']:
             paths=sorted((vault/f'_system/knowledge-builds/task-{task_id}/passes').glob('*.json'))
             records=[json.loads(p.read_text()) for p in paths]
             assert records[1]['inspections']==records[0]['inspections']
