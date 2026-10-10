@@ -104,6 +104,7 @@ def test_audited_recovery_requires_same_task_input_and_native_response(tmp_path)
     root=tmp_path/'_system/ledgers/ingest-workflows'/wid/'semantic-calls';root.mkdir(parents=True)
     audit={'workflow_id':wid,'phase':'citation','native_task_id':'prior-native','node':'pass-slice:old',
            'user_sha256':fingerprint(user),'response_sha256':fingerprint(raw),
+           'input_sha256':fingerprint({'system':'fixed system','user':user}),
            'model':{'origin':'hermes_native_model','session_id':'fixture','response_sha256':fingerprint(raw)}}
     (root/'old.json').write_text(json.dumps(audit))
     adapter=SimpleNamespace(worker_check=lambda b:{'batch_id':'b','task_ids':['same-task']},

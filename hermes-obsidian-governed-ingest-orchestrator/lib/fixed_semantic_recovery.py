@@ -54,8 +54,9 @@ def recover(adapter, binding, phase, view, decode, system, *, home=None):
             if len(users)!=1 or len(raw)!=1 or model.get('response_sha256')!=audit['response_sha256']:continue
             try:
                 body=json.loads(users[0].partition('\n')[2]);old_view=body['input']
-                # Match the actual native system instruction, not an inferred prompt version.
-                if not any(role=='system' and c==system for role,c,_ in rows):continue
+                # Hermes persists user/assistant only. The guarded native audit
+                # binds exact system+user bytes; a prompt-version guess cannot pass.
+                if audit.get('input_sha256')!=fingerprint({'system':system,'user':users[0]}):continue
                 old_slice=adapter.workflow.knowledge._slice(checked['batch_id'],audit['node'].partition(':')[2])
                 old_ids=audit.get('task_identities') or {f't{i}':tid for i,tid in enumerate(old_slice['task_ids'],1)}
                 decoded,_=decode(raw[0])
