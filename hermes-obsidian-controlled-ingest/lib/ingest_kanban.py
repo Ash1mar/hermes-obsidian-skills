@@ -628,17 +628,20 @@ class IngestKanbanAdapter:
             claim_at=datetime.fromisoformat(leased['lease']['claimed_at'].replace('Z','+00:00')).timestamp()
             if not float(ended['started_at'])<=claim_at<=float(ended['ended_at']):
                 continue
+            node=pass_node(value,leased)
             if (task.get('created_by')!='ingest-workflow'
                     or any(body.get(k)!=v for k,v in {'workflow_id':value['workflow_id'],
                         'node':node_name,'vault':str(self.workflow.vault),'worker_binding':str(binding_path),
-                        'input_fingerprint':leased['input_fingerprint']}.items())):
+                        'input_fingerprint':node.input_fingerprint}.items())):
                 _fail('STALE_INPUT','ended worker identity differs from its domain lease')
             binding=_load_json(binding_path)
             if (binding.get('task_id')!=card['task_id'] or binding.get('node')!=node_name
                     or binding.get('worker_id')!=leased['lease']['worker_id']
-                    or binding.get('input_fingerprint')!=leased['input_fingerprint']):
+                    or binding.get('input_fingerprint')!=node.input_fingerprint
+                    or binding.get('workflow_id')!=value['workflow_id']
+                    or binding.get('actor')!=value['actor']
+                    or binding.get('template_hash')!=leased['template_hash']):
                 _fail('STALE_INPUT','ended worker binding differs from its lease')
-            node=pass_node(value,leased)
             if domain_completed(self.workflow,value,node):
                 continue  # Completion acknowledgement owns valid finished products.
             if not self._failed_card(value['workflow_id'],node):
