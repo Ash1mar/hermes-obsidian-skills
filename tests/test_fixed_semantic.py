@@ -213,6 +213,18 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
             return fixture_response({'reviews':reviews})
         return fixture_response({'reviews':[{'task':t['task'],'decision':'confirmed_unchanged',
             'review_note':'Isolated fixture reviewed source conditions.'} for t in view['tasks']]})
+    if not aggregate_rejected and not citation_changes:
+        original_caller=caller
+        class NativeFixtureCaller(fixed.HermesCaller):
+            def __init__(self): pass
+            def __call__(self,*args): return original_caller(*args)
+        caller=NativeFixtureCaller()
+        import fixed_semantic_recovery
+        def verify_live_recovery_binding(adapter,actual,*args):
+            assert actual==json.loads((workspace/'worker-request.json').read_text())
+            assert adapter.worker_check(actual)['ok']
+            return None
+        monkeypatch.setattr(fixed_semantic_recovery,'recover',verify_live_recovery_binding)
     result=fixed.run_pass(adapter,binding,caller)
     assert result['domain_complete'] and calls==(['candidate','candidate','citation'] if aggregate_rejected else ['candidate','citation'])
     assert expansion_guards and all(g is None for g in expansion_guards)

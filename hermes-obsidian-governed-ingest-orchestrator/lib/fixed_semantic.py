@@ -412,7 +412,10 @@ def run_pass(adapter,binding,caller):
                 try:
                     view=subset(packet,tasks,phase)
                     from fixed_semantic_recovery import recover
-                    recovered=recover(adapter,binding,phase,view,decode_semantic_response,COMMON+'\n'+RULES[phase]) if isinstance(caller,HermesCaller) and not recovery_checked else None
+                    if isinstance(caller,HermesCaller) and not recovery_checked:
+                        with ACTION_LOCK:
+                            live_binding=_load_json(Path(os.environ['HERMES_KANBAN_WORKSPACE'])/'worker-request.json')
+                            recovered=recover(adapter,live_binding,phase,view,decode_semantic_response,COMMON+'\n'+RULES[phase])
                     recovery_checked=True
                     if recovered:
                         draft,call_ref=recovered
