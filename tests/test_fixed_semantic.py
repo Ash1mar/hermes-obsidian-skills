@@ -140,6 +140,20 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
     assert result['domain_complete'] and calls==(['candidate','candidate','citation'] if aggregate_rejected else ['candidate','citation'])
     assert expansion_guards and all(g is None for g in expansion_guards)
     assert all(p.read_bytes()==raw for p,raw in before.items())
+    assert not adapter.workflow.knowledge._slice(current['batch_id'],binding['node'].partition(':')[2])['lease']['worker_id']
+    audits=[json.loads(p.read_text()) for p in (vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls").glob('*.json')]
+    assert len(audits)==(3 if aggregate_rejected else 2)
+    assert sum(a.get('validated',False) for a in audits)==2
+    if aggregate_rejected:
+        rejection=next(a for a in audits if not a['validated'])
+        assert len(rejection['receipt_refs'])==1
+        receipt=json.loads((vault/rejection['receipt_refs'][0]).read_text())
+        assert receipt['code']=='INVALID_SCHEMA' and receipt['state']=='draft_rejected'
+    # No budget overflow call and no automatic stale-lease repair.
+    with pytest.raises(ContractError,match='READING_WINDOW_OVERSIZE'):
+        fixed.model_call(adapter,binding,'candidate',{},lambda *a:pytest.fail('called'),1)
+    with pytest.raises(ContractError):
+        fixed.model_call(adapter,binding,'candidate',{},lambda *a:pytest.fail('called'),30000)
 
 
 def test_multimodal_framing_is_exact_and_image_groups_keep_authority():
@@ -177,14 +191,6 @@ def test_image_transport_verifies_registered_bytes_and_ignores_linked_assets(tmp
     assert list(catalog)==[asset['path']] and catalog[asset['path']]['bytes']==len(path.read_bytes())
     path.write_bytes(b'changed image bytes')
     with pytest.raises(ContractError,match='SOURCE_CHANGED'): image_catalog(adapter,packet)
-    assert not adapter.workflow.knowledge._slice(current['batch_id'],binding['node'].partition(':')[2])['lease']['worker_id']
-    audits=list((vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls").glob('*.json'))
-    assert len(audits)==2 and all(json.loads(p.read_text())['validated'] for p in audits)
-    # No budget overflow call and no automatic stale-lease repair.
-    with pytest.raises(ContractError,match='READING_WINDOW_OVERSIZE'):
-        fixed.model_call(adapter,binding,'candidate',{},lambda *a:pytest.fail('called'),1)
-    with pytest.raises(ContractError):
-        fixed.model_call(adapter,binding,'candidate',{},lambda *a:pytest.fail('called'),30000)
 
 
 def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
