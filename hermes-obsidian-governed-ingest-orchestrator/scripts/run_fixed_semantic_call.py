@@ -23,6 +23,7 @@ def main():
             or request['schema']!=schema(request['phase'])):
         raise RuntimeError('fixed semantic child lacks its native parent grant')
     caller=HermesCaller();caller.input_limit=request['input_limit']
+    caller.images=request.get('images',[])
     raw,metadata=caller(request['phase'],request['view'],request['schema'],request['correction'])
     metadata.update(call_ownership='semantic_child',parent_native_run_id=request['native_run_id'])
     Path(args.output).write_text(json.dumps({'response':raw,'metadata':metadata},ensure_ascii=False))

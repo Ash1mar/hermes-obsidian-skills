@@ -65,8 +65,16 @@ def worker_context(vault, *, beginning=False):
     return adapter, workspace, path, binding
 
 
-def read_pass_input(vault, *, begin=False):
+def read_pass_input(vault, *, begin=False, program=False):
     adapter, workspace, binding_path, binding = worker_context(vault, beginning=begin)
+    if program:
+        from program_worker import canonical_binding
+        workflow=adapter.workflow.status(binding['workflow_id'])
+        card=next(c for c in workflow['kanban']['task_map']
+                  if c['task_id']==binding['task_id'] and c['node']==binding['node'])
+        canonical_binding(adapter,_vault_path(adapter.workflow.vault,
+            f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/bindings/{fingerprint(card['idempotency_key'])}.json"),
+            executor='semantic-v1')
     descriptor_path = workspace/'pass-input-descriptor.json'
     fresh = False
     if begin and not binding_path.exists():
@@ -122,6 +130,13 @@ def read_pass_input(vault, *, begin=False):
         remember_candidates(context, {'results':[{'task':t['task'],'sequence':0,
             'pass_id':t['continuation']['candidate']['candidate_pass_id']}
             for t in presented['tasks'] if t['continuation']['action']=='citation']})
+    if program:
+        # This is checked program data, not a model message. The fixed semantic
+        # runner applies phase/schema/output budgets to each whole-task group.
+        # Keep the same identity, source, permission and immutable evidence checks.
+        return {'ok':True,'renderer':packet['contract'],'task_count':len(packet['tasks']),
+                'packet_sha256':hashlib.sha256(packet_path.read_bytes()).hexdigest(),
+                'packet':visible_packet(presented)}
     text = present_model_packet(visible_packet(presented))
     limit = service._batch(checked['batch_id'])['slice_config']['slice_max_input_codepoints']
     import json

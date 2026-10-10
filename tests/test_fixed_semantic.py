@@ -81,8 +81,13 @@ def test_pass_admission_holds_live_domain_capacity_without_claiming():
     assert slices==[{'lease':{'worker_id':'already-owned'}}]
 
 
-def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypatch):
+@pytest.mark.parametrize('aggregate_rejected',[False,True])
+def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypatch,aggregate_rejected):
+    from pathlib import Path
+    from hermes_source_units import mutation_digest
     adapter,value,amendment=stopped
+    amendment['worker_template']=(Path(fixed.__file__).parents[1]/'references/workers/pass-slice-compact.md').read_text()
+    amendment['input_digest']=mutation_digest(amendment)
     current,begun=begin_amended(adapter,value,amendment)
     binding=begun['worker_request']; workspace=vault/'fixed-worker'; workspace.mkdir()
     (workspace/'worker-request.json').write_text(json.dumps(binding))
@@ -99,10 +104,27 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
         expansion_guards.append(_ACTIVE.get())
         return original(self,*args,**kwargs)
     monkeypatch.setattr(FileKnowledgeBuildService,'expand_model_passes',expand_outside_lock)
+    import native_ingest
+    # The complete checked program packet may exceed a human message budget.
+    # Human workers still fail that bound; program calls group before exposure.
+    monkeypatch.setattr(native_ingest,'present_model_packet',lambda packet:'large human presentation '*20000)
+    with pytest.raises(ContractError,match='READING_WINDOW_OVERSIZE'):
+        native_ingest.read_pass_input(vault)
+    original_action=fixed.worker_action
+    rejected=[]
+    def action(vault,action,payload=None):
+        if aggregate_rejected and action=='submit' and not rejected:
+            rejected.append(True)
+            return {'ok':False,'validated':False,'state':'draft_rejected','code':'INVALID_SCHEMA',
+                'error':'isolated aggregate schema rejection','next_action':'correct_semantic_draft'}
+        return original_action(vault,action,payload)
+    monkeypatch.setattr(fixed,'worker_action',action)
     def caller(phase,view,output_schema,correction):
         calls.append(phase)
         assert '"input_id"' not in json.dumps(view) and '"candidate_pass_id"' not in json.dumps(view)
-        assert correction is None
+        if aggregate_rejected and calls==['candidate','candidate']:
+            assert correction['code']=='INVALID_SCHEMA' and 'aggregate schema rejection' in correction['message']
+        else: assert correction is None
         if phase=='candidate':
             drafts=[]
             for task in view['tasks']:
@@ -115,9 +137,46 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
         return fixture_response({'reviews':[{'task':t['task'],'decision':'confirmed_unchanged',
             'review_note':'Isolated fixture reviewed source conditions.'} for t in view['tasks']]})
     result=fixed.run_pass(adapter,binding,caller)
-    assert result['domain_complete'] and calls==['candidate','citation']
+    assert result['domain_complete'] and calls==(['candidate','candidate','citation'] if aggregate_rejected else ['candidate','citation'])
     assert expansion_guards and all(g is None for g in expansion_guards)
     assert all(p.read_bytes()==raw for p,raw in before.items())
+
+
+def test_multimodal_framing_is_exact_and_image_groups_keep_authority():
+    from fixed_semantic_media import message_content,normalize_content,select_images,MAX_IMAGE_BYTES
+    tasks=[{'task':f't{i}','materials':[{'ref':'m1','role':'core','text_ref':'x','asset':{'path':f'image-{i}'}}],
+            'continuation':{'action':'candidate_then_citation'},'next_sequence':0} for i in range(1,4)]
+    catalog={f'image-{i}':{'url':f'data:image/png;base64,exact-{i}','bytes':MAX_IMAGE_BYTES//2,
+        'sha256':str(i),'media_type':'image/png'} for i in range(1,4)}
+    packet={'tasks':tasks,'texts':{'x':''},'headings':[]}
+    groups=fixed.pass_groups(packet,tasks,'candidate',30000,catalog)
+    assert [len(g) for g in groups]==[2,1]
+    images=select_images(groups[0],catalog)
+    message=message_content('exact task',images)
+    converted=[{'type':'input_text','text':message[0]['text']},
+        *[{'type':'input_image','image_url':i['url'],'detail':'high'} for i in images]]
+    assert normalize_content(message)==normalize_content(converted)
+    converted[1]['image_url']+='changed'
+    assert normalize_content(message)!=normalize_content(converted)
+    assert normalize_content([{'type':'tool_call','text':'extra context'}]) is None
+    with pytest.raises(ContractError,match='UNINSPECTED_SUPPORT'): select_images(tasks,{})
+
+
+def test_image_transport_verifies_registered_bytes_and_ignores_linked_assets(tmp_path):
+    import hashlib
+    from types import SimpleNamespace
+    from fixed_semantic_media import image_catalog
+    vault=tmp_path/'vault';root=vault/'_system/sources/artifacts/resource/revision';root.mkdir(parents=True)
+    path=root/'figure.png';path.write_bytes(b'registered image bytes')
+    manifest={'artifact_revision':'revision','assets':[{'path':'figure.png','sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'media_type':'image/png'}]}
+    source=SimpleNamespace(_artifact_path=lambda p:p,_verify_artifact=lambda p:(manifest,'',[]))
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=vault,knowledge=SimpleNamespace(source=source)))
+    asset={'path':'_system/sources/artifacts/resource/revision/figure.png','media_type':'image/png'}
+    packet={'tasks':[{'task':'t1','materials':[{'ref':'m1','asset':asset},{'ref':'m2','linked_assets':[asset]}]}]}
+    catalog=image_catalog(adapter,packet)
+    assert list(catalog)==[asset['path']] and catalog[asset['path']]['bytes']==len(path.read_bytes())
+    path.write_bytes(b'changed image bytes')
+    with pytest.raises(ContractError,match='SOURCE_CHANGED'): image_catalog(adapter,packet)
     assert not adapter.workflow.knowledge._slice(current['batch_id'],binding['node'].partition(':')[2])['lease']['worker_id']
     audits=list((vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls").glob('*.json'))
     assert len(audits)==2 and all(json.loads(p.read_text())['validated'] for p in audits)
