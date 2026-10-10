@@ -53,7 +53,11 @@ def recover(adapter, binding, phase, view, decode, system, *, home=None):
             raw=[c for role,c,_ in rows if role=='assistant' and fingerprint(c)==audit['response_sha256']]
             if len(users)!=1 or len(raw)!=1 or model.get('response_sha256')!=audit['response_sha256']:continue
             try:
-                body=json.loads(users[0].partition('\n')[2]);old_view=body['input']
+                request_text=users[0].partition('\n')[2]
+                body,end=json.JSONDecoder().raw_decode(request_text);old_view=body['input']
+                expected_labels='\n'.join('Image '+str(n)+': '+', '.join(r['task']+'/'+r['material'] for r in image['references'])
+                    for n,image in enumerate(audit.get('image_inputs',[]),1))
+                if request_text[end:].strip()!=expected_labels:continue
                 # Hermes persists user/assistant only. The guarded native audit
                 # binds exact system+user bytes; a prompt-version guess cannot pass.
                 if audit.get('input_sha256')!=fingerprint({'system':system,'user':users[0]}):continue

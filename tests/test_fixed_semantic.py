@@ -108,7 +108,7 @@ def test_audited_recovery_requires_same_task_input_and_native_response(tmp_path)
     task={'task':'t1','materials':[{'ref':'m1','role':'core','text_ref':'c1','heading':0}],
           'candidate':{'candidates':[]},'limits':{}}
     view={'tasks':[task],'texts':{'c1':'Condition AND exception.'},'headings':{'0':['Scope']}}
-    user='Native task prior-native\n'+json.dumps({'phase':'citation','input':view})
+    user='Native task prior-native\n'+json.dumps({'phase':'citation','input':view})+'\nImage 1: t1/m1'
     raw=json.dumps({'reviews':[{'task':'t1','decision':'confirmed_unchanged','review_note':'Source reviewed.'}]})
     db=sqlite3.connect(home/'state.db')
     db.executescript('CREATE TABLE sessions(id TEXT,source TEXT);CREATE TABLE messages(session_id TEXT,role TEXT,content TEXT,tool_calls TEXT);')
@@ -119,6 +119,7 @@ def test_audited_recovery_requires_same_task_input_and_native_response(tmp_path)
     audit={'workflow_id':wid,'phase':'citation','native_task_id':'prior-native','node':'pass-slice:old',
            'user_sha256':fingerprint(user),'response_sha256':fingerprint(raw),
            'input_sha256':fingerprint({'system':'fixed system','user':user}),
+           'image_inputs':[{'references':[{'task':'t1','material':'m1'}]}],
            'model':{'origin':'hermes_native_model','session_id':'fixture','response_sha256':fingerprint(raw)}}
     (root/'old.json').write_text(json.dumps(audit))
     adapter=SimpleNamespace(worker_check=lambda b:{'batch_id':'b','task_ids':['same-task']},

@@ -34,29 +34,37 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
         expanded, reviews = service.expand_citation_confirmations(request, checked['task_ids'], binding['actor'], checked['batch_id'])
     else:
         expanded = service.expand_model_passes(request, checked['task_ids'], binding['actor'], checked['batch_id'])
-    with worker_binding(binding), workflow_write_guard(vault, kinds=('pass-slice',), actor=binding['actor']):
-        live = adapter.worker_check(binding, verify_inputs=False)
-        if live != checked:
-            raise ContractError('STALE_INPUT', '$', 'bound slice changed after read-only expansion')
-        audit = {'worker_request_digest': fingerprint(binding), 'workflow_id': binding['workflow_id'],
-                 'node': binding['node'], 'worker_id': binding['worker_id'],
-                 'lease_revision': binding['expected_revision'], 'semantic_request_digest': fingerprint(request)}
-        result = service.record_pass_batch({**expanded, 'slice_id': checked['slice_id'],
-            'worker_id': binding['worker_id'], 'template_hash': binding['template_hash']},
-            lock_timeout=WORKER_LOCK_TIMEOUT, lock_check=lambda: adapter.worker_check(binding, verify_inputs=False), submission_audit=audit)
-        aliases = {tid: f't{i}' for i, tid in enumerate(checked['task_ids'], 1)}
-        receipts = []
-        for r in result['results']:
-            root = _vault_path(service.vault, f'_system/knowledge-builds/task-{r["task_id"]}/passes')
-            receipt = {**r, 'task': aliases[r['task_id']], 'next_sequence': len(list(root.glob('*.json'))),
-                       'pass_kind': 'candidate' if r['sequence'] == 0 else 'citation',
-                       'next_action': 'review_candidate' if r['sequence'] == 0 else 'pass_complete'}
-            review = next((v for v in reviews if v['task_id'] == r['task_id']), None)
-            if review:
-                evidence = {'contract': 'hermes-citation-confirmation/v1', 'binding': audit,
-                            'review': review, 'citation_pass_id': r['pass_id']}
-                ref = f'_system/knowledge-builds/task-{r["task_id"]}/citation-reviews/{fingerprint(evidence)}.json'
-                _write_atomic(_vault_path(service.vault, ref), _json_bytes(evidence))
-                receipt['review_ref'] = ref
-            receipts.append(receipt)
-        return {'ok': result['ok'], 'validated': result['ok'], 'results': receipts, 'failures': result['failures']}
+    audit = {'worker_request_digest': fingerprint(binding), 'workflow_id': binding['workflow_id'],
+             'node': binding['node'], 'worker_id': binding['worker_id'],
+             'lease_revision': binding['expected_revision'], 'semantic_request_digest': fingerprint(request)}
+    aliases = {tid: f't{i}' for i, tid in enumerate(checked['task_ids'], 1)}
+    receipts=[];failures=[]
+    # Passes already have individual durable preflights and partial recovery.
+    # Hold cancellation serialization for one atomic Pass, not the whole group.
+    for index,item in enumerate(expanded['passes']):
+        try:
+            live=adapter.worker_check(binding,verify_inputs=False)
+            if live!=checked:
+                raise ContractError('STALE_INPUT','$','bound slice changed after read-only expansion')
+            with worker_binding(binding), workflow_write_guard(vault,kinds=('pass-slice',),actor=binding['actor']):
+                result=service.record_pass_batch({**expanded,'passes':[item],'slice_id':checked['slice_id'],
+                    'worker_id':binding['worker_id'],'template_hash':binding['template_hash']},
+                    lock_timeout=WORKER_LOCK_TIMEOUT,lock_check=lambda:adapter.worker_check(binding,verify_inputs=False),submission_audit=audit)
+                failures.extend(result['failures'])
+                for r in result['results']:
+                    root = _vault_path(service.vault, f'_system/knowledge-builds/task-{r["task_id"]}/passes')
+                    receipt = {**r, 'task': aliases[r['task_id']], 'next_sequence': len(list(root.glob('*.json'))),
+                               'pass_kind': 'candidate' if r['sequence'] == 0 else 'citation',
+                               'next_action': 'review_candidate' if r['sequence'] == 0 else 'pass_complete'}
+                    review=next((v for v in reviews if v['task_id']==r['task_id']),None)
+                    if review:
+                        evidence={'contract':'hermes-citation-confirmation/v1','binding':audit,
+                                  'review':review,'citation_pass_id':r['pass_id']}
+                        ref=f'_system/knowledge-builds/task-{r["task_id"]}/citation-reviews/{fingerprint(evidence)}.json'
+                        _write_atomic(_vault_path(service.vault,ref),_json_bytes(evidence))
+                        receipt['review_ref']=ref
+                    receipts.append(receipt)
+        except (ContractError,OSError,ValueError,TypeError,KeyError) as exc:
+            failures.extend(service._failure('pass',pending['task_id'],exc) for pending in expanded['passes'][index:])
+            break  # Changed authority/lock failure never retries a mutation.
+    return {'ok':not failures,'validated':not failures,'results':receipts,'failures':failures}

@@ -242,21 +242,27 @@ def decode_semantic_response(raw):
 
 
 def attach_receipt(adapter,ref,receipt):
-    record=_load_json(_vault_path(adapter.workflow.vault,ref))
+    return attach_receipt_to_vault(adapter.workflow.vault,ref,receipt)
+
+
+def attach_receipt_to_vault(vault,ref,receipt):
+    record=_load_json(_vault_path(vault,ref))
     receipt_ref=receipt.get('receipt_ref')
     if not receipt_ref:
         # Aggregate schema rejection also needs its actual returned cause in
         # audit; success-only references concealed the rejected half of a group.
         receipt_ref=f"_system/ledgers/ingest-workflows/{record['workflow_id']}/worker-receipts/rejected-{fingerprint(receipt)}.json"
-        _write_atomic(_vault_path(adapter.workflow.vault,receipt_ref),_json_bytes(receipt))
+        _write_atomic(_vault_path(vault,receipt_ref),_json_bytes(receipt))
     record['receipt_refs'].append(receipt_ref)
     record['validated']=record.get('validated',True) and receipt.get('validated',False)
-    _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(record))
+    _write_atomic(_vault_path(vault,ref),_json_bytes(record))
 
 
-def pass_action(vault,action,payload=None):
+def pass_action(vault,action,payload=None,*,audit_ref=None):
     with ACTION_LOCK:
         result=worker_action(vault,action,payload)
+        if audit_ref:
+            attach_receipt_to_vault(Path(vault),audit_ref,result)
         if not result.get('ok') and result.get('state')!='draft_rejected':
             raise ContractError(result.get('code','PASS_EXECUTION_BLOCKED'),'$',str(result.get('error') or result.get('failures') or result))
         if result.get('next_action')=='end_worker' and action!='complete':
@@ -443,7 +449,7 @@ def run_pass(adapter,binding,caller):
                     authored,confirmations,failures=prepare_pass_items(adapter,draft,packet,tasks,phase)
                     for action,key,payload in (('submit','passes',authored),('confirm','confirmations',confirmations)):
                         if not payload: continue
-                        result=pass_action(adapter.workflow.vault,action,{key:payload}); attach_receipt(adapter,call_ref,result)
+                        result=pass_action(adapter.workflow.vault,action,{key:payload},audit_ref=call_ref)
                         if not result.get('ok') and not result.get('failures'):
                             raise ContractError(result.get('code','INVALID_SCHEMA'),'$',
                                 str(result.get('error') or 'semantic submission was rejected'))

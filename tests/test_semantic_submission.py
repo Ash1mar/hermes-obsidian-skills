@@ -86,10 +86,10 @@ def test_lease_rechecked_after_evidence_validation_before_write(stopped, vault, 
         result = original_units(self, *args, **kwargs)
         validated = True
         return result
-    def check(binding):
+    def check(binding,**kwargs):
         if validated:
             raise ContractError('STALE_INPUT', '$', 'lease changed during evidence validation')
-        return original_check(binding)
+        return original_check(binding,**kwargs)
     monkeypatch.setattr(FileKnowledgeBuildService, '_live_units', live_units)
     monkeypatch.setattr(adapter, 'worker_check', check)
     before = set((vault/'_system/knowledge-builds').rglob('*.json'))
@@ -97,6 +97,35 @@ def test_lease_rechecked_after_evidence_validation_before_write(stopped, vault, 
         {'passes': [semantic_draft(packet_views(vault, begun)[1], 't2')]}, adapter=adapter)
     assert not result['ok'] and result['failures'][0]['code'] == 'STALE_INPUT'
     assert set((vault/'_system/knowledge-builds').rglob('*.json')) == before
+
+
+def test_bound_group_releases_lock_and_keeps_partial_receipt(stopped,vault,monkeypatch):
+    from hermes_source_units import FileKnowledgeBuildService
+    from hermes_source_units.workflow_guard import _ACTIVE
+    adapter,value,amendment=stopped
+    current,begun=begin_amended(adapter,value,amendment)
+    bound=begun['worker_request'];views=packet_views(vault,begun)
+    original_record=FileKnowledgeBuildService.record_pass_batch
+    original_check=adapter.worker_check
+    persisted=[]
+    def record(self,request,**kwargs):
+        assert _ACTIVE.get() is not None and len(request['passes'])==1
+        result=original_record(self,request,**kwargs)
+        persisted.extend(result['results'])
+        return result
+    def check(binding,**kwargs):
+        if persisted:
+            assert _ACTIVE.get() is None
+            raise ContractError('LOCK_TIMEOUT','$','isolated next-slot contention')
+        return original_check(binding,**kwargs)
+    monkeypatch.setattr(FileKnowledgeBuildService,'record_pass_batch',record)
+    monkeypatch.setattr(adapter,'worker_check',check)
+    payload={'passes':[semantic_draft(views[1],'t2'),semantic_draft(views[0],'t1')]}
+    result=submit_bound(vault,bound,payload,adapter=adapter)
+    assert not result['ok'] and len(result['results'])==1
+    assert result['results'][0]['task']=='t2' and result['results'][0]['preflight_ref']
+    assert result['failures'][0]['code']=='LOCK_TIMEOUT'
+    assert json.loads((vault/result['results'][0]['path']).read_text())['sequence']==0
 
 
 def test_native_plugin_schema_and_automatic_binding_refresh(stopped, vault, monkeypatch):

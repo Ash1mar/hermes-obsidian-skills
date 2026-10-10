@@ -85,3 +85,9 @@ the canonical empty-reason field is empty without requesting another semantic
 generation; an actually empty result still needs the model's genuine reason.
 Delta validation failures remain local to their slot. Other valid slots are
 submitted before requesting correction, while stale authority stops execution.
+
+Bound groups retain the existing partial-result contract. The shared workflow
+lock is released after each individual Pass and its preflight, with the current
+lease/cancellation/source checks repeated before the next commit. A later lock
+or authority failure retains previous successful receipts in the audit. The
+atomic domain unit is unchanged; there is no new group transaction or retry layer.
