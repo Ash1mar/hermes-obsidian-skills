@@ -179,12 +179,32 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None):
     ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls/{fingerprint(audit)}.json"
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(audit))
     try:
-        value=json.loads(raw) if isinstance(raw,str) else raw
+        value,normalization=decode_semantic_response(raw)
+        if normalization:
+            audit.update(response_transport_normalization=normalization,
+                semantic_response_sha256=fingerprint(value))
+            _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(audit))
         validate(phase,value)
         if 'blocked_reason' in value: raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',value['blocked_reason'])
         return value,ref
     except json.JSONDecodeError as exc:
         raise ContractError('INVALID_SCHEMA','$','semantic response is not one JSON object') from exc
+
+
+def decode_semantic_response(raw):
+    """Decode one JSON object from the native final-channel envelope.
+
+    Preserve the original response/hash in audit. Only explicit channel tags
+    outside JSON may be removed; arbitrary prose, multiple objects and fences
+    still fail the closed output contract. Strings inside JSON are untouched.
+    """
+    if not isinstance(raw,str):return raw,None
+    text=raw.strip();normalization=None
+    if text.startswith('<final>') and text.endswith('</final>'):
+        text=text[len('<final>'):-len('</final>')].strip();normalization='final_channel_envelope'
+    elif text.endswith('</final>'):
+        text=text[:-len('</final>')].strip();normalization='final_channel_terminator'
+    return json.loads(text),normalization
 
 
 def attach_receipt(adapter,ref,receipt):

@@ -17,3 +17,4 @@ Every task retains its material roles, original QA and semantic limits, includin
 Native sessions, exact model-input/response hashes, actual preflight receipts and domain results form the audit trail. A test fixture or program acknowledgement is not a semantic model result. No step releases a durable pause or skips later page review.
 
 Assigned node: pass-slice.
+The installed program entry resolves its submission-library dependencies. Unexpected Python exceptions use the same identity-bound failure and audit path as contract errors, preserving valid partial results. A native final-channel envelope is decoded separately from the single semantic JSON object; raw response hashes and any channel normalization remain audited. Multiple objects and unexplained trailing content still fail validation.

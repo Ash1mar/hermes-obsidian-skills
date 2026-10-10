@@ -42,6 +42,15 @@ def fixture_response(value):
     return raw,{'origin':'isolated_fixture','response_sha256':fingerprint(raw)}
 
 
+def test_semantic_transport_preserves_strings_and_rejects_extra_content():
+    raw='{"review_note":"source literally contains </final>"}'
+    for wire in (raw,raw+'</final>','<final>'+raw+'</final>'):
+        value,_=fixed.decode_semantic_response(wire)
+        assert value=={'review_note':'source literally contains </final>'}
+    for wire in (raw+' commentary',raw+'{}',raw+'{}</final>','```json\n'+raw+'\n```'):
+        with pytest.raises(json.JSONDecodeError):fixed.decode_semantic_response(wire)
+
+
 def test_pass_groups_bound_output_without_dropping_semantic_limits():
     tasks=[{'task':f't{i}','materials':[{'ref':f'm{i}','role':'core','text_ref':f'x{i}'}],
         'limits':{'context_truncated':True,'omitted_material_count':2,'reason':'context budget'},

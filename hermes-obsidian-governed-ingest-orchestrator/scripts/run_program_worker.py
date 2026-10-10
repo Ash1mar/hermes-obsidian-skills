@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'hermes-obsidian-controlled-ingest/lib'))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _json_bytes, _write_atomic
@@ -82,7 +83,7 @@ def run(vault, binding):
         while own_run() and time.monotonic() < deadline:
             time.sleep(.5)
         return result
-    except (ContractError, OSError, ValueError, KeyError, RuntimeError) as exc:
+    except Exception as exc:
         completed.set()
         if executor=='semantic-v1' and request['node'].startswith('pass-slice:'):
             from fixed_semantic import ACTION_LOCK
@@ -112,7 +113,7 @@ def main():
     args = parser.parse_args()
     try:
         result = run(args.vault, args.binding)
-    except (ContractError, OSError, ValueError, KeyError, RuntimeError) as exc:
+    except Exception as exc:
         print(json.dumps({'ok':False, 'code':getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED'),
             'error':str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2
