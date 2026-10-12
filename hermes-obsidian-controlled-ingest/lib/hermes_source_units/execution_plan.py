@@ -266,7 +266,11 @@ class ExecutionPlanMixin:
                     package = self.knowledge._existing_reading_package(
                         task, journal['batch']['actor'], journal['batch']['document_registry_revision'])
                     if package is None:
-                        fail('INCOMPLETE_COVERAGE', 'preserved task lost its reading package')
+                        if preserved['state'] == 'completed':
+                            fail('INCOMPLETE_COVERAGE', 'preserved task lost its reading package')
+                        # Held ownership can contain never-started neighbors.
+                        # It is not accepted evidence and must not be dispatched.
+                        continue
                     self.knowledge.model_input(tid, package)
             for group in manifest['slice_inputs'].values():
                 for expected in group:
