@@ -9,11 +9,13 @@ from hermes_source_units.source_units import _load_json, _vault_path
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard
+from hermes_source_units.runtime_telemetry import measured
 from ingest_kanban import PROGRAM_ASSIGNEE as ASSIGNEE, PROGRAM_KINDS as KINDS, program_template, executor_for
 
 MARKER = '<!-- hermes-program-worker/v1 -->'
 
 
+@measured('claim_admission', lambda adapter, request: {'vault':adapter.workflow.vault,'binding':request})
 def admission_check(adapter, request):
     """Check a ready card's authority before claim; no lease exists yet."""
     if not request['node'].startswith('pass-slice:'):
@@ -29,6 +31,7 @@ def admission_check(adapter, request):
     return {'ok':True, 'node':request['node'], 'batch_id':workflow['batch_id'], 'slice_id':value['slice_id']}
 
 
+@measured('binding_check', lambda adapter, binding, **kwargs: {'vault':adapter.workflow.vault})
 def canonical_binding(adapter, binding, *, executor='program-v1'):
     path = Path(binding).resolve()
     request = _load_json(path)
