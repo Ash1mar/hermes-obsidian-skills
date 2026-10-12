@@ -164,16 +164,23 @@ def test_amendment_rejects_unversioned_policy_change(stopped):
 
 def test_cancelled_refusal_remains_held_after_regrouping_and_resume(stopped):
     adapter, value, request = stopped
-    service = adapter.knowledge
+    service = adapter.workflow.knowledge
     adapter.amend_execution(request)
-    workflow = adapter._load(value['workflow_id'])
+    workflow = adapter.workflow._load(value['workflow_id'])
     batch = service._batch(value['batch_id'])
     old = next(s for s in service._slices(batch['batch_id']) if s['state'] == 'cancelled')
     root = service.vault / '_system/ledgers/ingest-workflows' / value['workflow_id'] / 'reports'
     root.mkdir(exist_ok=True)
+    from hermes_source_units.validation import fingerprint
+    # Runtime node identity differs from the slice planning fingerprint.
+    identity = 'sha256:'+'1'*64
     receipt = {'error_code':'SEMANTIC_REVIEW_REQUIRED', 'node':'pass-slice:'+old['slice_id'],
-               'input_fingerprint':old['input_fingerprint'],
-               'idempotency_key':f"ingest:{value['workflow_id']}:pass-slice:{old['input_fingerprint']}"}
+               'task_id':'native-isolated', 'input_fingerprint':identity,
+               'idempotency_key':f"ingest:{value['workflow_id']}:pass-slice:{identity}"}
+    bindings = root.parent / 'bindings'; bindings.mkdir(exist_ok=True)
+    (bindings / (fingerprint(receipt['idempotency_key'])+'.json')).write_text(json.dumps({
+        'workflow_id':value['workflow_id'], 'node':receipt['node'], 'input_fingerprint':identity,
+        'task_id':receipt['task_id'], 'template_hash':old['template_hash']}))
     (root / 'failed-isolated.json').write_text(json.dumps(receipt))
     assert old['slice_id'] in service._deferred_execution_slices(batch, service._slices(batch['batch_id']))
     # Shutdown diagnostics no longer contain the original refusal cause.

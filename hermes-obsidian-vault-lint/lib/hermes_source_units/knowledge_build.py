@@ -1223,9 +1223,17 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 continue
             old = _load_json(old_path)
             identity = report.get('input_fingerprint')
+            key = report.get('idempotency_key')
+            binding_path = _vault_path(self.vault, root + '/bindings/' + fingerprint(key) + '.json')
+            if not binding_path.is_file():
+                continue
+            binding = _load_json(binding_path)
             if (old['batch_id'] != batch['batch_id'] or old['state'] == 'completed'
-                    or identity != old['input_fingerprint']
-                    or report.get('idempotency_key') != f'ingest:{wid}:pass-slice:{identity}'):
+                    or key != f'ingest:{wid}:pass-slice:{identity}'
+                    or binding.get('workflow_id') != wid or binding.get('node') != node
+                    or binding.get('input_fingerprint') != identity
+                    or binding.get('template_hash') != old['template_hash']
+                    or binding.get('task_id') != report.get('task_id')):
                 continue
             refused.update(tid for tid in old['task_ids'] if tid not in completed)
         return {value['slice_id'] for value in slices
