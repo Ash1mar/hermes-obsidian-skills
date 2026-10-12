@@ -49,3 +49,29 @@ Retain valid results, refuse incomplete downstream evidence, and stop repeated
 useless calls. Known local conversion limitations alone do not require stopping
 unrelated work. Round-two grouping must preserve complete authorized text,
 images, schema and correction budgets; worker concurrency remains 2.
+
+Required dependencies are derived by the program from explicit registered local
+asset links, table identifiers or exact numbered table references in bounded
+core text. Section-wide associations alone are not dependencies. The program
+resolves same-source whole SourceUnits with live governance and hashes, keeps
+original reading packages and Passes immutable, and persists a hash-bound
+reading supplement with its core-to-dependency links. Required context uses
+normal material handles and transport; it does not expand core coverage. New
+Passes require its inspections; unavailable or oversized material stays held.
+Historical results without required dependency inspections cannot pass Reduce
+merely because the file is structurally complete. Codex does not manually add
+worker materials or generate semantic findings.
+
+The `phase-balanced/v2` budget policy is explicitly pinned, including its
+configuration hash, through a supported execution amendment. An absent pin
+keeps legacy grouping; a mismatched pin rejects execution. Candidate estimates
+include core and required text plus inspection/image allowance. Citation uses
+prior candidate size, source review scope and revision allowance, rather than
+assuming confirmation. These byte-based estimates are labeled as heuristics;
+input limits remain codepoints, model output limits remain tokens. Actual
+instructions, structured schema, QA, text, image labels/count/bytes and bounded
+correction reserve are checked. A contiguous partition minimizes call groups
+before balancing utilization, without truncation or cross-slice permission.
+Grouping audits record utilization and input/output/image/boundary reasons.
+Budget amendments preserve blocked slices and all valid existing results; they
+do not authorize unchanged source or semantic retries.

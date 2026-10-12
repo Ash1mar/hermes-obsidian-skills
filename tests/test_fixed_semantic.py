@@ -216,11 +216,13 @@ def test_pass_admission_holds_live_domain_capacity_without_claiming():
 
 @pytest.mark.parametrize('aggregate_rejected',[False,True])
 @pytest.mark.parametrize('citation_changes',[False,True])
-def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypatch,aggregate_rejected,citation_changes):
+def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypatch,aggregate_rejected,citation_changes,phase_balanced=False):
     from pathlib import Path
     from hermes_source_units import mutation_digest
     adapter,value,amendment=stopped
     amendment['worker_template']=(Path(fixed.__file__).parents[1]/'references/workers/pass-slice-compact.md').read_text()
+    if phase_balanced:
+        amendment['semantic_budget_policy']=fixed.budget_policy_pin()
     amendment['input_digest']=mutation_digest(amendment)
     current,begun=begin_amended(adapter,value,amendment)
     binding=begun['worker_request']; workspace=vault/'fixed-worker'; workspace.mkdir()
@@ -299,6 +301,8 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
     audits=[json.loads(p.read_text()) for p in (vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls").glob('*.json')]
     assert len(audits)==(3 if aggregate_rejected else 2)
     assert sum(a.get('validated',False) for a in audits)==2
+    if phase_balanced:
+        assert all(a['semantic_budget_policy']==fixed.budget_policy_pin() for a in audits)
     if citation_changes:
         for task_id in adapter.workflow.knowledge._slice(current['batch_id'],binding['node'].partition(':')[2])['task_ids']:
             paths=sorted((vault/f'_system/knowledge-builds/task-{task_id}/passes').glob('*.json'))

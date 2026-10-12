@@ -21,6 +21,7 @@ def main():
     parser.add_argument('--max-tasks', type=int, default=12)
     parser.add_argument('--max-input-codepoints', type=int, default=30000)
     parser.add_argument('--output', required=True, help='Request file in the operator workspace, outside the Vault')
+    parser.add_argument('--phase-balanced', action='store_true', help='Explicitly pin the installed phase-aware semantic budget policy')
     args = parser.parse_args()
     try:
         if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
@@ -36,6 +37,9 @@ def main():
             'reason':args.reason, 'max_tasks':args.max_tasks,
             'max_input_codepoints':args.max_input_codepoints,
             'worker_template':template.read_text(encoding='utf-8')}
+        if args.phase_balanced:
+            from hermes_source_units.semantic_budget import budget_policy_pin
+            request['semantic_budget_policy']=budget_policy_pin()
         request['input_digest'] = mutation_digest(request)
         with output.open('x', encoding='utf-8', newline='\n') as stream:
             json.dump(request, stream, ensure_ascii=False, indent=2)

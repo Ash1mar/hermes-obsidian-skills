@@ -1682,6 +1682,7 @@
     "knowledge_slice_config": {
       "type": "object",
       "properties": {
+        "semantic_budget_policy": {"type": "object", "properties": {"version": {"type": "string", "enum": ["phase-balanced/v2"]}, "configuration_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}, "required": ["version", "configuration_sha256"], "additionalProperties": false},
         "pass_worker_concurrency": {"type": "integer", "minimum": 1},
         "slice_max_tasks": {"type": "integer", "minimum": 1},
         "slice_max_input_codepoints": {"type": "integer", "minimum": 1},

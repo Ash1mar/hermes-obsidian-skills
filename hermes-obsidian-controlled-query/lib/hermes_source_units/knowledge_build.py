@@ -665,6 +665,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
     def _slice_config(value: Mapping[str, Any] | None = None) -> dict[str, int]:
         raw = dict(value or {})
         config = {key: int(raw.get(key, default)) for key, default in DEFAULT_SLICE_CONFIG.items()}
+        if 'semantic_budget_policy' in raw:
+            config['semantic_budget_policy']=copy.deepcopy(raw['semantic_budget_policy'])
         validate_record("knowledge_slice_config", config)
         return config
 
@@ -1676,7 +1678,11 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             _fail("INVALID_PASS", "Pass 0 must be the candidate pass", "$.pass_kind")
         if body["sequence"] > 0 and body["pass_kind"] != "citation":
             _fail("INVALID_PASS", "Pass 1..N must be citation passes", "$.pass_kind")
-        available = window["core_refs"] + window["context_refs"]
+        from .reading_dependencies import required_reading
+        _,supplement=required_reading(self.source,package)
+        available = window["core_refs"] + window["context_refs"] + supplement['required_refs']
+        if any(not any(_covers(i['source_ref'],ref) for i in body['inspections']) for ref in supplement['required_refs']):
+            _fail('INCOMPLETE_COVERAGE','required reading dependency has not been inspected; retain original evidence')
         for inspection in body["inspections"]:
             if not any(_covers(item, inspection["source_ref"]) for item in available):
                 _fail("OUTSIDE_READING_PACKAGE", "inspection is not in the reading package", "$.inspections")
@@ -1701,6 +1707,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 'pass_id': body['pass_id'], 'task_revision': task['revision'],
                 'reading_package_fingerprint': package_fingerprint,
                 'template_hash': body.get('template_hash'), 'validated': True}
+            if supplement['required_refs']:
+                evidence['reading_supplement']=supplement
             receipt_id = fingerprint(evidence)
             preflight_ref = f'{BUILD_ROOT}/task-{task_id}/preflights/{receipt_id}.json'
             _write_atomic(_vault_path(self.vault, preflight_ref), _json_bytes(evidence))
@@ -1860,6 +1868,13 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 _fail("INCOMPLETE_COVERAGE", "Reduce cannot consume a task with deferred target ranges")
             if not task["inspections"]:
                 _fail("INCOMPLETE_COVERAGE", "context inspection does not cover the task target")
+            package=self._existing_reading_package(task,actor,int(request['document_registry_revision']))
+            if package is not None:
+                from .reading_dependencies import required_reading
+                _,supplement=required_reading(self.source,package)
+                if any(not any(_covers(i['source_ref'],ref) for i in passes[-1]['inspections'])
+                       for ref in supplement['required_refs']):
+                    _fail('INCOMPLETE_COVERAGE','required table dependency lacks citation inspection; historical records retained')
             validate_references("work", completion_probe, task_units)
         subjects = {item["subject_id"]: item for item in registry["subjects"]}
         paths = {item["current_path"]: item["subject_id"] for item in registry["subjects"]
