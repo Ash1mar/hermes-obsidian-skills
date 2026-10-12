@@ -87,6 +87,56 @@ def test_citation_merge_error_isolated_to_its_task(monkeypatch):
         fixed.prepare_pass_items(None,draft,{},tasks,'citation')
 
 
+@pytest.mark.parametrize('refusal_phase',['candidate','citation'])
+@pytest.mark.parametrize('all_blocked',[False,True])
+def test_explicit_refusal_held_without_correction_preserves_valid_slots(stopped,vault,monkeypatch,refusal_phase,all_blocked):
+    from pathlib import Path
+    from hermes_source_units import mutation_digest
+    adapter,value,amendment=stopped
+    amendment['worker_template']=(Path(fixed.__file__).parents[1]/'references/workers/pass-slice-compact.md').read_text()
+    amendment['input_digest']=mutation_digest(amendment)
+    current,begun=begin_amended(adapter,value,amendment)
+    binding=begun['worker_request'];workspace=vault/'refusal-worker';workspace.mkdir()
+    (workspace/'worker-request.json').write_text(json.dumps(binding))
+    (workspace/'pass-input-descriptor.json').write_text(json.dumps(begun['model_input']))
+    monkeypatch.setenv('HERMES_KANBAN_TASK',binding['task_id'])
+    monkeypatch.setenv('HERMES_KANBAN_WORKSPACE',str(workspace))
+    before={p:p.read_bytes() for p in (vault/'_system/knowledge-builds').glob('task-*/passes/*.json')}
+    calls=[];refused=[]
+    def caller(phase,view,output_schema,correction):
+        assert correction is None
+        calls.append((phase,[t['task'] for t in view['tasks']]))
+        results={}
+        for index,task in enumerate(view['tasks']):
+            alias=task['task']
+            if phase==refusal_phase and (all_blocked or (not refused and index==0)):
+                refused.append(alias);results[alias]={'blocked_reason':'Unreadable converted text; required table is missing.'}
+            elif phase=='candidate':
+                item=semantic_draft({**task,'input_id':'fixture-only','next_sequence':0},alias)
+                results[alias]={k:v for k,v in item.items() if k not in ('task','input_id','sequence')}
+            else:
+                results[alias]={'decision':'confirmed_unchanged','review_note':'Isolated source fidelity checked.'}
+        return fixture_response({'results':results})
+    with pytest.raises(ContractError,match='SEMANTIC_REVIEW_REQUIRED') as error:
+        fixed.run_pass(adapter,binding,caller)
+    assert refused and 'no unchanged-material correction' in str(error.value)
+    assert all(p.read_bytes()==raw for p,raw in before.items())
+    slc=adapter.workflow.knowledge._slice(current['batch_id'],binding['node'].partition(':')[2])
+    assert slc['state']!='completed' and not fixed.PASS_DONE.is_set()
+    audits=[json.loads(p.read_text()) for p in (vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls").glob('*.json')]
+    receipts=[json.loads((vault/ref).read_text()) for audit in audits for ref in audit['receipt_refs']]
+    held=[r for r in receipts if r.get('state')=='deferred']
+    assert sum(len(r['failures']) for r in held)==len(refused)
+    assert all(r['code']=='SEMANTIC_REVIEW_REQUIRED' and not r['validated'] for r in held)
+    assert all(f['message']=='Unreadable converted text; required table is missing.' for r in held for f in r['failures'])
+    assert all('semantic-calls/' in str(error.value) for _ in held)
+    if not all_blocked:
+        assert any(r.get('validated') for r in receipts)
+        assert len(list((vault/'_system/knowledge-builds').glob('task-*/passes/*.json')))>len(before)
+    if refusal_phase=='candidate':
+        assert all(not set(refused)&set(aliases) for phase,aliases in calls if phase=='citation')
+
+
 def test_image_budget_preserves_nine_complete_images_and_reports_actual_limits():
     from fixed_semantic_media import require_images_fit,image_budget
     nine=[{'bytes':35000} for _ in range(9)]

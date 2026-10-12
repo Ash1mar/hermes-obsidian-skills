@@ -424,6 +424,7 @@ def run_pass(adapter,binding,caller):
     if isinstance(caller,HermesCaller): caller.image_catalog=images
     value=adapter.workflow.status(binding['workflow_id'])
     limit=adapter.workflow.knowledge._batch(value['batch_id'])['slice_config']['slice_max_input_codepoints']
+    deferred=[]
     for phase in ('candidate','citation'):
         if phase=='citation':
             with ACTION_LOCK:
@@ -460,6 +461,19 @@ def run_pass(adapter,binding,caller):
                             raise ContractError(result.get('code','INVALID_SCHEMA'),'$',
                                 str(result.get('error') or 'semantic submission was rejected'))
                         failures.extend(result.get('failures',[]))
+                    # An explicit refusal is not malformed JSON. Repeating the
+                    # same materials cannot repair OCR or supply a missing asset.
+                    # Keep other valid slots and phases; never complete this slice
+                    # while its refused work remains unresolved.
+                    refused=[f for f in failures if f['code']=='SEMANTIC_REVIEW_REQUIRED']
+                    if refused:
+                        with ACTION_LOCK:
+                            attach_receipt(adapter,call_ref,{'ok':False,'validated':False,
+                                'state':'deferred','code':'SEMANTIC_REVIEW_REQUIRED',
+                                'phase':phase,'failures':refused,
+                                'next_action':'hold_affected_work_no_unchanged_retry'})
+                        deferred.extend({'phase':phase,'audit_ref':call_ref,**f} for f in refused)
+                        failures=[f for f in failures if f['code']!='SEMANTIC_REVIEW_REQUIRED']
                     if not failures: break
                     failed={f['task'] for f in failures}
                     tasks=[t for t in tasks if t['task'] in failed]
@@ -472,6 +486,10 @@ def run_pass(adapter,binding,caller):
                 attempt+=1
                 if attempt>=2:
                     raise ContractError('SEMANTIC_DRAFT_REJECTED','$','one bounded semantic correction was exhausted; preserve valid partial Passes')
+    if deferred:
+        raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',json.dumps({
+            'decision':'deferred; preserve valid partial Passes; no unchanged-material correction',
+            'failures':deferred},ensure_ascii=False))
     return pass_action(adapter.workflow.vault,'complete')
 
 
