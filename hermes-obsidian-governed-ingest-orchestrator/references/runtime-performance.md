@@ -32,3 +32,20 @@ per projection, per-Pass persistence cost, model busy-time union, effective
 completions and partial records, cancellation drain, and material-volume/quality
 limits of the comparison. Keep operator overhead separate from native semantic
 work. Preserve verified completed and partial results and every durable pause.
+
+Explicit `blocked_reason` slots are held with their original native audit and
+refusal receipt, without an unchanged-material correction call. Valid slots and
+other groups still use the normal submission and citation checks; unresolved
+slots prevent slice completion. An explicit refusal is not an invalid JSON
+response and is not by itself proof of model misjudgment. Schema/contract errors
+retain their existing bounded correction path.
+
+During the current efficiency observation, repeated unreadable OCR or missing
+table reports from a known image-PDF conversion are deferred source limitations.
+Do not reconvert or revise each item automatically. Check registered assets and
+authorized packet/coverage to distinguish source loss from a usable required
+asset omitted by the program. The latter remains an implementation issue.
+Retain valid results, refuse incomplete downstream evidence, and stop repeated
+useless calls. Known local conversion limitations alone do not require stopping
+unrelated work. Round-two grouping must preserve complete authorized text,
+images, schema and correction budgets; worker concurrency remains 2.
