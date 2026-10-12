@@ -198,3 +198,81 @@ def test_ambiguous_discovery_lists_scope_without_mutation(stopped,vault):
     assert adapter.amend_execution(amendment)['applied']
     current=workflow_status(vault,value['workflow_id'])
     assert current['execution_config']['slice_max_tasks']==amendment['max_tasks']
+
+
+def test_cancel_waits_for_shared_lock_and_replays_only_its_transition(stopped, vault):
+    import threading
+    import time
+    from hermes_source_units.source_units import _exclusive_lock
+    adapter, value, _ = stopped
+    service = adapter.workflow
+    current = service.resume(workflow_request(workflow_id=value['workflow_id'],
+        actor=value['actor'], expected_revision=value['revision']))
+    request = workflow_request(workflow_id=current['workflow_id'], actor=current['actor'],
+                               expected_revision=current['revision'])
+    ready = threading.Event()
+    def hold():
+        with _exclusive_lock(service._lock(current['workflow_id'])):
+            ready.set()
+            time.sleep(.2)
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert ready.wait(3)
+    try:
+        cancelled = service.cancel(request)
+    finally:
+        holder.join(3)
+    assert cancelled['state'] == 'cancelled'
+    assert service.cancel(request) == cancelled
+    service.resume(workflow_request(workflow_id=cancelled['workflow_id'],
+        actor=cancelled['actor'], expected_revision=cancelled['revision']))
+    with pytest.raises(ContractError, match='REVISION_CONFLICT'):
+        service.cancel(request)
+
+
+@pytest.mark.parametrize('after_transition', [False, True])
+def test_cancel_missing_receipt_finishes_same_frozen_request(stopped, vault, monkeypatch, after_transition):
+    import orchestration
+    adapter, value, _ = stopped
+    current = adapter.workflow.resume(workflow_request(workflow_id=value['workflow_id'],
+        actor=value['actor'], expected_revision=value['revision']))
+    calls = []
+    def interrupted(vault_arg, action, request):
+        calls.append(dict(request))
+        if after_transition:
+            adapter.workflow.cancel(request)
+        raise ContractError('LOCK_TIMEOUT', '$', 'isolated interruption')
+    monkeypatch.setattr(orchestration, 'dispatch', interrupted)
+    with pytest.raises(ContractError, match='LOCK_TIMEOUT'):
+        control_workflow(vault, current['workflow_id'], 'cancel', 'recover-cancel')
+    root = vault / f"_system/ledgers/ingest-workflows/{current['workflow_id']}/operator-operations/recover-cancel"
+    frozen = (root / 'request.json').read_bytes()
+    def finish(vault_arg, action, request):
+        calls.append(dict(request))
+        return adapter.cancel(request)
+    monkeypatch.setattr(orchestration, 'dispatch', finish)
+    result = control_workflow(vault, current['workflow_id'], 'cancel', 'recover-cancel')
+    assert result['ok'] and result['status']['state'] == 'cancelled'
+    assert result['status']['active_leases'] == 0
+    assert calls[0] == calls[1] and (root / 'request.json').read_bytes() == frozen
+    assert adapter.workflow.knowledge._batch(current['batch_id'])['cancel_requested']
+    assert control_workflow(vault, current['workflow_id'], 'cancel', 'recover-cancel')['replayed']
+    assert len(calls) == 2
+
+
+def test_missing_receipt_rejects_changed_revision_and_resume(stopped, vault, monkeypatch):
+    import orchestration
+    adapter, value, _ = stopped
+    def interrupted(*args):
+        raise ContractError('LOCK_TIMEOUT', '$', 'isolated interruption')
+    monkeypatch.setattr(orchestration, 'dispatch', interrupted)
+    for action in ('resume', 'cancel'):
+        with pytest.raises(ContractError, match='LOCK_TIMEOUT'):
+            control_workflow(vault, value['workflow_id'], action, 'interrupted-' + action)
+    resumed = adapter.workflow.resume(workflow_request(workflow_id=value['workflow_id'],
+        actor=value['actor'], expected_revision=value['revision']))
+    adapter.workflow.cancel(workflow_request(workflow_id=resumed['workflow_id'],
+        actor=resumed['actor'], expected_revision=resumed['revision']))
+    for action in ('resume', 'cancel'):
+        with pytest.raises(ContractError, match='EXECUTION_UNCERTAIN'):
+            control_workflow(vault, value['workflow_id'], action, 'interrupted-' + action)

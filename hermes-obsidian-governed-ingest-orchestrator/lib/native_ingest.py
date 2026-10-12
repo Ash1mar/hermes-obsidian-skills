@@ -285,18 +285,29 @@ def control_workflow(vault, workflow_id, action, operation_id):
     root = _vault_path(service.vault,
         f'_system/ledgers/ingest-workflows/{workflow_id}/operator-operations/{operation_id}')
     intent = {'workflow_id':workflow_id,'action':action,'operation_id':operation_id}
-    with _exclusive_lock(root/'.operation.lock'):
+    with _exclusive_lock(root/'.operation.lock', timeout=WORKER_LOCK_TIMEOUT):
         request_path, result_path = root/'request.json', root/'result.json'
         if request_path.exists():
             saved = _load_json(request_path)
             if saved['intent'] != intent:
                 fail('IDEMPOTENCY_CONFLICT', 'operation_id already names another authorized intent')
-            if not result_path.exists():
+            if result_path.exists():
+                return {**_load_json(result_path),'replayed':True}
+            if action != 'cancel':
                 fail('EXECUTION_UNCERTAIN', 'saved operation has no receipt; observe before recovery')
-            return {**_load_json(result_path),'replayed':True}
-        request = {'workflow_id':workflow_id,'actor':value['actor'],'expected_revision':value['revision']}
-        request['input_digest'] = mutation_digest(request)
-        _write_atomic(request_path, _json_bytes({'intent':intent,'request':request}))
+            request = saved['request']
+            service._check_request(request)
+            current = service.status(workflow_id)
+            if (request['workflow_id'] != workflow_id or request['actor'] != current['actor']
+                    or not (current['revision'] == request['expected_revision'] or
+                            (current['state'] == 'cancelled' and current['cancel_requested']
+                             and current['revision'] == request['expected_revision'] + 1))):
+                fail('EXECUTION_UNCERTAIN', 'cancel request no longer matches the current workflow revision')
+        else:
+            value = service.status(workflow_id)
+            request = {'workflow_id':workflow_id,'actor':value['actor'],'expected_revision':value['revision']}
+            request['input_digest'] = mutation_digest(request)
+            _write_atomic(request_path, _json_bytes({'intent':intent,'request':request}))
         from orchestration import dispatch
         result = dispatch(vault, action, request)
         receipt = {'ok':True,'action':action,'operation_id':operation_id,

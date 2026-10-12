@@ -705,7 +705,16 @@ class FileIngestWorkflowService(ExecutionPlanMixin, PassRevisionMixin, WorkflowP
             return value
 
     def cancel(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        with _exclusive_lock(self._lock(str(request["workflow_id"]))):
+        from .workflow_guard import WORKER_LOCK_TIMEOUT
+        with _exclusive_lock(self._lock(str(request["workflow_id"])), timeout=WORKER_LOCK_TIMEOUT):
+            self._check_request(request)
+            current = self._load(str(request["workflow_id"]))
+            # Finish the same cancellation after a crash in batch/Kanban cleanup.
+            # Any intervening revision or different actor still fails closed.
+            if (current["actor"] == request["actor"] and current["state"] == "cancelled"
+                    and current["cancel_requested"]
+                    and current["revision"] == request["expected_revision"] + 1):
+                return current
             value = self._mutation(request)
             if value["state"] in TERMINAL:
                 _fail("WORKFLOW_STOPPED", "workflow already terminal")

@@ -1169,7 +1169,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             return {"ok": True, "reclaimed": len(reclaimed), "slices": reclaimed}
 
     def cancel_batch(self, batch_id: str, actor: str, expected_revision: int) -> dict[str, Any]:
-        with _exclusive_lock(self._batch_lock_path(batch_id)):
+        from .workflow_guard import WORKER_LOCK_TIMEOUT
+        with _exclusive_lock(self._batch_lock_path(batch_id), timeout=WORKER_LOCK_TIMEOUT):
             batch = self._batch(batch_id)
             if batch["actor"] != actor:
                 _fail("ACCESS_DENIED", "only the batch actor can cancel it")
