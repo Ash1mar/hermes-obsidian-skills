@@ -175,13 +175,29 @@ Changing installed templates never updates an existing workflow's pinned pack au
 
 Execute exact-plan's `worker_command` as a single supervised background terminal job (`background=true,
 notify=true`), polling in short calls rather than waiting through the outer tool deadline.
-The helper validates full ready coverage, splits on the actual canonical serialized budget,
+The helper validates full ready coverage, accumulates whole Units in source order,
+and closes a window before adding the next Unit would exceed canonical or model
+budget. New plans use the same runtime projection, required registered dependencies,
+QA, complete images, strict wire schema and phase-budget estimates. Candidate wire
+size is measured; future candidate content in citation is conservatively reserved
+as an explicit heuristic and checked against actual content during execution.
+New batches pin the existing phase budget policy; existing batches retain their
+identities and policies. The helper
 and persists per-window measurements plus `progress.json` and `plan-request.json` under
 `_system/reports/exact-planning/<input-fingerprint>/`. Restart the same bound command to reuse
 verified checkpoints while the binding remains valid. A reported contract failure requires the supported repair
 below before rerunning; a repair epoch changes card identity but preserves compatible measurements. Registry/ACL, UnitSet bytes, reader configuration and input fingerprints
 must still match. An indivisible oversize unit stays explicitly blocked. Commit reuses the
 same verified measurements instead of recalculating the entire plan.
+There is no fixed eight-Unit initial window, task reordering or old-task migration.
+The library's reader-only mode remains available for canonical reading measurements;
+the native exact worker always supplies the actual Pass model-budget measurement.
+For read-only parameter measurement use
+`python3 "<skill-dir>/scripts/measure_exact_plan.py" --vault "<vault>" --workflow-id "<id>" --reader-limit 12000`
+and optionally repeat `--reader-limit` or select a registered `--resource-id`.
+This runs the same planner without checkpoints, tasks, batches or model calls;
+indivisible oversize material and the bounded measurement timeout are reported.
+It does not revise the selected existing workflow or authorize a new workflow.
 The generic reader selects at most eight nearest eligible context candidates before
 serialized-budget trimming, so omitted-context metadata cannot grow with an entire
 large ancestor section. Every ready source's core units are still planned exactly once;

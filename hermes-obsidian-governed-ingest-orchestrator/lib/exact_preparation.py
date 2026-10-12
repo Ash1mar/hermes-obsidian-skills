@@ -62,8 +62,12 @@ def prepare_exact(adapter, request):
             if time.monotonic() - last_check[0] >= 10:
                 adapter.worker_check(bound)
                 last_check[0] = time.monotonic()
-        planner = ExactPlanner(knowledge, inputs, check=check)
+        from exact_model_budget import model_measurement
+        planner = ExactPlanner(knowledge, inputs, check=check,
+            model_measure=model_measurement(knowledge, inputs['actor'], registry))
         plan = planner.prepare()
+        from hermes_source_units.semantic_budget import budget_policy_pin
+        plan['slice_config'] = knowledge._slice_config({'semantic_budget_policy':budget_policy_pin()})
         knowledge._exact_planner = planner
         try:
             adapter.worker_check(bound)

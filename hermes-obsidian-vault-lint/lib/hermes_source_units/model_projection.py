@@ -35,6 +35,19 @@ class ModelProjectionMixin:
     def model_input(self, task_id, package, *, persist=False):
         """Verify all evidence and render it without exposing full identity objects."""
         task = self._task(task_id)
+        return self._render_model_input(task_id, task, package, persist=persist)
+
+    def preview_reading_model_input(self, refs, assembled, actor, registry):
+        """Render future complete reading with the runtime renderer, without tasks."""
+        task_id = 'preview-' + fingerprint(refs)[:32]
+        package = {'contract':'hermes-reading-package/v1', 'task_id':task_id,
+            'task_revision':1, 'actor':actor, 'document_registry_revision':registry,
+            'window':assembled['window'], 'materials':assembled['materials'],
+            'total_codepoints':sum(len(m['core_text'] or '') for m in assembled['materials'])}
+        package['package_id'] = fingerprint(package)
+        return self._render_model_input(task_id, {'target_refs':refs}, package, persist=False)
+
+    def _render_model_input(self, task_id, task, package, *, persist=False):
         validate_record('reading_package', package)
         package_hash = self._reading_package_fingerprint(package, package['package_id'])
         if package['task_id'] != task_id or package['window']['core_refs'] != task['target_refs']:

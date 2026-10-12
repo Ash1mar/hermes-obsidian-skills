@@ -109,6 +109,17 @@ correctness; conversion limits and occasional model errors stay deferred.
    current HBTest2 identities and outcomes; no migration, replacement workflow
    or rebuild of its current plan to test this algorithm. Native validation of
    a new plan requires separate authority for that plan.
+   Implemented as `sequential-exact-planner/v2` with `sequential-model-budget/v2`:
+   the native worker measures the existing runtime projection and candidate wire,
+   plus conservative future-candidate input/output reserves for citation. These
+   future-output reserves are explicit heuristics, not predicted model facts or
+   a promise that every future response fits. Complete dependencies and image
+   authority use the same runtime path; indivisible oversize Units stay blocked.
+   New batches pin the existing phase policy. Reader-only library measurement
+   remains available; native planning always supplies model-budget measurement.
+   The small read-only CLI compares fixed reader limits without writing planning
+   checkpoints or changing existing batches. Observing current HBTest2 after
+   deployment establishes compatibility/progress, not new-plan task reduction.
 4. Round four first shortens candidate restatement using existing fields:
    short rule/topic, original references, necessary conditions/exceptions or
    cross-paragraph explanation, and uncertainty/source limits. Citation retains

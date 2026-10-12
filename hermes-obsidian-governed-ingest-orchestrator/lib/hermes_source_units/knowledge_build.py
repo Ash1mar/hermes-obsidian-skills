@@ -550,6 +550,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             batch_path = self._batch_path(batch_id)
             if batch_path.exists():
                 existing_batch = self._batch(batch_id)
+                if request.get('slice_config') is not None and existing_batch.get('slice_config') != self._slice_config(request['slice_config']):
+                    _fail('STALE_PLAN', 'new-plan slice policy differs from existing batch')
                 if (existing_batch["actor"] != actor or existing_batch["task_ids"] != task_ids
                         or existing_batch["document_registry_revision"] != registry_revision):
                     _fail("DUPLICATE", "batch_id already identifies a different task set", "$.batch_id")
@@ -609,6 +611,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 else:
                     prepared.append((path, task, True))
             batch = self._new_batch(batch_id, actor, registry_revision, task_ids, origin)
+            if request.get('slice_config') is not None:
+                batch['slice_config'] = self._slice_config(request['slice_config'])
+                validate_record('knowledge_batch', batch)
             for path, task, created in prepared:
                 if created:
                     _write_atomic(path, _json_bytes(task))
@@ -697,7 +702,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                        requested_config: Mapping[str, Any] | None = None,
                        template_id: str = PASS_TEMPLATE_ID,
                        template_hash: str | None = None) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        configured = self._slice_config(requested_config)
+        configured = self._slice_config(requested_config if requested_config is not None else batch.get('slice_config'))
         if batch.get("slices_initialized"):
             if batch.get("slice_config") != configured:
                 _fail("STALE_PLAN", "slice configuration differs from the initialized batch")
