@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'hermes-obsidian-controlled-ingest/lib'))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _json_bytes, _write_atomic
@@ -61,6 +62,9 @@ def run(vault, binding):
                     os.kill(os.getpid(), signal.SIGTERM)
                 return
     thread = threading.Thread(target=heartbeat, daemon=True)
+    def terminated(signum,frame):
+        raise ContractError('NATIVE_WORKER_STOPPED','$','native program was stopped; preserve valid partial results')
+    previous_handler=signal.signal(signal.SIGTERM,terminated)
     thread.start()
     progress = Path(binding).with_suffix('.execution.json')
     try:
@@ -79,19 +83,11 @@ def run(vault, binding):
         while own_run() and time.monotonic() < deadline:
             time.sleep(.5)
         return result
-    except (ContractError, OSError, ValueError, KeyError, RuntimeError) as exc:
+    except Exception as exc:
         completed.set()
-        if executor=='semantic-v1' and request['node'].startswith('pass-slice:'):
-            from fixed_semantic import ACTION_LOCK
-            with ACTION_LOCK:
-                path=Path(os.environ['HERMES_KANBAN_WORKSPACE'])/'worker-request.json'
-                if path.is_file():
-                    from hermes_source_units.source_units import _load_json
-                    try:
-                        live=_load_json(path); adapter.worker_check(live)
-                        adapter.worker_fail({**live,'code':getattr(exc,'code','MODEL_REQUEST_FAILED'),'message':str(exc)})
-                    except (ContractError,OSError,ValueError,KeyError):
-                        pass  # A changed/stopped/foreign lease is never refreshed.
+        # Record the cause. The trusted reconciler settles this exact ended
+        # native run's lease; failure cleanup does not depend on live input
+        # checks or compete with the worker heartbeat for a new revision.
         ref = adapter.execution_failure(request, getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED'), str(exc))
         _write_atomic(progress, _json_bytes({'state':'execution_blocked', 'executor':executor,
             'run_id':run_id, 'report_ref':ref, 'code':getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED')}))
@@ -99,6 +95,7 @@ def run(vault, binding):
     finally:
         stop.set()
         thread.join(timeout=2)
+        signal.signal(signal.SIGTERM,previous_handler)
 
 
 def main():
@@ -108,7 +105,7 @@ def main():
     args = parser.parse_args()
     try:
         result = run(args.vault, args.binding)
-    except (ContractError, OSError, ValueError, KeyError, RuntimeError) as exc:
+    except Exception as exc:
         print(json.dumps({'ok':False, 'code':getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED'),
             'error':str(exc)}, ensure_ascii=False), file=sys.stderr)
         return 2

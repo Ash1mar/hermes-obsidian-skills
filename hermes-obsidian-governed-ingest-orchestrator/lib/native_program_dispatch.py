@@ -12,7 +12,7 @@ from pathlib import Path
 import subprocess
 import sys
 
-from program_worker import ASSIGNEE, canonical_binding
+from program_worker import ASSIGNEE, canonical_binding, admission_check
 from hermes_source_units import ContractError
 
 
@@ -50,14 +50,23 @@ def dispatch_programs(adapter, workflow_id):
             if executor not in ('program-v1', 'semantic-v1') or body.get('workflow_id') != workflow_id:
                 raise RuntimeError('program card lacks its executor contract')
             request, current = canonical_binding(adapter, body['worker_binding'], executor=executor)
+            if request['node'].startswith('pass-slice:'):
+                batch=adapter.workflow.knowledge._batch(current['batch_id'])
+                occupied={'pass-slice:'+s['slice_id'] for s in adapter.workflow.knowledge._slices(current['batch_id']) if s['lease']['worker_id']}
+                # Native claims can precede domain leasing. Reserve that in-flight
+                # capacity too, without counting its eventual lease twice.
+                occupied.update(c['node'] for c in current['kanban']['task_map'] if c['node'].startswith('pass-slice:')
+                    and (native:=kb.get_task(conn,c['task_id'])) and native.status=='running')
+                if len(occupied)>=batch['slice_config']['pass_worker_concurrency']:
+                    return spawned
             if (request['task_id'] != task.id or request['node'] != card['node']
                     or current['kanban']['board_id'] != board
                     or task.idempotency_key != card['idempotency_key']):
                 raise RuntimeError('native program card differs from the canonical binding')
             try:
-                adapter.worker_check(request)
+                admission_check(adapter, request)
             except ContractError as exc:
-                if exc.code in ('WORKFLOW_PAUSED', 'WORKFLOW_STOPPED'):
+                if exc.code in ('WORKFLOW_PAUSED', 'WORKFLOW_STOPPED', 'PASS_ADMISSION_WAIT'):
                     return spawned
                 if exc.code == 'STALE_INPUT':
                     from ingest_kanban import desired_graph

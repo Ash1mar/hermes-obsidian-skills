@@ -10,7 +10,7 @@ from hermes_source_units.model_presentation import present_model_packet
 from hermes_source_units.semantic_submission import validate_native_submission
 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _vault_path, _write_atomic
 from hermes_source_units.validation import fingerprint
-from hermes_source_units.workflow_guard import WORKER_LOCK_TIMEOUT
+from hermes_source_units.workflow_guard import WORKER_LOCK_TIMEOUT, workflow_write_guard, worker_binding
 from ingest_kanban import IngestKanbanAdapter
 from native_pass_identity import (bind_payload, capture_context, load_context,
     remember_candidates, verified_packet, visible_packet, evidence_packet, pass_failure)
@@ -65,8 +65,16 @@ def worker_context(vault, *, beginning=False):
     return adapter, workspace, path, binding
 
 
-def read_pass_input(vault, *, begin=False):
+def read_pass_input(vault, *, begin=False, program=False):
     adapter, workspace, binding_path, binding = worker_context(vault, beginning=begin)
+    if program:
+        from program_worker import canonical_binding
+        workflow=adapter.workflow.status(binding['workflow_id'])
+        card=next(c for c in workflow['kanban']['task_map']
+                  if c['task_id']==binding['task_id'] and c['node']==binding['node'])
+        canonical_binding(adapter,_vault_path(adapter.workflow.vault,
+            f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/bindings/{fingerprint(card['idempotency_key'])}.json"),
+            executor='semantic-v1')
     descriptor_path = workspace/'pass-input-descriptor.json'
     fresh = False
     if begin and not binding_path.exists():
@@ -107,9 +115,11 @@ def read_pass_input(vault, *, begin=False):
     if not fresh:
         # Replay never trusts a model-editable descriptor as reading authority.
         service.source.enable_session_cache()
-        prepared = service.prepare_leased_slice(checked['batch_id'], checked['slice_id'],
-            binding['worker_id'], binding['expected_revision'], check=lambda: adapter.worker_check(binding),
-            timeout=WORKER_LOCK_TIMEOUT)
+        with worker_binding(binding):
+            prepared = service.prepare_leased_slice(checked['batch_id'], checked['slice_id'],
+                binding['worker_id'], binding['expected_revision'], check=lambda: adapter.worker_check(binding,verify_inputs=False),
+                timeout=WORKER_LOCK_TIMEOUT,write_guard=lambda: workflow_write_guard(
+                    service.vault,kinds=('pass-slice',),actor=binding['actor']))
         projections = [service.model_input(p['task_id'], _load_json(_vault_path(service.vault, p['path'])))
                        for p in prepared['reading_packages']]
         live = service.model_packet(projections, checked['batch_id'])
@@ -122,6 +132,13 @@ def read_pass_input(vault, *, begin=False):
         remember_candidates(context, {'results':[{'task':t['task'],'sequence':0,
             'pass_id':t['continuation']['candidate']['candidate_pass_id']}
             for t in presented['tasks'] if t['continuation']['action']=='citation']})
+    if program:
+        # This is checked program data, not a model message. The fixed semantic
+        # runner applies phase/schema/output budgets to each whole-task group.
+        # Keep the same identity, source, permission and immutable evidence checks.
+        return {'ok':True,'renderer':packet['contract'],'task_count':len(packet['tasks']),
+                'packet_sha256':hashlib.sha256(packet_path.read_bytes()).hexdigest(),
+                'packet':visible_packet(presented)}
     text = present_model_packet(visible_packet(presented))
     limit = service._batch(checked['batch_id'])['slice_config']['slice_max_input_codepoints']
     import json
@@ -268,18 +285,29 @@ def control_workflow(vault, workflow_id, action, operation_id):
     root = _vault_path(service.vault,
         f'_system/ledgers/ingest-workflows/{workflow_id}/operator-operations/{operation_id}')
     intent = {'workflow_id':workflow_id,'action':action,'operation_id':operation_id}
-    with _exclusive_lock(root/'.operation.lock'):
+    with _exclusive_lock(root/'.operation.lock', timeout=WORKER_LOCK_TIMEOUT):
         request_path, result_path = root/'request.json', root/'result.json'
         if request_path.exists():
             saved = _load_json(request_path)
             if saved['intent'] != intent:
                 fail('IDEMPOTENCY_CONFLICT', 'operation_id already names another authorized intent')
-            if not result_path.exists():
+            if result_path.exists():
+                return {**_load_json(result_path),'replayed':True}
+            if action != 'cancel':
                 fail('EXECUTION_UNCERTAIN', 'saved operation has no receipt; observe before recovery')
-            return {**_load_json(result_path),'replayed':True}
-        request = {'workflow_id':workflow_id,'actor':value['actor'],'expected_revision':value['revision']}
-        request['input_digest'] = mutation_digest(request)
-        _write_atomic(request_path, _json_bytes({'intent':intent,'request':request}))
+            request = saved['request']
+            service._check_request(request)
+            current = service.status(workflow_id)
+            if (request['workflow_id'] != workflow_id or request['actor'] != current['actor']
+                    or not (current['revision'] == request['expected_revision'] or
+                            (current['state'] == 'cancelled' and current['cancel_requested']
+                             and current['revision'] == request['expected_revision'] + 1))):
+                fail('EXECUTION_UNCERTAIN', 'cancel request no longer matches the current workflow revision')
+        else:
+            value = service.status(workflow_id)
+            request = {'workflow_id':workflow_id,'actor':value['actor'],'expected_revision':value['revision']}
+            request['input_digest'] = mutation_digest(request)
+            _write_atomic(request_path, _json_bytes({'intent':intent,'request':request}))
         from orchestration import dispatch
         result = dispatch(vault, action, request)
         receipt = {'ok':True,'action':action,'operation_id':operation_id,

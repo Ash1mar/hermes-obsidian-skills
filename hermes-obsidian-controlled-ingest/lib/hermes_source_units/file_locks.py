@@ -1,6 +1,7 @@
 """Host kernel locks with Vault owner markers; legacy recovery is explicit."""
 from contextlib import contextmanager
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,33 @@ from .validation import ContractError
 CONTRACT = "hermes-skill-kernel-lock/v1"
 
 
+def lock_diagnostic(path, event, **fields):
+    """Best-effort host diagnostics; never acquire a business lock or affect it."""
+    try:
+        root = (Path.home() / '.cache/hermes-skill-runtime/lock-diagnostics' if os.name == 'posix'
+                else Path(tempfile.gettempdir()) / 'hermes-skill-lock-diagnostics')
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        row = {'at':time.time(), 'event':event, 'path':str(path), 'pid':os.getpid(),
+               'native_task':os.environ.get('HERMES_KANBAN_TASK'), **fields}
+        with (root / f'{os.getpid()}.jsonl').open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(row, ensure_ascii=False, separators=(',', ':'))+'\n')
+    except (OSError, ValueError):
+        pass
+
+
+def lock_operation():
+    frame = inspect.currentframe().f_back
+    try:
+        while frame:
+            name = frame.f_code.co_name
+            if name not in ('__enter__', 'exclusive_lock', 'kernel_lock', 'owner_record','workflow_write_guard','busy'):
+                return Path(frame.f_code.co_filename).name+':'+name
+            frame = frame.f_back
+        return 'unknown'
+    finally:
+        del frame
+
+
 def host_identity():
     machine = Path("/etc/machine-id")
     name = machine.read_text().strip() if os.name == "posix" and machine.exists() else socket.gethostname()
@@ -24,7 +52,9 @@ def owner_record():
     boot = Path("/proc/sys/kernel/random/boot_id")
     return {"contract": CONTRACT, "pid": os.getpid(), "host": host_identity(),
             "boot_id": boot.read_text().strip() if boot.exists() else None,
-            "token": uuid.uuid4().hex}
+            "token": uuid.uuid4().hex, "operation":lock_operation(),
+            "acquired_at":time.time(), "native_task":os.environ.get('HERMES_KANBAN_TASK'),
+            "native_run":os.environ.get('HERMES_KANBAN_RUN_ID')}
 
 
 def process_exists(pid):
@@ -57,13 +87,20 @@ def kernel_lock(path, *, timeout=0, check=None):
             else Path(tempfile.gettempdir()) / "hermes-skill-runtime-locks")
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     key = hashlib.sha256(os.path.normcase(str(path.resolve())).encode()).hexdigest()
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    deadline = started + timeout
     def busy():
         if check is not None:
             check()
         remaining = deadline - time.monotonic()
         if timeout <= 0 or remaining <= 0:
             code = "LOCK_TIMEOUT" if timeout > 0 else "LOCK_BUSY"
+            try:
+                holder = json.loads(Path(path).read_text(encoding='utf-8'))
+            except (OSError, ValueError):
+                holder = None
+            lock_diagnostic(path, 'wait_failed', code=code, operation=lock_operation(),
+                            wait_ms=round((time.monotonic()-started)*1000), holder=holder)
             raise ContractError(code, "$", f"Skill kernel lock is held: {path}; wait limit={timeout}s")
         time.sleep(min(.05, remaining))
     with (root / f"{key}.lock").open("a+b") as stream:
@@ -102,6 +139,7 @@ def kernel_lock(path, *, timeout=0, check=None):
 def exclusive_lock(path, *, timeout=0, check=None):
     path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
+    waiting = time.monotonic()
     with kernel_lock(path, timeout=timeout, check=check):
         if path.exists():
             try:
@@ -117,9 +155,17 @@ def exclusive_lock(path, *, timeout=0, check=None):
         record = owner_record()
         from .source_units import _write_atomic, _json_bytes
         _write_atomic(path, _json_bytes(record))
+        acquired = time.monotonic()
+        lock_diagnostic(path, 'acquired', owner=record, wait_ms=round((acquired-waiting)*1000))
+        exit_reason = 'success'
         try:
             yield
+        except BaseException as exc:
+            exit_reason = getattr(exc, 'code', type(exc).__name__)
+            raise
         finally:
+            lock_diagnostic(path, 'released', owner=record, exit_reason=exit_reason,
+                            hold_ms=round((time.monotonic()-acquired)*1000))
             # The kernel inode is separate and remains stable after marker removal.
             if path.exists():
                 current = json.loads(path.read_text(encoding="utf-8"))

@@ -116,6 +116,13 @@ class KernelLockTest(unittest.TestCase):
             with exclusive_lock(self.lock, timeout=.15):
                 self.fail("waiter bypassed live owner")
         self.assertEqual(self.lock.read_bytes(), before)
+        root = (Path.home()/'.cache/hermes-skill-runtime/lock-diagnostics' if os.name=='posix'
+                else Path(tempfile.gettempdir())/'hermes-skill-lock-diagnostics')
+        events=[json.loads(line) for line in (root/f'{os.getpid()}.jsonl').read_text().splitlines()]
+        failure=next(e for e in reversed(events) if e['event']=='wait_failed' and e['path']==str(self.lock.resolve()))
+        self.assertEqual(failure['holder']['pid'],holder.pid)
+        self.assertGreaterEqual(failure['wait_ms'],100)
+        self.assertIn('operation',failure['holder'])
 
 
 if __name__ == "__main__":

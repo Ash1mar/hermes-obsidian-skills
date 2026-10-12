@@ -201,15 +201,20 @@ class FileSourceUnitService:
         self._read_snapshot = snapshot
         try:
             yield
-            for relative, path in snapshot['paths'].items():
-                if _vault_path(self.vault, relative) != path:
-                    _fail('SOURCE_CHANGED', 'repository path changed during reading')
-            for path, signature in snapshot['files'].items():
-                if self._file_signature(path) != signature:
-                    _fail('SOURCE_CHANGED', 'repository changed during reading snapshot')
+            self.assert_reading_snapshot_current()
         finally:
             self._read_snapshot = None
             self._session_cache_enabled = enabled
+
+    def assert_reading_snapshot_current(self):
+        snapshot=self._read_snapshot
+        if snapshot is None: return
+        for relative,path in snapshot['paths'].items():
+            if _vault_path(self.vault,relative)!=path:
+                _fail('SOURCE_CHANGED','repository path changed during reading')
+        for path,signature in snapshot['files'].items():
+            if self._file_signature(path)!=signature:
+                _fail('SOURCE_CHANGED','repository changed during reading snapshot')
 
     def _read_path(self, relative):
         snapshot = self._read_snapshot
