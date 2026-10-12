@@ -127,7 +127,8 @@ def test_phase_balancing_preserves_tasks_materials_and_complete_budget():
 def test_correction_reserve_covers_bounded_errors_and_whole_images():
     packet,tasks=grouping_fixture(3)
     images={}
-    correction={'failures':[{'task':t['task'],'code':'INVALID_SCHEMA','message':'\\'*160} for t in tasks]}
+    correction={'failures':[{'task':t['task'],'code':'INVALID_SCHEMA',
+        'message':fixed.bounded_correction_message('\\'*160,PHASE_BALANCED_POLICY)} for t in tasks]}
     u=fixed.group_usage(packet,tasks,'citation',100000,images,PHASE_BALANCED_POLICY)
     wire=fixed.wire_prompt('citation',fixed.subset(packet,tasks,'citation'),{},correction)
     size=len(json.dumps(wire,ensure_ascii=False,separators=(',',':')))+len(json.dumps(fixed.strict_schema(fixed.slot_schema('citation',tasks)),ensure_ascii=False,separators=(',',':')))

@@ -355,6 +355,15 @@ def correction_reserve(count,policy):
     return max(policy['input_correction_reserve_codepoints'],policy['correction_slot_reserve_codepoints']*count)
 
 
+def bounded_correction_message(message,policy):
+    # The user request is itself JSON inside the measured wire. Backslashes and
+    # control characters expand twice; raw-character slicing undercounts them.
+    message=str(message)[:policy['correction_message_codepoints']]
+    while len(json.dumps(json.dumps(message,ensure_ascii=False),ensure_ascii=False))>policy['correction_message_codepoints']:
+        message=message[:-1]
+    return message
+
+
 def group_usage(packet,tasks,phase,limit,images,policy):
     prompt=wire_prompt(phase,subset(packet,tasks,phase),slot_schema(phase,tasks))
     selected=select_images(tasks,images) if images is not None else []
@@ -563,11 +572,11 @@ def run_pass(adapter,binding,caller):
                     tasks=[t for t in tasks if t['task'] in failed]
                     correction={'failures':failures}
                     if policy:
-                        correction={'failures':[{k:(str(v)[:policy['correction_message_codepoints']] if k=='message' else v)
+                        correction={'failures':[{k:(bounded_correction_message(v,policy) if k=='message' else v)
                             for k,v in f.items() if k in ('task','code','message')} for f in failures]}
                 except ContractError as exc:
                     if exc.code not in ('INVALID_SCHEMA','UNRESOLVED_REFERENCE','UNINSPECTED_SUPPORT','INCOMPLETE_COVERAGE'): raise
-                    correction={'code':exc.code,'message':str(exc)[:policy['correction_message_codepoints'] if policy else 500]}
+                    correction={'code':exc.code,'message':bounded_correction_message(exc,policy) if policy else str(exc)[:500]}
                 if recovered:
                     continue  # Mechanical replay consumes no semantic correction budget.
                 attempt+=1

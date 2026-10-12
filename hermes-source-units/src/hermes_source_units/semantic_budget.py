@@ -4,6 +4,7 @@ from .validation import fingerprint
 PHASE_BALANCED_POLICY={
     'version':'phase-balanced/v2','output_tokens':8192,'output_reserve':1024,
     'input_correction_reserve_codepoints':2048,'correction_slot_reserve_codepoints':512,'correction_message_codepoints':160,
+    'correction_message_metric':'wire-serialized-codepoints; full diagnostic retained in audit',
     'candidate_core_bytes_per_estimated_token':6,
     'citation_prior_bytes_per_estimated_token':4,
     'citation_core_bytes_per_estimated_token':12,
