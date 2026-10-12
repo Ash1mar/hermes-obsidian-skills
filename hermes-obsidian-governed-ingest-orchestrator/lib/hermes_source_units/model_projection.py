@@ -41,9 +41,12 @@ class ModelProjectionMixin:
             fail('STALE_INPUT', 'model input does not belong to this task')
         access = {'actor': package['actor'], 'purpose': 'construction',
                   'registry_revision': package['document_registry_revision']}
+        from .reading_dependencies import required_reading
+        effective,supplement=required_reading(self.source,package)
+        required={canonical_json(r['unit_ref']) for r in supplement['required_refs']}
         headings, heading_ids, mapping, materials, qa_hashes = [], {}, {}, [], {}
         with self.source.reading_snapshot():
-            for index, material in enumerate(package['materials'], 1):
+            for index, material in enumerate(effective, 1):
                 live = self.source.get({'source_ref': material['source_ref'], 'access': access})
                 if (live['core_text'] != material['core_text'] or
                         live['content_sha256'] != material['unit_content_sha256'] or
@@ -64,6 +67,8 @@ class ModelProjectionMixin:
                 handle = f'm{index}'
                 mapping[handle] = copy.deepcopy(material['source_ref'])
                 item = {'ref': handle, 'role': material['role'], 'heading': heading_ids[heading], 'text': text}
+                if canonical_json(unit) in required:
+                    item['required_dependency']=True
                 if live['locator'].get('span'):
                     item['source_span'] = material['source_ref'].get('span') or live['locator']['span']
                 if live['locator']['kind'] == 'asset' and text is None:
@@ -94,6 +99,19 @@ class ModelProjectionMixin:
                 if material['quality_refs']:
                     item['qa_qualification'] = 'Review source QA restrictions before treating affected claims as authoritative.'
                 materials.append(item)
+        # Tell the model which associations are actually supplied, without
+        # exposing canonical identities or granting it attachment-opening tools.
+        provided={r['unit_ref']['unit_id']:handle for handle,r in mapping.items()}
+        for material,item in zip(effective,materials):
+            u=material['source_ref']['unit_ref']
+            _,units,_=self.source._load_set(u['resource_id'],u['unit_set_id'])
+            for linked,asset in zip(item.get('linked_assets',[]),material['asset_refs']):
+                target=next((x for x in units if x['locator']['kind']=='asset' and x['locator']['path']==asset['path']),None)
+                handle=provided.get(target['ref']['unit_id']) if target else None
+                if handle:
+                    linked.update(content_provided=True,material_ref=handle)
+                if target and canonical_json(target['ref']) in required:
+                    linked['required_dependency']=True
         view = {'headings': headings, 'materials': materials, 'limits': {
             'context_truncated': package['window']['truncated'],
             'omitted_material_count': len(package['window']['omitted_refs']),
@@ -101,6 +119,8 @@ class ModelProjectionMixin:
         identity = {'renderer': RENDERER, 'task_id': task_id,
                     'package_id': package['package_id'], 'package_hash': package_hash,
                     'qa_hashes': qa_hashes, 'view': copy.deepcopy(view), 'mapping': mapping}
+        if required:
+            identity['reading_supplement']=supplement
         input_id = fingerprint(identity)
         # Historical Passes are context, not new evidence. Resolve them through
         # the same bounded mapping, never include hashes/full UnitRefs in the view.
@@ -154,6 +174,11 @@ class ModelProjectionMixin:
         manifest = {**identity, 'input_id': input_id, 'view_hash': fingerprint(view)}
         ref = f'_system/knowledge-builds/task-{task_id}/model-inputs/{input_id}-{manifest["view_hash"]}.json'
         if persist:
+            if required:
+                supplement_path=_vault_path(self.vault,f'_system/knowledge-builds/task-{task_id}/reading-supplements/{supplement["supplement_id"]}.json')
+                if supplement_path.exists() and _load_json(supplement_path)!=supplement:
+                    fail('SOURCE_CHANGED','reading supplement identity collision')
+                if not supplement_path.exists():_write_atomic(supplement_path,_json_bytes(supplement))
             path = _vault_path(self.vault, ref)
             if path.exists() and _load_json(path) != view:
                 fail('IDEMPOTENCY_CONFLICT', 'model projection identity has different content')

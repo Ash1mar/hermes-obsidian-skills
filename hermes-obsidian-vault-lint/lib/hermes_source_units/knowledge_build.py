@@ -665,6 +665,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
     def _slice_config(value: Mapping[str, Any] | None = None) -> dict[str, int]:
         raw = dict(value or {})
         config = {key: int(raw.get(key, default)) for key, default in DEFAULT_SLICE_CONFIG.items()}
+        if 'semantic_budget_policy' in raw:
+            config['semantic_budget_policy']=copy.deepcopy(raw['semantic_budget_policy'])
         validate_record("knowledge_slice_config", config)
         return config
 
@@ -1194,6 +1196,49 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             _write_atomic(self._batch_path(batch_id), _json_bytes(updated_batch))
             return {"ok": True, "batch": updated_batch, "cancelled_slice_ids": cancelled}
 
+    def _deferred_execution_slices(self, batch, slices):
+        """Keep bound semantic refusals held across cancellation and regrouping.
+
+        Cancellation receipts describe worker shutdown and may overwrite the
+        slice's last_error. The original bound failure reports retain the cause.
+        No domain output is revised or inferred here.
+        """
+        pointer = batch.get('execution_plan_ref')
+        if not pointer or '/execution-plans/' not in pointer:
+            return set()
+        root = pointer.split('/execution-plans/', 1)[0]
+        wid = root.rsplit('/', 1)[-1]
+        completed = {tid for value in slices if value['state'] == 'completed'
+                     for tid in value['task_ids']}
+        refused = set()
+        for path in _vault_path(self.vault, root + '/reports').glob('failed-*.json'):
+            report = _load_json(path)
+            if report.get('error_code') not in ('SEMANTIC_DRAFT_REJECTED', 'SEMANTIC_REVIEW_REQUIRED'):
+                continue
+            node = report.get('node', '')
+            if not node.startswith('pass-slice:'):
+                continue
+            old_path = self._slice_path(batch['batch_id'], node.split(':', 1)[1])
+            if not old_path.is_file():
+                continue
+            old = _load_json(old_path)
+            identity = report.get('input_fingerprint')
+            key = report.get('idempotency_key')
+            binding_path = _vault_path(self.vault, root + '/bindings/' + fingerprint(key) + '.json')
+            if not binding_path.is_file():
+                continue
+            binding = _load_json(binding_path)
+            if (old['batch_id'] != batch['batch_id'] or old['state'] == 'completed'
+                    or key != f'ingest:{wid}:pass-slice:{identity}'
+                    or binding.get('workflow_id') != wid or binding.get('node') != node
+                    or binding.get('input_fingerprint') != identity
+                    or binding.get('template_hash') != old['template_hash']
+                    or binding.get('task_id') != report.get('task_id')):
+                continue
+            refused.update(tid for tid in old['task_ids'] if tid not in completed)
+        return {value['slice_id'] for value in slices
+                if value['state'] != 'completed' and refused.intersection(value['task_ids'])}
+
     def resume_cancelled_batch(self, batch_id: str, actor: str,
                                expected_revision: int) -> dict[str, Any]:
         """Reopen cancelled slices; worker admission still checks pinned inputs."""
@@ -1206,8 +1251,10 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             if not batch.get("cancel_requested") or batch["state"] != "cancelled":
                 _fail("INVALID_STATE", "batch is not cancelled")
             reopened = []
-            for value in self._slices(batch_id):
-                if value["state"] != "cancelled":
+            slices = self._slices(batch_id)
+            deferred = self._deferred_execution_slices(batch, slices)
+            for value in slices:
+                if value["state"] != "cancelled" or value['slice_id'] in deferred:
                     continue
                 updated = copy.deepcopy(value)
                 updated.update({"state": "ready", "retry_at": None,
@@ -1676,7 +1723,11 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             _fail("INVALID_PASS", "Pass 0 must be the candidate pass", "$.pass_kind")
         if body["sequence"] > 0 and body["pass_kind"] != "citation":
             _fail("INVALID_PASS", "Pass 1..N must be citation passes", "$.pass_kind")
-        available = window["core_refs"] + window["context_refs"]
+        from .reading_dependencies import required_reading
+        _,supplement=required_reading(self.source,package)
+        available = window["core_refs"] + window["context_refs"] + supplement['required_refs']
+        if any(not any(_covers(i['source_ref'],ref) for i in body['inspections']) for ref in supplement['required_refs']):
+            _fail('INCOMPLETE_COVERAGE','required reading dependency has not been inspected; retain original evidence')
         for inspection in body["inspections"]:
             if not any(_covers(item, inspection["source_ref"]) for item in available):
                 _fail("OUTSIDE_READING_PACKAGE", "inspection is not in the reading package", "$.inspections")
@@ -1701,6 +1752,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 'pass_id': body['pass_id'], 'task_revision': task['revision'],
                 'reading_package_fingerprint': package_fingerprint,
                 'template_hash': body.get('template_hash'), 'validated': True}
+            if supplement['required_refs']:
+                evidence['reading_supplement']=supplement
             receipt_id = fingerprint(evidence)
             preflight_ref = f'{BUILD_ROOT}/task-{task_id}/preflights/{receipt_id}.json'
             _write_atomic(_vault_path(self.vault, preflight_ref), _json_bytes(evidence))
@@ -1860,6 +1913,13 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 _fail("INCOMPLETE_COVERAGE", "Reduce cannot consume a task with deferred target ranges")
             if not task["inspections"]:
                 _fail("INCOMPLETE_COVERAGE", "context inspection does not cover the task target")
+            package=self._existing_reading_package(task,actor,int(request['document_registry_revision']))
+            if package is not None:
+                from .reading_dependencies import required_reading
+                _,supplement=required_reading(self.source,package)
+                if any(not any(_covers(i['source_ref'],ref) for i in passes[-1]['inspections'])
+                       for ref in supplement['required_refs']):
+                    _fail('INCOMPLETE_COVERAGE','required table dependency lacks citation inspection; historical records retained')
             validate_references("work", completion_probe, task_units)
         subjects = {item["subject_id"]: item for item in registry["subjects"]}
         paths = {item["current_path"]: item["subject_id"] for item in registry["subjects"]

@@ -87,9 +87,17 @@ class ExecutionPlanMixin:
             fail('INVALID_TRANSITION', 'canary must already be accepted and released before amendment')
         self._verify_execution_evidence(workflow)
         config = service._slice_config({**batch['slice_config'], 'slice_max_tasks': request['max_tasks'],
-                                      'slice_max_input_codepoints': request['max_input_codepoints']})
+                                      'slice_max_input_codepoints': request['max_input_codepoints'],
+                                      **({'semantic_budget_policy':request['semantic_budget_policy']} if 'semantic_budget_policy' in request else {})})
+        if config.get('semantic_budget_policy'):
+            from .semantic_budget import budget_policy_pin
+            if config['semantic_budget_policy']!=budget_policy_pin():
+                fail('STALE_PLAN','semantic budget policy fingerprint differs from installed implementation')
         completed = [s for s in slices if s['state'] == 'completed']
+        deferred = service._deferred_execution_slices(batch, slices)
+        held = [s for s in slices if s['state'] == 'blocked' or s['slice_id'] in deferred]
         completed_tasks = {tid for s in completed for tid in s['task_ids']}
+        held_tasks={tid for s in held for tid in s['task_ids']}
         planned = [tid for s in slices for tid in s['task_ids']]
         if Counter(planned) != Counter(batch['task_ids']):
             fail('INCOMPLETE_COVERAGE', 'active slices do not own every task exactly once')
@@ -115,6 +123,10 @@ class ExecutionPlanMixin:
             for record in records.get(tid, []):
                 if fingerprint({k: v for k, v in record.items() if k != 'pass_id'}) != record['pass_id']:
                     fail('SOURCE_CHANGED', 'historical Pass fingerprint changed')
+            if tid in held_tasks:
+                # An efficiency amendment is not permission to retry unchanged
+                # rejected source/semantic work. Keep its ownership and evidence.
+                continue
             if tid in completed_tasks:
                 if not records.get(tid) or records[tid][-1]['sequence'] < 1:
                     fail('INCOMPLETE_COVERAGE', 'completed slice lacks durable citation')
@@ -140,7 +152,7 @@ class ExecutionPlanMixin:
                 fail('READING_WINDOW_OVERSIZE', 'one shared-packet task exceeds execution input budget')
         if current:
             groups.append(current)
-        for value in completed:
+        for value in [*completed,*held]:
             protect(service._slice_path(batch['batch_id'], value['slice_id']))
             for ref in value['result_refs']:
                 protect(_vault_path(self.vault, ref))
@@ -157,18 +169,19 @@ class ExecutionPlanMixin:
                 'template_id':RENDERER, 'template_hash':template_hash, 'state':'cancelled', 'attempt':0,
                 'lease':{'worker_id':None,'claimed_at':None,'heartbeat_at':None,'expires_at':None},
                 'retry_at':None, 'result_refs':[], 'last_error':None, 'reslice_count':0, 'revision':1})
-        task_owner = [tid for s in [*completed, *new_slices] for tid in s['task_ids']]
+        task_owner = [tid for s in [*completed,*held, *new_slices] for tid in s['task_ids']]
         if Counter(task_owner) != Counter(batch['task_ids']):
             fail('INCOMPLETE_COVERAGE', 'amendment lost or duplicated task ownership')
         for value in new_slices:
             validate_record('knowledge_slice', value)
         summary = {'completed_slices_preserved':len(completed), 'partial_task_ids':partial,
+            'held_slices_preserved':len(held),
             'task_ids_unchanged':True, 'old_slice_count':len(slices),
-            'new_slice_count':len(completed)+len(new_slices), 'pending_slice_count':len(new_slices),
+            'new_slice_count':len(completed)+len(held)+len(new_slices), 'pending_slice_count':len(new_slices),
             'model_input_codepoints':sum(s['input_codepoints'] for s in new_slices),
             'shared_text_codepoints_saved':sum(packet_size(group)[1] for group in groups),
             'pause_control_unchanged':True}
-        return batch, completed, new_slices, groups, config, protected, summary
+        return batch, [*completed,*held], new_slices, groups, config, protected, summary
 
     def amend_execution(self, request, *, dry_run=False):
         if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
@@ -253,7 +266,11 @@ class ExecutionPlanMixin:
                     package = self.knowledge._existing_reading_package(
                         task, journal['batch']['actor'], journal['batch']['document_registry_revision'])
                     if package is None:
-                        fail('INCOMPLETE_COVERAGE', 'preserved task lost its reading package')
+                        if preserved['state'] == 'completed':
+                            fail('INCOMPLETE_COVERAGE', 'preserved task lost its reading package')
+                        # Held ownership can contain never-started neighbors.
+                        # It is not accepted evidence and must not be dispatched.
+                        continue
                     self.knowledge.model_input(tid, package)
             for group in manifest['slice_inputs'].values():
                 for expected in group:
