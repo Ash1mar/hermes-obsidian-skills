@@ -9,6 +9,7 @@ from test_phase_grouping_dependencies import dependency_fixture
 from hermes_source_units import FileKnowledgeBuildService, ContractError
 from hermes_source_units.exact_planning import ExactPlanner
 from exact_model_budget import model_measurement
+from hermes_source_units.validation import fingerprint
 
 
 def inventory(vault):
@@ -17,7 +18,7 @@ def inventory(vault):
 
 
 def test_sequential_model_budget_reads_more_than_eight_units_without_writes(vault):
-    publish_sources(vault,['\n'.join(f'# Clause {i}\nEvidence {i}.\n' for i in range(24))])
+    publish_sources(vault,['# Evidence\n' + ('Evidence is preserved.\n\n'*600)])
     service=FileKnowledgeBuildService(vault)
     request={'actor':'agent','registry_revision':1,'batch_id':'new-plan-only','max_codepoints':100000,
         'sources':[{'resource_id':'resource-1','unit_set_id':service.source._current('resource-1')['unit_set_id']}]}
@@ -28,13 +29,12 @@ def test_sequential_model_budget_reads_more_than_eight_units_without_writes(vaul
     assert flattened==planner.refs
     assert any(len(t['target_refs'])>8 for t in plan['tasks'])
     assert all(b['fits'] for t in plan['tasks'] for b in
-        [planner.budgets[__import__('hermes_source_units').validation.fingerprint({'session':planner.session,'refs':t['target_refs']})]])
+        [planner.budgets[fingerprint({'session':planner.session,'refs':t['target_refs']})]])
     assert inventory(vault)==before
 
 
 def test_model_budget_counts_required_table_and_indivisible_oversize(vault):
-    source,package,_=dependency_fixture(vault)
-    service=FileKnowledgeBuildService(vault)
+    service,package=dependency_fixture(vault)
     request={'actor':'agent','registry_revision':1,'batch_id':'required-table-plan','max_codepoints':12000,
         'sources':[{'resource_id':package['window']['core_refs'][0]['unit_ref']['resource_id'],
                     'unit_set_id':package['window']['core_refs'][0]['unit_ref']['unit_set_id']}]}
@@ -66,7 +66,6 @@ def test_model_budget_checkpoint_rechecks_fingerprint(vault):
 
 
 def test_new_native_plan_pins_budget_without_replanning_existing_batch(vault):
-    from test_exact_planning import test_exact_worker_bound_completion_and_gaps
     # Existing native fixture covers bound exact preparation and completion.
     # Pin inheritance itself is checked without starting a real worker.
     request=request_for(vault);service=FileKnowledgeBuildService(vault)
