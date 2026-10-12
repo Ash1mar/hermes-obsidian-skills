@@ -29,7 +29,10 @@ def span(name, *, vault=None, workflow_id=None, binding=None, **fields):
     identity.update(vault=str(vault or identity.get('vault') or os.environ.get('TERMINAL_CWD','')),
         workflow_id=workflow_id or identity.get('workflow_id') or os.environ.get('HERMES_INGEST_WORKFLOW_ID'),
         task_id=identity.get('task_id') or os.environ.get('HERMES_KANBAN_TASK'),
+        node=identity.get('node') or os.environ.get('HERMES_INGEST_NODE'),
         native_run_id=os.environ.get('HERMES_KANBAN_RUN_ID'))
+    if identity.get('node','') and identity['node'].startswith('pass-slice:'):
+        identity['slice_id']=identity['node'].partition(':')[2]
     trace = {**identity, 'span_id':uuid.uuid4().hex, 'parent_span_id':parent.get('span_id'),
              'name':name, 'started_at':time.time(), 'pid':os.getpid(), **fields}
     started = time.monotonic()

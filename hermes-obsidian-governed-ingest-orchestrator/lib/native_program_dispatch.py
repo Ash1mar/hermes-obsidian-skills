@@ -99,7 +99,10 @@ def dispatch_programs(adapter, workflow_id):
                 adapter.execution_failure(request, exc.code, str(exc))
                 return spawned
             # Native claim enforces parents, opens a run and uses ready->running CAS.
-            claimed = kb.claim_task(conn, task.id, claimer='ingest-program-dispatch')
+            with span('native_claim',binding=request) as claim_trace:
+                claimed = kb.claim_task(conn, task.id, claimer='ingest-program-dispatch')
+                if claimed:
+                    claim_trace['native_run_id']=str(claimed.current_run_id)
             if claimed is None:
                 continue
             if request['node'].startswith('pass-slice:'):
@@ -119,12 +122,12 @@ def dispatch_programs(adapter, workflow_id):
                     HERMES_KANBAN_BOARD=board, HERMES_KANBAN_DB=str(kb.kanban_db_path(board=board)),
                     HERMES_KANBAN_WORKSPACES_ROOT=str(kb.workspaces_root(board=board)),
                     HERMES_KANBAN_WORKSPACE=str(workspace), TERMINAL_CWD=str(workspace),
-                    HERMES_INGEST_EXECUTOR=executor,HERMES_INGEST_WORKFLOW_ID=workflow_id)
+                    HERMES_INGEST_EXECUTOR=executor,HERMES_INGEST_WORKFLOW_ID=workflow_id,HERMES_INGEST_NODE=request['node'])
                 script = Path(__file__).resolve().parents[1] / 'scripts/run_program_worker.py'
                 argv = kd._restart_safe_worker_argv(claimed, [sys.executable, str(script),
                     '--vault', str(adapter.workflow.vault), '--binding', body['worker_binding']])
                 with kd._open_worker_log(claimed, board) as output:
-                    with span('native_spawn',binding=request):
+                    with span('native_spawn',binding=request,native_run_id=str(claimed.current_run_id)):
                         proc = subprocess.Popen(argv, cwd=workspace, env=env,
                             stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
                             start_new_session=True,

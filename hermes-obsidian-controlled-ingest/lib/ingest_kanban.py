@@ -223,7 +223,8 @@ class KanbanCLI:
                 or os.environ.get("HERMES_KANBAN_TASK")):
             _fail("ACCESS_DENIED", "Kanban reconciliation requires a trusted orchestrator process")
         from hermes_source_units.runtime_telemetry import span
-        with span('native_cli', operation=parts[3] if parts[0]=='kanban' and len(parts)>3 else parts[1] if len(parts)>1 else parts[0]):
+        with span('native_cli', operation=parts[3] if parts[0]=='kanban' and len(parts)>3 else parts[1] if len(parts)>1 else parts[0],
+                  target_task_id=parts[4] if parts[0]=='kanban' and len(parts)>4 else None):
             result = self.invoke(["hermes", *parts])
         if result.returncode != 0:
             _fail("KANBAN_UNAVAILABLE", result.stderr.strip() or result.stdout.strip()
