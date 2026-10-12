@@ -12,6 +12,7 @@ import uuid
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _vault_path, _write_atomic, _json_bytes
 from hermes_source_units.validation import fingerprint, validate_record
+from hermes_source_units.runtime_telemetry import measured, span
 from native_ingest import worker_action, read_pass_input
 from native_pass_identity import visible_packet, load_context
 from program_worker import canonical_binding
@@ -122,16 +123,18 @@ class HermesCaller:
         return raw,metadata
 
     def _call(self, phase, view, output_schema, correction=None):
-        agent = self.make_agent()
-        prompt = wire_prompt(phase,view,output_schema,correction)
-        content=message_content(prompt['user'],self.images)
+        with span('request_construct', phase=phase):
+            agent = self.make_agent()
+            prompt = wire_prompt(phase,view,output_schema,correction)
+            content=message_content(prompt['user'],self.images)
         agent.fixed_request={**prompt,'user':content}
         text=normalize_content(content)[0]
         agent.fixed_text_request={**prompt,'user':text}
         agent.fixed_images=self.images
         agent.fixed_output_schema=output_schema if 'results' in output_schema.get('properties',{}) else None
         try:
-            result=agent.run_conversation(content,system_message=prompt['system'])
+            with span('sdk_model_request',phase=phase,session_id=agent.session_id):
+                result=agent.run_conversation(content,system_message=prompt['system'])
             if result.get('error') or result.get('partial'):
                 raise RuntimeError('native model request did not complete; inspect its session')
             raw=result.get('final_response','')
@@ -160,6 +163,7 @@ def wire_prompt(phase,view,output_schema,correction=None):
         'user':'Native task '+os.environ.get('HERMES_KANBAN_TASK','isolated-test')+'\n'+json.dumps(body,ensure_ascii=False,separators=(',',':'))}
 
 
+@measured('semantic_call', lambda adapter, binding, phase, view, caller, limit, correction=None: {'vault':adapter.workflow.vault,'binding':binding,'phase':phase})
 def model_call(adapter,binding,phase,view,caller,limit,correction=None):
     output_schema=slot_schema(phase,view.get('tasks',[])) if phase in ('candidate','citation') else schema(phase)
     wire=wire_prompt(phase,view,output_schema,correction)
@@ -180,7 +184,8 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None):
         else: adapter.worker_check(binding)
     if isinstance(caller,HermesCaller): caller.input_limit=limit
     started=time.monotonic()
-    raw,metadata=caller(phase,view,output_schema,correction)
+    with span('model_call',phase=phase,input_sha256=fingerprint(wire)) as model_trace:
+        raw,metadata=caller(phase,view,output_schema,correction)
     audit={'contract':'hermes-fixed-semantic-call/v1','native_task_id':binding['task_id'],
         'workflow_id':binding['workflow_id'],'node':binding['node'],
         'template_hash':binding.get('template_hash'),
@@ -192,6 +197,7 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None):
         'static_codepoints':len(wire['system'])+len(json.dumps(output_schema,ensure_ascii=False,separators=(',',':'))),
         'structured_schema_codepoints':schema_size,
         'model':metadata,'receipt_refs':[]}
+    audit['timeline_span_id']=model_trace['span_id']
     if images:
         audit['image_inputs']=[{k:v for k,v in image.items() if k!='url'} for image in images]
     if phase in ('candidate','citation'):

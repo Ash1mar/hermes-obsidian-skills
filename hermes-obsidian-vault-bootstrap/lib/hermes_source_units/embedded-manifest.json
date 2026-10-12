@@ -23,6 +23,7 @@
   "model_projection.py": "345616c3df9e941ae32668eab1174d4a995f7f2778917a04996cf30960844232",
   "pass_revision.py": "ed274ce103ca1d061562c0b817d217cff7f8e503989c2e439e5f572d481e570a",
   "py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+  "runtime_telemetry.py": "b026c8f4e071ae01b4e5036fccb1fef9d28870fff8b8da44a3bf869f8e885d37",
   "schemas/contracts.json": "99345a2415a46f1bbf966bddadfea567b84d4fbdaced8a2ba5005d9d895d0063",
   "semantic_submission.py": "059a45deb482a4848e77609a93b4c9daa609723f2723a50ff9c1c884070e7477",
   "source_units.py": "8c3f12f11e08539e2968f707e2b124db09e21f52d94b05b905779dc39ad90a62",

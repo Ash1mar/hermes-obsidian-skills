@@ -1,0 +1,83 @@
+"""Best-effort host timelines and wake hints, never workflow authority."""
+from contextlib import contextmanager
+from contextvars import ContextVar
+from functools import wraps
+import hashlib
+import json
+import os
+from pathlib import Path
+import signal
+import tempfile
+import time
+import uuid
+
+_TRACE = ContextVar('ingest_runtime_trace', default={})
+
+
+def runtime_directory(vault, workflow_id):
+    root = (Path.home()/'.cache/hermes-skill-runtime/timelines' if os.name == 'posix'
+            else Path(tempfile.gettempdir())/'hermes-skill-runtime/timelines')
+    key = hashlib.sha256((str(Path(vault).resolve())+'\0'+workflow_id).encode()).hexdigest()[:24]
+    return root/key
+
+
+@contextmanager
+def span(name, *, vault=None, workflow_id=None, binding=None, **fields):
+    parent = _TRACE.get()
+    binding = binding or {}
+    identity = {**parent, **{k:binding[k] for k in ('workflow_id','task_id','node') if k in binding}}
+    identity.update(vault=str(vault or identity.get('vault') or os.environ.get('TERMINAL_CWD','')),
+        workflow_id=workflow_id or identity.get('workflow_id') or os.environ.get('HERMES_INGEST_WORKFLOW_ID'),
+        task_id=identity.get('task_id') or os.environ.get('HERMES_KANBAN_TASK'),
+        native_run_id=os.environ.get('HERMES_KANBAN_RUN_ID'))
+    trace = {**identity, 'span_id':uuid.uuid4().hex, 'parent_span_id':parent.get('span_id'),
+             'name':name, 'started_at':time.time(), 'pid':os.getpid(), **fields}
+    started = time.monotonic()
+    token = _TRACE.set(trace)
+    error = None
+    try:
+        yield trace
+    except BaseException as exc:
+        error = getattr(exc,'code',type(exc).__name__)
+        raise
+    finally:
+        _TRACE.reset(token)
+        try:
+            if trace['workflow_id'] and trace['vault']:
+                row = {**trace, 'finished_at':time.time(),
+                       'elapsed_ms':round((time.monotonic()-started)*1000,3), 'error':error}
+                root = runtime_directory(trace['vault'],trace['workflow_id'])
+                root.mkdir(parents=True,exist_ok=True)
+                with (root/f'{os.getpid()}.jsonl').open('a',encoding='utf-8') as stream:
+                    stream.write(json.dumps(row,separators=(',',':'))+'\n')
+        except (OSError, ValueError, TypeError):
+            pass
+
+
+def measured(name, identity=None):
+    def decorate(function):
+        @wraps(function)
+        def invoke(*args, **kwargs):
+            with span(name, **(identity(*args, **kwargs) if identity else {})):
+                return function(*args, **kwargs)
+        return invoke
+    return decorate
+
+
+def notify_reconciler(vault, workflow_id):
+    """Wake only the exact local watcher process; hint does not grant execution."""
+    if os.name != 'posix':
+        return False
+    try:
+        marker = json.loads((runtime_directory(vault,workflow_id)/'watcher.json').read_text())
+        proc = Path('/proc')/str(marker['pid'])
+        args = [s.decode() for s in (proc/'cmdline').read_bytes().split(b'\0') if s]
+        if (proc.stat().st_uid != os.getuid() or marker['workflow_id'] != workflow_id
+                or not any(Path(a).name == 'watch_ingest_workflow.py' for a in args)
+                or '--workflow-id' not in args or args[args.index('--workflow-id')+1] != workflow_id
+                or '--vault' not in args or Path(args[args.index('--vault')+1]).resolve() != Path(vault).resolve()):
+            return False
+        os.kill(marker['pid'],signal.SIGUSR1)
+        return True
+    except (OSError,ValueError,KeyError,IndexError,UnicodeError):
+        return False

@@ -6,8 +6,10 @@ from hermes_source_units.source_units import _vault_path, _write_atomic, _json_b
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard, WORKER_LOCK_TIMEOUT
 from ingest_kanban import IngestKanbanAdapter, semantic_template
+from hermes_source_units.runtime_telemetry import measured, span
 
 
+@measured('submission', lambda vault, binding, request, **kwargs: {'vault':vault,'binding':binding})
 def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
     # Shape failures happen before lease renewal, guard entry or any domain write.
     validate_submission(request, confirmation=confirmation)
@@ -16,6 +18,9 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
     if not binding['node'].startswith('pass-slice:'):
         raise ContractError('ACCESS_DENIED', '$', 'semantic submission requires a Pass worker')
     service = FileKnowledgeBuildService(vault)
+    # Share this invocation's signature-checked evidence cache with live worker
+    # checks, rather than parsing the same immutable repositories twice.
+    adapter.workflow.knowledge.source = service.source
     # Expansion also checks these same repositories. Enable the existing
     # signature-checked invocation cache before expansion, retaining ACL and
     # live pre-commit checks, instead of enabling it only during persistence.
@@ -30,10 +35,11 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
     # Pure reading/identity expansion does not need the shared cancellation lock.
     # Persistence still verifies live source/ACL, task revision and current lease.
     reviews = []
-    if confirmation:
-        expanded, reviews = service.expand_citation_confirmations(request, checked['task_ids'], binding['actor'], checked['batch_id'])
-    else:
-        expanded = service.expand_model_passes(request, checked['task_ids'], binding['actor'], checked['batch_id'])
+    with span('identity_expansion'):
+        if confirmation:
+            expanded, reviews = service.expand_citation_confirmations(request, checked['task_ids'], binding['actor'], checked['batch_id'])
+        else:
+            expanded = service.expand_model_passes(request, checked['task_ids'], binding['actor'], checked['batch_id'])
     audit = {'worker_request_digest': fingerprint(binding), 'workflow_id': binding['workflow_id'],
              'node': binding['node'], 'worker_id': binding['worker_id'],
              'lease_revision': binding['expected_revision'], 'semantic_request_digest': fingerprint(request)}
@@ -46,7 +52,7 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
             live=adapter.worker_check(binding,verify_inputs=False)
             if live!=checked:
                 raise ContractError('STALE_INPUT','$','bound slice changed after read-only expansion')
-            with worker_binding(binding), workflow_write_guard(vault,kinds=('pass-slice',),actor=binding['actor']):
+            with span('atomic_pass', task_id=item['task_id']), worker_binding(binding), workflow_write_guard(vault,kinds=('pass-slice',),actor=binding['actor']):
                 result=service.record_pass_batch({**expanded,'passes':[item],'slice_id':checked['slice_id'],
                     'worker_id':binding['worker_id'],'template_hash':binding['template_hash']},
                     lock_timeout=WORKER_LOCK_TIMEOUT,lock_check=lambda:adapter.worker_check(binding,verify_inputs=False),submission_audit=audit)

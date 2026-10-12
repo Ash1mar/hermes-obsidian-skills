@@ -11,6 +11,7 @@ from hermes_source_units.semantic_submission import validate_native_submission
 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _vault_path, _write_atomic
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.workflow_guard import WORKER_LOCK_TIMEOUT, workflow_write_guard, worker_binding
+from hermes_source_units.runtime_telemetry import measured
 from ingest_kanban import IngestKanbanAdapter
 from native_pass_identity import (bind_payload, capture_context, load_context,
     remember_candidates, verified_packet, visible_packet, evidence_packet, pass_failure)
@@ -65,6 +66,7 @@ def worker_context(vault, *, beginning=False):
     return adapter, workspace, path, binding
 
 
+@measured('materials_prepare', lambda vault, **kwargs: {'vault':vault})
 def read_pass_input(vault, *, begin=False, program=False):
     adapter, workspace, binding_path, binding = worker_context(vault, beginning=begin)
     if program:
@@ -218,6 +220,7 @@ def _worker_action(vault, action, payload=None):
     return receipt
 
 
+@measured('bound_action', lambda vault, action, payload=None: {'vault':vault,'action':action})
 def worker_action(vault, action, payload=None):
     try:
         return _worker_action(vault, action, payload)
@@ -276,6 +279,7 @@ def workflow_status(vault, workflow_id=None, *, runtime=False):
     return out
 
 
+@measured('operator_control', lambda vault, workflow_id, action, operation_id: {'vault':vault,'workflow_id':workflow_id,'action':action,'operation_id':operation_id})
 def control_workflow(vault, workflow_id, action, operation_id):
     operator_only()
     if action not in ('resume','cancel') or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,95}', operation_id):

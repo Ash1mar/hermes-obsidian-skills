@@ -18,8 +18,10 @@ from hermes_source_units import ContractError
 from hermes_source_units.source_units import _json_bytes, _write_atomic
 from ingest_kanban import IngestKanbanAdapter
 from program_worker import canonical_binding, execute
+from hermes_source_units.runtime_telemetry import measured, span, notify_reconciler
 
 
+@measured('worker_lifecycle', lambda vault, binding: {'vault':vault})
 def run(vault, binding):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kc, kanban_db_dispatch as kd
     adapter = IngestKanbanAdapter(vault, enable_workers=True)
@@ -77,11 +79,13 @@ def run(vault, binding):
         completed.set()
         _write_atomic(progress, _json_bytes({'state':'completed' if result.get('ok') else 'blocked',
             'executor':executor, 'run_id':run_id, 'result':result}))
+        notify_reconciler(vault,request['workflow_id'])
         # The trusted reconciler acknowledges the durable result and holds
         # successors at pauses. Keep the native PID alive until it does so.
-        deadline = time.monotonic() + 120
-        while own_run() and time.monotonic() < deadline:
-            time.sleep(.5)
+        with span('completion_acknowledgement',binding=request):
+            deadline = time.monotonic() + 120
+            while own_run() and time.monotonic() < deadline:
+                time.sleep(.5)
         return result
     except Exception as exc:
         completed.set()
@@ -91,6 +95,7 @@ def run(vault, binding):
         ref = adapter.execution_failure(request, getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED'), str(exc))
         _write_atomic(progress, _json_bytes({'state':'execution_blocked', 'executor':executor,
             'run_id':run_id, 'report_ref':ref, 'code':getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED')}))
+        notify_reconciler(vault,request['workflow_id'])
         raise
     finally:
         stop.set()

@@ -14,8 +14,10 @@ import sys
 
 from program_worker import ASSIGNEE, canonical_binding, admission_check
 from hermes_source_units import ContractError
+from hermes_source_units.runtime_telemetry import measured, span
 
 
+@measured('program_dispatch', lambda adapter, workflow_id: {'vault':adapter.workflow.vault,'workflow_id':workflow_id})
 def dispatch_programs(adapter, workflow_id):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise RuntimeError('program dispatcher requires a trusted operator process')
@@ -35,13 +37,23 @@ def dispatch_programs(adapter, workflow_id):
         kd.reap_worker_zombies()
         cap = kd.resolve_max_in_progress(kd.configured_max_in_progress())
         pressure = kd._memory_pressure_level()
+        with span('capacity_snapshot'):
+            tasks = {task.id:task for task in kb.list_tasks(conn)}
+            batch = adapter.workflow.knowledge._batch(value['batch_id']) if value['batch_id'] else None
+            occupied = ({'pass-slice:'+s['slice_id'] for s in adapter.workflow.knowledge._slices(value['batch_id'])
+                         if s['lease']['worker_id']} if batch else set())
+            occupied.update(c['node'] for c in value['kanban']['task_map'] if c['node'].startswith('pass-slice:')
+                and c['task_id'] in tasks and tasks[c['task_id']].status=='running')
         for card in value['kanban']['task_map']:
-            task = kb.get_task(conn, card['task_id'])
+            task = tasks.get(card['task_id'])
             if not task or task.status != 'ready' or task.assignee != ASSIGNEE:
                 continue
             if pressure == 'critical' or (pressure == 'elevated' and spawned):
                 break
             if cap is not None and kd.count_running_tasks(conn) + kd.count_running_tasks_other_boards(board) >= cap:
+                break
+            if (card['node'].startswith('pass-slice:') and batch
+                    and len(occupied)>=batch['slice_config']['pass_worker_concurrency']):
                 break
             if kd.check_respawn_guard(conn, task.id) is not None:
                 continue
@@ -51,13 +63,14 @@ def dispatch_programs(adapter, workflow_id):
                 raise RuntimeError('program card lacks its executor contract')
             request, current = canonical_binding(adapter, body['worker_binding'], executor=executor)
             if request['node'].startswith('pass-slice:'):
-                batch=adapter.workflow.knowledge._batch(current['batch_id'])
-                occupied={'pass-slice:'+s['slice_id'] for s in adapter.workflow.knowledge._slices(current['batch_id']) if s['lease']['worker_id']}
+                live_batch=adapter.workflow.knowledge._batch(current['batch_id'])
+                live_occupied={'pass-slice:'+s['slice_id'] for s in adapter.workflow.knowledge._slices(current['batch_id']) if s['lease']['worker_id']}
                 # Native claims can precede domain leasing. Reserve that in-flight
                 # capacity too, without counting its eventual lease twice.
-                occupied.update(c['node'] for c in current['kanban']['task_map'] if c['node'].startswith('pass-slice:')
-                    and (native:=kb.get_task(conn,c['task_id'])) and native.status=='running')
-                if len(occupied)>=batch['slice_config']['pass_worker_concurrency']:
+                live_tasks = {native.id:native for native in kb.list_tasks(conn)}
+                live_occupied.update(c['node'] for c in current['kanban']['task_map'] if c['node'].startswith('pass-slice:')
+                    and c['task_id'] in live_tasks and live_tasks[c['task_id']].status=='running')
+                if len(live_occupied)>=live_batch['slice_config']['pass_worker_concurrency']:
                     return spawned
             if (request['task_id'] != task.id or request['node'] != card['node']
                     or current['kanban']['board_id'] != board
@@ -89,6 +102,8 @@ def dispatch_programs(adapter, workflow_id):
             claimed = kb.claim_task(conn, task.id, claimer='ingest-program-dispatch')
             if claimed is None:
                 continue
+            if request['node'].startswith('pass-slice:'):
+                occupied.add(request['node'])
             try:
                 workspace = kw.resolve_workspace(claimed, board=board)
                 kw.set_workspace_path(conn, claimed.id, str(workspace))
@@ -104,15 +119,16 @@ def dispatch_programs(adapter, workflow_id):
                     HERMES_KANBAN_BOARD=board, HERMES_KANBAN_DB=str(kb.kanban_db_path(board=board)),
                     HERMES_KANBAN_WORKSPACES_ROOT=str(kb.workspaces_root(board=board)),
                     HERMES_KANBAN_WORKSPACE=str(workspace), TERMINAL_CWD=str(workspace),
-                    HERMES_INGEST_EXECUTOR=executor)
+                    HERMES_INGEST_EXECUTOR=executor,HERMES_INGEST_WORKFLOW_ID=workflow_id)
                 script = Path(__file__).resolve().parents[1] / 'scripts/run_program_worker.py'
                 argv = kd._restart_safe_worker_argv(claimed, [sys.executable, str(script),
                     '--vault', str(adapter.workflow.vault), '--binding', body['worker_binding']])
                 with kd._open_worker_log(claimed, board) as output:
-                    proc = subprocess.Popen(argv, cwd=workspace, env=env,
-                        stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
-                        start_new_session=True,
-                        creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
+                    with span('native_spawn',binding=request):
+                        proc = subprocess.Popen(argv, cwd=workspace, env=env,
+                            stdin=subprocess.DEVNULL, stdout=output, stderr=subprocess.STDOUT,
+                            start_new_session=True,
+                            creationflags=subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0)
                 kd._set_worker_pid(conn, claimed.id, proc.pid)
                 if os.name == 'nt':
                     kd._live_worker_procs[proc.pid] = proc

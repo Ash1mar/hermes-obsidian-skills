@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -22,6 +23,7 @@ from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from hermes_source_units.validation import fingerprint, validate_record
 from hermes_source_units.ingest_workflow import SOURCE_FAILURE_CODES
 from hermes_source_units.workflow_guard import workflow_write_guard, worker_binding, WORKER_LOCK_TIMEOUT
+from hermes_source_units.runtime_telemetry import measured, span
 
 
 def _fail(code: str, message: str) -> None:
@@ -186,6 +188,30 @@ def board_slug(workflow_id: str) -> str:
 class KanbanCLI:
     def __init__(self, invoke: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None):
         self.invoke = invoke or self._invoke
+        self._projection_board = None
+        self._projection_rows = {}
+        self._projection_snapshots = {}
+
+    @contextmanager
+    def projection(self, slug):
+        """One read projection only; native mutations and claims remain live."""
+        previous = (self._projection_board,self._projection_rows,self._projection_snapshots)
+        self._projection_board,self._projection_rows,self._projection_snapshots = slug,{},{}
+        try:
+            if slug:
+                self.task_states(slug)
+            yield
+        finally:
+            self._projection_board,self._projection_rows,self._projection_snapshots = previous
+
+    def _refresh_projection(self, slug):
+        if self._projection_board == slug:
+            self._projection_snapshots.clear()
+            self.task_states(slug)
+
+    def task_has_runs(self, slug, task_id):
+        row = self._projection_rows.get(task_id) if self._projection_board == slug else None
+        return row is None or 'started_at' not in row or row['started_at'] is not None
 
     @staticmethod
     def _invoke(argv: list[str]) -> subprocess.CompletedProcess[str]:
@@ -196,7 +222,9 @@ class KanbanCLI:
         if (os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
                 or os.environ.get("HERMES_KANBAN_TASK")):
             _fail("ACCESS_DENIED", "Kanban reconciliation requires a trusted orchestrator process")
-        result = self.invoke(["hermes", *parts])
+        from hermes_source_units.runtime_telemetry import span
+        with span('native_cli', operation=parts[3] if parts[0]=='kanban' and len(parts)>3 else parts[1] if len(parts)>1 else parts[0]):
+            result = self.invoke(["hermes", *parts])
         if result.returncode != 0:
             _fail("KANBAN_UNAVAILABLE", result.stderr.strip() or result.stdout.strip()
                   or "Hermes Kanban command failed")
@@ -249,6 +277,7 @@ class KanbanCLI:
         if node.gate or not enable_workers:
             argv.extend(("--initial-status", "blocked"))
         task = json.loads(self.command(*argv))
+        self._refresh_projection(slug)
         if not isinstance(task.get("id"), str) or not task["id"]:
             _fail("KANBAN_INVALID_RESPONSE", "task creation omitted its id")
         return task["id"]
@@ -258,18 +287,28 @@ class KanbanCLI:
             return
         self.command("kanban", "--board", slug, "complete", task_id,
                      "--force", "--result", result)
+        self._refresh_projection(slug)
 
     def task_status(self, slug: str, task_id: str) -> str:
+        if self._projection_board == slug and task_id in self._projection_rows:
+            return str(self._projection_rows[task_id]['status'])
         shown = json.loads(self.command("kanban", "--board", slug, "show",
                                         task_id, "--json"))
         return str(shown["task"]["status"])
 
     def task_snapshot(self, slug: str, task_id: str) -> dict[str, Any]:
-        return json.loads(self.command("kanban", "--board", slug, "show", task_id, "--json"))
+        if self._projection_board == slug and task_id in self._projection_snapshots:
+            return self._projection_snapshots[task_id]
+        result = json.loads(self.command("kanban", "--board", slug, "show", task_id, "--json"))
+        if self._projection_board == slug:
+            self._projection_snapshots[task_id] = result
+        return result
 
     def task_states(self, slug: str) -> dict[str, str]:
         result = json.loads(self.command('kanban', '--board', slug, 'list', '--json'))
         rows = result.get('tasks', []) if isinstance(result, dict) else result
+        if self._projection_board == slug:
+            self._projection_rows = {row['id']:row for row in rows}
         return {row['id']: row['status'] for row in rows}
 
     def task_log(self, slug: str, task_id: str) -> str:
@@ -284,17 +323,20 @@ class KanbanCLI:
                 if child_id:
                     self.archive(slug, child_id)
             self.command("kanban", "--board", slug, "archive", task_id)
+            self._refresh_projection(slug)
 
     def wait(self, slug: str, task_id: str, state: str, reason: str) -> None:
         if self.task_status(slug, task_id) in (state, "done", "archived"):
             return
         operation = "schedule" if state == "scheduled" else "block"
         self.command("kanban", "--board", slug, operation, task_id, reason)
+        self._refresh_projection(slug)
 
     def unblock(self, slug: str, task_id: str) -> None:
         if self.task_status(slug, task_id) in ("blocked", "scheduled"):
             self.command("kanban", "--board", slug, "unblock", task_id,
                          "--reason", "Vault slice ready")
+            self._refresh_projection(slug)
 
 
 def domain_completed(service: FileIngestWorkflowService,
@@ -712,10 +754,11 @@ class IngestKanbanAdapter:
                 self.workflow.knowledge.cancel_batch(
                     value["batch_id"], value["actor"], batch["revision"])
         if value["kanban"]["board_id"]:
-            for item in value["kanban"]["task_map"]:
-                if "task_id" in item:
-                    self.kanban.wait(value["kanban"]["board_id"], item["task_id"],
-                                     "blocked", "Vault workflow cancelled")
+            board = value['kanban']['board_id']
+            with self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
+                for item in value["kanban"]["task_map"]:
+                    if "task_id" in item:
+                        self.kanban.wait(board, item["task_id"], "blocked", "Vault workflow cancelled")
         return {"workflow_id": value["workflow_id"], "state": "cancelled",
                 "background_dispatch": False, "revision": value["revision"]}
 
@@ -775,6 +818,7 @@ class IngestKanbanAdapter:
         followup["input_digest"] = mutation_digest(followup)
         return self.sync(followup)
 
+    @measured('reconciliation', lambda self, request: {'vault':self.workflow.vault, 'workflow_id':request['workflow_id']})
     def sync(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if (os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
                 or os.environ.get("HERMES_KANBAN_TASK")):
@@ -784,7 +828,9 @@ class IngestKanbanAdapter:
         lock = _vault_path(self.workflow.vault,
                            f"_system/ledgers/ingest-workflows/.dispatch-locks/{workflow_id}.lock")
         with _exclusive_lock(lock):
-            return self._sync_locked(request)
+            board = self.workflow.status(workflow_id)['kanban']['board_id']
+            with self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
+                return self._sync_locked(request)
 
     def _sync_locked(self, request: Mapping[str, Any]) -> dict[str, Any]:
         workflow_id, actor = str(request["workflow_id"]), str(request["actor"])
@@ -1041,7 +1087,8 @@ class IngestKanbanAdapter:
             if failed_parent and not domain_completed(self.workflow, updated, node) and not self._failed_card(workflow_id, node):
                 self._projection_failure(workflow_id, node, ids[node.name],
                                          "DEPENDENCY_EXECUTION_BLOCKED", failed_parent.name)
-            if not domain_completed(self.workflow, updated, node) and hasattr(self.kanban, "task_snapshot"):
+            if (not domain_completed(self.workflow, updated, node) and hasattr(self.kanban, "task_snapshot")
+                    and (not hasattr(self.kanban,'task_has_runs') or self.kanban.task_has_runs(slug,ids[node.name]))):
                 snapshot = self.kanban.task_snapshot(slug, ids[node.name])
                 ended = [r for r in snapshot.get("runs", []) if r.get("ended_at")]
                 durable_slice_failure = False
@@ -1135,7 +1182,10 @@ class IngestKanbanAdapter:
                     if n.kind == 'pass-slice' else None) or templates.get(n.kind)) != 'model'
                     and not domain_completed(self.workflow, updated, n)
                     and not self._failed_card(workflow_id, n)
-                    and self._eligible(updated, n, nodes) for n in nodes),
+                    and self._eligible(updated, n, nodes)
+                    and (n.kind!='pass-slice' or (n.name in pass_window
+                         and self.workflow.knowledge._slice(updated['batch_id'],n.name.partition(':')[2])['state']=='ready'))
+                    for n in nodes),
                 "board_id": slug, "task_count": len(task_map),
                 "canary_complete": canary_done, "canary_report_ref": canary_report,
                 "execution_blocked": [n.name for n in nodes if self._execution_blocked(workflow_id, n)],
