@@ -162,6 +162,37 @@ def test_amendment_rejects_unversioned_policy_change(stopped):
         adapter.amend_execution(request,dry_run=True)
 
 
+def test_cancelled_refusal_remains_held_after_regrouping_and_resume(stopped):
+    adapter, value, request = stopped
+    service = adapter.knowledge
+    adapter.amend_execution(request)
+    workflow = adapter._load(value['workflow_id'])
+    batch = service._batch(value['batch_id'])
+    old = next(s for s in service._slices(batch['batch_id']) if s['state'] == 'cancelled')
+    root = service.vault / '_system/ledgers/ingest-workflows' / value['workflow_id'] / 'reports'
+    root.mkdir(exist_ok=True)
+    receipt = {'error_code':'SEMANTIC_REVIEW_REQUIRED', 'node':'pass-slice:'+old['slice_id'],
+               'input_fingerprint':old['input_fingerprint'],
+               'idempotency_key':f"ingest:{value['workflow_id']}:pass-slice:{old['input_fingerprint']}"}
+    (root / 'failed-isolated.json').write_text(json.dumps(receipt))
+    assert old['slice_id'] in service._deferred_execution_slices(batch, service._slices(batch['batch_id']))
+    # Shutdown diagnostics no longer contain the original refusal cause.
+    before = service._slice_path(batch['batch_id'], old['slice_id']).read_bytes()
+    next_request = {**request, 'amendment_id':'keep-refusal', 'expected_revision':workflow['revision']}
+    next_request['input_digest'] = mutation_digest(next_request)
+    assert adapter.amend_execution(next_request)['held_slices_preserved'] == 1
+    assert service._slice_path(batch['batch_id'], old['slice_id']).read_bytes() == before
+    current = service._batch(batch['batch_id'])
+    resumed = service.resume_cancelled_batch(batch['batch_id'], current['actor'], current['revision'])
+    assert old['slice_id'] not in resumed['reopened_slice_ids']
+    assert resumed['reopened_slice_ids']
+    assert service._slice(batch['batch_id'], old['slice_id'])['state'] == 'cancelled'
+    # A receipt for different inputs cannot hold an otherwise runnable slice.
+    receipt['input_fingerprint'] = 'sha256:'+'0'*64
+    (root / 'failed-isolated.json').write_text(json.dumps(receipt))
+    assert not service._deferred_execution_slices(current, service._slices(batch['batch_id']))
+
+
 def test_phase_budget_runs_fixed_submission_and_citation_with_partial_reuse(stopped,vault,monkeypatch):
     from test_fixed_semantic import test_fixed_pass_preserves_partial_and_controls_phases
     test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypatch,

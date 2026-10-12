@@ -1196,6 +1196,41 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             _write_atomic(self._batch_path(batch_id), _json_bytes(updated_batch))
             return {"ok": True, "batch": updated_batch, "cancelled_slice_ids": cancelled}
 
+    def _deferred_execution_slices(self, batch, slices):
+        """Keep bound semantic refusals held across cancellation and regrouping.
+
+        Cancellation receipts describe worker shutdown and may overwrite the
+        slice's last_error. The original bound failure reports retain the cause.
+        No domain output is revised or inferred here.
+        """
+        pointer = batch.get('execution_plan_ref')
+        if not pointer or '/execution-plans/' not in pointer:
+            return set()
+        root = pointer.split('/execution-plans/', 1)[0]
+        wid = root.rsplit('/', 1)[-1]
+        completed = {tid for value in slices if value['state'] == 'completed'
+                     for tid in value['task_ids']}
+        refused = set()
+        for path in _vault_path(self.vault, root + '/reports').glob('failed-*.json'):
+            report = _load_json(path)
+            if report.get('error_code') not in ('SEMANTIC_DRAFT_REJECTED', 'SEMANTIC_REVIEW_REQUIRED'):
+                continue
+            node = report.get('node', '')
+            if not node.startswith('pass-slice:'):
+                continue
+            old_path = self._slice_path(batch['batch_id'], node.split(':', 1)[1])
+            if not old_path.is_file():
+                continue
+            old = _load_json(old_path)
+            identity = report.get('input_fingerprint')
+            if (old['batch_id'] != batch['batch_id'] or old['state'] == 'completed'
+                    or identity != old['input_fingerprint']
+                    or report.get('idempotency_key') != f'ingest:{wid}:pass-slice:{identity}'):
+                continue
+            refused.update(tid for tid in old['task_ids'] if tid not in completed)
+        return {value['slice_id'] for value in slices
+                if value['state'] != 'completed' and refused.intersection(value['task_ids'])}
+
     def resume_cancelled_batch(self, batch_id: str, actor: str,
                                expected_revision: int) -> dict[str, Any]:
         """Reopen cancelled slices; worker admission still checks pinned inputs."""
@@ -1208,8 +1243,10 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             if not batch.get("cancel_requested") or batch["state"] != "cancelled":
                 _fail("INVALID_STATE", "batch is not cancelled")
             reopened = []
-            for value in self._slices(batch_id):
-                if value["state"] != "cancelled":
+            slices = self._slices(batch_id)
+            deferred = self._deferred_execution_slices(batch, slices)
+            for value in slices:
+                if value["state"] != "cancelled" or value['slice_id'] in deferred:
                     continue
                 updated = copy.deepcopy(value)
                 updated.update({"state": "ready", "retry_at": None,

@@ -94,7 +94,8 @@ class ExecutionPlanMixin:
             if config['semantic_budget_policy']!=budget_policy_pin():
                 fail('STALE_PLAN','semantic budget policy fingerprint differs from installed implementation')
         completed = [s for s in slices if s['state'] == 'completed']
-        held = [s for s in slices if s['state'] == 'blocked']
+        deferred = service._deferred_execution_slices(batch, slices)
+        held = [s for s in slices if s['state'] == 'blocked' or s['slice_id'] in deferred]
         completed_tasks = {tid for s in completed for tid in s['task_ids']}
         held_tasks={tid for s in held for tid in s['task_ids']}
         planned = [tid for s in slices for tid in s['task_ids']]
