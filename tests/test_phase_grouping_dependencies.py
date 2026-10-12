@@ -94,17 +94,18 @@ def test_required_table_inspection_is_mandatory_for_new_pass(vault):
         'inspections':[{'source_ref':r,'finding':'isolated program fixture','qa':'usable','qa_note':''} for r in task['target_refs']],
         'candidates':[],'empty_reason':'isolated coverage fixture'}
     with pytest.raises(ContractError,match='INCOMPLETE_COVERAGE'):
-        service.submit_pass(request,validate_only=True)
+        service.record_pass(request,validate_only=True)
     _,supplement=required_reading(service.source,package)
     request['inspections'].extend({'source_ref':r,'finding':'isolated table inspected','qa':'usable','qa_note':''} for r in supplement['required_refs'])
-    assert service.submit_pass(request,validate_only=True)['validated']
+    assert service.record_pass(request,validate_only=True)['validated']
     assert path.read_bytes()==before and not list(path.parent.parent.glob('passes/*.json'))
 
 
 def grouping_fixture(count=8):
     tasks=[{'task':f't{i}','materials':[{'ref':'m1','role':'core','text_ref':f'x{i}'}],
         'limits':{'context_truncated':True,'omitted_material_count':3,'reason':'bounded context'},
-        'next_sequence':0,'continuation':{'action':'candidate_then_citation'}} for i in range(count)]
+        'next_sequence':0,'continuation':{'action':'candidate_then_citation',
+            'candidate':{'candidates':[],'empty_reason':'isolated grouping fixture'}}} for i in range(count)]
     return {'tasks':tasks,'texts':{f'x{i}':'条件与例外。'*800 for i in range(count)},'headings':[]},tasks
 
 
