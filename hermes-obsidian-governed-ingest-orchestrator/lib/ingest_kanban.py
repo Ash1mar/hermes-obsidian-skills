@@ -20,7 +20,7 @@ from hermes_source_units import (ContractError, FileIngestWorkflowService,
 from hermes_source_units.source_units import (_exclusive_lock, _json_bytes, _load_json,
                                               _vault_path, _write_atomic)
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
-from hermes_source_units.validation import fingerprint, validate_record
+from hermes_source_units.validation import fingerprint, validate_record, record_validation_scope
 from hermes_source_units.ingest_workflow import SOURCE_FAILURE_CODES
 from hermes_source_units.workflow_guard import workflow_write_guard, worker_binding, WORKER_LOCK_TIMEOUT
 from hermes_source_units.runtime_telemetry import measured, span
@@ -311,8 +311,7 @@ class KanbanCLI:
     def task_status(self, slug: str, task_id: str) -> str:
         if self._projection_board == slug and task_id in self._projection_rows:
             return str(self._projection_rows[task_id]['status'])
-        shown = json.loads(self.command("kanban", "--board", slug, "show",
-                                        task_id, "--json"))
+        shown = self.task_snapshot(slug, task_id)
         return str(shown["task"]["status"])
 
     def task_snapshot(self, slug: str, task_id: str) -> dict[str, Any]:
@@ -1000,14 +999,23 @@ class IngestKanbanAdapter:
         if (os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
                 or os.environ.get("HERMES_KANBAN_TASK")):
             _fail("ACCESS_DENIED", "Kanban reconciliation requires a trusted orchestrator process")
-        self.workflow._check_request(request)
         workflow_id = str(request["workflow_id"])
-        lock = _vault_path(self.workflow.vault,
-                           f"_system/ledgers/ingest-workflows/.dispatch-locks/{workflow_id}.lock")
-        with _exclusive_lock(lock):
-            board = self.workflow.status(workflow_id)['kanban']['board_id']
-            with self.workflow.execution_projection(), self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
-                return self._sync_locked(request,yield_requested=yield_requested)
+        with record_validation_scope() as schema, span('full_reconciliation',
+                vault=self.workflow.vault,workflow_id=workflow_id) as trace:
+            trace['completed']=False
+            try:
+                self.workflow._check_request(request)
+                lock = _vault_path(self.workflow.vault,
+                    f"_system/ledgers/ingest-workflows/.dispatch-locks/{workflow_id}.lock")
+                with _exclusive_lock(lock):
+                    board = self.workflow.status(workflow_id)['kanban']['board_id']
+                    with self.workflow.execution_projection(), self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
+                        result=self._sync_locked(request,yield_requested=yield_requested)
+                        trace['completed']='task_count' in result
+                        return result
+            finally:
+                trace['schema_loads']=schema.get('schema_loads',0)
+                trace['record_validation_calls']=schema.get('record_validation_calls',0)
 
     def _sync_locked(self, request: Mapping[str, Any], *, yield_requested=None) -> dict[str, Any]:
         def checkpoint():
@@ -1015,371 +1023,375 @@ class IngestKanbanAdapter:
                 _fail('RECONCILIATION_YIELD','worker wake requests current completion/refill checks')
         checkpoint()
         workflow_id, actor = str(request["workflow_id"]), str(request["actor"])
-        value = self.workflow.status(workflow_id)
-        self.workflow.assert_execution_ready(value)
-        if value["actor"] != actor:
-            _fail("ACTOR_MISMATCH", "workflow actor differs")
-        if value["revision"] != request["expected_revision"]:
-            _fail("REVISION_CONFLICT", "workflow revision changed")
-        if value["cancel_requested"]:
-            _fail("WORKFLOW_STOPPED", "cancelled workflow cannot dispatch")
-        templates = (self.workflow.pinned_templates(value) if self.enable_workers else {})
-        if value['batch_id'] is None and value['current_stage'] in ('created', 'source_preparing'):
-            coverage = self.workflow.source_coverage(value)
-            if not coverage['pending'] and coverage['ready']:
-                value = self._advance(value, 'planning')
-        if value["batch_id"]:
-            batch = self.workflow.knowledge._batch(value["batch_id"])
-            if not batch.get("slices_initialized"):
-                self.workflow.knowledge.initialize_slices(
-                    value["batch_id"], actor, batch["revision"])
-            self.workflow.prepare_pass_revision(value)
-            value = self.workflow.finish_pass_revision(self._mutation(value))
-            value = self.workflow.latch_pause(self._mutation(value))
-            checkpoint()
-            if not self.workflow.pending_pause(value) or (value.get('pass_revision') and value['pass_revision']['state'] == 'running'):
-                self.workflow.knowledge.reclaim_expired_slices(value["batch_id"])
-                self._settle_ended_pass_leases(value)
+        with span('reconciliation_state_settlement'):
+            value = self.workflow.status(workflow_id)
+            self.workflow.assert_execution_ready(value)
+            if value["actor"] != actor:
+                _fail("ACTOR_MISMATCH", "workflow actor differs")
+            if value["revision"] != request["expected_revision"]:
+                _fail("REVISION_CONFLICT", "workflow revision changed")
+            if value["cancel_requested"]:
+                _fail("WORKFLOW_STOPPED", "cancelled workflow cannot dispatch")
+            templates = (self.workflow.pinned_templates(value) if self.enable_workers else {})
+            if value['batch_id'] is None and value['current_stage'] in ('created', 'source_preparing'):
+                coverage = self.workflow.source_coverage(value)
+                if not coverage['pending'] and coverage['ready']:
+                    value = self._advance(value, 'planning')
+            if value["batch_id"]:
+                batch = self.workflow.knowledge._batch(value["batch_id"])
+                if not batch.get("slices_initialized"):
+                    self.workflow.knowledge.initialize_slices(
+                        value["batch_id"], actor, batch["revision"])
+                self.workflow.prepare_pass_revision(value)
+                value = self.workflow.finish_pass_revision(self._mutation(value))
+                value = self.workflow.latch_pause(self._mutation(value))
                 checkpoint()
-                self.workflow.knowledge.refresh_ready_slices(value["batch_id"], actor)
-                checkpoint()
-            if (value["scope"].get("execution_mode") in ("canary_only", "auto_full")
-                    and not self.workflow.pending_pause(value)
-                    and value["current_stage"] == "analyzing"):
-                policy = value["dispatch_policy"]
-                if policy["mode"] == "disabled":
-                    try:
-                        preview = self.workflow.canary_preview(workflow_id, 8)
-                    except ContractError as exc:
-                        if exc.code != "CANARY_UNAVAILABLE":
-                            raise
-                        return {"workflow_id": workflow_id, "workflow_created": True,
-                                "state": "canary_unavailable", "reason": str(exc),
-                                "background_dispatch": False,
-                                "board_id": value["kanban"]["board_id"]}
-                    armed = {"workflow_id": workflow_id, "actor": actor,
-                             "expected_revision": value["revision"],
-                             "slice_ids": [item["slice_id"] for item in preview["slices"]],
-                             "selection_digest": preview["selection_digest"]}
-                    armed["input_digest"] = mutation_digest(armed)
-                    value = self.workflow.arm_canary(armed)
-                elif value["scope"].get("execution_mode") == "auto_full" and policy["mode"] == "canary" and len(policy["slice_ids"]) == 8 and all(
-                        self.workflow.knowledge._slice(value["batch_id"], slice_id)["state"] == "completed"
-                        for slice_id in policy["slice_ids"]):
-                    promoted = {"workflow_id": workflow_id, "actor": actor,
-                                "expected_revision": value["revision"]}
-                    promoted["input_digest"] = mutation_digest(promoted)
-                    value = self.workflow.promote_canary(promoted)
-                if (value["dispatch_policy"]["mode"] == "full"
+                if not self.workflow.pending_pause(value) or (value.get('pass_revision') and value['pass_revision']['state'] == 'running'):
+                    self.workflow.knowledge.reclaim_expired_slices(value["batch_id"])
+                    self._settle_ended_pass_leases(value)
+                    checkpoint()
+                    self.workflow.knowledge.refresh_ready_slices(value["batch_id"], actor)
+                    checkpoint()
+                if (value["scope"].get("execution_mode") in ("canary_only", "auto_full")
                         and not self.workflow.pending_pause(value)
-                        and value["current_stage"] == "analyzing"
-                        and all(item["state"] == "completed"
-                                for item in self.workflow.knowledge._slices(value["batch_id"]))):
-                    transition = {"workflow_id": workflow_id, "actor": actor,
-                                  "expected_revision": value["revision"],
-                                  "target_stage": "reducing"}
-                    transition["input_digest"] = mutation_digest(transition)
-                    value = self.workflow.reconcile(transition)
-            if (value["scope"].get("execution_mode") == "auto_full"
-                    and not self.workflow.pending_pause(value)
-                    and value["dispatch_policy"]["mode"] == "full"):
-                if (value["current_stage"] == "checkpoint_1"
-                        and value["checkpoints"]["checkpoint_1"]["state"] == "approved"):
-                    value = self._advance(value, "build_finalizing")
-                if value["current_stage"] == "build_finalizing":
-                    status = self.workflow.knowledge.batch_status(value["batch_id"], compact=True)
-                    if status["runs"] and all(item["state"] == "completed" for item in status["runs"]):
-                        refs = [f"_system/knowledge-builds/{item['run_id']}/manifest.json"
-                                for item in status["runs"]]
-                        value = self._advance(value, "release_planning", refs)
-                if (value["current_stage"] == "checkpoint_2"
-                        and value["checkpoints"]["checkpoint_2"]["state"] == "approved"):
-                    plan_ref = (f"_system/knowledge-releases/{value['release_id']}/plan.json")
-                    value = self._advance(value, "applying", [plan_ref])
-                if (value["current_stage"] == "indexing"
-                        and value["scope"].get("provider", "skip") == "skip"):
-                    manifest_ref = (f"_system/knowledge-releases/{value['release_id']}/manifest.json")
-                    value = self._advance(value, "validating", [manifest_ref])
+                        and value["current_stage"] == "analyzing"):
+                    policy = value["dispatch_policy"]
+                    if policy["mode"] == "disabled":
+                        try:
+                            preview = self.workflow.canary_preview(workflow_id, 8)
+                        except ContractError as exc:
+                            if exc.code != "CANARY_UNAVAILABLE":
+                                raise
+                            return {"workflow_id": workflow_id, "workflow_created": True,
+                                    "state": "canary_unavailable", "reason": str(exc),
+                                    "background_dispatch": False,
+                                    "board_id": value["kanban"]["board_id"]}
+                        armed = {"workflow_id": workflow_id, "actor": actor,
+                                 "expected_revision": value["revision"],
+                                 "slice_ids": [item["slice_id"] for item in preview["slices"]],
+                                 "selection_digest": preview["selection_digest"]}
+                        armed["input_digest"] = mutation_digest(armed)
+                        value = self.workflow.arm_canary(armed)
+                    elif value["scope"].get("execution_mode") == "auto_full" and policy["mode"] == "canary" and len(policy["slice_ids"]) == 8 and all(
+                            self.workflow.knowledge._slice(value["batch_id"], slice_id)["state"] == "completed"
+                            for slice_id in policy["slice_ids"]):
+                        promoted = {"workflow_id": workflow_id, "actor": actor,
+                                    "expected_revision": value["revision"]}
+                        promoted["input_digest"] = mutation_digest(promoted)
+                        value = self.workflow.promote_canary(promoted)
+                    if (value["dispatch_policy"]["mode"] == "full"
+                            and not self.workflow.pending_pause(value)
+                            and value["current_stage"] == "analyzing"
+                            and all(item["state"] == "completed"
+                                    for item in self.workflow.knowledge._slices(value["batch_id"]))):
+                        transition = {"workflow_id": workflow_id, "actor": actor,
+                                      "expected_revision": value["revision"],
+                                      "target_stage": "reducing"}
+                        transition["input_digest"] = mutation_digest(transition)
+                        value = self.workflow.reconcile(transition)
+                if (value["scope"].get("execution_mode") == "auto_full"
+                        and not self.workflow.pending_pause(value)
+                        and value["dispatch_policy"]["mode"] == "full"):
+                    if (value["current_stage"] == "checkpoint_1"
+                            and value["checkpoints"]["checkpoint_1"]["state"] == "approved"):
+                        value = self._advance(value, "build_finalizing")
+                    if value["current_stage"] == "build_finalizing":
+                        status = self.workflow.knowledge.batch_status(value["batch_id"], compact=True)
+                        if status["runs"] and all(item["state"] == "completed" for item in status["runs"]):
+                            refs = [f"_system/knowledge-builds/{item['run_id']}/manifest.json"
+                                    for item in status["runs"]]
+                            value = self._advance(value, "release_planning", refs)
+                    if (value["current_stage"] == "checkpoint_2"
+                            and value["checkpoints"]["checkpoint_2"]["state"] == "approved"):
+                        plan_ref = (f"_system/knowledge-releases/{value['release_id']}/plan.json")
+                        value = self._advance(value, "applying", [plan_ref])
+                    if (value["current_stage"] == "indexing"
+                            and value["scope"].get("provider", "skip") == "skip"):
+                        manifest_ref = (f"_system/knowledge-releases/{value['release_id']}/manifest.json")
+                        value = self._advance(value, "validating", [manifest_ref])
         if not self.kanban.dispatcher_available():
             return {"workflow_id": workflow_id, "workflow_created": True,
                     "state": "dispatcher_unavailable", "background_dispatch": False,
                     "board_id": value["kanban"]["board_id"]}
         checkpoint()
-        nodes = desired_graph(self.workflow, value)
-        if (value['batch_id'] and value['scope'].get('execution_mode') == 'canary_only'
-                and value['dispatch_policy']['mode'] == 'canary'):
-            selected = {'pass-slice:' + sid for sid in value['dispatch_policy']['slice_ids']}
-            nodes = [n for n in nodes if n.name in selected]
-        # Reserve a stable window before exposing any cards to the dispatcher.
-        # Failed cards do not occupy the window; their failure remains visible.
-        source_window = {node.name for node in [
-            item for item in nodes if item.kind == "source-prepare"
-            and not domain_completed(self.workflow, value, item)
-            and not self._failed_card(workflow_id, item)
-        ][:self.source_prepare_concurrency]}
-        pass_window = set()
-        if value['batch_id']:
-            capacity = self.workflow.knowledge._batch(value['batch_id'])['slice_config']['pass_worker_concurrency']
-            held={'pass-slice:'+s['slice_id'] for s in self.workflow.knowledge._slices(value['batch_id']) if s['lease']['worker_id']}
-            candidates = [node for node in nodes if node.kind == 'pass-slice'
-                          and self._canary_allows(value, node)
-                          and not self._failed_card(workflow_id, node)
-                          and self.workflow.knowledge._slice(value['batch_id'], node.name.partition(':')[2])['state']
-                          == 'ready']
-            # A failed native card does not make its live domain lease free.
-            pass_window = held | {n.name for n in candidates[:max(0,capacity-len(held))]}
-        slug = board_slug(workflow_id)
-        self.kanban.ensure_board(slug)
-        ids: dict[str, str] = {}
-        task_map: list[dict[str, str]] = []
-        artifact_conflicts: list[dict[str, Any]] = []
-        native_states=self.kanban.task_states(slug) if hasattr(self.kanban,'task_states') else {}
-        for node in nodes:
-            checkpoint()
-            key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
-            pin = next((item for item in value.get("template_pins", [])
-                        if item["kind"] == node.kind), None)
-            slice_template_hash = (self.workflow.knowledge._slice(
-                value["batch_id"], node.name.partition(":")[2])["template_hash"]
-                if node.kind == "pass-slice" else None)
-            instructions = (self.workflow.revision_instructions(value)
-                if self.workflow.revision_allows(value, node.name) else
-                (self.workflow.execution_template(value, node.name.partition(':')[2])
-                if node.kind == 'pass-slice' else None) or templates.get(node.kind))
-            executor = executor_for(node.kind, instructions)
-            body = json.dumps({"workflow_id": workflow_id, "node": node.name,
-                               "executor": executor,
-                               "kind": node.kind,
-                               "input_fingerprint": node.input_fingerprint,
-                               "vault": str(self.workflow.vault),
-                               "worker_contract": "pinned-v1" if pin else "phase-7-pending",
-                               "template_id": pin["template_id"] if pin else None,
-                               "template_hash": pin["template_hash"] if pin else None,
-                               "slice_template_hash": slice_template_hash,
-                               "dispatcher_script": str(Path(__file__).resolve().parents[2] /
-                                   "hermes-obsidian-governed-ingest-orchestrator/scripts/dispatch_ingest_workflow.py"),
-                               "domain_script": str(Path(__file__).resolve().parents[2] /
-                                   "hermes-obsidian-controlled-ingest/scripts/manage_knowledge_build.py"),
-                               "worker_request": {"workflow_id": workflow_id, "node": node.name},
-                               "worker_binding": (str(_vault_path(self.workflow.vault,
-                                   f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json")) if pin else None),
-                               "worker_command": (shlex.join(["python3", str(Path(__file__).resolve().parents[2] /
-                                   "hermes-obsidian-governed-ingest-orchestrator/scripts/run_preparation_worker.py"),
-                                   "--vault", str(self.workflow.vault), "--binding", str(_vault_path(self.workflow.vault,
-                                   f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json"))])
-                                   if node.kind in ("source-prepare", "exact-plan") else None),
-                               "instructions": instructions,
-                               "citation_revision_rule": ("Historical superseded citation Passes are audit only. For candidate decisions use only citations whose pass_id is not named by a later supersedes_pass_id in that task; retain all Pass IDs as history. Never propose or omit superseded candidates."
-                                   if value.get('pass_revision') and node.kind == 'resource-reduce' else None)},
-                              ensure_ascii=False, sort_keys=True)
-            # Native create ignores archived idempotency keys. Reuse the Vault's
-            # current failed binding until an explicit
-            # repair changes the input identity. Never mint a new card under an
-            # immutable binding file merely because its predecessor is archived.
-            previous = next((item for item in value['kanban']['task_map']
-                             if value['kanban']['board_id'] == slug
-                             and item['node'] == node.name and item['idempotency_key'] == key
-                             and self._failed_card(workflow_id, node)), None)
-            completed_task = self._completed_pass_binding(value, node, key)
-            existing=next((c for c in value['kanban']['task_map'] if c['node']==node.name and c['idempotency_key']==key
-                and native_states.get(c['task_id']) not in (None,'archived')),None)
-            task_id = completed_task or (previous['task_id'] if previous else existing['task_id'] if existing else self.kanban.create_node(
-                slug, node, key, [ids[parent] for parent in node.parents], body,
-                enable_workers=False))  # bind the complete graph before releasing cards
-            ids[node.name] = task_id
-            if pin:
-                record = {"workflow_id": workflow_id, "node": node.name, "task_id": task_id,
-                          "actor": actor,
-                          "template_hash": slice_template_hash if node.kind == 'pass-slice' else pin["template_hash"],
-                          "input_fingerprint": node.input_fingerprint}
-                if node.kind == 'pass-slice':
-                    record['worker_id'] = 'ingest-worker-' + task_id
-                path = _vault_path(self.workflow.vault,
-                    f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json")
-                if not path.is_file():
-                    if any(c.get('task_id') == task_id and c['idempotency_key'] == key
-                           for c in value['kanban']['task_map']):
-                        artifact_conflicts.append(record)
+        with span('reconciliation_capacity'):
+            nodes = desired_graph(self.workflow, value)
+            if (value['batch_id'] and value['scope'].get('execution_mode') == 'canary_only'
+                    and value['dispatch_policy']['mode'] == 'canary'):
+                selected = {'pass-slice:' + sid for sid in value['dispatch_policy']['slice_ids']}
+                nodes = [n for n in nodes if n.name in selected]
+            # Reserve a stable window before exposing any cards to the dispatcher.
+            # Failed cards do not occupy the window; their failure remains visible.
+            source_window = {node.name for node in [
+                item for item in nodes if item.kind == "source-prepare"
+                and not domain_completed(self.workflow, value, item)
+                and not self._failed_card(workflow_id, item)
+            ][:self.source_prepare_concurrency]}
+            pass_window = set()
+            if value['batch_id']:
+                capacity = self.workflow.knowledge._batch(value['batch_id'])['slice_config']['pass_worker_concurrency']
+                held={'pass-slice:'+s['slice_id'] for s in self.workflow.knowledge._slices(value['batch_id']) if s['lease']['worker_id']}
+                candidates = [node for node in nodes if node.kind == 'pass-slice'
+                              and self._canary_allows(value, node)
+                              and not self._failed_card(workflow_id, node)
+                              and self.workflow.knowledge._slice(value['batch_id'], node.name.partition(':')[2])['state']
+                              == 'ready']
+                # A failed native card does not make its live domain lease free.
+                pass_window = held | {n.name for n in candidates[:max(0,capacity-len(held))]}
+        with span('reconciliation_bindings'):
+            slug = board_slug(workflow_id)
+            self.kanban.ensure_board(slug)
+            ids: dict[str, str] = {}
+            task_map: list[dict[str, str]] = []
+            artifact_conflicts: list[dict[str, Any]] = []
+            native_states=self.kanban.task_states(slug) if hasattr(self.kanban,'task_states') else {}
+            for node in nodes:
+                checkpoint()
+                key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
+                pin = next((item for item in value.get("template_pins", [])
+                            if item["kind"] == node.kind), None)
+                slice_template_hash = (self.workflow.knowledge._slice(
+                    value["batch_id"], node.name.partition(":")[2])["template_hash"]
+                    if node.kind == "pass-slice" else None)
+                instructions = (self.workflow.revision_instructions(value)
+                    if self.workflow.revision_allows(value, node.name) else
+                    (self.workflow.execution_template(value, node.name.partition(':')[2])
+                    if node.kind == 'pass-slice' else None) or templates.get(node.kind))
+                executor = executor_for(node.kind, instructions)
+                body = json.dumps({"workflow_id": workflow_id, "node": node.name,
+                                   "executor": executor,
+                                   "kind": node.kind,
+                                   "input_fingerprint": node.input_fingerprint,
+                                   "vault": str(self.workflow.vault),
+                                   "worker_contract": "pinned-v1" if pin else "phase-7-pending",
+                                   "template_id": pin["template_id"] if pin else None,
+                                   "template_hash": pin["template_hash"] if pin else None,
+                                   "slice_template_hash": slice_template_hash,
+                                   "dispatcher_script": str(Path(__file__).resolve().parents[2] /
+                                       "hermes-obsidian-governed-ingest-orchestrator/scripts/dispatch_ingest_workflow.py"),
+                                   "domain_script": str(Path(__file__).resolve().parents[2] /
+                                       "hermes-obsidian-controlled-ingest/scripts/manage_knowledge_build.py"),
+                                   "worker_request": {"workflow_id": workflow_id, "node": node.name},
+                                   "worker_binding": (str(_vault_path(self.workflow.vault,
+                                       f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json")) if pin else None),
+                                   "worker_command": (shlex.join(["python3", str(Path(__file__).resolve().parents[2] /
+                                       "hermes-obsidian-governed-ingest-orchestrator/scripts/run_preparation_worker.py"),
+                                       "--vault", str(self.workflow.vault), "--binding", str(_vault_path(self.workflow.vault,
+                                       f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json"))])
+                                       if node.kind in ("source-prepare", "exact-plan") else None),
+                                   "instructions": instructions,
+                                   "citation_revision_rule": ("Historical superseded citation Passes are audit only. For candidate decisions use only citations whose pass_id is not named by a later supersedes_pass_id in that task; retain all Pass IDs as history. Never propose or omit superseded candidates."
+                                       if value.get('pass_revision') and node.kind == 'resource-reduce' else None)},
+                                  ensure_ascii=False, sort_keys=True)
+                # Native create ignores archived idempotency keys. Reuse the Vault's
+                # current failed binding until an explicit
+                # repair changes the input identity. Never mint a new card under an
+                # immutable binding file merely because its predecessor is archived.
+                previous = next((item for item in value['kanban']['task_map']
+                                 if value['kanban']['board_id'] == slug
+                                 and item['node'] == node.name and item['idempotency_key'] == key
+                                 and self._failed_card(workflow_id, node)), None)
+                completed_task = self._completed_pass_binding(value, node, key)
+                existing=next((c for c in value['kanban']['task_map'] if c['node']==node.name and c['idempotency_key']==key
+                    and native_states.get(c['task_id']) not in (None,'archived')),None)
+                task_id = completed_task or (previous['task_id'] if previous else existing['task_id'] if existing else self.kanban.create_node(
+                    slug, node, key, [ids[parent] for parent in node.parents], body,
+                    enable_workers=False))  # bind the complete graph before releasing cards
+                ids[node.name] = task_id
+                if pin:
+                    record = {"workflow_id": workflow_id, "node": node.name, "task_id": task_id,
+                              "actor": actor,
+                              "template_hash": slice_template_hash if node.kind == 'pass-slice' else pin["template_hash"],
+                              "input_fingerprint": node.input_fingerprint}
+                    if node.kind == 'pass-slice':
+                        record['worker_id'] = 'ingest-worker-' + task_id
+                    path = _vault_path(self.workflow.vault,
+                        f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json")
+                    if not path.is_file():
+                        if any(c.get('task_id') == task_id and c['idempotency_key'] == key
+                               for c in value['kanban']['task_map']):
+                            artifact_conflicts.append(record)
+                        else:
+                            _write_atomic(path, _json_bytes(record))
                     else:
-                        _write_atomic(path, _json_bytes(record))
-                else:
-                    try:
-                        matches = _load_json(path) == record
-                    except (ContractError, OSError, ValueError):
-                        matches = False
-                    if not matches:
-                        artifact_conflicts.append(record)
-            task_map.append({"node": node.name, "idempotency_key": key,
-                             "task_id": task_id})
-        value = self.workflow.status(workflow_id)
-        checkpoint()
-        # A revision narrows the dispatch graph without retiring valid native
-        # outcomes. Keep their identities so later projection cannot recreate
-        # archived cards under an immutable binding.
-        projected_names = {item['node'] for item in task_map}
-        for previous in value['kanban']['task_map']:
-            if previous['node'] in projected_names or not previous['node'].startswith('pass-slice:'):
-                continue
-            item = self.workflow.knowledge._slice(value['batch_id'], previous['node'].partition(':')[2])
-            node = pass_node(value, item)
-            key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
-            if previous['idempotency_key']==key and self._completed_pass_binding(value, node, key)==previous['task_id']:
-                task_map.append(dict(previous))
-        current_keys = {item["idempotency_key"] for item in task_map}
-        if value["kanban"]["board_id"] == slug:
-            for previous in value["kanban"]["task_map"]:
-                replacement = next((c for c in task_map if c['idempotency_key']==previous['idempotency_key']), None)
-                if replacement and replacement.get('task_id') != previous.get('task_id'):
-                    self.kanban.archive(slug, previous['task_id'])
-                    continue
-                if (previous.get("task_id")
-                        and previous["idempotency_key"] not in current_keys):
-                    if previous["node"] == "exact-plan" and value["batch_id"] is not None:
-                        self.kanban.complete(slug, previous["task_id"],
-                                             "Authoritative Vault exact plan committed")
-                    elif previous["node"].startswith("source-prepare:") and any(
-                            previous["node"] == "source-prepare:" + fingerprint({
-                                "path": item["path"], "content_sha256": item["content_sha256"]})[:16]
-                            for item in value.get("source_outcomes", [])):
-                        self.kanban.complete(slug, previous["task_id"],
-                                             "Authoritative Vault source outcome committed")
-                    elif (current := next((node for node in nodes
-                                           if node.name == previous["node"]), None)) is not None \
-                            and domain_completed(self.workflow, value, current):
-                        self.kanban.complete(slug, previous["task_id"],
-                                             "Authoritative Vault worker result committed")
-                    else:
-                        self.kanban.archive(slug, previous["task_id"])
-        bind = {"workflow_id": workflow_id, "actor": actor,
-                "expected_revision": value["revision"],
-                "board_id": slug, "task_map": task_map}
-        bind["input_digest"] = mutation_digest(bind)
-        updated = self.workflow.bind_kanban(bind)
-        updated = self.workflow.finish_pass_revision(self._mutation(updated))
-        # A worker may commit its boundary while this graph is being projected.
-        # Hold successors immediately and persist the receipt before the watcher exits.
-        updated = self.workflow.latch_pause(self._mutation(updated))
-        for record in artifact_conflicts:
-            node = next(n for n in nodes if n.name == record['node'])
-            if not self._failed_card(workflow_id, node):
-                self._projection_failure(workflow_id, node, record['task_id'], 'DISPATCH_ARTIFACT_CHANGED',
-                    'canonical dispatcher binding differs; trusted repair required')
-        cooldown = (self.workflow.knowledge._batch(updated["batch_id"]).get("cooldown_until")
-                    if updated["batch_id"] else None)
-        cooldown_active = (cooldown is not None and datetime.fromisoformat(
-            cooldown.replace("Z", "+00:00")) > datetime.now(timezone.utc))
-        for node in nodes:
-            checkpoint()
-            failed_parent = next((p for p in nodes if p.name in node.parents
-                                  and self._execution_blocked(workflow_id, p)), None)
-            if failed_parent and not domain_completed(self.workflow, updated, node) and not self._failed_card(workflow_id, node):
-                self._projection_failure(workflow_id, node, ids[node.name],
-                                         "DEPENDENCY_EXECUTION_BLOCKED", failed_parent.name)
-            if (not domain_completed(self.workflow, updated, node) and hasattr(self.kanban, "task_snapshot")
-                    and (not hasattr(self.kanban,'task_has_runs') or self.kanban.task_has_runs(slug,ids[node.name]))):
-                snapshot = self.kanban.task_snapshot(slug, ids[node.name])
-                ended = [r for r in snapshot.get("runs", []) if r.get("ended_at")]
-                durable_slice_failure = False
-                if ended and node.kind == 'pass-slice':
-                    current_slice = self.workflow.knowledge._slice(updated['batch_id'], node.name.partition(':')[2])
-                    error = current_slice.get('last_error')
-                    if error and current_slice['state'] != 'leased':
                         try:
-                            failure_at = datetime.fromisoformat(error['at'].replace('Z', '+00:00')).timestamp()
-                            durable_slice_failure = failure_at >= float(ended[-1]['started_at'])
-                        except (KeyError, TypeError, ValueError):
-                            pass
-                if ended and not durable_slice_failure and snapshot['task']['status'] not in ('running', 'archived') and not self._failed_card(workflow_id, node):
-                    self._projection_failure(workflow_id, node, ids[node.name], "NATIVE_WORKER_STOPPED",
-                        str(ended[-1].get("error") or ended[-1].get("summary") or "worker ended without a Vault outcome"))
-            if domain_completed(self.workflow, updated, node):
-                summary = "Authoritative Vault outcome already committed"
-                if node.kind == 'source-prepare':
-                    for item in updated.get('source_outcomes', []):
-                        name = 'source-prepare:' + fingerprint({'path':item['path'],
-                            'content_sha256':item['content_sha256']})[:16]
-                        if name == node.name:
-                            summary = ('Source preparation ready' if item['status']=='ready' else
-                                f"Source preparation failed ({item['error_code']}): {item['reason']}; coverage gap retained")
-                            break
-                self.kanban.complete(slug, ids[node.name],
-                                     summary)
-            elif self._failed_card(workflow_id, node):
-                if not self._execution_blocked(workflow_id, node):
-                    self.kanban.wait(slug, ids[node.name], 'blocked', 'Vault validation gate requires review')
+                            matches = _load_json(path) == record
+                        except (ContractError, OSError, ValueError):
+                            matches = False
+                        if not matches:
+                            artifact_conflicts.append(record)
+                task_map.append({"node": node.name, "idempotency_key": key,
+                                 "task_id": task_id})
+            value = self.workflow.status(workflow_id)
+            checkpoint()
+            # A revision narrows the dispatch graph without retiring valid native
+            # outcomes. Keep their identities so later projection cannot recreate
+            # archived cards under an immutable binding.
+            projected_names = {item['node'] for item in task_map}
+            for previous in value['kanban']['task_map']:
+                if previous['node'] in projected_names or not previous['node'].startswith('pass-slice:'):
                     continue
-                # Publish dependency guards before archiving can promote children.
-                affected = {node.name}
-                for dependent in nodes:
-                    if any(parent in affected for parent in dependent.parents):
-                        affected.add(dependent.name)
-                        if not self._failed_card(workflow_id, dependent):
-                            self._projection_failure(workflow_id, dependent, ids[dependent.name],
-                                                     'DEPENDENCY_EXECUTION_BLOCKED', node.name)
-                for dependent in reversed(nodes):
-                    if dependent.name in affected and dependent.name != node.name:
-                        self.kanban.archive(slug, ids[dependent.name])
-                self.kanban.archive(slug, ids[node.name])
-            elif node.gate or not self._eligible(updated, node, nodes):
-                self.kanban.wait(slug, ids[node.name], "blocked",
-                                 "Vault gate or outside active dispatch scope")
-            elif node.kind == "source-prepare" and node.name not in source_window:
-                self.kanban.wait(slug, ids[node.name], "blocked",
-                                 "Skill source preparation concurrency limit")
-            elif node.kind == "pass-slice":
-                slice_id = node.name.partition(":")[2]
-                state = self.workflow.knowledge._slice(updated["batch_id"], slice_id)["state"]
-                if state == "retry_wait" or (state == "ready" and cooldown_active):
-                    self.kanban.wait(slug, ids[node.name], "scheduled", "Vault retry backoff")
-                elif state in ("blocked", "reconcile_required", "awaiting_approval",
-                               "cancelled"):
-                    self.kanban.wait(slug, ids[node.name], "blocked", "Vault worker gate")
-                elif state == "ready":
-                    if node.name in pass_window:
-                        self.kanban.unblock(slug, ids[node.name])
-                    else:
-                        self.kanban.wait(slug, ids[node.name], 'blocked', 'Vault Pass concurrency limit')
-            else:
-                self.kanban.unblock(slug, ids[node.name])
-        active_canary = self.enable_workers and any(
-            not domain_completed(self.workflow, updated, node)
-            and not self._failed_card(workflow_id, node)
-            and self._eligible(updated, node, nodes)
-            and (node.kind != "pass-slice" or self.workflow.knowledge._slice(
-                updated["batch_id"], node.name.partition(":")[2])["state"]
-                in ("ready", "leased")) for node in nodes)
-        canary_done = (updated["dispatch_policy"]["mode"] == "canary"
-                       and len(updated["dispatch_policy"]["slice_ids"]) == 8
-                       and all(self.workflow.knowledge._slice(updated["batch_id"], sid)["state"] == "completed"
-                               for sid in updated["dispatch_policy"]["slice_ids"]))
-        canary_report = None
-        if canary_done:
-            canary_report = self._report(updated, "canary", {
-                "workflow_id": workflow_id, "ok": True,
-                "slice_ids": updated["dispatch_policy"]["slice_ids"],
-                "selection_digest": updated["dispatch_policy"]["selection_digest"],
-                "source_coverage": self.workflow.source_coverage(updated),
-                "execution_mode": updated["scope"].get("execution_mode", "manual")})
-        return {"workflow_id": workflow_id, "workflow_created": True,
-                "state": "paused" if self.workflow.pending_pause(updated) else updated["state"],
-                "pause": self.workflow.pause_status(updated),
-                "revision": updated["revision"], "background_dispatch": active_canary,
-                "program_dispatch": any(executor_for(n.kind, self.workflow.revision_instructions(updated)
-                    if self.workflow.revision_allows(updated, n.name) else
-                    (self.workflow.execution_template(updated, n.name.partition(':')[2])
-                    if n.kind == 'pass-slice' else None) or templates.get(n.kind)) != 'model'
-                    and not domain_completed(self.workflow, updated, n)
-                    and not self._failed_card(workflow_id, n)
-                    and self._eligible(updated, n, nodes)
-                    and (n.kind!='pass-slice' or (n.name in pass_window
-                         and self.workflow.knowledge._slice(updated['batch_id'],n.name.partition(':')[2])['state']=='ready'))
-                    for n in nodes),
-                "board_id": slug, "task_count": len(task_map),
-                "canary_complete": canary_done, "canary_report_ref": canary_report,
-                "execution_blocked": [n.name for n in nodes if self._execution_blocked(workflow_id, n)],
-                "pass_revision": ({'revision_id': updated['pass_revision']['revision_id'],
-                                   'state': updated['pass_revision']['state']}
-                                  if updated.get('pass_revision') else None)}
+                item = self.workflow.knowledge._slice(value['batch_id'], previous['node'].partition(':')[2])
+                node = pass_node(value, item)
+                key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
+                if previous['idempotency_key']==key and self._completed_pass_binding(value, node, key)==previous['task_id']:
+                    task_map.append(dict(previous))
+            current_keys = {item["idempotency_key"] for item in task_map}
+            if value["kanban"]["board_id"] == slug:
+                for previous in value["kanban"]["task_map"]:
+                    replacement = next((c for c in task_map if c['idempotency_key']==previous['idempotency_key']), None)
+                    if replacement and replacement.get('task_id') != previous.get('task_id'):
+                        self.kanban.archive(slug, previous['task_id'])
+                        continue
+                    if (previous.get("task_id")
+                            and previous["idempotency_key"] not in current_keys):
+                        if previous["node"] == "exact-plan" and value["batch_id"] is not None:
+                            self.kanban.complete(slug, previous["task_id"],
+                                                 "Authoritative Vault exact plan committed")
+                        elif previous["node"].startswith("source-prepare:") and any(
+                                previous["node"] == "source-prepare:" + fingerprint({
+                                    "path": item["path"], "content_sha256": item["content_sha256"]})[:16]
+                                for item in value.get("source_outcomes", [])):
+                            self.kanban.complete(slug, previous["task_id"],
+                                                 "Authoritative Vault source outcome committed")
+                        elif (current := next((node for node in nodes
+                                               if node.name == previous["node"]), None)) is not None \
+                                and domain_completed(self.workflow, value, current):
+                            self.kanban.complete(slug, previous["task_id"],
+                                                 "Authoritative Vault worker result committed")
+                        else:
+                            self.kanban.archive(slug, previous["task_id"])
+            bind = {"workflow_id": workflow_id, "actor": actor,
+                    "expected_revision": value["revision"],
+                    "board_id": slug, "task_map": task_map}
+            bind["input_digest"] = mutation_digest(bind)
+            updated = self.workflow.bind_kanban(bind)
+            updated = self.workflow.finish_pass_revision(self._mutation(updated))
+            # A worker may commit its boundary while this graph is being projected.
+            # Hold successors immediately and persist the receipt before the watcher exits.
+            updated = self.workflow.latch_pause(self._mutation(updated))
+            for record in artifact_conflicts:
+                node = next(n for n in nodes if n.name == record['node'])
+                if not self._failed_card(workflow_id, node):
+                    self._projection_failure(workflow_id, node, record['task_id'], 'DISPATCH_ARTIFACT_CHANGED',
+                        'canonical dispatcher binding differs; trusted repair required')
+        with span('reconciliation_card_projection'):
+            cooldown = (self.workflow.knowledge._batch(updated["batch_id"]).get("cooldown_until")
+                        if updated["batch_id"] else None)
+            cooldown_active = (cooldown is not None and datetime.fromisoformat(
+                cooldown.replace("Z", "+00:00")) > datetime.now(timezone.utc))
+            for node in nodes:
+                checkpoint()
+                failed_parent = next((p for p in nodes if p.name in node.parents
+                                      and self._execution_blocked(workflow_id, p)), None)
+                if failed_parent and not domain_completed(self.workflow, updated, node) and not self._failed_card(workflow_id, node):
+                    self._projection_failure(workflow_id, node, ids[node.name],
+                                             "DEPENDENCY_EXECUTION_BLOCKED", failed_parent.name)
+                if (not domain_completed(self.workflow, updated, node) and hasattr(self.kanban, "task_snapshot")
+                        and (not hasattr(self.kanban,'task_has_runs') or self.kanban.task_has_runs(slug,ids[node.name]))):
+                    snapshot = self.kanban.task_snapshot(slug, ids[node.name])
+                    ended = [r for r in snapshot.get("runs", []) if r.get("ended_at")]
+                    durable_slice_failure = False
+                    if ended and node.kind == 'pass-slice':
+                        current_slice = self.workflow.knowledge._slice(updated['batch_id'], node.name.partition(':')[2])
+                        error = current_slice.get('last_error')
+                        if error and current_slice['state'] != 'leased':
+                            try:
+                                failure_at = datetime.fromisoformat(error['at'].replace('Z', '+00:00')).timestamp()
+                                durable_slice_failure = failure_at >= float(ended[-1]['started_at'])
+                            except (KeyError, TypeError, ValueError):
+                                pass
+                    if ended and not durable_slice_failure and snapshot['task']['status'] not in ('running', 'archived') and not self._failed_card(workflow_id, node):
+                        self._projection_failure(workflow_id, node, ids[node.name], "NATIVE_WORKER_STOPPED",
+                            str(ended[-1].get("error") or ended[-1].get("summary") or "worker ended without a Vault outcome"))
+                if domain_completed(self.workflow, updated, node):
+                    summary = "Authoritative Vault outcome already committed"
+                    if node.kind == 'source-prepare':
+                        for item in updated.get('source_outcomes', []):
+                            name = 'source-prepare:' + fingerprint({'path':item['path'],
+                                'content_sha256':item['content_sha256']})[:16]
+                            if name == node.name:
+                                summary = ('Source preparation ready' if item['status']=='ready' else
+                                    f"Source preparation failed ({item['error_code']}): {item['reason']}; coverage gap retained")
+                                break
+                    self.kanban.complete(slug, ids[node.name],
+                                         summary)
+                elif self._failed_card(workflow_id, node):
+                    if not self._execution_blocked(workflow_id, node):
+                        self.kanban.wait(slug, ids[node.name], 'blocked', 'Vault validation gate requires review')
+                        continue
+                    # Publish dependency guards before archiving can promote children.
+                    affected = {node.name}
+                    for dependent in nodes:
+                        if any(parent in affected for parent in dependent.parents):
+                            affected.add(dependent.name)
+                            if not self._failed_card(workflow_id, dependent):
+                                self._projection_failure(workflow_id, dependent, ids[dependent.name],
+                                                         'DEPENDENCY_EXECUTION_BLOCKED', node.name)
+                    for dependent in reversed(nodes):
+                        if dependent.name in affected and dependent.name != node.name:
+                            self.kanban.archive(slug, ids[dependent.name])
+                    self.kanban.archive(slug, ids[node.name])
+                elif node.gate or not self._eligible(updated, node, nodes):
+                    self.kanban.wait(slug, ids[node.name], "blocked",
+                                     "Vault gate or outside active dispatch scope")
+                elif node.kind == "source-prepare" and node.name not in source_window:
+                    self.kanban.wait(slug, ids[node.name], "blocked",
+                                     "Skill source preparation concurrency limit")
+                elif node.kind == "pass-slice":
+                    slice_id = node.name.partition(":")[2]
+                    state = self.workflow.knowledge._slice(updated["batch_id"], slice_id)["state"]
+                    if state == "retry_wait" or (state == "ready" and cooldown_active):
+                        self.kanban.wait(slug, ids[node.name], "scheduled", "Vault retry backoff")
+                    elif state in ("blocked", "reconcile_required", "awaiting_approval",
+                                   "cancelled"):
+                        self.kanban.wait(slug, ids[node.name], "blocked", "Vault worker gate")
+                    elif state == "ready":
+                        if node.name in pass_window:
+                            self.kanban.unblock(slug, ids[node.name])
+                        else:
+                            self.kanban.wait(slug, ids[node.name], 'blocked', 'Vault Pass concurrency limit')
+                else:
+                    self.kanban.unblock(slug, ids[node.name])
+            active_canary = self.enable_workers and any(
+                not domain_completed(self.workflow, updated, node)
+                and not self._failed_card(workflow_id, node)
+                and self._eligible(updated, node, nodes)
+                and (node.kind != "pass-slice" or self.workflow.knowledge._slice(
+                    updated["batch_id"], node.name.partition(":")[2])["state"]
+                    in ("ready", "leased")) for node in nodes)
+            canary_done = (updated["dispatch_policy"]["mode"] == "canary"
+                           and len(updated["dispatch_policy"]["slice_ids"]) == 8
+                           and all(self.workflow.knowledge._slice(updated["batch_id"], sid)["state"] == "completed"
+                                   for sid in updated["dispatch_policy"]["slice_ids"]))
+            canary_report = None
+            if canary_done:
+                canary_report = self._report(updated, "canary", {
+                    "workflow_id": workflow_id, "ok": True,
+                    "slice_ids": updated["dispatch_policy"]["slice_ids"],
+                    "selection_digest": updated["dispatch_policy"]["selection_digest"],
+                    "source_coverage": self.workflow.source_coverage(updated),
+                    "execution_mode": updated["scope"].get("execution_mode", "manual")})
+            return {"workflow_id": workflow_id, "workflow_created": True,
+                    "state": "paused" if self.workflow.pending_pause(updated) else updated["state"],
+                    "pause": self.workflow.pause_status(updated),
+                    "revision": updated["revision"], "background_dispatch": active_canary,
+                    "program_dispatch": any(executor_for(n.kind, self.workflow.revision_instructions(updated)
+                        if self.workflow.revision_allows(updated, n.name) else
+                        (self.workflow.execution_template(updated, n.name.partition(':')[2])
+                        if n.kind == 'pass-slice' else None) or templates.get(n.kind)) != 'model'
+                        and not domain_completed(self.workflow, updated, n)
+                        and not self._failed_card(workflow_id, n)
+                        and self._eligible(updated, n, nodes)
+                        and (n.kind!='pass-slice' or (n.name in pass_window
+                             and self.workflow.knowledge._slice(updated['batch_id'],n.name.partition(':')[2])['state']=='ready'))
+                        for n in nodes),
+                    "board_id": slug, "task_count": len(task_map),
+                    "canary_complete": canary_done, "canary_report_ref": canary_report,
+                    "execution_blocked": [n.name for n in nodes if self._execution_blocked(workflow_id, n)],
+                    "pass_revision": ({'revision_id': updated['pass_revision']['revision_id'],
+                                       'state': updated['pass_revision']['state']}
+                                      if updated.get('pass_revision') else None)}
 
     def _slice_worker(self, workflow_id: str, node_name: str,
                       task_id: str, *, verify_inputs: bool = True) -> tuple[dict[str, Any], dict[str, Any]]:

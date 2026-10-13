@@ -62,6 +62,25 @@ def test_unknown_attempt_metadata_is_not_treated_as_never_started():
         assert cli.task_has_runs('board','t')
 
 
+def test_archived_status_reuses_same_projection_show_and_expires():
+    calls=[]
+    def invoke(argv):
+        verb=argv[4];calls.append(verb)
+        return subprocess.CompletedProcess(argv,0,json.dumps([] if verb=='list' else
+            {'task':{'id':'old','status':'archived'},'runs':[],'children':[]}),'')
+    cli=KanbanCLI(invoke)
+    with cli.projection('board'):
+        cli.task_snapshot('board','old')
+        for _ in range(3):
+            assert cli.task_status('board','old')=='archived'
+            cli.archive('board','old')
+        assert calls.count('show')==1
+        cli.task_snapshot_fresh('board','old')
+        assert calls.count('show')==2
+    cli.task_status('board','old')
+    assert calls.count('show')==3
+
+
 def test_nested_timeline_and_failed_diagnostic_do_not_change_execution(tmp_path, monkeypatch):
     root=tmp_path/'timeline'
     monkeypatch.setattr(telemetry,'runtime_directory',lambda *args:root)
