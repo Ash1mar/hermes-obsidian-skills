@@ -203,3 +203,32 @@ Observe pass_validation, pass_commit, atomic_pass, pass_refill and native comple
 separately. Lock-hold evidence differs from submission time, which includes wait.
 Compare completion/termination to the next native claim; signal delivery alone
 does not prove timely refill. Keep original results, fixed budgets and pauses.
+
+## Round-five stable input and call-local construction (2026-10-13)
+
+Keep worker and in-flight model concurrency at 2. Preserve the exact system
+rules and canonical domain packets. The versioned `semantic-input/v1` wire
+places shared material dictionaries before changing task state, uses stable
+object encoding, and keeps array order, handles, QA, original text and all
+required evidence. Native card identity remains in the native session/audit,
+rather than preceding the material prefix. Correction data stays explicit.
+
+One model call prepares its pure wire/content/strict schema and size projection
+once. The scope ends in `finally`; it does not reuse agents, sessions, prior
+candidate state or an execution decision. Every native request still checks
+live worker authority and the exact outgoing text, schema, images, tool
+absence and input/image limits. SDK schema copies cannot mutate the prepared
+schema. Group measurements reuse only their local schema construction.
+
+Historical native responses retain exact transcript/system/request/response
+hashes, real native sessions, current reading authority and same-task content
+checks. Recognize only the old `Native task` header and the explicit new wire
+header; reject unknown framing or image tails. A stable prefix alone never
+authorizes response reuse. Future plan measurement identities include the wire
+contract; current task identities and accepted results are not migrated.
+
+Report pure request projection time and call-local construction reuse separately
+from agent initialization, historical response reuse and recorded provider cache
+tokens. Missing provider cache statistics are unknown, not zero or savings.
+No observed cache benefit is a valid outcome. No additional scheduler, persistent
+cache, automatic tuning or parallel model calls are introduced.

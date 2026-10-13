@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.semantic_budget import PHASE_BALANCED_POLICY, budget_policy_pin
-from fixed_semantic import COMMON, RULES, group_usage, OUTPUT_TOKENS, OUTPUT_RESERVE
+from fixed_semantic import COMMON, RULES, WIRE_CONTRACT, group_usage, OUTPUT_TOKENS, OUTPUT_RESERVE
 from fixed_semantic_schema import slot_schema, strict_schema
 from fixed_semantic_media import image_catalog, image_budget
 from native_pass_identity import visible_packet
@@ -19,6 +19,7 @@ def model_measurement(service, actor, registry, limit=None):
     limit = PLANNING_POLICY['model_input_codepoints'] if limit is None else limit
     identity={'planning':PLANNING_POLICY, 'phase_budget':budget_policy_pin(), 'input_limit':limit,
         'image_budget':image_budget(), 'request_contract_sha256':fingerprint({
+            'wire_contract':WIRE_CONTRACT,
             'common':COMMON, 'rules':{p:RULES[p] for p in ('candidate','citation')},
             'schema':{p:strict_schema(slot_schema(p,[{'task':'t1'}])) for p in ('candidate','citation')}})}
     def measure(refs, assembled):

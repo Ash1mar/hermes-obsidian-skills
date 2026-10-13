@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -42,6 +43,7 @@ ACTION_LOCK = threading.RLock()
 PASS_DONE = threading.Event()
 OUTPUT_TOKENS = 8192
 OUTPUT_RESERVE = 1024
+WIRE_CONTRACT = 'semantic-input/v1'
 
 
 class HermesCaller:
@@ -67,22 +69,33 @@ class HermesCaller:
 
             def _check_fixed_request(self, api_kwargs):
                 messages=api_kwargs.get('messages',[])
-                expected=[('system',normalize_content(self.fixed_request['system'])),
-                          ('user',normalize_content(self.fixed_request['user']))]
                 if 'instructions' in api_kwargs:
                     messages=[{'role':'system','content':api_kwargs['instructions']},*api_kwargs.get('input',[])]
                 elif 'system' in api_kwargs:
                     messages=[{'role':'system','content':api_kwargs['system']},*messages]
-                actual=[(m.get('role'),normalize_content(m.get('content'))) for m in messages]
-                if api_kwargs.get('tools') or actual!=expected:
+                actual=tuple((m.get('role'),_normalized_request_content(m.get('content'))) for m in messages)
+                if api_kwargs.get('tools') or actual!=self.fixed_expected_request:
                     raise RuntimeError('fixed semantic request contains extra tools, context or messages')
-                format_schema=getattr(self,'fixed_output_schema',None)
-                schema_size=len(json.dumps(strict_schema(format_schema),ensure_ascii=False,separators=(',',':'))) if format_schema else 0
-                if len(json.dumps(self.fixed_text_request,ensure_ascii=False,separators=(',',':')))+schema_size>self.fixed_limit:
+                if self.fixed_transport_schema is not None:
+                    output={'type':'json_schema','name':'semantic_task_slots','strict':True,
+                            'schema':self.fixed_transport_schema}
+                    if 'instructions' in api_kwargs:
+                        actual_format=api_kwargs.get('text',{}).get('format')
+                        expected_format=output
+                    else:
+                        actual_format=api_kwargs.get('response_format')
+                        expected_format={'type':'json_schema','json_schema':{k:v for k,v in output.items() if k!='type'}}
+                    if actual_format!=expected_format:
+                        raise RuntimeError('fixed semantic output schema changed')
+                # Exact current messages/schema have been checked above. Reuse
+                # only this call's construction size, never an admission result.
+                if self.fixed_input_size>self.fixed_limit:
                     raise RuntimeError('actual fixed semantic request exceeds its input bound')
                 if not images_fit(self.fixed_images):
                     raise RuntimeError('actual fixed semantic image payload exceeds its bound')
                 self.fixed_request_checks+=1
+                self.fixed_construction_counts['expected_content_reuses']+=1
+                self.fixed_construction_counts['budget_size_reuses']+=1
 
             def _interruptible_api_call(self, api_kwargs):
                 self._apply_fixed_format(api_kwargs)
@@ -95,14 +108,15 @@ class HermesCaller:
                 return super()._interruptible_streaming_api_call(api_kwargs, *args, **kwargs)
 
             def _apply_fixed_format(self, api_kwargs):
-                if getattr(self,'fixed_output_schema',None) is None: return
+                if self.fixed_transport_schema is None: return
                 output={'type':'json_schema','name':'semantic_task_slots','strict':True,
-                        'schema':strict_schema(self.fixed_output_schema)}
+                        'schema':copy.deepcopy(self.fixed_transport_schema)}
                 if 'instructions' in api_kwargs:
                     api_kwargs['text']={**api_kwargs.get('text',{}),'format':output}
                 else:
                     api_kwargs['response_format']={'type':'json_schema','json_schema':{k:v for k,v in output.items() if k!='type'}}
                 self.fixed_structured_requests+=1
+                self.fixed_construction_counts['transport_schema_reuses']+=1
         self.db = SessionDB()
         fields = {k:self.runtime[k] for k in ('provider','api_mode','base_url','api_key','acp_command','acp_args') if k in self.runtime}
         # Native workers inherit lifecycle tools unless explicitly disabled.
@@ -119,27 +133,57 @@ class HermesCaller:
         agent.fixed_structured_requests=0
         return agent
 
+    @contextmanager
+    def request_scope(self, prepared):
+        """One synchronous call owns a pure construction, never permission."""
+        if hasattr(self,'_prepared_request'):
+            raise RuntimeError('fixed semantic request scope is already active')
+        if prepared['closed'] or prepared['consumed']:
+            raise RuntimeError('prepared semantic request has already been consumed')
+        self._prepared_request=prepared
+        try:
+            yield
+        finally:
+            del self._prepared_request
+            prepared['closed']=True
+            self.images=[]
+
     def __call__(self, phase, view, output_schema, correction=None):
         # SDK-supported context-local isolation: no process-wide environment
         # changes and no second process/PID to coordinate with the parent lease.
         from agent.delegation_context import delegated_child_context
         with delegated_child_context():
-            raw,metadata=self._call(phase,view,output_schema,correction)
+            raw,metadata=self._call(phase,view,output_schema,correction,
+                prepared=getattr(self,'_prepared_request',None))
         metadata.update(call_ownership='fixed_model_call',
             parent_native_run_id=os.environ.get('HERMES_KANBAN_RUN_ID'))
         return raw,metadata
 
-    def _call(self, phase, view, output_schema, correction=None):
+    def _call(self, phase, view, output_schema, correction=None, *, prepared=None):
+        if prepared is None:
+            prepared=prepare_request_projection(phase,view,output_schema,self.images,correction)
+        else:
+            if prepared['closed'] or prepared['consumed']:
+                raise RuntimeError('prepared semantic request has already been consumed')
+            current={'phase':phase,'view':view,'output_schema':output_schema,
+                     'correction':correction,'images':self.images}
+            if prepared['identity']!=current:
+                raise RuntimeError('prepared semantic request no longer matches this call')
+            prepared['construction_counts']['projection_reuses']+=1
+        prepared['consumed']=True
         with span('request_construct', phase=phase):
             agent = self.make_agent()
-            prompt = wire_prompt(phase,view,output_schema,correction)
-            content=message_content(prompt['user'],self.images)
-        agent.fixed_request={**prompt,'user':content}
-        text=normalize_content(content)[0]
-        agent.fixed_text_request={**prompt,'user':text}
-        agent.fixed_images=self.images
-        agent.fixed_output_schema=output_schema if 'results' in output_schema.get('properties',{}) else None
         try:
+            prompt=prepared['prompt'];content=prepared['content']
+            agent.fixed_request={**prompt,'user':content}
+            agent.fixed_text_request=prepared['wire']
+            agent.fixed_expected_request=prepared['expected']
+            agent.fixed_images=copy.deepcopy(prepared['images'])
+            agent.fixed_output_schema=output_schema if prepared['transport_schema'] is not None else None
+            agent.fixed_transport_schema=copy.deepcopy(prepared['transport_schema'])
+            agent.fixed_schema_size=prepared['schema_size']
+            agent.fixed_input_size=prepared['input_size']
+            agent.fixed_construction_counts=prepared['construction_counts']
             with span('sdk_model_request',phase=phase,session_id=agent.session_id):
                 result=agent.run_conversation(content,system_message=prompt['system'])
             if result.get('error') or result.get('partial'):
@@ -152,28 +196,88 @@ class HermesCaller:
                 'api_calls':result.get('api_calls'),'response_sha256':fingerprint(raw),
                 'fixed_request_checks':agent.fixed_request_checks,'tools':0,
                 'structured_output_requests':agent.fixed_structured_requests,
-                'image_count':len(self.images),'image_bytes':sum(i['bytes'] for i in self.images),
-                'system_codepoints':len(prompt['system']),'extra_context_codepoints':0}
+                'image_count':len(prepared['images']),'image_bytes':sum(i['bytes'] for i in prepared['images']),
+                'system_codepoints':len(prompt['system']),'extra_context_codepoints':0,
+                'wire_contract':WIRE_CONTRACT,
+                'request_construction':copy.deepcopy(prepared['construction_counts'])}
         finally:
-            agent.close(); self.db.close()
+            try:
+                try: agent.close()
+                finally: self.db.close()
+            finally:
+                prepared['closed']=True
+                self.images=[]
+                # No request, schema or construction scope survives this SDK session.
+                for name in ('fixed_request','fixed_text_request','fixed_expected_request',
+                             'fixed_images','fixed_output_schema','fixed_transport_schema',
+                             'fixed_construction_counts'):
+                    if hasattr(agent,name): delattr(agent,name)
+
+
+def _stable_objects(value):
+    if isinstance(value,dict):
+        return {key:_stable_objects(value[key]) for key in sorted(value)}
+    if isinstance(value,list): return [_stable_objects(item) for item in value]
+    return value
+
+
+def _ordered_view(view):
+    ordered={}
+    for key in ('contract','texts','headings','qa','qa_rule'):
+        if key in view: ordered[key]=_stable_objects(view[key])
+    for key in sorted(view):
+        if key not in ordered and key!='tasks': ordered[key]=_stable_objects(view[key])
+    if 'tasks' in view: ordered['tasks']=_stable_objects(view['tasks'])
+    return ordered
+
+
+def _normalized_request_content(value):
+    normalized=normalize_content(value)
+    return (normalized[0],tuple(normalized[1])) if normalized is not None else None
 
 
 def wire_prompt(phase,view,output_schema,correction=None):
     # Native task identity is metadata, not a model-built request field.
-    body={'phase':phase,'input':view,'output_schema':output_schema}
+    body={'phase':phase}
+    if phase not in ('candidate','citation'):
+        body['output_schema']=_stable_objects(output_schema)
+    body['input']=_ordered_view(view)
     if phase in ('candidate','citation'):
         # The actual request carries the schema once at the API boundary.
-        body.pop('output_schema')
         body['required_result_slots']=[t['task'] for t in view.get('tasks',[])]
-    if correction: body['correction'] = correction
+    if correction: body['correction'] = _stable_objects(correction)
     return {'system':COMMON+'\n'+RULES[phase],
-        'user':'Native task '+os.environ.get('HERMES_KANBAN_TASK','isolated-test')+'\n'+json.dumps(body,ensure_ascii=False,separators=(',',':'))}
+        'user':'Semantic input v1\n'+json.dumps(body,ensure_ascii=False,separators=(',',':'))}
+
+
+def prepare_request_projection(phase,view,output_schema,images=(),correction=None):
+    """Render one complete call; identities and permission checks stay live."""
+    images=list(images)
+    with span('request_projection',phase=phase,wire_contract=WIRE_CONTRACT):
+        prompt=wire_prompt(phase,view,output_schema,correction)
+        content=message_content(prompt['user'],images)
+        user=_normalized_request_content(content)
+        wire={**prompt,'user':user[0]}
+        transport_schema=(strict_schema(_stable_objects(output_schema))
+                          if 'results' in output_schema.get('properties',{}) else None)
+        schema_size=(len(json.dumps(transport_schema,ensure_ascii=False,separators=(',',':')))
+                     if transport_schema is not None else 0)
+        return {'prompt':prompt,'content':content,'wire':wire,
+            'closed':False,'consumed':False,
+            'expected':(('system',_normalized_request_content(prompt['system'])),('user',user)),
+            'transport_schema':transport_schema,'schema_size':schema_size,
+            'input_size':len(json.dumps(wire,ensure_ascii=False,separators=(',',':')))+schema_size,
+            'static_size':len(prompt['system'])+len(json.dumps(output_schema,ensure_ascii=False,separators=(',',':'))),
+            'images':copy.deepcopy(images),
+            'identity':copy.deepcopy({'phase':phase,'view':view,'output_schema':output_schema,
+                                     'correction':correction,'images':images}),
+            'construction_counts':{'scope':'one_model_call','projection_builds':1,'projection_reuses':0,
+                'expected_content_reuses':0,'transport_schema_reuses':0,'budget_size_reuses':0}}
 
 
 @measured('semantic_call', lambda adapter, binding, phase, view, caller, limit, correction=None, **kwargs: {'vault':adapter.workflow.vault,'binding':binding,'phase':phase})
 def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None):
     output_schema=slot_schema(phase,view.get('tasks',[])) if phase in ('candidate','citation') else schema(phase)
-    wire=wire_prompt(phase,view,output_schema,correction)
     images=[]
     if isinstance(caller,HermesCaller):
         original=view.get('original_evidence')
@@ -183,10 +287,8 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
             images=select_images(view.get('tasks',[]),getattr(caller,'image_catalog',{}))
         require_images_fit(images)
         caller.images=images
-        content=message_content(wire['user'],images)
-        wire={**wire,'user':normalize_content(content)[0]}
-    schema_size=len(json.dumps(strict_schema(output_schema),ensure_ascii=False,separators=(',',':'))) if phase in ('candidate','citation') else 0
-    size=len(json.dumps(wire,ensure_ascii=False,separators=(',',':')))+schema_size
+    prepared=prepare_request_projection(phase,view,output_schema,images,correction)
+    wire=prepared['wire'];schema_size=prepared['schema_size'];size=prepared['input_size']
     if size>limit:
         raise ContractError('READING_WINDOW_OVERSIZE','$','fixed task instructions/schema/materials exceed the bound; no truncation or model call')
     with ACTION_LOCK:
@@ -196,18 +298,25 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
         else: adapter.worker_check(binding)
     if isinstance(caller,HermesCaller): caller.input_limit=limit
     started=time.monotonic()
-    with span('model_call',phase=phase,input_sha256=fingerprint(wire)) as model_trace:
-        raw,metadata=caller(phase,view,output_schema,correction)
+    input_sha256=fingerprint(wire)
+    with span('model_call',phase=phase,input_sha256=input_sha256) as model_trace:
+        if isinstance(caller,HermesCaller):
+            with caller.request_scope(prepared):
+                raw,metadata=caller(phase,view,output_schema,correction)
+        else:
+            raw,metadata=caller(phase,view,output_schema,correction)
     audit={'contract':'hermes-fixed-semantic-call/v1','native_task_id':binding['task_id'],
         'workflow_id':binding['workflow_id'],'node':binding['node'],
         'template_hash':binding.get('template_hash'),
         'native_run_id':os.environ.get('HERMES_KANBAN_RUN_ID'),'phase':phase,
         'user_sha256':fingerprint(wire['user']),
-        'input_sha256':fingerprint(wire),'schema_sha256':fingerprint(output_schema),
+        'input_sha256':input_sha256,'schema_sha256':fingerprint(output_schema),
         'response_sha256':fingerprint(raw),'input_codepoints':size,'limit':limit,
         'model_elapsed_ms':int(round((time.monotonic()-started)*1000)),
-        'static_codepoints':len(wire['system'])+len(json.dumps(output_schema,ensure_ascii=False,separators=(',',':'))),
+        'static_codepoints':prepared['static_size'],
         'structured_schema_codepoints':schema_size,
+        'wire_contract':WIRE_CONTRACT,
+        'request_construction':copy.deepcopy(prepared['construction_counts']),
         'model':metadata,'receipt_refs':[]}
     audit['timeline_span_id']=model_trace['span_id']
     if images:
@@ -374,10 +483,11 @@ def bounded_correction_message(message,policy):
 
 
 def group_usage(packet,tasks,phase,limit,images,policy):
-    prompt=wire_prompt(phase,subset(packet,tasks,phase),slot_schema(phase,tasks))
+    output_schema=slot_schema(phase,tasks)
+    prompt=wire_prompt(phase,subset(packet,tasks,phase),output_schema)
     selected=select_images(tasks,images) if images is not None else []
     if images is not None:prompt['user']=normalize_content(message_content(prompt['user'],selected))[0]
-    codepoints=len(json.dumps(prompt,ensure_ascii=False,separators=(',',':')))+len(json.dumps(strict_schema(slot_schema(phase,tasks)),ensure_ascii=False,separators=(',',':')))
+    codepoints=len(json.dumps(prompt,ensure_ascii=False,separators=(',',':')))+len(json.dumps(strict_schema(_stable_objects(output_schema)),ensure_ascii=False,separators=(',',':')))
     reserve=correction_reserve(len(tasks),policy)
     output=estimate_pass_output_tokens(packet,tasks,phase,policy)
     reasons=[]
@@ -426,10 +536,11 @@ def pass_groups(packet,tasks,phase,limit,images=None,*,policy=None):
     for task in tasks:
         trial=[*group,task]
         def size_of(items):
-            prompt=wire_prompt(phase,subset(packet,items,phase),slot_schema(phase,items))
+            output_schema=slot_schema(phase,items)
+            prompt=wire_prompt(phase,subset(packet,items,phase),output_schema)
             if images is not None:
                 prompt['user']=normalize_content(message_content(prompt['user'],select_images(items,images)))[0]
-            return len(json.dumps(prompt,ensure_ascii=False,separators=(',',':')))+len(json.dumps(strict_schema(slot_schema(phase,items)),ensure_ascii=False,separators=(',',':')))
+            return len(json.dumps(prompt,ensure_ascii=False,separators=(',',':')))+len(json.dumps(strict_schema(_stable_objects(output_schema)),ensure_ascii=False,separators=(',',':')))
         size=size_of(trial)
         image_over=images is not None and not images_fit(select_images(trial,images))
         if group and (size>limit-512 or estimate_pass_output_tokens(packet,trial)>OUTPUT_TOKENS-OUTPUT_RESERVE or image_over):

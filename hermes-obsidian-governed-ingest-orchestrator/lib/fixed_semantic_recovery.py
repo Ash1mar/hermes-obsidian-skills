@@ -10,6 +10,20 @@ from hermes_source_units.validation import fingerprint
 from fixed_semantic_schema import validate, slot_results
 
 
+def _request_text(user):
+    """Recognize only the two emitted native framings, without searching for JSON."""
+    header, separator, payload = user.partition('\n')
+    if not separator:
+        raise ValueError('semantic input has no supported header')
+    if header == 'Semantic input v1':
+        return payload
+    if header.startswith('Native task '):
+        identity = header[len('Native task '):]
+        if identity and not any(char.isspace() for char in identity):
+            return payload
+    raise ValueError('semantic input has an unsupported header')
+
+
 def task_content(view, task):
     task=copy.deepcopy(task)
     task.pop('task',None)
@@ -53,11 +67,14 @@ def recover(adapter, binding, phase, view, decode, system, *, home=None):
             raw=[c for role,c,_ in rows if role=='assistant' and fingerprint(c)==audit['response_sha256']]
             if len(users)!=1 or len(raw)!=1 or model.get('response_sha256')!=audit['response_sha256']:continue
             try:
-                request_text=users[0].partition('\n')[2]
-                body,end=json.JSONDecoder().raw_decode(request_text);old_view=body['input']
+                request_text=_request_text(users[0])
+                body,end=json.JSONDecoder().raw_decode(request_text)
+                if not isinstance(body,dict) or body.get('phase') != phase:continue
+                old_view=body['input']
                 expected_labels='\n'.join('Image '+str(n)+': '+', '.join(r['task']+'/'+r['material'] for r in image['references'])
                     for n,image in enumerate(audit.get('image_inputs',[]),1))
-                if request_text[end:].strip()!=expected_labels:continue
+                expected_tail='\n'+expected_labels if expected_labels else ''
+                if request_text[end:]!=expected_tail:continue
                 # Hermes persists user/assistant only. The guarded native audit
                 # binds exact system+user bytes; a prompt-version guess cannot pass.
                 if audit.get('input_sha256')!=fingerprint({'system':system,'user':users[0]}):continue
