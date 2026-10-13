@@ -5,6 +5,7 @@ from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _vault_path, _write_atomic, _json_bytes
 from hermes_source_units.validation import fingerprint, validate_record
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard
+import fixed_evidence
 
 
 def fail(code,message):
@@ -44,19 +45,24 @@ def snapshot(adapter,binding):
                 if parent_hash!=parent_record['authored_sha256']:
                     fail('STALE_INPUT','review parent content changed')
                 parent={'path':subject['current_path'],'content':prior.decode('utf-8')}
-            evidence=[]
+            evidence=[]; selected=[]
             for ref in decision['candidate_refs']:
                 pair=candidates.get((ref['pass_id'],ref['candidate_id']))
                 if pair is None or pair[0]['pass_kind']!='citation':
                     fail('STALE_INPUT','draft no longer has its active citation evidence')
                 record,candidate=pair
+                selected.append(pair)
                 evidence.append({**{k:v for k,v in candidate.items() if k not in ('candidate_id','support_refs')},
                     'evidence_qa':[{k:v for k,v in i.items() if k!='source_ref'} for i in record['inspections']]})
+            packet,readings=fixed_evidence.original_evidence(service,[r for r,c in selected],
+                backend['actor'],service._document_registry_revision())
+            for item,(record,candidate) in zip(evidence,selected):
+                item['source_evidence']=[fixed_evidence.support(service,record,candidate,readings)]
             backend['pages'][alias]={'run_id':run_id,'page':page,'parent_hash':parent_hash}
             views.append({'page':alias,'identity':{k:v for k,v in decision['identity'].items() if k!='subject_id'},
                 'path':page['path'],'content':raw.decode('utf-8'),'existing_page':parent,
                 'qa_status':page['qa_status'],'business_status':page['business_status'],
-                'visibility':page['visibility'],'citation_evidence':evidence})
+                'visibility':page['visibility'],'citation_evidence':evidence,'original_evidence':packet})
     value={'contract':'fixed-review-input/v1','binding':dict(binding),'backend':backend,'views':views}
     value['input_id']=fingerprint(value)
     return value

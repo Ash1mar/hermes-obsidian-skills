@@ -130,6 +130,17 @@ correctness; conversion limits and occasional model errors stay deferred.
    information. No evidence graph, automatic topic hierarchy, sentence network
    or bulk candidate migration. Measure total Map, Reduce and review cost when
    those stages are authorized; Map-only observations cannot prove total savings.
+   Implemented with the existing candidate/Pass schema: compact `name` and
+   `finding`, separate applicability/conditions/exceptions, original support refs
+   and inspection QA. No hard semantic text truncation or historical rewrite.
+   Program-controlled Reduce, page writing and page review restore each active
+   citation's immutable original reading package through the runtime renderer,
+   with live source/governance/hash/QA and required inspection checks. Source
+   handles retain their original spans; shared text is deduplicated per input.
+   Full original core and bounded context plus required dependencies participate
+   in actual text/image budgets. Oversized evidence blocks the affected request;
+   it is never silently replaced with a candidate summary. Old valid records
+   use the same deterministic projection without invented semantic fields.
 5. Round five is a small prefix/local-cache optimization: stable serialization,
    stable rules/schema/material prefix and operation-local parsing/construction
    reuse. Report actual cache statistics or unknown status, retaining strict
