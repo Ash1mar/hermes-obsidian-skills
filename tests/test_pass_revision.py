@@ -54,7 +54,16 @@ def paused(vault):
         bound = {'workflow_id':value['workflow_id'], 'node':card['node'], 'task_id':card['task_id'], 'worker_id':'first'}
         begun = adapter.worker_begin(bound)
         bound = begun['worker_request']
-        for task, package in zip(begun['task_snapshots'], begun['reading_packages']):
+        prepared=begun
+        if 'task_snapshots' not in begun:
+            # Compact workers expose a descriptor, not full canonical identities.
+            # This isolated fixture uses the supported checked preparation path.
+            with worker_binding(bound):
+                prepared=batch.prepare_leased_slice(value['batch_id'],card['node'].partition(':')[2],
+                    bound['worker_id'],bound['expected_revision'],
+                    check=lambda:adapter.worker_check(bound,verify_inputs=False),timeout=3,
+                    write_guard=lambda:workflow_write_guard(vault,kinds=('pass-slice',),actor='agent'))
+        for task, package in zip(prepared['task_snapshots'], prepared['reading_packages']):
             for seq in (0,1):
                 draft = {'batch_id': value['batch_id'], 'passes': [{
                 'task_id':task['task_id'], 'actor':'agent', 'expected_revision':batch._task(task['task_id'])['revision'],

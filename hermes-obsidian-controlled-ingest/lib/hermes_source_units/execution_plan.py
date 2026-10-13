@@ -7,10 +7,12 @@ import json
 import os
 import re
 from collections import Counter
+from contextlib import contextmanager
 
 from .source_units import _exclusive_lock, _json_bytes, _load_json, _vault_path, _write_atomic
 from .validation import ContractError, fingerprint, validate_record
 from .model_projection import RENDERER, BEGIN_ENVELOPE_RESERVE
+from .runtime_telemetry import span
 
 
 def fail(code, message):
@@ -18,6 +20,25 @@ def fail(code, message):
 
 
 class ExecutionPlanMixin:
+    @contextmanager
+    def execution_projection(self):
+        """One sync's parsing only; every use still reads/hashes current bytes."""
+        previous = getattr(self, '_execution_projection_cache', None)
+        self._execution_projection_cache = {'plans':{}, 'texts':{}}
+        try:
+            yield
+        finally:
+            self._execution_projection_cache = previous
+
+    def _execution_text(self, data):
+        cache = getattr(self, '_execution_projection_cache', None)
+        key = hashlib.sha256(data).digest()
+        if cache is None:
+            return data.decode('utf-8')
+        if key not in cache['texts']:
+            cache['texts'][key] = data.decode('utf-8')
+        return cache['texts'][key]
+
     def _execution_journal(self, wid):
         return _vault_path(self.vault, f'_system/ledgers/ingest-workflows/{wid}/execution-plan.pending.json')
 
@@ -25,12 +46,29 @@ class ExecutionPlanMixin:
         pointer = workflow.get('execution_plan')
         if not pointer:
             return None
-        plan = _load_json(_vault_path(self.vault, pointer['path']))
-        body = {k: v for k, v in plan.items() if k != 'plan_hash'}
-        if (fingerprint(body) != plan.get('plan_hash') or pointer['sha256'] != plan['plan_hash']
+        path = _vault_path(self.vault, pointer['path'])
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            fail('SOURCE_UNAVAILABLE', f'cannot read JSON {path}: {exc}')
+        cache = getattr(self, '_execution_projection_cache', None)
+        key = (str(path), hashlib.sha256(data).digest())
+        plan = cache['plans'].get(key) if cache is not None else None
+        if plan is None:
+            with span('execution_manifest_parse', vault=self.vault, workflow_id=workflow['workflow_id']):
+                try:
+                    plan = json.loads(data.decode('utf-8'))
+                except (UnicodeError, json.JSONDecodeError) as exc:
+                    fail('SOURCE_UNAVAILABLE', f'cannot read JSON {path}: {exc}')
+                body = {k:v for k,v in plan.items() if k!='plan_hash'}
+                if fingerprint(body) != plan.get('plan_hash'):
+                    fail('STALE_INPUT', 'execution manifest identity or fingerprint changed')
+                if cache is not None:
+                    cache['plans'][key] = plan
+        if (pointer['sha256'] != plan['plan_hash']
                 or plan['workflow_id'] != workflow['workflow_id'] or plan['batch_id'] != workflow['batch_id']):
             fail('STALE_INPUT', 'execution manifest identity or fingerprint changed')
-        return plan
+        return copy.deepcopy(plan) if cache is not None else plan
 
     def assert_execution_ready(self, workflow):
         if self._execution_journal(workflow['workflow_id']).exists():
@@ -49,7 +87,7 @@ class ExecutionPlanMixin:
                 data = path.read_bytes()
                 if hashlib.sha256(data).hexdigest() != plan['template_hash']:
                     fail('TEMPLATE_CHANGED', 'execution template changed')
-                return data.decode('utf-8')
+                return self._execution_text(data)
             prior = plan.get('previous')
             if not prior:
                 break
