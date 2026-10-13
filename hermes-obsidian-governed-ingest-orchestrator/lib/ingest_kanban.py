@@ -81,6 +81,7 @@ def pass_node(workflow, value):
                     **({'revision_digest': revision['input_digest']} if revision else {})}, []))
 
 
+@measured('desired_graph', lambda service, workflow: {'vault':service.vault,'workflow_id':workflow['workflow_id'],'stage':workflow['current_stage']})
 def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any]) -> list[Node]:
     """Derive the DAG from Vault records, never from Kanban's task state."""
     nodes: list[Node] = []
@@ -128,6 +129,9 @@ def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any
         nodes.append(pass_node(workflow, item))
         for task_id in item["task_ids"]:
             pass_nodes[task_id] = name
+
+    if staged and workflow['current_stage'] == 'analyzing':
+        return nodes  # Unopened Reduce work must not scan every task and Pass.
 
     resource_tasks: dict[str, list[str]] = {}
     for task_id in batch["task_ids"]:
@@ -233,7 +237,8 @@ class KanbanCLI:
 
     def dispatcher_available(self) -> bool:
         try:
-            result = self.invoke(["hermes", "gateway", "status"])
+            with span('dispatcher_probe', operation='gateway status'):
+                result = self.invoke(["hermes", "gateway", "status"])
         except OSError:
             return False
         output = result.stdout + result.stderr
@@ -241,7 +246,8 @@ class KanbanCLI:
                 or "not running" in output.lower()):
             return False
         try:
-            location = self.invoke(["hermes", "config", "path"])
+            with span('dispatcher_probe', operation='config path'):
+                location = self.invoke(["hermes", "config", "path"])
             if location.returncode != 0:
                 return False
             lines = Path(location.stdout.strip()).read_text(encoding="utf-8").splitlines()
@@ -830,7 +836,7 @@ class IngestKanbanAdapter:
                            f"_system/ledgers/ingest-workflows/.dispatch-locks/{workflow_id}.lock")
         with _exclusive_lock(lock):
             board = self.workflow.status(workflow_id)['kanban']['board_id']
-            with self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
+            with self.workflow.execution_projection(), self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
                 return self._sync_locked(request)
 
     def _sync_locked(self, request: Mapping[str, Any]) -> dict[str, Any]:

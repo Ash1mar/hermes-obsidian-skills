@@ -120,7 +120,7 @@ def test_resume_handoff_dispatches_before_watcher_without_authority_snapshot(han
     assert handoff.calls[0][1]["text"] is True
     assert handoff.calls[0][1]["timeout"] == 60
     assert handoff.calls[1][0][1] == str(
-        ROOT / "hermes-obsidian-governed-ingest-orchestrator/scripts/watch_ingest_workflow.py"
+        orchestration.SKILL / "scripts/watch_ingest_workflow.py"
     )
     assert handoff.locks[0][0] == handoff.vault / (
         "_system/ledgers/ingest-workflows/.watch-locks/ingest-resume-handoff.lock"
