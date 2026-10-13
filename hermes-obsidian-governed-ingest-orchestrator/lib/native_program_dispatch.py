@@ -24,7 +24,7 @@ def dispatch_programs(adapter, workflow_id):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kc, kanban_db_dispatch as kd, kanban_db_workspace as kw
     from hermes_cli.profiles import profile_exists
     value = adapter.workflow.status(workflow_id)
-    if value['cancel_requested'] or adapter.workflow.pending_pause(value):
+    if value['cancel_requested']:
         return []
     # A profile with this name would allow Gateway to launch a model instead.
     if profile_exists(ASSIGNEE):
@@ -35,6 +35,14 @@ def dispatch_programs(adapter, workflow_id):
     spawned = []
     with contextlib.closing(kc.connect(board=board)) as conn:
         kd.reap_worker_zombies()
+        # Native termination and trusted completion acknowledgement precede
+        # capacity selection. This only reconciles existing bound Pass cards;
+        # it does not build a new graph or grant authority from an old tick.
+        adapter.reconcile_pass_workers(workflow_id)
+        value = adapter.workflow.status(workflow_id)
+        if (value['cancel_requested'] or adapter.workflow.pending_pause(value)
+                or value['kanban']['board_id'] != board):
+            return []
         cap = kd.resolve_max_in_progress(kd.configured_max_in_progress())
         pressure = kd._memory_pressure_level()
         with span('capacity_snapshot'):
@@ -79,8 +87,12 @@ def dispatch_programs(adapter, workflow_id):
             try:
                 admission_check(adapter, request)
             except ContractError as exc:
-                if exc.code in ('WORKFLOW_PAUSED', 'WORKFLOW_STOPPED', 'PASS_ADMISSION_WAIT'):
+                if exc.code in ('WORKFLOW_PAUSED', 'WORKFLOW_STOPPED'):
                     return spawned
+                if exc.code in ('EXECUTION_BLOCKED', 'PASS_ADMISSION_WAIT'):
+                    # A held/failed binding cannot obstruct unrelated ready
+                    # cards. Their live capacity and admission are still checked.
+                    continue
                 if exc.code == 'STALE_INPUT':
                     from ingest_kanban import desired_graph
                     latest = adapter.workflow.status(workflow_id)

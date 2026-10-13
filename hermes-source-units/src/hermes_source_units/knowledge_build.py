@@ -1638,17 +1638,43 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                   "empty_reason", "actor")
         return all(left.get(field) == right.get(field) for field in fields)
 
+    def prepare_pass(self, request: Mapping[str, Any], *, batch_id: str,
+                     template_hash: str, pass_revision=None) -> dict[str, Any]:
+        """Validate one immutable draft before acquiring its shared commit locks.
+
+        The result is invocation-local and valid only inside the same reading
+        snapshot. Mutable task, sequence, lease and workflow authority remain
+        checked by the normal commit path.
+        """
+        if self.source._read_snapshot is None or not self.source._read_snapshot.get('verify_hashes'):
+            _fail('INVALID_STATE', 'Pass preparation requires an active byte-verified reading snapshot')
+        return self.record_pass(request, batch_id=batch_id, template_hash=template_hash,
+                                validate_only=True, _prepare_only=True,
+                                _preparation_revision=pass_revision)['_prepared']
+
     def record_pass(self, request: Mapping[str, Any], *, batch_id: str | None = None,
                     template_hash: str | None = None, validate_only: bool = False,
-                    pre_commit_check=None, submission_audit=None) -> dict[str, Any]:
+                    pre_commit_check=None, submission_audit=None, _prepared=None,
+                    _prepare_only=False, _preparation_revision=None) -> dict[str, Any]:
         task_id, actor = str(request["task_id"]), str(request["actor"])
         task = self._task(task_id)
         expected_revision = int(request["expected_revision"])
         package_id = str(request["reading_package_id"])
-        package_path = _vault_path(self.vault, f"{BUILD_ROOT}/task-{task_id}/readings/{package_id}.json")
-        package = _load_json(package_path)
-        validate_record("reading_package", package)
-        package_fingerprint = self._reading_package_fingerprint(package, package_id)
+        package_path = self.source.track_reading_file(f"{BUILD_ROOT}/task-{task_id}/readings/{package_id}.json")
+        if _prepared is not None:
+            if (self.source._read_snapshot is None
+                    or _prepared['snapshot'] is not self.source._read_snapshot
+                    or _prepared['request_digest'] != fingerprint(request)
+                    or _prepared['batch_id'] != batch_id
+                    or _prepared['template_hash'] != template_hash):
+                _fail('STALE_INPUT', 'Pass preparation differs from this commit invocation')
+            self.source.assert_reading_snapshot_current()
+            package = _prepared['package']
+            package_fingerprint = _prepared['package_fingerprint']
+        else:
+            package = _load_json(package_path)
+            validate_record("reading_package", package)
+            package_fingerprint = self._reading_package_fingerprint(package, package_id)
         window = package["window"]
         if window["core_refs"] != task["target_refs"]:
             _fail("STALE_INPUT", "reading window does not belong to the current task")
@@ -1660,14 +1686,19 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 "empty_reason": str(request.get("empty_reason", "")), "actor": actor}
         from .workflow_guard import _ACTIVE
         context = _ACTIVE.get()
-        revision = context.get('pass_revision') if context else None
+        revision = (_preparation_revision if _prepare_only else
+                    context.get('pass_revision') if context else None)
+        revision_fingerprint = fingerprint(revision) if revision else None
+        if _prepared is not None and _prepared['revision_fingerprint'] != revision_fingerprint:
+            _fail('STALE_INPUT', 'authorized Pass revision changed during preparation')
         if revision:
             target = next((item for item in revision['tasks'] if item['task_id'] == task_id), None)
             if (target is None or body['sequence'] != target['sequence'] or body['pass_kind'] != 'citation'
                     or package_id != target['reading_package_id']):
                 _fail('ACCESS_DENIED', 'revision permits only the selected next citation and original bounded package')
             body.update(revision_id=revision['revision_id'], supersedes_pass_id=target['pass_id'])
-            prior = _load_json(_vault_path(self.vault, target['pass_ref']))
+            prior_path = self.source.track_reading_file(target['pass_ref'])
+            prior = _load_json(prior_path)
             validate_record('knowledge_pass', prior)
             if prior['pass_id'] != target['pass_id'] or prior['sequence'] != body['sequence'] - 1:
                 _fail('STALE_INPUT', 'revision predecessor changed')
@@ -1702,14 +1733,31 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                                     and self._same_pass_payload(existing, body)):
                 if pre_commit_check:
                     pre_commit_check()
-                return {"ok": True, "created": False, "pass": existing, "task": task,
+                self.source.assert_reading_snapshot_current()
+                result = {"ok": True, "created": False, "pass": existing, "task": task,
                         "idempotency_key": body.get("idempotency_key"),
                         "path": existing_path.relative_to(self.vault).as_posix()}
+                if _prepare_only:
+                    # Replay precedes task CAS, but its live source/governance
+                    # authority must still be captured for the later locked check.
+                    from .reading_dependencies import required_reading
+                    required_reading(self.source, package)
+                    refs = [*task['target_refs'], *[i['source_ref'] for i in body['inspections']],
+                            *[r for c in body['candidates'] for r in c['support_refs']]]
+                    self._live_units(refs, actor, package['document_registry_revision'])
+                    result['_prepared'] = {
+                        'snapshot': self.source._read_snapshot, 'request_digest': fingerprint(request),
+                        'batch_id': batch_id, 'template_hash': template_hash,
+                        'package': package, 'package_fingerprint': package_fingerprint,
+                        'revision_fingerprint': revision_fingerprint, 'replay_only': True}
+                return result
             if (body.get("idempotency_key") is not None
                     and existing.get("idempotency_key") == body["idempotency_key"]):
                 _fail("IDEMPOTENCY_CONFLICT",
                       "same Pass idempotency key has different content", "$.idempotency_key")
             _fail("DUPLICATE", "pass sequence already contains different content", "$.sequence")
+        if _prepared is not None and _prepared.get('replay_only'):
+            _fail('STALE_INPUT', 'prepared replay no longer has its durable Pass')
         if task["revision"] != expected_revision:
             _fail("STALE_INPUT", "task revision changed", "$.expected_revision")
         if task["status"] != "running" or task["actor"] != actor:
@@ -1729,7 +1777,10 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         if body["sequence"] > 0 and body["pass_kind"] != "citation":
             _fail("INVALID_PASS", "Pass 1..N must be citation passes", "$.pass_kind")
         from .reading_dependencies import required_reading
-        _,supplement=required_reading(self.source,package)
+        if _prepared is None:
+            _,supplement=required_reading(self.source,package)
+        else:
+            supplement = _prepared['supplement']
         available = window["core_refs"] + window["context_refs"] + supplement['required_refs']
         if any(not any(_covers(i['source_ref'],ref) for i in body['inspections']) for ref in supplement['required_refs']):
             _fail('INCOMPLETE_COVERAGE','required reading dependency has not been inspected; retain original evidence')
@@ -1738,18 +1789,28 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 _fail("OUTSIDE_READING_PACKAGE", "inspection is not in the reading package", "$.inspections")
         refs = [*task["target_refs"], *[i["source_ref"] for i in body["inspections"]],
                 *[r for c in body["candidates"] for r in c["support_refs"]]]
-        units = self._live_units(refs, actor, package["document_registry_revision"])
+        units = (self._live_units(refs, actor, package["document_registry_revision"])
+                 if _prepared is None else _prepared['units'])
         validate_references("knowledge_pass", body, units)
         for candidate in body['candidates']:
             for ref in candidate['support_refs']:
                 if not any(_covers(item, ref) for item in available):
                     _fail('OUTSIDE_READING_PACKAGE', 'candidate support is outside bounded materials')
         if validate_only:
-            return {"ok": True, "created": False, "validated": True, "pass": body,
+            result = {"ok": True, "created": False, "validated": True, "pass": body,
                     "task": task, "idempotency_key": body.get("idempotency_key"),
                     "path": path.relative_to(self.vault).as_posix()}
+            if _prepare_only:
+                result['_prepared'] = {
+                    'snapshot': self.source._read_snapshot, 'request_digest': fingerprint(request),
+                    'batch_id': batch_id, 'template_hash': template_hash,
+                    'package': package, 'package_fingerprint': package_fingerprint,
+                    'revision_fingerprint': revision_fingerprint, 'replay_only': False,
+                    'supplement': supplement, 'units': units}
+            return result
         if pre_commit_check:
             pre_commit_check()
+        self.source.assert_reading_snapshot_current()
         preflight_ref = None
         if submission_audit is not None:
             evidence = {'contract': 'hermes-bound-pass-preflight/v1',
@@ -1775,7 +1836,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 "path": path.relative_to(self.vault).as_posix()}
 
     def record_pass_batch(self, request: Mapping[str, Any], *, lock_timeout: float = 0,
-                          lock_check=None, validate_only: bool = False, submission_audit=None) -> dict[str, Any]:
+                          lock_check=None, validate_only: bool = False, submission_audit=None,
+                          prepared_passes=None) -> dict[str, Any]:
         """Persist model-produced Pass records for a batch with per-task recovery."""
         self.source.enable_session_cache()
         batch_id = str(request["batch_id"])
@@ -1814,6 +1876,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                         validate_only=validate_only,
                         pre_commit_check=lock_check,
                         submission_audit=submission_audit,
+                        _prepared=(prepared_passes.get(task_id) if prepared_passes is not None else None),
                         template_hash=(selected["template_hash"] if selected is not None
                                        else str(requested_template or _pass_template_hash())))
                     results.append({"task_id": task_id, "created": recorded["created"],

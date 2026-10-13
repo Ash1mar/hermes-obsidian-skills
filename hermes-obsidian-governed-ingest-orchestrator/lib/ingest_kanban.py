@@ -311,6 +311,10 @@ class KanbanCLI:
             self._projection_snapshots[task_id] = result
         return result
 
+    def task_snapshot_fresh(self, slug: str, task_id: str) -> dict[str, Any]:
+        """Read a native grant at the mutation boundary, outside projections."""
+        return json.loads(self.command('kanban','--board',slug,'show',task_id,'--json'))
+
     def task_states(self, slug: str) -> dict[str, str]:
         result = json.loads(self.command('kanban', '--board', slug, 'list', '--json'))
         rows = result.get('tasks', []) if isinstance(result, dict) else result
@@ -700,6 +704,127 @@ class IngestKanbanAdapter:
             self.workflow.knowledge.slice_fail({'batch_id':value['batch_id'],'slice_id':leased['slice_id'],
                 'worker_id':leased['lease']['worker_id'],'expected_revision':leased['revision'],
                 'code':'NATIVE_WORKER_STOPPED','message':'Trusted native termination; retain partial results and require supported recovery'})
+
+    @measured('pass_refill', lambda self, workflow_id: {'vault':self.workflow.vault,'workflow_id':workflow_id})
+    def reconcile_pass_workers(self, workflow_id):
+        """Settle current leaf Pass cards before the normal graph projection."""
+        if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
+            _fail('ACCESS_DENIED','Pass reconciliation requires a trusted operator')
+        lock=_vault_path(self.workflow.vault,
+            f'_system/ledgers/ingest-workflows/.dispatch-locks/{workflow_id}.lock')
+        with _exclusive_lock(lock):
+            value=self.workflow.status(workflow_id)
+            if (not self.enable_workers or value['cancel_requested'] or not value['batch_id']
+                    or value['current_stage']!='analyzing' or not value['scope'].get('pause_after')
+                    or not value['kanban']['board_id'] or not hasattr(self.kanban,'task_states')):
+                return
+            self.workflow.assert_execution_ready(value)
+            board=value['kanban']['board_id']
+            with self.workflow.execution_projection(), self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
+                states=self.kanban.task_states(board)
+                slices={s['slice_id']:s for s in self.workflow.knowledge._slices(value['batch_id'])}
+                value=self.workflow.latch_pause(self._mutation(value))
+                for card in value['kanban']['task_map']:
+                    sid=card['node'].partition(':')[2]
+                    if (not card['node'].startswith('pass-slice:') or sid not in slices
+                            or slices[sid]['state']!='completed' or states.get(card['task_id'])!='running'):
+                        continue
+                    with span('pass_completion_projection',target_task_id=card['task_id']):
+                        snapshot=self.kanban.task_snapshot(board,card['task_id'])
+                        if snapshot.get('children'):
+                            continue  # A full projection owns dependent guards.
+                        _,path=self._current_pass_card(value,card,slices[sid],snapshot)
+                        progress=path.with_suffix('.execution.json')
+                        if not progress.is_file():
+                            continue
+                        receipt=_load_json(progress)
+                        native=snapshot['task']
+                        if (receipt.get('state')!='completed' or not receipt.get('result',{}).get('ok')
+                                or receipt.get('run_id')!=native.get('current_run_id')
+                                or not native.get('worker_pid') or not native.get('claim_lock')
+                                or receipt.get('grant')!={'claim_lock':native.get('claim_lock'),'worker_pid':native.get('worker_pid')}):
+                            continue
+                        # Native completion must not expose an unlatched pause.
+                        with _exclusive_lock(self.workflow._lock(workflow_id)):
+                            live=self.workflow.status(workflow_id)
+                            if live['cancel_requested'] or live['current_stage']!='analyzing':
+                                return
+                            boundary=self.workflow.pending_pause(live)
+                            if boundary and live.get('pause_control',{}).get('boundary')!=boundary:
+                                continue
+                            current=self.workflow.knowledge._slice(live['batch_id'],sid)
+                            fresh=(self.kanban.task_snapshot_fresh(board,card['task_id'])
+                                if hasattr(self.kanban,'task_snapshot_fresh') else self.kanban.task_snapshot(board,card['task_id']))
+                            actual=fresh['task']
+                            if (fresh.get('children') or actual.get('status')!='running'
+                                    or receipt['run_id']!=actual.get('current_run_id')
+                                    or receipt['grant']!={'claim_lock':actual.get('claim_lock'),'worker_pid':actual.get('worker_pid')}):
+                                continue
+                            self._current_pass_card(live,card,current,fresh)
+                            if domain_completed(self.workflow,live,pass_node(live,current)):
+                                self.kanban.complete(board,card['task_id'],'Authoritative Vault Pass outcome already committed')
+                value=self.workflow.status(workflow_id)
+                if value['cancel_requested'] or self.workflow.pending_pause(value):
+                    return
+                with span('ended_pass_settlement'):
+                    self._settle_ended_pass_leases(value)
+                value=self.workflow.status(workflow_id)
+                if value['cancel_requested'] or self.workflow.pending_pause(value):
+                    return
+                batch=self.workflow.knowledge._batch(value['batch_id'])
+                cooldown=batch.get('cooldown_until')
+                if batch.get('cancel_requested') or (cooldown and datetime.fromisoformat(cooldown.replace('Z','+00:00'))>datetime.now(timezone.utc)):
+                    return
+                states=self.kanban.task_states(board)
+                slices={s['slice_id']:s for s in self.workflow.knowledge._slices(value['batch_id'])}
+                occupied={'pass-slice:'+s['slice_id'] for s in slices.values() if s['lease']['worker_id']}
+                occupied.update(c['node'] for c in value['kanban']['task_map']
+                    if c['node'].startswith('pass-slice:') and states.get(c['task_id'])=='running')
+                slots=max(0,batch['slice_config']['pass_worker_concurrency']-len(occupied))
+                for card in value['kanban']['task_map']:
+                    if not slots:
+                        break
+                    sid=card['node'].partition(':')[2]
+                    item=slices.get(sid)
+                    if (not card['node'].startswith('pass-slice:') or not item or item['state']!='ready'
+                            or states.get(card['task_id']) not in ('ready','blocked')):
+                        continue
+                    node=pass_node(value,item)
+                    if not self._canary_allows(value,node) or self._failed_card(workflow_id,node):
+                        continue
+                    snapshot=self.kanban.task_snapshot(board,card['task_id'])
+                    if snapshot.get('children'):
+                        continue
+                    self._current_pass_card(value,card,item,snapshot)
+                    # Native admission still verifies current bytes and ACL.
+                    self._slice_worker(workflow_id,card['node'],card['task_id'],verify_inputs=False)
+                    self.kanban.unblock(board,card['task_id'])
+                    slots-=1
+
+    def _current_pass_card(self, value, card, item, snapshot):
+        from program_worker import canonical_binding
+        node=pass_node(value,item)
+        native=snapshot['task']
+        path=_vault_path(self.workflow.vault,
+            f"_system/ledgers/ingest-workflows/{value['workflow_id']}/bindings/{fingerprint(card['idempotency_key'])}.json")
+        body=json.loads(native['body'])
+        expected={'workflow_id':value['workflow_id'],'node':node.name,'vault':str(self.workflow.vault),
+            'input_fingerprint':node.input_fingerprint,'worker_binding':str(path),
+            'slice_template_hash':item['template_hash'],'executor':'semantic-v1'}
+        if (native.get('id')!=card['task_id'] or native.get('created_by')!='ingest-workflow'
+                or native.get('assignee')!=PROGRAM_ASSIGNEE
+                or native.get('idempotency_key')!=card['idempotency_key']
+                or card['idempotency_key']!=f"ingest:{value['workflow_id']}:pass-slice:{node.input_fingerprint}"
+                or any(body.get(k)!=v for k,v in expected.items())):
+            _fail('STALE_INPUT','native Pass card differs from its current canonical binding')
+        request,live=canonical_binding(self,path,executor='semantic-v1')
+        grant={'workflow_id':value['workflow_id'],'task_id':card['task_id'],'node':node.name,
+            'actor':live['actor'],'worker_id':'ingest-worker-'+card['task_id'],
+            'input_fingerprint':node.input_fingerprint,'template_hash':item['template_hash']}
+        if (any(request.get(k)!=v for k,v in grant.items())
+                or live['kanban']['board_id']!=value['kanban']['board_id']):
+            _fail('STALE_INPUT','Pass canonical grant differs from its card')
+        return request,path
 
     @staticmethod
     def validate_worker_request(request: Mapping[str, Any], *, beginning: bool = False) -> None:

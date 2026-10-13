@@ -177,3 +177,29 @@ parsing, previously unmeasured Gateway/config CLI probes, resume handoff and
 watcher launch. Compare resume-to-first-request and completion-to-next-claim
 separately from model latency. This is first-round completion, not fifth-round
 prefix optimization or a new monitoring/scheduling layer.
+
+## Round-one submission and refill follow-up (2026-10-13)
+
+Keep the ten-second worker lock deadline. Prepare one Pass outside the shared
+commit locks, using an operation-local reading snapshot that verifies canonical
+paths and current byte hashes. Recheck the current task, sequence, idempotency,
+lease, actor, templates, pause and cancellation under the existing write guards
+before persistence. Required material inspection and support coverage remain
+mandatory. Commit each Pass separately and preserve successful partial receipts.
+No permission decision, prepared draft or evidence cache survives this operation.
+
+The watcher first hands existing bindings to the same native CLI, then performs
+its normal full sync. Before measuring capacity, the CLI reaps ended native runs
+and performs a bounded Pass projection: latch a reached pause, acknowledge a
+completed leaf card against its canonical binding and fresh native run/claim/PID,
+settle only an exactly ended matching lease, then open existing ready bindings.
+Native admission still checks current inputs and capacity 2 before claiming.
+Do not create plans or cards, change identities, retry a failed binding or advance
+a stage in this projection. Non-leaf cards and historical receipts lacking a
+native grant use the normal full projection. Failed worker cleanup sends its wake
+hint last; the trusted native reap remains responsible for recording termination.
+
+Observe pass_validation, pass_commit, atomic_pass, pass_refill and native completion
+separately. Lock-hold evidence differs from submission time, which includes wait.
+Compare completion/termination to the next native claim; signal delivery alone
+does not prove timely refill. Keep original results, fixed budgets and pauses.

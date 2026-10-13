@@ -110,6 +110,7 @@ def test_native_capacity_snapshot_counts_claims_and_leases_once(monkeypatch, tmp
     value={'cancel_requested':False,'batch_id':'batch','kanban':{'board_id':'board','task_map':cards}}
     adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,status=lambda _:value,
         pending_pause=lambda _:False,knowledge=leased))
+    adapter.reconcile_pass_workers=lambda _:None
     tasks=[SimpleNamespace(id=f't{i}',status='running' if i<=2 else 'ready',assignee='ingest-program') for i in range(1,5)]
     reads=[]
     kb=SimpleNamespace(list_tasks=lambda _:reads.append('list') or tasks,
