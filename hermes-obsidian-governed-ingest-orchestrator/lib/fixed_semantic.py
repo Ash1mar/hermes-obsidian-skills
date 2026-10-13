@@ -21,7 +21,7 @@ from fixed_semantic_schema import schema, validate, slot_schema, slot_results, s
 from hermes_source_units.semantic_budget import PHASE_BALANCED_POLICY, budget_policy_pin
 import fixed_reduce
 import fixed_review
-from fixed_semantic_media import image_catalog, select_images, images_fit, message_content, normalize_content, require_images_fit
+from fixed_semantic_media import image_catalog, select_images, images_fit, image_usage, message_content, normalize_content, require_images_fit
 
 RULES = {
     'candidate':'Each task object defines an independent assignment through its materials and their core/context roles. Extract source-grounded facts, requirements and procedures from its core, grouping only statements with compatible conditions and scope. Inspect every core material; use context to interpret it, not to expand the assignment. Preserve exact facts, AND/OR, units, applicability, conditions and exceptions. Report uncertainty from QA and limits; omitted context is not evidence. Unread linked assets do not authorize invented facts. Shared text/QA handles are not citation targets. Use only assigned tN and authorized mN refs. Empty candidates need an actual empty_reason.',
@@ -490,12 +490,16 @@ def group_usage(packet,tasks,phase,limit,images,policy):
     codepoints=len(json.dumps(prompt,ensure_ascii=False,separators=(',',':')))+len(json.dumps(strict_schema(_stable_objects(output_schema)),ensure_ascii=False,separators=(',',':')))
     reserve=correction_reserve(len(tasks),policy)
     output=estimate_pass_output_tokens(packet,tasks,phase,policy)
+    measured_images=image_usage(selected)
     reasons=[]
     if codepoints+reserve>limit:reasons.append('input_with_correction_reserve')
     if output>policy['output_tokens']-policy['output_reserve']:reasons.append('output_estimate')
     if images is not None and not images_fit(selected):reasons.append('whole_image_budget')
     return {'input_codepoints':codepoints,'correction_reserve_codepoints':reserve,
-        'estimated_output_tokens':output,'image_count':len(selected),'blocking_reasons':reasons}
+        'estimated_output_tokens':output,'image_count':measured_images['image_count'],
+        'image_bytes':measured_images['image_bytes'],'largest_image_bytes':measured_images['largest_image_bytes'],
+        'image_max_count':measured_images['max_images'],'image_max_bytes':measured_images['max_bytes'],
+        'blocking_reasons':reasons}
 
 
 def phase_balanced_groups(packet,tasks,phase,limit,images,policy):
@@ -528,6 +532,35 @@ def phase_balanced_groups(packet,tasks,phase,limit,images,policy):
         records.append({**usage[start,end],'tasks':[t['task'] for t in tasks[start:end]],
             'boundary_reasons':reasons or ['balanced_contiguous_partition']})
     return groups,records
+
+
+def build_group_plan(packet,tasks,phase,limit,images,policy,*,pinned):
+    """Plan intact task groups and retain a complete record even when blocked."""
+    try:
+        groups,records=phase_balanced_groups(packet,tasks,phase,limit,images,policy)
+        state='ready';error=None
+    except ContractError as exc:
+        # Persist every whole task and its measured blockers before stopping.
+        # Siblings that would fit are explicitly held, never silently omitted.
+        groups=[];records=[];state='blocked';error={'code':exc.code,'message':str(exc)}
+        for task in tasks:
+            usage=group_usage(packet,[task],phase,limit,images,policy)
+            records.append({**usage,'tasks':[task['task']],
+                'status':'blocked' if usage['blocking_reasons'] else 'held_due_to_sibling_blocker'})
+    plan={'policy':budget_policy_pin(),'policy_pinned_by_batch':bool(pinned),
+        'groups':records,'input_limit_codepoints':limit,
+        'output_limit_tokens':OUTPUT_TOKENS,'output_reserve_tokens':OUTPUT_RESERVE,
+        'state':state}
+    if error:plan['error']=error
+    return groups,plan
+
+
+def persist_group_plan(vault,binding,phase,plan):
+    """Write the auditable group membership/blocker record before any call."""
+    record={**plan,'workflow_id':binding['workflow_id'],'node':binding['node'],'phase':phase}
+    ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-grouping/{fingerprint(record)}.json"
+    _write_atomic(_vault_path(Path(vault),ref),_json_bytes(record))
+    return ref
 
 
 def pass_groups(packet,tasks,phase,limit,images=None,*,policy=None):
@@ -638,12 +671,10 @@ def run_pass(adapter,binding,caller):
         # Fit the actual phase payload, including its schema, rather than repeat
         # complete packets or silently shrink any individual reading window.
         if policy:
-            groups,records=phase_balanced_groups(packet,pending,phase,limit,images,policy)
-            plan={'workflow_id':binding['workflow_id'],'node':binding['node'],'phase':phase,
-                'policy':budget_policy_pin(),'groups':records,'input_limit_codepoints':limit,
-                'output_limit_tokens':OUTPUT_TOKENS,'output_reserve_tokens':OUTPUT_RESERVE}
-            ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-grouping/{fingerprint(plan)}.json"
-            _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(plan))
+            groups,plan=build_group_plan(packet,pending,phase,limit,images,policy,pinned=True)
+            persist_group_plan(adapter.workflow.vault,binding,phase,plan)
+            if plan['state']=='blocked':
+                raise ContractError(plan['error']['code'],'$',plan['error']['message'])
         else:
             groups=pass_groups(packet,pending,phase,limit,images)
         for tasks in groups:

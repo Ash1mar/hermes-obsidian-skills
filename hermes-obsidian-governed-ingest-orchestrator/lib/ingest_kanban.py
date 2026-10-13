@@ -348,8 +348,18 @@ class KanbanCLI:
             self._refresh_projection(slug)
 
     def wait(self, slug: str, task_id: str, state: str, reason: str) -> None:
-        if self.task_status(slug, task_id) in (state, "done", "archived"):
+        row = (self._projection_rows.get(task_id) if self._projection_board == slug else None)
+        if row is None:
+            row = self.task_snapshot(slug, task_id)['task']
+        # Program-owned holds are not a human unblock/re-block loop. Native
+        # block can route its second recurrence to triage and open decomposition.
+        # Scheduled preserves the binding and waits for our explicit unblock.
+        if state == 'blocked' and row.get('assignee') == PROGRAM_ASSIGNEE:
+            state = 'scheduled'
+        if row['status'] in (state, "done", "archived"):
             return
+        if row['status'] == 'triage':
+            _fail('NATIVE_ROUTING_CONFLICT', 'triage card requires trusted isolation recovery')
         operation = "schedule" if state == "scheduled" else "block"
         self.command("kanban", "--board", slug, operation, task_id, reason)
         self._refresh_projection(slug)
@@ -677,7 +687,7 @@ class IngestKanbanAdapter:
                 continue
             snapshot=self.kanban.task_snapshot(value['kanban']['board_id'],card['task_id'])
             task=snapshot['task']
-            if (task.get('id')!=card['task_id'] or task.get('status') not in ('archived','blocked','done')
+            if (task.get('id')!=card['task_id'] or task.get('status') not in ('archived','blocked','scheduled','done')
                     or task.get('worker_pid') or any(not r.get('ended_at') for r in snapshot.get('runs',[]))):
                 continue
             body=json.loads(task['body'])
@@ -934,7 +944,7 @@ class IngestKanbanAdapter:
             with self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
                 for item in value["kanban"]["task_map"]:
                     if "task_id" in item:
-                        self.kanban.wait(board, item["task_id"], "blocked", "Vault workflow cancelled")
+                        self.kanban.wait(board, item["task_id"], "scheduled", "Vault workflow cancelled")
         return {"workflow_id": value["workflow_id"], "state": "cancelled",
                 "background_dispatch": False, "revision": value["revision"]}
 
@@ -960,13 +970,13 @@ class IngestKanbanAdapter:
             value = self.workflow.status(wid)
             if hasattr(self.kanban, 'task_states') and value['kanban']['board_id']:
                 states = self.kanban.task_states(value['kanban']['board_id'])
-                if any(states.get(c.get('task_id')) in ('running','ready','scheduled','todo')
+                if any(states.get(c.get('task_id')) in ('running','ready','triage','todo')
                        for c in value['kanban']['task_map']):
                     _fail('WORKER_ACTIVE', 'native consumers must stop before execution amendment')
             if hasattr(self.kanban, 'task_snapshot') and value['kanban']['board_id']:
                 for card in value['kanban']['task_map']:
                     snapshot = self.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
-                    if snapshot.get('task', {}).get('status') in ('running','ready','scheduled','todo'):
+                    if snapshot.get('task', {}).get('status') in ('running','ready','triage','todo'):
                         _fail('WORKER_ACTIVE', 'native card remains dispatchable before execution amendment')
                     if any(run.get('status') == 'running' for run in snapshot.get('runs', [])):
                         _fail('WORKER_ACTIVE', 'native run must finish before execution amendment')
