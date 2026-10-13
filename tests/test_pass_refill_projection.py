@@ -250,10 +250,12 @@ def test_fresh_native_grant_change_prevents_completion_ack(projection, monkeypat
     assert 'ack:t1' not in projection.events
 
 
-@pytest.mark.parametrize('case', ['native-id', 'native-body', 'binding-template', 'binding-worker', 'binding-input'])
+@pytest.mark.parametrize('case', ['native-id', 'canonical-key', 'native-body', 'binding-template', 'binding-worker', 'binding-input'])
 def test_foreign_or_stale_current_card_cannot_be_unblocked(projection, case):
     if case == 'native-id':
         projection.native['t3']['id'] = 'foreign'
+    elif case == 'canonical-key':
+        projection.value['kanban']['task_map'][2]['idempotency_key'] = 'foreign'
     elif case == 'native-body':
         body = json.loads(projection.native['t3']['body'])
         body['input_fingerprint'] = 'sha256:' + '0' * 64
@@ -268,3 +270,16 @@ def test_foreign_or_stale_current_card_cannot_be_unblocked(projection, case):
     with pytest.raises(ContractError, match='STALE_INPUT'):
         run(projection)
     assert 'unblock:t3' not in projection.events
+
+
+@pytest.mark.parametrize('key', ['omitted', None])
+def test_public_native_snapshot_without_private_key_keeps_canonical_grant(projection, key):
+    # Real Kanban show JSON omits the private database idempotency key.
+    for native in projection.native.values():
+        if key == 'omitted':
+            native.pop('idempotency_key')
+        else:
+            native['idempotency_key'] = None
+    run(projection)
+    assert 'ack:t1' in projection.events
+    assert 'unblock:t3' in projection.events
