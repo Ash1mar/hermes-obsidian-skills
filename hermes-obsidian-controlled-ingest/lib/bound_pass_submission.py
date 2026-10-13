@@ -3,13 +3,14 @@ from hermes_source_units import ContractError, FileKnowledgeBuildService
 from hermes_source_units.model_projection import RENDERER
 from hermes_source_units.semantic_submission import validate_submission
 from hermes_source_units.source_units import _vault_path, _write_atomic, _json_bytes
-from hermes_source_units.validation import fingerprint
+from hermes_source_units.validation import fingerprint, record_validation_scope
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard, WORKER_LOCK_TIMEOUT
 from ingest_kanban import IngestKanbanAdapter, semantic_template
 from hermes_source_units.runtime_telemetry import measured, span
 
 
 @measured('submission', lambda vault, binding, request, **kwargs: {'vault':vault,'binding':binding})
+@record_validation_scope()
 def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
     # Shape failures happen before lease renewal, guard entry or any domain write.
     validate_submission(request, confirmation=confirmation)
@@ -48,38 +49,39 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
     # Passes already have individual durable preflights and partial recovery.
     # Hold cancellation serialization for one atomic Pass, not the whole group.
     for index,item in enumerate(expanded['passes']):
-        try:
-            live=adapter.worker_check(binding,verify_inputs=False)
-            if live!=checked:
-                raise ContractError('STALE_INPUT','$','bound slice changed after read-only expansion')
-            with service.source.reading_snapshot(verify_hashes=True):
-                current = adapter.workflow.status(binding['workflow_id'])
-                revision = (current.get('pass_revision')
-                            if adapter.workflow.revision_allows(current, binding['node']) else None)
-                with span('pass_validation', task_id=item['task_id']):
-                    prepared = service.prepare_pass(item, batch_id=checked['batch_id'],
-                        template_hash=binding['template_hash'], pass_revision=revision)
-                with span('atomic_pass', task_id=item['task_id']), worker_binding(binding), workflow_write_guard(vault,kinds=('pass-slice',),actor=binding['actor']):
-                    with span('pass_commit', task_id=item['task_id']):
-                        result=service.record_pass_batch({**expanded,'passes':[item],'slice_id':checked['slice_id'],
-                            'worker_id':binding['worker_id'],'template_hash':binding['template_hash']},
-                            lock_timeout=WORKER_LOCK_TIMEOUT,lock_check=lambda:adapter.worker_check(binding,verify_inputs=False),submission_audit=audit,
-                            prepared_passes={item['task_id']:prepared})
-                        failures.extend(result['failures'])
-                        for r in result['results']:
-                            root = _vault_path(service.vault, f'_system/knowledge-builds/task-{r["task_id"]}/passes')
-                            receipt = {**r, 'task': aliases[r['task_id']], 'next_sequence': len(list(root.glob('*.json'))),
-                                       'pass_kind': 'candidate' if r['sequence'] == 0 else 'citation',
-                                       'next_action': 'review_candidate' if r['sequence'] == 0 else 'pass_complete'}
-                            review=next((v for v in reviews if v['task_id']==r['task_id']),None)
-                            if review:
-                                evidence={'contract':'hermes-citation-confirmation/v1','binding':audit,
-                                          'review':review,'citation_pass_id':r['pass_id']}
-                                ref=f'_system/knowledge-builds/task-{r["task_id"]}/citation-reviews/{fingerprint(evidence)}.json'
-                                _write_atomic(_vault_path(service.vault,ref),_json_bytes(evidence))
-                                receipt['review_ref']=ref
-                            receipts.append(receipt)
-        except (ContractError,OSError,ValueError,TypeError,KeyError) as exc:
-            failures.extend(service._failure('pass',pending['task_id'],exc) for pending in expanded['passes'][index:])
-            break  # Changed authority/lock failure never retries a mutation.
+        with span('pass_total', task_id=item['task_id']):
+            try:
+                live=adapter.worker_check(binding,verify_inputs=False)
+                if live!=checked:
+                    raise ContractError('STALE_INPUT','$','bound slice changed after read-only expansion')
+                with service.source.reading_snapshot(verify_hashes=True):
+                    current = adapter.workflow.status(binding['workflow_id'])
+                    revision = (current.get('pass_revision')
+                                if adapter.workflow.revision_allows(current, binding['node']) else None)
+                    with span('pass_validation', task_id=item['task_id']):
+                        prepared = service.prepare_pass(item, batch_id=checked['batch_id'],
+                            template_hash=binding['template_hash'], pass_revision=revision)
+                    with span('atomic_pass', task_id=item['task_id']), worker_binding(binding), workflow_write_guard(vault,kinds=('pass-slice',),actor=binding['actor']):
+                        with span('pass_commit', task_id=item['task_id']):
+                            result=service.record_pass_batch({**expanded,'passes':[item],'slice_id':checked['slice_id'],
+                                'worker_id':binding['worker_id'],'template_hash':binding['template_hash']},
+                                lock_timeout=WORKER_LOCK_TIMEOUT,lock_check=lambda:adapter.worker_check(binding,verify_inputs=False),submission_audit=audit,
+                                prepared_passes={item['task_id']:prepared})
+                            failures.extend(result['failures'])
+                            for r in result['results']:
+                                root = _vault_path(service.vault, f'_system/knowledge-builds/task-{r["task_id"]}/passes')
+                                receipt = {**r, 'task': aliases[r['task_id']], 'next_sequence': len(list(root.glob('*.json'))),
+                                           'pass_kind': 'candidate' if r['sequence'] == 0 else 'citation',
+                                           'next_action': 'review_candidate' if r['sequence'] == 0 else 'pass_complete'}
+                                review=next((v for v in reviews if v['task_id']==r['task_id']),None)
+                                if review:
+                                    evidence={'contract':'hermes-citation-confirmation/v1','binding':audit,
+                                              'review':review,'citation_pass_id':r['pass_id']}
+                                    ref=f'_system/knowledge-builds/task-{r["task_id"]}/citation-reviews/{fingerprint(evidence)}.json'
+                                    _write_atomic(_vault_path(service.vault,ref),_json_bytes(evidence))
+                                    receipt['review_ref']=ref
+                                receipts.append(receipt)
+            except (ContractError,OSError,ValueError,TypeError,KeyError) as exc:
+                failures.extend(service._failure('pass',pending['task_id'],exc) for pending in expanded['passes'][index:])
+                break  # Changed authority/lock failure never retries a mutation.
     return {'ok':not failures,'validated':not failures,'results':receipts,'failures':failures}

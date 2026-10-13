@@ -92,8 +92,9 @@ def run(vault, binding):
         else:
             result = execute(adapter, binding)
         completed.set()
-        _write_atomic(progress, _json_bytes({'state':'completed' if result.get('ok') else 'blocked',
-            'executor':executor, 'run_id':run_id, 'grant':grant, 'result':result}))
+        with span('domain_completion_receipt',binding=request,domain_ok=bool(result.get('ok'))):
+            _write_atomic(progress, _json_bytes({'state':'completed' if result.get('ok') else 'blocked',
+                'executor':executor, 'run_id':run_id, 'grant':grant, 'result':result}))
         notify_reconciler(vault,request['workflow_id'])
         # The trusted reconciler acknowledges the durable result and holds
         # successors at pauses. Keep the native PID alive until it does so.

@@ -190,6 +190,9 @@ def test_watcher_refills_before_full_sync_and_retains_wake(monkeypatch, tmp_path
             events.append("clear")
             self.set = False
 
+        def is_set(self):
+            return self.set
+
         def wait(self, delay):
             events.append("wait")
             assert self.set, "wake received during sync must prevent sleep"
@@ -205,7 +208,8 @@ def test_watcher_refills_before_full_sync_and_retains_wake(monkeypatch, tmp_path
             reads.append(wid)
             return {"cancel_requested": len(reads) > 1, "state": "analyzing"}
 
-        def _sync_current(self, wid):
+        def _sync_current(self, wid, *, max_attempts, yield_requested):
+            assert max_attempts == 1 and not yield_requested()
             events.append("full-sync")
             wake.set = True
             return {"background_dispatch": post_dispatch, "program_dispatch": post_dispatch,

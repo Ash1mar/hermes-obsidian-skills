@@ -69,7 +69,14 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                             dispatch_ready_programs(vault,workflow_id)
                     except (ContractError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
                         print('Ready-card handoff deferred: ' + str(exc), flush=True)
-                    result = adapter._sync_current(workflow_id)
+                        if getattr(exc,'code',None)=='LOCK_BUSY' or 'LOCK_BUSY' in str(exc):
+                            # One busy atomic commit must not trigger a long full
+                            # scan. Return to fresh completion/refill after a tick.
+                            wake.wait(interval)
+                            continue
+                    if wake.is_set():
+                        continue
+                    result = adapter._sync_current(workflow_id,max_attempts=1,yield_requested=wake.is_set)
                 if (result.get("pause", {}).get("boundary")
                         and result["pause"].get("evidence_digest") and not result.get('background_dispatch')):
                     print("Workflow paused after " + result["pause"]["boundary"], flush=True)
@@ -87,9 +94,9 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                 delay = min(delay*2,max(interval,12)) if stamp==prior else interval
                 prior = stamp
             except ContractError as exc:
-                if exc.code not in ("KANBAN_UNAVAILABLE", "REVISION_CONFLICT", "LOCK_BUSY"):
+                if exc.code not in ("KANBAN_UNAVAILABLE", "REVISION_CONFLICT", "LOCK_BUSY", "RECONCILIATION_YIELD"):
                     raise
-                delay = interval
+                delay = 0 if exc.code=='RECONCILIATION_YIELD' else interval
             with span('reconciliation_wait',vault=vault,workflow_id=workflow_id,requested_seconds=delay):
                 wake.wait(delay)
 

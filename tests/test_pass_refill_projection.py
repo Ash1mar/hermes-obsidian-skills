@@ -143,6 +143,41 @@ def run(projection):
     projection.adapter.reconcile_pass_workers(projection.value['workflow_id'])
 
 
+def test_actual_public_fields_use_fresh_native_grant(projection, monkeypatch):
+    # Native _task_to_dict omits these fields in both running and done cards.
+    grants=copy.deepcopy(projection.native)
+    for snapshot in projection.snapshots.values():
+        for field in ('current_run_id','worker_pid','claim_lock','idempotency_key'):
+            snapshot['task'].pop(field,None)
+    reads=[]
+    def grant(board,tid):
+        reads.append(tid)
+        return copy.deepcopy(grants[tid])
+    monkeypatch.setattr(projection.adapter.kanban,'current_task_grant',grant,raising=False)
+    run(projection)
+    assert 'ack:t1' in projection.events and reads.count('t1')==2
+
+
+def test_public_native_private_identity_conflict_fails_closed(projection,monkeypatch):
+    grant=copy.deepcopy(projection.native['t1'])
+    grant['idempotency_key']='foreign'
+    monkeypatch.setattr(projection.adapter.kanban,'current_task_grant',lambda *a:grant,raising=False)
+    with pytest.raises(ContractError,match='STALE_INPUT'):
+        run(projection)
+    assert 'ack:t1' not in projection.events
+
+
+def test_native_api_grant_change_between_reads_prevents_ack(projection,monkeypatch):
+    grant=copy.deepcopy(projection.native['t1'])
+    count=[]
+    def read(*args):
+        count.append(1)
+        return {**grant,'worker_pid':999} if len(count)>1 else grant
+    monkeypatch.setattr(projection.adapter.kanban,'current_task_grant',read,raising=False)
+    run(projection)
+    assert 'ack:t1' not in projection.events and len(count)==2
+
+
 def test_completion_and_ended_lease_settlement_precede_fresh_refill(projection):
     run(projection)
     events = projection.events
