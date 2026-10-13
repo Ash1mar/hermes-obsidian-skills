@@ -10,6 +10,14 @@ from native_ingest import control_workflow, read_pass_input, worker_action, work
 from native_pass_identity import bind_payload, load_context, evidence_packet
 
 
+def isolated_control_adapter(monkeypatch, adapter):
+    import native_ingest
+    monkeypatch.setattr(native_ingest,'IngestKanbanAdapter',lambda _:adapter)
+    monkeypatch.setattr(adapter.kanban,'task_states',lambda board:{
+        tid:adapter.kanban.task_snapshot(board,tid)['task']['status']
+        for tid in adapter.kanban.by_id},raising=False)
+
+
 def test_presentation_preserves_text_once_and_task_boundaries():
     packet = {'contract':'bounded-model-packet/v1','texts':{'c1':'one\nshared quotation "x"'},
         'headings':[['H']], 'qa':{'q1':['review table']}, 'qa_rule':'actual restriction',
@@ -165,6 +173,7 @@ def test_native_begin_resolves_only_own_binding_and_saves_input(stopped,vault,mo
 
 def test_control_builds_current_request_and_replays_without_dispatch(stopped,vault,monkeypatch):
     adapter,value,amendment = stopped
+    isolated_control_adapter(monkeypatch,adapter)
     import orchestration
     calls = []
     def dispatch(vault_arg,action,request):
@@ -234,6 +243,7 @@ def test_cancel_waits_for_shared_lock_and_replays_only_its_transition(stopped, v
 def test_cancel_missing_receipt_finishes_same_frozen_request(stopped, vault, monkeypatch, after_transition):
     import orchestration
     adapter, value, _ = stopped
+    isolated_control_adapter(monkeypatch,adapter)
     current = adapter.workflow.resume(workflow_request(workflow_id=value['workflow_id'],
         actor=value['actor'], expected_revision=value['revision']))
     calls = []

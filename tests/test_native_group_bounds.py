@@ -129,6 +129,7 @@ class PassBoundsTests(unittest.TestCase):
             task.update({"next_sequence": 1, "continuation": {"action": "candidate_then_citation"}})
         cause = "EVIDENCE_REF_INVALID: c2 lacks its authorized page reference"
         model_calls = []
+        policies = []
         submission_calls = []
 
         class Knowledge:
@@ -148,6 +149,7 @@ class PassBoundsTests(unittest.TestCase):
         binding = {"workflow_id": "wf-test", "node": "pass-slice:test", "task_id": "kanban-test"}
 
         def fake_model_call(_adapter, _binding, phase, view, _caller, _limit, correction=None, **_kwargs):
+            policies.append(_kwargs.get('policy'))
             model_calls.append((phase, [task["task"] for task in view["tasks"]], correction))
             return {"drafts": [], "slot_failures": []}, "audit-ref"
 
@@ -181,6 +183,7 @@ class PassBoundsTests(unittest.TestCase):
                 result = fixed_semantic.run_pass(Adapter(), binding, object())
 
         self.assertTrue(result["domain_complete"])
+        self.assertTrue(policies and all(policy is None for policy in policies))
         self.assertEqual(submission_calls, [["t1", "t2"], ["t2"]])
         correction_calls = [call for call in model_calls if call[2] is not None]
         self.assertEqual(len(correction_calls), 1)

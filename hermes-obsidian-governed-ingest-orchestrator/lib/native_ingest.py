@@ -296,7 +296,11 @@ def control_workflow(vault, workflow_id, action, operation_id):
             if saved['intent'] != intent:
                 fail('IDEMPOTENCY_CONFLICT', 'operation_id already names another authorized intent')
             if result_path.exists():
-                return {**_load_json(result_path),'replayed':True}
+                result={**_load_json(result_path),'replayed':True}
+                if action=='cancel':
+                    from native_stop_inventory import verify_cancel_drain
+                    result['stop_verification']=verify_cancel_drain(IngestKanbanAdapter(vault),workflow_id)
+                return result
             if action != 'cancel':
                 fail('EXECUTION_UNCERTAIN', 'saved operation has no receipt; observe before recovery')
             request = saved['request']
@@ -314,8 +318,13 @@ def control_workflow(vault, workflow_id, action, operation_id):
             _write_atomic(request_path, _json_bytes({'intent':intent,'request':request}))
         from orchestration import dispatch
         result = dispatch(vault, action, request)
+        stop_verification=None
+        if action=='cancel':
+            from native_stop_inventory import verify_cancel_drain
+            stop_verification=verify_cancel_drain(IngestKanbanAdapter(vault),workflow_id)
         receipt = {'ok':True,'action':action,'operation_id':operation_id,
                    'request_ref':request_path.relative_to(service.vault).as_posix(),
                    'dispatch':result,'status':workflow_status(vault, workflow_id)}
+        if stop_verification is not None:receipt['stop_verification']=stop_verification
         _write_atomic(result_path, _json_bytes(receipt))
         return receipt

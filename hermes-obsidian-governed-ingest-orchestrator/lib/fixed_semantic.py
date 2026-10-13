@@ -662,10 +662,6 @@ def run_pass(adapter,binding,caller):
         if config['semantic_budget_policy']!=budget_policy_pin():
             raise ContractError('STALE_PLAN','$','semantic budget policy changed; supported execution amendment required')
         policy=PHASE_BALANCED_POLICY
-    # Even legacy slices without a stored policy pin use the exact request-size
-    # bound, a conservative response estimate/reserve, and a bounded correction
-    # allowance. The plan records whether this policy was pinned by the batch.
-    budget_policy=policy or PHASE_BALANCED_POLICY
     deferred=[]
     for phase in ('candidate','citation'):
         if phase=='citation':
@@ -674,10 +670,13 @@ def run_pass(adapter,binding,caller):
         pending=[t for t in packet['tasks'] if t['continuation']['action']==('candidate_then_citation' if phase=='candidate' else 'citation')]
         # Fit the actual phase payload, including its schema, rather than repeat
         # complete packets or silently shrink any individual reading window.
-        groups,plan=build_group_plan(packet,pending,phase,limit,images,budget_policy,pinned=policy is not None)
-        persist_group_plan(adapter.workflow.vault,binding,phase,plan)
-        if plan['state']=='blocked':
-            raise ContractError(plan['error']['code'],'$',plan['error']['message'])
+        if policy:
+            groups,plan=build_group_plan(packet,pending,phase,limit,images,policy,pinned=True)
+            persist_group_plan(adapter.workflow.vault,binding,phase,plan)
+            if plan['state']=='blocked':
+                raise ContractError(plan['error']['code'],'$',plan['error']['message'])
+        else:
+            groups=pass_groups(packet,pending,phase,limit,images)
         for tasks in groups:
             correction=None
             recovery_checked=False;attempt=0
@@ -697,7 +696,7 @@ def run_pass(adapter,binding,caller):
                         remaining=[t for t in tasks if t['task'] not in found]
                         draft['slot_failures']=[{'task':t['task'],'code':'INCOMPLETE_COVERAGE','message':'no reusable audited result; obtain remaining semantic work'} for t in remaining]
                     else:
-                        draft,call_ref=model_call(adapter,binding,phase,view,caller,limit,correction,policy=budget_policy)
+                        draft,call_ref=model_call(adapter,binding,phase,view,caller,limit,correction,policy=policy)
                     authored,confirmations,failures=prepare_pass_items(adapter,draft,packet,tasks,phase)
                     for action,key,payload in (('submit','passes',authored),('confirm','confirmations',confirmations)):
                         if not payload: continue
@@ -722,11 +721,13 @@ def run_pass(adapter,binding,caller):
                     if not failures: break
                     failed={f['task'] for f in failures}
                     tasks=[t for t in tasks if t['task'] in failed]
-                    correction={'failures':[{k:(bounded_correction_message(v,budget_policy) if k=='message' else v)
-                        for k,v in f.items() if k in ('task','code','message')} for f in failures]}
+                    correction={'failures':failures}
+                    if policy:
+                        correction={'failures':[{k:(bounded_correction_message(v,policy) if k=='message' else v)
+                            for k,v in f.items() if k in ('task','code','message')} for f in failures]}
                 except ContractError as exc:
                     if exc.code not in ('INVALID_SCHEMA','UNRESOLVED_REFERENCE','UNINSPECTED_SUPPORT','INCOMPLETE_COVERAGE'): raise
-                    correction={'code':exc.code,'message':bounded_correction_message(exc,budget_policy)}
+                    correction={'code':exc.code,'message':bounded_correction_message(exc,policy) if policy else str(exc)[:500]}
                 if recovered:
                     continue  # Mechanical replay consumes no semantic correction budget.
                 attempt+=1

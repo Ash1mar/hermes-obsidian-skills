@@ -348,8 +348,18 @@ class KanbanCLI:
             self._refresh_projection(slug)
 
     def wait(self, slug: str, task_id: str, state: str, reason: str) -> None:
-        if self.task_status(slug, task_id) in (state, "done", "archived"):
+        row = (self._projection_rows.get(task_id) if self._projection_board == slug else None)
+        if row is None:
+            row = self.task_snapshot(slug, task_id)['task']
+        # Program-owned holds are not a human unblock/re-block loop. Native
+        # block can route its second recurrence to triage and open decomposition.
+        # Scheduled preserves the binding and waits for our explicit unblock.
+        if state == 'blocked' and row.get('assignee') == PROGRAM_ASSIGNEE:
+            state = 'scheduled'
+        if row['status'] in (state, "done", "archived"):
             return
+        if row['status'] == 'triage':
+            _fail('NATIVE_ROUTING_CONFLICT', 'triage card requires trusted isolation recovery')
         operation = "schedule" if state == "scheduled" else "block"
         self.command("kanban", "--board", slug, operation, task_id, reason)
         self._refresh_projection(slug)
@@ -934,7 +944,7 @@ class IngestKanbanAdapter:
             with self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
                 for item in value["kanban"]["task_map"]:
                     if "task_id" in item:
-                        self.kanban.wait(board, item["task_id"], "blocked", "Vault workflow cancelled")
+                        self.kanban.wait(board, item["task_id"], "scheduled", "Vault workflow cancelled")
         return {"workflow_id": value["workflow_id"], "state": "cancelled",
                 "background_dispatch": False, "revision": value["revision"]}
 

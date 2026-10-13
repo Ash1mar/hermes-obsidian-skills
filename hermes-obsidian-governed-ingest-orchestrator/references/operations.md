@@ -24,11 +24,26 @@ All examples use `python3 "<skill-dir>/scripts/<script>.py" --vault "<vault>" <c
 | Resume | `dispatch_ingest_workflow.py resume` | Clears permitted stop, then resynchronizes projection |
 | Continue one reviewed pause | `dispatch_ingest_workflow.py continue-workflow` | Revalidates evidence, records explicit authorization and releases only this boundary |
 | Approve in manual mode | `manage_ingest_workflow.py approve` | Records named human checkpoint with approval digest |
-| Cancel | `dispatch_ingest_workflow.py cancel` | Persists cancellation and blocks projected cards |
+| Cancel | `dispatch_ingest_workflow.py cancel` | Persists cancellation and parks projected cards in scheduled until explicit resume |
 | Recover board | `manage_ingest_workflow.py rebuild-kanban`, then `dispatch_ingest_workflow.py sync` | Rebuilds projection from Vault |
 | Recover reconciler | `watch_ingest_workflow.py --workflow-id <id>` from a trusted non-worker terminal | Continues Kanban acknowledgement and successor dispatch from Vault outcomes |
 
 Before any mutation inspect current status and compute a fresh digest with `manage_ingest_workflow.py digest`. Gateway/dispatcher failure after start is a recoverable result: `workflow_created: true`, `state: dispatcher_unavailable`, `background_dispatch: false`. Do not fall back to a long conversational run. In `auto_full`, each checkpoint worker validates the exact Vault state, writes a result report, and calls `worker-complete`; the adapter writes a hashed decision and the workflow service independently verifies it. Passing decisions automatically advance the gate. Failed validation leaves the card blocked and exposes report and blocking codes. Manual mode still accepts explicit human approval.
+
+For a dedicated fixed-program ingest Gateway, start the existing service with
+`HERMES_KANBAN_DISPATCH_IN_GATEWAY=0 hermes gateway run`. The trusted ingest
+dispatcher owns program-card claims; the Gateway must not run the generic
+triage decomposer or open model dispatcher for this scoped observation. This
+process-local setting does not alter another Gateway's host configuration.
+Program-card pauses and capacity holds use native `scheduled`, which is not
+dispatchable until the trusted adapter explicitly unblocks the same identity.
+Do not use repeated human `block` operations for these holds: native recurrence
+routing can move a card into `triage`. Unexpected triage requires trusted
+isolation recovery, never automatic decomposition or an open-agent fallback.
+The native cancellation control receipt now waits for actual workers and the
+reconciler to exit and checks the dedicated board for ready/running/triage cards,
+including cards absent from the Vault map. It rechecks this proof on receipt
+replay. A timeout or routing conflict leaves cancellation verification pending.
 
 Current `worker_dispatch_enabled: true` permits scoped source workers and exact planning after coverage checks. In `auto_full`, the first eight ready slices form a bounded canary; once all eight have durable valid Pass records, remaining slices and the downstream workers become eligible in order. Manual mode retains explicit canary arm and approval operations. Inspect compact status for `source_coverage` before planning or reporting completion. Failed sources are listed as gaps and require a partial final workflow outcome.
 
