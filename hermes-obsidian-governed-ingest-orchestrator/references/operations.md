@@ -1,5 +1,14 @@
 # Operations
 
+Candidates use existing compact rule/topic, applicability, condition/exception,
+support and inspection QA fields. Citation still checks original facts and
+omissions. Downstream Reduce, page writing and page review receive original
+hash-valid reading packages and required context from program-controlled
+projection, with exact support spans. Old valid Passes are not rewritten.
+Missing required inspection, stale authority or oversized evidence holds the
+affected request; no evidence truncation or candidate-only fallback is allowed.
+Map observations do not validate Reduce/review costs or release the Pass pause.
+
 All examples use `python3 "<skill-dir>/scripts/<script>.py" --vault "<vault>" <command>`. Request-taking commands read JSON from `--request "<file>"`; never embed secrets in CLI arguments.
 
 | Intent | Command | Result |

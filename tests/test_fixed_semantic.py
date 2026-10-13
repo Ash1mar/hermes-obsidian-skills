@@ -410,6 +410,8 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
     def caller(phase,view,output_schema,correction):
         calls.append(phase); assert correction is None
         refs=[c['candidate'] for c in view['candidates']]
+        assert view['original_evidence']['texts']
+        assert all(c['source_evidence'] for c in view['candidates'])
         assert 'pass_id' not in json.dumps(view) and 'task_id' not in json.dumps(view)
         if phase=='resource-reduce':
             return fixture_response({'proposals':[{'candidate_refs':refs,'summary':'Pump X evidence',
@@ -459,6 +461,8 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
     def reviewer(phase,view,output_schema,correction):
         assert phase=='page-review' and correction is None
         assert view['citation_evidence'] and 'filtered fluid' in view['content']
+        assert any('filtered fluid' in t for t in view['original_evidence']['texts'].values())
+        assert all(c['source_evidence'] for c in view['citation_evidence'])
         assert not {'run_id','page_id','authored_sha256','expected_revision'} & set(view)
         return fixture_response({'decision':'approved','review_note':'Isolated semantic review preserved both source conditions.'})
     assert fixed.execute(adapter,binding_path('build-finalize'),reviewer)['ok']; sync()

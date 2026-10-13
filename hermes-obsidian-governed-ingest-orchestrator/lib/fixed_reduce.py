@@ -7,6 +7,7 @@ from hermes_source_units.source_units import _load_json, _vault_path, _write_ato
 from hermes_source_units.validation import fingerprint, validate_record
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard
 from fixed_semantic_schema import validate
+import fixed_evidence
 
 
 def fail(code, message):
@@ -33,6 +34,9 @@ def snapshot(adapter, binding):
     eligible = {key:pair for key,pair in candidates.items()
         if pair[0]['pass_kind']=='citation' and (kind=='resource-reduce' or key in proposed)}
     view = {'phase':kind,'candidates':[]}
+    packet, readings = fixed_evidence.original_evidence(service,
+        [pair[0] for pair in eligible.values()], workflow['actor'], service._document_registry_revision())
+    view['original_evidence'] = packet
     mapping, aliases, grouped = {}, {}, {}
     # Deduplicate only identical semantics AND inspection QA, never similar names.
     for key, (record,candidate) in sorted(eligible.items()):
@@ -42,7 +46,10 @@ def snapshot(adapter, binding):
         handle = grouped.get(digest)
         if handle is None:
             handle = 'c'+str(len(mapping)+1); grouped[digest]=handle; mapping[handle]=[]
-            view['candidates'].append({'candidate':handle,**observation})
+            view['candidates'].append({'candidate':handle,**observation,'source_evidence':[]})
+        exposed = next(c for c in view['candidates'] if c['candidate']==handle)
+        link = fixed_evidence.support(service,record,candidate,readings)
+        if link not in exposed['source_evidence']: exposed['source_evidence'].append(link)
         mapping[handle].append({'pass_id':key[0],'candidate_id':key[1]})
         aliases[key]=handle
     backend = {'kind':kind,'batch_id':batch['batch_id'],'actor':workflow['actor'],
@@ -97,8 +104,12 @@ def page_view(adapter, value, page):
             'qa_status':old['page']['qa_status'],'business_status':old['page']['business_status'],
             'visibility':old['page']['visibility']}
     handles=set(page['candidate_refs'])
-    return {'identity':identity,'path':page['path'],'candidates':[c for c in value['view']['candidates'] if c['candidate'] in handles],
-        'existing_page':parent}
+    candidates=[c for c in value['view']['candidates'] if c['candidate'] in handles]
+    view={'identity':identity,'path':page['path'],'candidates':candidates,'existing_page':parent}
+    if 'original_evidence' in value['view']:
+        readings={r['reading'] for c in candidates for r in c['source_evidence']}
+        view['original_evidence']=fixed_evidence.selected(value['view']['original_evidence'],readings)
+    return view
 
 
 def expand(value, draft):
