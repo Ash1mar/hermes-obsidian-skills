@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from contextlib import contextmanager, nullcontext
+from contextlib import closing, contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -195,6 +195,18 @@ class KanbanCLI:
         self._projection_board = None
         self._projection_rows = {}
         self._projection_snapshots = {}
+
+    def current_task_grant(self, slug, task_id):
+        """Fresh native ownership; public show JSON deliberately omits it."""
+        if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
+            _fail('ACCESS_DENIED', 'native ownership requires a trusted reconciler')
+        from hermes_cli import kanban_db as kb, kanban_db_connect as kc
+        with closing(kc.connect(board=slug)) as conn:
+            task = kb.get_task(conn, task_id)
+            if task is None:
+                _fail('KANBAN_INVALID_RESPONSE', 'current native card is missing')
+            return {key:getattr(task,key) for key in ('id','body','status','assignee',
+                'created_by','idempotency_key','current_run_id','worker_pid','claim_lock')}
 
     @contextmanager
     def projection(self, slug):
@@ -543,15 +555,16 @@ class IngestKanbanAdapter:
                 "authority": "native Kanban attempt telemetry; source coverage remains Vault-authoritative",
                 "cards": cards}
 
-    def _sync_current(self, workflow_id: str) -> dict[str, Any]:
-        for _ in range(16):
+    def _sync_current(self, workflow_id: str, *, max_attempts=16, yield_requested=None) -> dict[str, Any]:
+        for _ in range(max_attempts):
             value = self.workflow.status(workflow_id)
             try:
-                return self.sync(self._mutation(value))
+                return (self.sync(self._mutation(value), yield_requested=yield_requested)
+                        if yield_requested is not None else self.sync(self._mutation(value)))
             except ContractError as exc:
                 if exc.code not in ("REVISION_CONFLICT", "LOCK_BUSY"):
                     raise
-                if _ == 15:
+                if _ == max_attempts - 1:
                     raise
                 time.sleep(0.05)
 
@@ -729,40 +742,47 @@ class IngestKanbanAdapter:
                     if (not card['node'].startswith('pass-slice:') or sid not in slices
                             or slices[sid]['state']!='completed' or states.get(card['task_id'])!='running'):
                         continue
-                    with span('pass_completion_projection',target_task_id=card['task_id']):
+                    with span('pass_completion_projection',target_task_id=card['task_id']) as trace:
+                        trace['decision']='skipped'
                         snapshot=self.kanban.task_snapshot(board,card['task_id'])
                         if snapshot.get('children'):
+                            trace['reason']='dependent_children'
                             continue  # A full projection owns dependent guards.
                         _,path=self._current_pass_card(value,card,slices[sid],snapshot)
                         progress=path.with_suffix('.execution.json')
                         if not progress.is_file():
+                            trace['reason']='missing_execution_receipt'
                             continue
                         receipt=_load_json(progress)
-                        native=snapshot['task']
-                        if (receipt.get('state')!='completed' or not receipt.get('result',{}).get('ok')
-                                or receipt.get('run_id')!=native.get('current_run_id')
-                                or not native.get('worker_pid') or not native.get('claim_lock')
-                                or receipt.get('grant')!={'claim_lock':native.get('claim_lock'),'worker_pid':native.get('worker_pid')}):
+                        native=self._completion_grant(board,card,snapshot)
+                        reason=self._completion_skip(receipt,native)
+                        if reason:
+                            trace['reason']=reason
                             continue
                         # Native completion must not expose an unlatched pause.
                         with _exclusive_lock(self.workflow._lock(workflow_id)):
                             live=self.workflow.status(workflow_id)
                             if live['cancel_requested'] or live['current_stage']!='analyzing':
+                                trace['reason']='workflow_stopped_or_stage_changed'
                                 return
                             boundary=self.workflow.pending_pause(live)
                             if boundary and live.get('pause_control',{}).get('boundary')!=boundary:
+                                trace['reason']='pause_not_latched'
                                 continue
                             current=self.workflow.knowledge._slice(live['batch_id'],sid)
                             fresh=(self.kanban.task_snapshot_fresh(board,card['task_id'])
                                 if hasattr(self.kanban,'task_snapshot_fresh') else self.kanban.task_snapshot(board,card['task_id']))
-                            actual=fresh['task']
-                            if (fresh.get('children') or actual.get('status')!='running'
-                                    or receipt['run_id']!=actual.get('current_run_id')
-                                    or receipt['grant']!={'claim_lock':actual.get('claim_lock'),'worker_pid':actual.get('worker_pid')}):
+                            actual=self._completion_grant(board,card,fresh)
+                            reason=('dependent_children' if fresh.get('children') else self._completion_skip(receipt,actual))
+                            if reason:
+                                trace['reason']='fresh_'+reason
                                 continue
                             self._current_pass_card(live,card,current,fresh)
                             if domain_completed(self.workflow,live,pass_node(live,current)):
                                 self.kanban.complete(board,card['task_id'],'Authoritative Vault Pass outcome already committed')
+                                trace.update(decision='acknowledged',reason='current_native_grant',acknowledged_run_id=receipt['run_id'])
+                            else:
+                                trace['reason']='domain_not_complete'
                 value=self.workflow.status(workflow_id)
                 if value['cancel_requested'] or self.workflow.pending_pause(value):
                     return
@@ -800,6 +820,29 @@ class IngestKanbanAdapter:
                     self._slice_worker(workflow_id,card['node'],card['task_id'],verify_inputs=False)
                     self.kanban.unblock(board,card['task_id'])
                     slots-=1
+
+    @staticmethod
+    def _completion_skip(receipt,native):
+        if receipt.get('state')!='completed' or not receipt.get('result',{}).get('ok'):
+            return 'receipt_not_completed'
+        if native.get('status')!='running':
+            return 'native_not_running'
+        if receipt.get('run_id')!=native.get('current_run_id'):
+            return 'run_identity_mismatch'
+        if not native.get('worker_pid') or not native.get('claim_lock'):
+            return 'missing_native_grant'
+        if receipt.get('grant')!={'claim_lock':native['claim_lock'],'worker_pid':native['worker_pid']}:
+            return 'grant_mismatch'
+        return None
+
+    def _completion_grant(self,board,card,snapshot):
+        if not hasattr(self.kanban,'current_task_grant'):
+            return snapshot['task']  # Explicit full-grant adapters, including isolated fixtures.
+        native=self.kanban.current_task_grant(board,card['task_id'])
+        if (native['idempotency_key']!=card['idempotency_key'] or
+                any(native[k]!=snapshot['task'].get(k) for k in ('id','body','created_by','assignee'))):
+            _fail('STALE_INPUT','native grant differs from the public canonical card')
+        return native
 
     def _current_pass_card(self, value, card, item, snapshot):
         from program_worker import canonical_binding
@@ -952,8 +995,8 @@ class IngestKanbanAdapter:
         followup["input_digest"] = mutation_digest(followup)
         return self.sync(followup)
 
-    @measured('reconciliation', lambda self, request: {'vault':self.workflow.vault, 'workflow_id':request['workflow_id']})
-    def sync(self, request: Mapping[str, Any]) -> dict[str, Any]:
+    @measured('reconciliation', lambda self, request, **kwargs: {'vault':self.workflow.vault, 'workflow_id':request['workflow_id']})
+    def sync(self, request: Mapping[str, Any], *, yield_requested=None) -> dict[str, Any]:
         if (os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
                 or os.environ.get("HERMES_KANBAN_TASK")):
             _fail("ACCESS_DENIED", "Kanban reconciliation requires a trusted orchestrator process")
@@ -964,9 +1007,13 @@ class IngestKanbanAdapter:
         with _exclusive_lock(lock):
             board = self.workflow.status(workflow_id)['kanban']['board_id']
             with self.workflow.execution_projection(), self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
-                return self._sync_locked(request)
+                return self._sync_locked(request,yield_requested=yield_requested)
 
-    def _sync_locked(self, request: Mapping[str, Any]) -> dict[str, Any]:
+    def _sync_locked(self, request: Mapping[str, Any], *, yield_requested=None) -> dict[str, Any]:
+        def checkpoint():
+            if yield_requested and yield_requested():
+                _fail('RECONCILIATION_YIELD','worker wake requests current completion/refill checks')
+        checkpoint()
         workflow_id, actor = str(request["workflow_id"]), str(request["actor"])
         value = self.workflow.status(workflow_id)
         self.workflow.assert_execution_ready(value)
@@ -989,10 +1036,13 @@ class IngestKanbanAdapter:
             self.workflow.prepare_pass_revision(value)
             value = self.workflow.finish_pass_revision(self._mutation(value))
             value = self.workflow.latch_pause(self._mutation(value))
+            checkpoint()
             if not self.workflow.pending_pause(value) or (value.get('pass_revision') and value['pass_revision']['state'] == 'running'):
                 self.workflow.knowledge.reclaim_expired_slices(value["batch_id"])
                 self._settle_ended_pass_leases(value)
+                checkpoint()
                 self.workflow.knowledge.refresh_ready_slices(value["batch_id"], actor)
+                checkpoint()
             if (value["scope"].get("execution_mode") in ("canary_only", "auto_full")
                     and not self.workflow.pending_pause(value)
                     and value["current_stage"] == "analyzing"):
@@ -1054,6 +1104,7 @@ class IngestKanbanAdapter:
             return {"workflow_id": workflow_id, "workflow_created": True,
                     "state": "dispatcher_unavailable", "background_dispatch": False,
                     "board_id": value["kanban"]["board_id"]}
+        checkpoint()
         nodes = desired_graph(self.workflow, value)
         if (value['batch_id'] and value['scope'].get('execution_mode') == 'canary_only'
                 and value['dispatch_policy']['mode'] == 'canary'):
@@ -1084,6 +1135,7 @@ class IngestKanbanAdapter:
         artifact_conflicts: list[dict[str, Any]] = []
         native_states=self.kanban.task_states(slug) if hasattr(self.kanban,'task_states') else {}
         for node in nodes:
+            checkpoint()
             key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
             pin = next((item for item in value.get("template_pins", [])
                         if item["kind"] == node.kind), None)
@@ -1160,6 +1212,7 @@ class IngestKanbanAdapter:
             task_map.append({"node": node.name, "idempotency_key": key,
                              "task_id": task_id})
         value = self.workflow.status(workflow_id)
+        checkpoint()
         # A revision narrows the dispatch graph without retiring valid native
         # outcomes. Keep their identities so later projection cannot recreate
         # archived cards under an immutable binding.
@@ -1216,6 +1269,7 @@ class IngestKanbanAdapter:
         cooldown_active = (cooldown is not None and datetime.fromisoformat(
             cooldown.replace("Z", "+00:00")) > datetime.now(timezone.utc))
         for node in nodes:
+            checkpoint()
             failed_parent = next((p for p in nodes if p.name in node.parents
                                   and self._execution_blocked(workflow_id, p)), None)
             if failed_parent and not domain_completed(self.workflow, updated, node) and not self._failed_card(workflow_id, node):

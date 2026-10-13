@@ -1668,7 +1668,6 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                     or _prepared['batch_id'] != batch_id
                     or _prepared['template_hash'] != template_hash):
                 _fail('STALE_INPUT', 'Pass preparation differs from this commit invocation')
-            self.source.assert_reading_snapshot_current()
             package = _prepared['package']
             package_fingerprint = _prepared['package_fingerprint']
         else:
@@ -1719,7 +1718,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 }),
             })
         body["pass_id"] = fingerprint(body)
-        validate_record("knowledge_pass", body)
+        from .runtime_telemetry import span
+        with span('pass_record_schema'):
+            validate_record("knowledge_pass", body)
         pass_root = _vault_path(self.vault, f"{BUILD_ROOT}/task-{task_id}/passes")
         path = pass_root / f"{body['sequence']:04d}-{body['pass_id']}.json"
         existing_sequence = list(pass_root.glob(f"{body['sequence']:04d}-*.json")) if pass_root.exists() else []
@@ -1823,7 +1824,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             receipt_id = fingerprint(evidence)
             preflight_ref = f'{BUILD_ROOT}/task-{task_id}/preflights/{receipt_id}.json'
             _write_atomic(_vault_path(self.vault, preflight_ref), _json_bytes(evidence))
-        _write_atomic(path, _json_bytes(body))
+        with span('pass_record_persistence'):
+            _write_atomic(path, _json_bytes(body))
         owned_inspections = [item for item in body["inspections"]
                              if any(_covers(target, item["source_ref"]) for target in task["target_refs"])]
         task["inspections"] = _unique([*task["inspections"], *owned_inspections])
@@ -1849,7 +1851,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 if str(item.get("task_id", "")) not in allowed:
                     _fail("ACCESS_DENIED", "pass request is outside the batch", "$.passes")
             results, failures = [], []
-            slices = self._slices(batch_id) if batch.get("slices_initialized") else []
+            from .runtime_telemetry import span
+            with span('pass_slice_scan'):
+                slices = self._slices(batch_id) if batch.get("slices_initialized") else []
             for item in pass_requests:
                 task_id = str(item["task_id"])
                 try:
@@ -1889,8 +1893,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                         results[-1]['preflight_ref'] = recorded['preflight_ref']
                 except (ContractError, OSError, ValueError, TypeError, KeyError) as exc:
                     failures.append(self._failure("pass", task_id, exc))
-            updated = (batch if validate_only else self._store_batch(
-                batch, state="analyzing", operation="pass", failures=failures))
+            with span('pass_batch_persistence'):
+                updated = (batch if validate_only else self._store_batch(
+                    batch, state="analyzing", operation="pass", failures=failures))
             result = {"ok": not failures, "batch": updated, "results": results, "failures": failures}
             if validate_only:
                 result["validated"] = not failures

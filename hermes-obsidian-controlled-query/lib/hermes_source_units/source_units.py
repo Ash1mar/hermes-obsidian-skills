@@ -214,6 +214,11 @@ class FileSourceUnitService:
     def assert_reading_snapshot_current(self):
         snapshot=self._read_snapshot
         if snapshot is None: return
+        from .runtime_telemetry import span
+        with span('pass_byte_recheck', file_count=len(snapshot['files'])):
+            self._check_reading_snapshot(snapshot)
+
+    def _check_reading_snapshot(self, snapshot):
         for relative,path in snapshot['paths'].items():
             if _vault_path(self.vault,relative)!=path:
                 _fail('SOURCE_CHANGED','repository path changed during reading')

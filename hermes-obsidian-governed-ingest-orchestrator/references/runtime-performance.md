@@ -232,3 +232,29 @@ from agent initialization, historical response reuse and recorded provider cache
 tokens. Missing provider cache statistics are unknown, not zero or savings.
 No observed cache benefit is a valid outcome. No additional scheduler, persistent
 cache, automatic tuning or parallel model calls are introduced.
+
+## Round-one third submission/completion follow-up (2026-10-13)
+
+Public native Kanban show JSON omits the current run, PID and claim owner.
+Fast completion reads those fields freshly from the existing native state API,
+checks its private key/body against the canonical public card, then compares
+the exact durable receipt grant again under the workflow lock. Leaf and pause
+guards remain mandatory. Each inspected completed card records its short skip
+reason or acknowledged run; omitted public fields never imply authority.
+
+The watcher uses one full-sync attempt per tick. A busy refill returns to the
+next fresh refill check; a wake yields the full projection at safe checkpoints
+between operations, releasing its dispatch lock. Normal full reconciliation
+continues on later ticks and each mutation retains its own live guards. There
+is no new scheduling layer or permission snapshot.
+
+Within one submission only, reuse bundled schema parsing/auditing while checking
+every record's shape, relationships and invariants. Discard that cache on exit.
+Prepared evidence is byte-checked immediately before persistence and again on
+snapshot exit; remove the redundant early check before read-only reconstruction.
+Keep fresh task CAS, lease, cancellation and native ownership and ten-second
+lock timeouts. Measure pass_total, outside pass_validation, actual lock wait and
+hold, slice scan, schema, byte checks and persistence separately. Compare domain
+completion receipt to native confirmation and subsequent claim; an atomic_pass
+drop alone does not prove total improvement. Failed-worker refill remains
+unverified without a natural real-run failure sample.

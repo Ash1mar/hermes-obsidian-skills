@@ -3,10 +3,27 @@
 from __future__ import annotations
 
 import hashlib
+from contextlib import contextmanager
+from contextvars import ContextVar
 from importlib.resources import files
 import json
 import re
 from typing import Any, Iterable, Mapping
+
+_RECORD_SCHEMA = ContextVar('record_schema', default=None)
+
+
+@contextmanager
+def record_validation_scope():
+    """Reuse only the bundled schema audit within one submission invocation."""
+    if _RECORD_SCHEMA.get() is not None:
+        yield
+        return
+    token = _RECORD_SCHEMA.set({})
+    try:
+        yield
+    finally:
+        _RECORD_SCHEMA.reset(token)
 
 class ContractError(ValueError):
     def __init__(self, code: str, path: str, message: str) -> None:
@@ -214,10 +231,15 @@ def _unique(values: list[Any], path: str) -> None:
 
 def validate_record(kind: str, record: Mapping[str, Any]) -> None:
     """Validate closed shape plus local invariants. No filesystem/model access."""
-    schema = load_schema()
+    scope = _RECORD_SCHEMA.get()
+    schema = scope.get('schema') if scope is not None else None
+    if schema is None:
+        schema = load_schema()
+        check_schema(schema)
+        if scope is not None:
+            scope['schema'] = schema
     if kind not in schema["$defs"]:
         _fail("UNKNOWN_KIND", "$", kind)
-    check_schema(schema)
     _check_shape(schema["$defs"][kind], record, schema["$defs"], "$")
     for path, item in _walk(record):
         if isinstance(item, float):
