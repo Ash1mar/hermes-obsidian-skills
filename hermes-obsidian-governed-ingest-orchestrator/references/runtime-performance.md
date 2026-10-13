@@ -258,3 +258,23 @@ hold, slice scan, schema, byte checks and persistence separately. Compare domain
 completion receipt to native confirmation and subsequent claim; an atomic_pass
 drop alone does not prove total improvement. Failed-worker refill remains
 unverified without a natural real-run failure sample.
+
+## Round-one fourth full-reconciliation follow-up (2026-10-13)
+
+Optimize the same full-sync path used by resume and the background watcher.
+Reuse the bundled schema parsing/audit for this invocation, retaining every
+record validation and fresh workflow, task, source, lease and pause check.
+Discard the scope even when the sync yields or fails. A status lookup for a
+card absent from the active listing uses the same operation's existing show
+snapshot; this avoids duplicate archived-card reads. Explicit fresh snapshots
+still bypass it, mutations still invalidate projections and refresh promotions,
+and native grant/admission checks remain live. No cross-tick permission cache.
+
+Record nonoverlapping state-settlement, capacity, binding and card-projection
+phases, schema load/validation counts and completed full-sync outcomes. Compare
+resume's first full sync and successfully completed background full syncs
+separately. LOCK_BUSY, RECONCILIATION_YIELD, interrupted and cross-deadline cycles
+are separate counts, not completed performance samples. Report repeated show
+calls per card alongside CLI totals and local phase costs. Runtime counts and
+material differ across windows; do not infer costs from the presence of errors
+or extend this repair to other efficiency rounds.

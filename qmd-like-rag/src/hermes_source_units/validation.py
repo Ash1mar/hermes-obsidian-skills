@@ -16,12 +16,14 @@ _RECORD_SCHEMA = ContextVar('record_schema', default=None)
 @contextmanager
 def record_validation_scope():
     """Reuse only the bundled schema audit within one submission invocation."""
-    if _RECORD_SCHEMA.get() is not None:
-        yield
+    scope=_RECORD_SCHEMA.get()
+    if scope is not None:
+        yield scope
         return
-    token = _RECORD_SCHEMA.set({})
+    scope={}
+    token = _RECORD_SCHEMA.set(scope)
     try:
-        yield
+        yield scope
     finally:
         _RECORD_SCHEMA.reset(token)
 
@@ -232,12 +234,17 @@ def _unique(values: list[Any], path: str) -> None:
 def validate_record(kind: str, record: Mapping[str, Any]) -> None:
     """Validate closed shape plus local invariants. No filesystem/model access."""
     scope = _RECORD_SCHEMA.get()
+    if scope is not None:
+        scope['record_validation_calls']=scope.get('record_validation_calls',0)+1
     schema = scope.get('schema') if scope is not None else None
     if schema is None:
-        schema = load_schema()
-        check_schema(schema)
+        from .runtime_telemetry import span
+        with span('record_schema_prepare'):
+            schema = load_schema()
+            check_schema(schema)
         if scope is not None:
             scope['schema'] = schema
+            scope['schema_loads']=scope.get('schema_loads',0)+1
     if kind not in schema["$defs"]:
         _fail("UNKNOWN_KIND", "$", kind)
     _check_shape(schema["$defs"][kind], record, schema["$defs"], "$")
