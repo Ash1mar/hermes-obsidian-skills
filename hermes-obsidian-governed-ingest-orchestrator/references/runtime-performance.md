@@ -153,3 +153,27 @@ post-deployment checks, same-workflow bounded observation and reliable stop,
 then normal main-to-intranet maintenance. Keep durable pauses, accepted outcomes
 and source identities. Future-round implementation is not automatically
 authorized by documenting this plan.
+
+## Round-one resume and dispatch completion (2026-10-13)
+
+Resume's first full sync now hands ready program cards to the existing native
+CLI before launching the normal watcher. It sends only Vault/workflow identity,
+never a permission snapshot. The existing watcher lock serializes this handoff
+with any old watcher; a busy lock or failed/partial spawn is reported as deferred
+and normal reconciliation remains responsible for recovery. Native claims, live
+pause/cancel checks, leases and concurrency 2 remain unchanged.
+
+Within one sync, execution manifests reuse parsed and canonically fingerprinted
+content only when newly read bytes have the same SHA. Pointer/workflow/batch
+identity checks still run on every call, template bytes are freshly hashed, and
+caller-visible plans are copied. The cache expires on operation exit. Journal,
+source, actor, revision, pause, cancellation, capacity and lease decisions are
+never cached as permission. Staged analyzing constructs only its Pass graph,
+without scanning unopened Reduce tasks and Pass history. Later stages retain
+their original graph and evidence checks.
+
+Small timeline spans expose desired-graph construction, execution-manifest
+parsing, previously unmeasured Gateway/config CLI probes, resume handoff and
+watcher launch. Compare resume-to-first-request and completion-to-next-claim
+separately from model latency. This is first-round completion, not fifth-round
+prefix optimization or a new monitoring/scheduling layer.

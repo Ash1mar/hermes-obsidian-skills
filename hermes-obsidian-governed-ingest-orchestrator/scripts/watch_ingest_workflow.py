@@ -19,6 +19,7 @@ from hermes_source_units.source_units import _exclusive_lock, _vault_path
 from ingest_kanban import IngestKanbanAdapter
 from hermes_source_units.runtime_telemetry import runtime_directory, span
 from hermes_source_units.source_units import _json_bytes, _write_atomic
+from orchestration import dispatch_ready_programs
 
 
 @contextmanager
@@ -70,12 +71,7 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                 if result.get('program_dispatch') and result.get('background_dispatch'):
                     # Hermes CLI loads its native runtime and backend plugin even
                     # when the operator launched this watcher with system python3.
-                    with span('dispatch_cli',vault=vault,workflow_id=workflow_id):
-                        dispatched = subprocess.run(['hermes', 'ingest-program-dispatch',
-                            '--vault', str(vault), '--workflow-id', workflow_id],
-                            capture_output=True, text=True, timeout=60)
-                    if dispatched.returncode:
-                        raise RuntimeError(dispatched.stderr.strip() or dispatched.stdout.strip())
+                    dispatch_ready_programs(vault,workflow_id)
                 stamp = (result.get('revision'),result.get('state'),result.get('program_dispatch'))
                 delay = min(delay*2,max(interval,12)) if stamp==prior else interval
                 prior = stamp

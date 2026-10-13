@@ -849,7 +849,7 @@ class FileIngestWorkflowService(ExecutionPlanMixin, PassRevisionMixin, WorkflowP
             if "sha256:" + hashlib.sha256(data).hexdigest() != item["template_hash"]:
                 _fail("TEMPLATE_CHANGED", "pinned worker template content changed")
             try:
-                result[item["kind"]] = data.decode("utf-8")
+                result[item["kind"]] = self._execution_text(data)
             except UnicodeError:
                 _fail("TEMPLATE_CHANGED", "pinned worker template is not UTF-8")
         return result
