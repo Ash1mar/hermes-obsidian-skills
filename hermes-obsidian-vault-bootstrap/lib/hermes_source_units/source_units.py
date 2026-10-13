@@ -185,19 +185,24 @@ class FileSourceUnitService:
         self._read_snapshot = None
 
     @contextmanager
-    def reading_snapshot(self):
+    def reading_snapshot(self, *, verify_hashes=False):
         """One immutable reading calculation with before/after disk checks.
 
         Artifact hashes are verified on first read; repeated reads use that same
         snapshot. No result escapes if repository bytes/signatures or resolved
         paths change. Registry/ACL checks still run on each get.
+        ``verify_hashes`` bypasses older metadata-only cache entries on first
+        read and checks bytes again at commit boundaries for this operation.
         """
         if self._read_snapshot is not None:
+            if verify_hashes and not self._read_snapshot.get('verify_hashes'):
+                _fail('INVALID_STATE', 'strong reading cannot inherit a metadata-only snapshot')
             yield
             return
         enabled = self._session_cache_enabled
         self.enable_session_cache()
-        snapshot = {'files':{}, 'paths':{}, 'sets':{}, 'artifacts':{}}
+        snapshot = {'files':{}, 'paths':{}, 'sets':{}, 'artifacts':{},
+                    'verify_hashes':verify_hashes, 'hashes':{}, 'governance':{}}
         self._read_snapshot = snapshot
         try:
             yield
@@ -215,6 +220,26 @@ class FileSourceUnitService:
         for path,signature in snapshot['files'].items():
             if self._file_signature(path)!=signature:
                 _fail('SOURCE_CHANGED','repository changed during reading snapshot')
+            if snapshot.get('verify_hashes') and _sha(path.read_bytes()) != snapshot['hashes'][path]:
+                _fail('SOURCE_CHANGED', 'repository bytes changed during reading snapshot')
+
+    def track_reading_file(self, path):
+        """Include a checked immutable evidence file in the active reading snapshot."""
+        path = Path(path)
+        relative = path.relative_to(self.vault).as_posix() if path.is_absolute() else path.as_posix()
+        resolved = self._read_path(relative)
+        self._snapshot_file(resolved)
+        return resolved
+
+    def _snapshot_file(self, path, signature=None):
+        if self._read_snapshot is None:
+            return
+        signature = self._file_signature(path) if signature is None else signature
+        previous = self._read_snapshot['files'].setdefault(path, signature)
+        if previous != signature:
+            _fail('SOURCE_CHANGED', 'evidence file changed during reading snapshot')
+        if self._read_snapshot.get('verify_hashes') and path not in self._read_snapshot['hashes']:
+            self._read_snapshot['hashes'][path] = _sha(path.read_bytes())
 
     def _read_path(self, relative):
         snapshot = self._read_snapshot
@@ -362,21 +387,27 @@ class FileSourceUnitService:
             if manifest is None or dict(manifest) == result[0]:
                 return result
         cached = self._artifact_cache.get(path) if self._session_cache_enabled else None
-        if cached is not None:
+        if cached is not None and not (snapshot is not None and snapshot.get('verify_hashes')):
             signatures, result = cached
             if all(self._file_signature(item_path) == (size, modified)
                    for item_path, size, modified in signatures):
                 if manifest is None or dict(manifest) == result[0]:
                     if snapshot is not None:
-                        snapshot['files'].update({p:(size,modified) for p,size,modified in signatures})
+                        for p,size,modified in signatures:
+                            self._snapshot_file(p, (size,modified))
                         snapshot['artifacts'][path] = result
                     return result
+        self._snapshot_file(path)
         value = dict(manifest or _load_json(path))
         validate_record("artifact", value)
         if value["identity"]["vault_id"] != self.vault_id:
             _fail("SOURCE_CHANGED", "artifact Vault identity mismatch")
         root = path.parent
         document = _child_path(root, value["document_path"], self.vault)
+        if snapshot is not None and snapshot.get('verify_hashes'):
+            relative = root.relative_to(self.vault).as_posix() + '/' + value['document_path']
+            if self.track_reading_file(relative) != document:
+                _fail('SOURCE_CHANGED', 'artifact document path changed during reading')
         data = document.read_bytes()
         if _sha(data) != value["document_sha256"]:
             _fail("SOURCE_CHANGED", "normalized document hash changed")
@@ -384,12 +415,18 @@ class FileSourceUnitService:
         if text.encode("utf-8") != data:
             _fail("SOURCE_CHANGED", "normalized document is not canonical UTF-8 LF text")
         outline_path = root / "outline.json"
+        if snapshot is not None and snapshot.get('verify_hashes'):
+            self.track_reading_file(root.relative_to(self.vault).as_posix() + '/outline.json')
         outline_bytes = outline_path.read_bytes()
         if _sha(outline_bytes) != value["outline_sha256"]:
             _fail("SOURCE_CHANGED", "outline hash changed")
         outline = json.loads(outline_bytes.decode("utf-8"))
         for asset in value["assets"]:
             asset_path = _child_path(root, asset["path"], self.vault)
+            if snapshot is not None and snapshot.get('verify_hashes'):
+                relative = root.relative_to(self.vault).as_posix() + '/' + asset['path']
+                if self.track_reading_file(relative) != asset_path:
+                    _fail('SOURCE_CHANGED', 'artifact asset path changed during reading')
             if _sha(asset_path.read_bytes()) != asset["sha256"]:
                 _fail("SOURCE_CHANGED", f"artifact asset hash changed: {asset['path']}")
         if fingerprint(_artifact_payload(value["source_sha256"], value["document_sha256"],
@@ -402,7 +439,8 @@ class FileSourceUnitService:
             signatures = tuple((item, *self._file_signature(item)) for item in paths)
             self._artifact_cache[path] = (signatures, result)
             if snapshot is not None:
-                snapshot['files'].update({p:(size,modified) for p,size,modified in signatures})
+                for p,size,modified in signatures:
+                    self._snapshot_file(p, (size,modified))
                 snapshot['artifacts'][path] = result
         return result
 
@@ -618,9 +656,16 @@ class FileSourceUnitService:
             _fail("INVALID_SCHEMA", "invalid unit-set id")
         root = self._read_path(f"{UNIT_ROOT}/{resource_id}/{selected}")
         files = (root / "manifest.json", root / "units.jsonl", root / "sections.json")
+        if snapshot is not None and snapshot.get('verify_hashes'):
+            files = tuple(self.track_reading_file(f"{UNIT_ROOT}/{resource_id}/{selected}/{path.name}")
+                          for path in files)
         signatures = tuple(self._file_signature(path) for path in files)
+        if snapshot is not None:
+            for path,signature in zip(files, signatures):
+                self._snapshot_file(path, signature)
         cached = self._unit_set_cache.get((resource_id, selected)) if self._session_cache_enabled else None
-        if cached is not None and cached[0] == signatures:
+        if (cached is not None and cached[0] == signatures
+                and not (snapshot is not None and snapshot.get('verify_hashes'))):
             manifest, units, sections = cached[1]
         else:
             manifest = _load_json(files[0])
@@ -638,7 +683,6 @@ class FileSourceUnitService:
                         or current.get("revision") != manifest.get("revision")):
             _fail("SOURCE_CHANGED", "current pointer and immutable unit-set manifest disagree")
         if snapshot is not None:
-            snapshot['files'].update(dict(zip(files,signatures)))
             snapshot['sets'][(resource_id,selected)] = (manifest,units,sections)
         return manifest, units, sections
 
@@ -646,7 +690,7 @@ class FileSourceUnitService:
         manifest, units, sections = self._load_set(resource_id, unit_set_id)
         self._verified_references(manifest, units)
         repository = _vault_path(self.vault, f"{UNIT_ROOT}/{resource_id}/{manifest['unit_set_id']}")
-        engine_path = repository / "engine.json"
+        engine_path = self.track_reading_file(f"{UNIT_ROOT}/{resource_id}/{manifest['unit_set_id']}/engine.json")
         engine_report = _load_json(engine_path)
         if not isinstance(engine_report, dict):
             _fail("INVALID_SCHEMA", "source-unit engine report is invalid")
@@ -733,14 +777,17 @@ class FileSourceUnitService:
         resolved_registry = self._read_path(registry_path)
         signature = self._file_signature(resolved_registry)
         if self._read_snapshot is not None:
-            previous = self._read_snapshot['files'].setdefault(resolved_registry,signature)
-            if previous != signature:
-                _fail('SOURCE_CHANGED', 'registry changed during reading snapshot')
+            self._snapshot_file(resolved_registry, signature)
+        strong = self._read_snapshot is not None and self._read_snapshot.get('verify_hashes')
         cached = self._governance_cache.get(resolved_registry) if self._session_cache_enabled else None
-        if cached is not None and cached[0] == signature:
+        if strong and resolved_registry in self._read_snapshot['governance']:
+            registry = self._read_snapshot['governance'][resolved_registry]
+        elif cached is not None and cached[0] == signature and not strong:
             registry = cached[1]
         else:
             registry = _load_json(resolved_registry)
+            if strong:
+                self._read_snapshot['governance'][resolved_registry] = registry
             if self._session_cache_enabled:
                 self._governance_cache[resolved_registry] = (signature, registry)
         revision = registry.get("registry_revision")

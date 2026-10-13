@@ -21,6 +21,14 @@ from program_worker import canonical_binding, execute
 from hermes_source_units.runtime_telemetry import measured, span, notify_reconciler
 
 
+def cleanup_diagnostic(message):
+    """A reporting failure must not replace the worker's original failure."""
+    try:
+        print(message, file=sys.stderr, flush=True)
+    except OSError:
+        pass
+
+
 @measured('worker_lifecycle', lambda vault, binding: {'vault':vault})
 def run(vault, binding):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kc, kanban_db_dispatch as kd
@@ -35,17 +43,24 @@ def run(vault, binding):
         raise RuntimeError('program execution requires its native dispatcher grant')
     run_id = int(os.environ['HERMES_KANBAN_RUN_ID'])
     board = value['kanban']['board_id']
+    registered_pid = None
     def own_run():
+        nonlocal registered_pid
         with contextlib.closing(kc.connect(board=board)) as conn:
             task = kb.get_task(conn, request['task_id'])
-            return (task is not None and task.status == 'running' and task.current_run_id == run_id
-                and task.claim_lock == os.environ.get('HERMES_KANBAN_CLAIM_LOCK') and bool(task.worker_pid))
+            owned = (task is not None and task.status == 'running' and task.current_run_id == run_id
+                and task.claim_lock == os.environ.get('HERMES_KANBAN_CLAIM_LOCK')
+                and bool(task.worker_pid))
+            if owned and registered_pid is None:
+                registered_pid = task.worker_pid
+            return owned
     # Do not write domain state before the parent persists our process identity.
     deadline = time.monotonic() + 10
     while not own_run():
         if time.monotonic() >= deadline:
             raise RuntimeError('native run registration missing or superseded')
         time.sleep(.05)
+    grant = {'claim_lock':os.environ.get('HERMES_KANBAN_CLAIM_LOCK'), 'worker_pid':registered_pid}
     stop = threading.Event()
     completed = threading.Event()
     def heartbeat():
@@ -70,7 +85,7 @@ def run(vault, binding):
     thread.start()
     progress = Path(binding).with_suffix('.execution.json')
     try:
-        _write_atomic(progress, _json_bytes({'state':'running', 'executor':executor, 'run_id':run_id}))
+        _write_atomic(progress, _json_bytes({'state':'running', 'executor':executor, 'run_id':run_id,'grant':grant}))
         if executor=='semantic-v1':
             from fixed_semantic import execute as semantic_execute
             result=semantic_execute(adapter,binding)
@@ -78,7 +93,7 @@ def run(vault, binding):
             result = execute(adapter, binding)
         completed.set()
         _write_atomic(progress, _json_bytes({'state':'completed' if result.get('ok') else 'blocked',
-            'executor':executor, 'run_id':run_id, 'result':result}))
+            'executor':executor, 'run_id':run_id, 'grant':grant, 'result':result}))
         notify_reconciler(vault,request['workflow_id'])
         # The trusted reconciler acknowledges the durable result and holds
         # successors at pauses. Keep the native PID alive until it does so.
@@ -92,15 +107,27 @@ def run(vault, binding):
         # Record the cause. The trusted reconciler settles this exact ended
         # native run's lease; failure cleanup does not depend on live input
         # checks or compete with the worker heartbeat for a new revision.
-        ref = adapter.execution_failure(request, getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED'), str(exc))
-        _write_atomic(progress, _json_bytes({'state':'execution_blocked', 'executor':executor,
-            'run_id':run_id, 'report_ref':ref, 'code':getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED')}))
-        notify_reconciler(vault,request['workflow_id'])
+        try:
+            ref = adapter.execution_failure(request, getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED'), str(exc))
+            _write_atomic(progress, _json_bytes({'state':'execution_blocked', 'executor':executor,
+                'run_id':run_id, 'grant':grant, 'report_ref':ref, 'code':getattr(exc, 'code', 'PROGRAM_EXECUTION_FAILED')}))
+        except Exception as report_error:
+            cleanup_diagnostic('Worker failure reporting deferred: ' + str(report_error))
         raise
     finally:
-        stop.set()
-        thread.join(timeout=2)
-        signal.signal(signal.SIGTERM,previous_handler)
+        try:
+            stop.set()
+            thread.join(timeout=2)
+            signal.signal(signal.SIGTERM,previous_handler)
+        finally:
+            # The native helper cannot safely combine an exact grant check with
+            # its private transaction here. Exit normally and let the trusted
+            # CLI reap the ended run and settle only its matching domain lease.
+            # Notify last, even when failure reporting could not be persisted.
+            try:
+                notify_reconciler(vault,request['workflow_id'])
+            except Exception as wake_error:
+                cleanup_diagnostic('Worker cleanup wake deferred: ' + str(wake_error))
 
 
 def main():

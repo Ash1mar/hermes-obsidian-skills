@@ -53,11 +53,22 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
         delay = interval
         prior = None
         while True:
+            # Consume the prior hint before reading fresh state. A hint arriving
+            # during this cycle remains set and prevents the following sleep.
+            wake.clear()
             value = adapter.workflow.status(workflow_id)
             if value["cancel_requested"] or value["state"] in ("completed", "partial", "failed"):
                 return
             try:
                 with span('watch_cycle',vault=vault,workflow_id=workflow_id):
+                    # Existing ready bindings can refill a free slot without
+                    # waiting for the full graph projection. Native CLI rereads
+                    # authority, settles exact ended grants, then admits claims.
+                    try:
+                        with span('refill_handoff',vault=vault,workflow_id=workflow_id):
+                            dispatch_ready_programs(vault,workflow_id)
+                    except (ContractError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                        print('Ready-card handoff deferred: ' + str(exc), flush=True)
                     result = adapter._sync_current(workflow_id)
                 if (result.get("pause", {}).get("boundary")
                         and result["pause"].get("evidence_digest") and not result.get('background_dispatch')):
@@ -81,7 +92,6 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                 delay = interval
             with span('reconciliation_wait',vault=vault,workflow_id=workflow_id,requested_seconds=delay):
                 wake.wait(delay)
-                wake.clear()
 
 
 def main() -> int:
