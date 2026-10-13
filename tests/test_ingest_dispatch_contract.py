@@ -217,7 +217,7 @@ def test_native_failure_preserves_durable_slice_retry_but_blocks_unreported_fail
     card=next(c for c in value['kanban']['task_map'] if c['node'].startswith('pass-slice:'))
     req={'workflow_id':value['workflow_id'],'node':card['node'],'task_id':card['task_id'],'worker_id':'retry-worker'}
     begun=adapter.worker_begin(req)
-    adapter.worker_fail({**req,'template_hash':begun['template_hash'],'expected_revision':begun['slice']['revision'],
+    adapter.worker_fail({**begun['worker_request'],
         'code':'INVALID_MODEL_JSON','message':'invalid structured response','failed_output':'{broken'})
     sid=card['node'].partition(':')[2]
     failed=batch._slice('native-retry-batch',sid)
