@@ -60,7 +60,7 @@ def test_original_required_table_is_supplied_and_uninspected_history_held(vault)
     before=inventory(vault)
     with pytest.raises(ContractError,match='INCOMPLETE_COVERAGE'):
         fixed_evidence.original_evidence(service,[record],'agent',1)
-    record['inspections'].extend({'source_ref':r,'finding':'isolated table inspected','qa':'qa_required',
+    record['inspections'].extend({'source_ref':r,'finding':'isolated table inspected','qa':'needs-qa',
         'qa_note':'Keep source limitation'} for r in supplement['required_refs'])
     record['pass_id']=fingerprint({k:v for k,v in record.items() if k!='pass_id'})
     packet,_=fixed_evidence.original_evidence(service,[record],'agent',1)
