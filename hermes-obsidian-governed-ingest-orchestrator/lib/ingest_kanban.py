@@ -687,7 +687,7 @@ class IngestKanbanAdapter:
                 continue
             snapshot=self.kanban.task_snapshot(value['kanban']['board_id'],card['task_id'])
             task=snapshot['task']
-            if (task.get('id')!=card['task_id'] or task.get('status') not in ('archived','blocked','done')
+            if (task.get('id')!=card['task_id'] or task.get('status') not in ('archived','blocked','scheduled','done')
                     or task.get('worker_pid') or any(not r.get('ended_at') for r in snapshot.get('runs',[]))):
                 continue
             body=json.loads(task['body'])
@@ -970,13 +970,13 @@ class IngestKanbanAdapter:
             value = self.workflow.status(wid)
             if hasattr(self.kanban, 'task_states') and value['kanban']['board_id']:
                 states = self.kanban.task_states(value['kanban']['board_id'])
-                if any(states.get(c.get('task_id')) in ('running','ready','scheduled','todo')
+                if any(states.get(c.get('task_id')) in ('running','ready','triage','todo')
                        for c in value['kanban']['task_map']):
                     _fail('WORKER_ACTIVE', 'native consumers must stop before execution amendment')
             if hasattr(self.kanban, 'task_snapshot') and value['kanban']['board_id']:
                 for card in value['kanban']['task_map']:
                     snapshot = self.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
-                    if snapshot.get('task', {}).get('status') in ('running','ready','scheduled','todo'):
+                    if snapshot.get('task', {}).get('status') in ('running','ready','triage','todo'):
                         _fail('WORKER_ACTIVE', 'native card remains dispatchable before execution amendment')
                     if any(run.get('status') == 'running' for run in snapshot.get('runs', [])):
                         _fail('WORKER_ACTIVE', 'native run must finish before execution amendment')
