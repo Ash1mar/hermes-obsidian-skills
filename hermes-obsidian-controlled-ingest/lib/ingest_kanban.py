@@ -811,9 +811,11 @@ class IngestKanbanAdapter:
         expected={'workflow_id':value['workflow_id'],'node':node.name,'vault':str(self.workflow.vault),
             'input_fingerprint':node.input_fingerprint,'worker_binding':str(path),
             'slice_template_hash':item['template_hash'],'executor':'semantic-v1'}
+        # Public CLI snapshots omit the native private idempotency key. The
+        # canonical Vault key binds this body/path; native admission verifies
+        # its private task key again before a claim.
         if (native.get('id')!=card['task_id'] or native.get('created_by')!='ingest-workflow'
                 or native.get('assignee')!=PROGRAM_ASSIGNEE
-                or native.get('idempotency_key')!=card['idempotency_key']
                 or card['idempotency_key']!=f"ingest:{value['workflow_id']}:pass-slice:{node.input_fingerprint}"
                 or any(body.get(k)!=v for k,v in expected.items())):
             _fail('STALE_INPUT','native Pass card differs from its current canonical binding')
