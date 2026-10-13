@@ -71,5 +71,7 @@ def test_original_required_table_is_supplied_and_uninspected_history_held(vault)
     oversized={'original_evidence':packet,'content':'x'*40000}
     class NeverCalled:
         def __call__(self,*args): raise AssertionError('oversize evidence must not call model')
+    from types import SimpleNamespace
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=vault))
     with pytest.raises(ContractError,match='READING_WINDOW_OVERSIZE'):
-        fixed.model_call(None,{},'page-review',oversized,NeverCalled(),30000)
+        fixed.model_call(adapter,{},'page-review',oversized,NeverCalled(),30000)
