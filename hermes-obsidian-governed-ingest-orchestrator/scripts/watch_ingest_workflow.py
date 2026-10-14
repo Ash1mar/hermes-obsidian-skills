@@ -22,6 +22,21 @@ from hermes_source_units.source_units import _json_bytes, _write_atomic
 from orchestration import dispatch_ready_programs
 
 
+def settle_blocked_pass(adapter,workflow_id,wake,interval):
+    """Drain exact ended leases before reporting a blocked workflow and exiting."""
+    deadline=time.monotonic()+30
+    while True:
+        adapter.reconcile_pass_workers(workflow_id)
+        value=adapter.workflow.status(workflow_id)
+        if value['cancel_requested'] or not value['batch_id']:
+            return
+        if not any(s['lease']['worker_id'] for s in adapter.workflow.knowledge._slices(value['batch_id'])):
+            return
+        if time.monotonic()>=deadline:
+            raise ContractError('PASS_SETTLEMENT_PENDING','$','blocked workflow still owns an unsettled Pass lease')
+        wake.wait(interval);wake.clear()
+
+
 @contextmanager
 def wake_events(vault, workflow_id):
     event = threading.Event()
@@ -82,6 +97,7 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                     print("Workflow paused after " + result["pause"]["boundary"], flush=True)
                     return
                 if result.get('execution_blocked') and not result.get('background_dispatch'):
+                    settle_blocked_pass(adapter,workflow_id,wake,interval)
                     print('Execution blocked; trusted repair required: ' + ', '.join(result['execution_blocked']), flush=True)
                     return
                 if result.get("canary_complete") and value["scope"].get("execution_mode") == "canary_only":
