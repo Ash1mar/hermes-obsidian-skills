@@ -133,7 +133,8 @@ class PassSkipMixin:
                                 fail('STALE_INPUT','failure binding changed')
                             covered.update(set(item['task_ids']).intersection(old_slice['task_ids']))
                             proofs.append({'ref':evidence['ref'],'sha256':evidence['sha256'],'category':category,'failure':failure})
-                        if not proofs or covered!=set(item['task_ids']):fail('INCOMPLETE_COVERAGE','failure evidence must cover selected task ownership')
+                        if not proofs or not covered or (covered!=set(item['task_ids']) and entry.get('scope')!='whole_failed_slice'):
+                            fail('INCOMPLETE_COVERAGE','partial failure evidence requires an explicit whole unfinished slice exclusion')
                         targets={}
                         for tid in item['task_ids']:
                             task=service._task(tid)
@@ -146,6 +147,8 @@ class PassSkipMixin:
                             targets[tid]=fingerprint(task['target_refs']);task_ids.append(tid)
                         audited.append({'slice_id':item['slice_id'],'slice_input_fingerprint':item['input_fingerprint'],
                             'task_ids':item['task_ids'],'target_fingerprints':targets,'reason':entry['reason'],'evidence':proofs})
+                        audited[-1].update(known_failure_task_ids=sorted(covered),
+                            withheld_unverified_task_ids=sorted(set(item['task_ids'])-covered))
                     report={'contract':'pass-coverage-gaps/v1','request':dict(request),'batch_id':value['batch_id'],
                         'entries':audited,'task_ids':task_ids,'verification_success':False,'domain_outputs_preserved':True}
                     if dry_run:return {'ok':True,'applied':False,'skipped_slices':len(audited),'skipped_tasks':len(task_ids),'coverage_gaps':audited}

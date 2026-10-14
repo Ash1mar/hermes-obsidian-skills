@@ -148,6 +148,9 @@ With user authorization, `skip-pass-slices` excludes failed content without decl
 verified. Save a current actor/revision/digest request with a stable `operation_id` and
 `entries`: each has `slice_id`, `reason`, and `evidence` (`ref`, `sha256`) covering its
 task ownership through bound current or superseded failure reports. Preview then apply
+If only part of an unfinished slice has failed evidence, explicit `scope: whole_failed_slice`
+may conservatively exclude the allocation as a whole. The report distinguishes known
+failure task IDs from withheld unverified siblings; it does not claim every task failed.
 the same request using `python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault
 "<vault>" skip-pass-slices --dry-run --request "<request.json>"`, then omit `--dry-run`.
 The workflow and batch must be cancelled and quiescent; completed slices, source IDs,
