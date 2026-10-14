@@ -86,8 +86,13 @@ def pass_node(workflow, value):
                     **({'recovery_digest': recovery['input_digest']} if recovery else {})}, []))
 
 
-def mechanical_failure_codes(report):
+def mechanical_failure_codes(report, scope='mechanical/v1'):
     """Only structured, homogeneous mechanical failures permit a fresh attempt."""
+    if (scope=='phase-packet-grouping/v1' and report.get('error_code')=='READING_WINDOW_OVERSIZE'
+            and report.get('reason')=='READING_WINDOW_OVERSIZE at $: actual compact worker input exceeds budget'):
+        return ['READING_WINDOW_OVERSIZE']
+    if scope=='phase-packet-grouping/v1':
+        _fail('RECOVERY_NOT_ALLOWED','the corrected phase-packet cause applies only to input-budget failures')
     if report.get('error_code') == 'WORKFLOW_STOPPED':
         return ['WORKFLOW_STOPPED']
     if report.get('error_code') != 'PASS_EXECUTION_BLOCKED':
@@ -160,6 +165,8 @@ def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any
     resource_tasks: dict[str, list[str]] = {}
     for task_id in batch["task_ids"]:
         task = service.knowledge._task(task_id)
+        if task['status']=='skipped':
+            continue
         for resource_id in sorted({ref["unit_ref"]["resource_id"]
                                    for ref in task["target_refs"]}):
             resource_tasks.setdefault(resource_id, []).append(task_id)
@@ -710,23 +717,22 @@ class IngestKanbanAdapter:
             if not card or leased['lease']['worker_id']!='ingest-worker-'+card['task_id']:
                 continue
             snapshot=self.kanban.task_snapshot(value['kanban']['board_id'],card['task_id'])
-            task=snapshot['task']
-            if (task.get('id')!=card['task_id'] or task.get('status') not in ('archived','blocked','scheduled','done')
+            task=self._completion_grant(value['kanban']['board_id'],card,snapshot)
+            if (task.get('id')!=card['task_id'] or task.get('status') not in ('archived','blocked','scheduled','done','ready')
                     or task.get('worker_pid') or any(not r.get('ended_at') for r in snapshot.get('runs',[]))):
                 continue
             body=json.loads(task['body'])
             binding_path=_vault_path(self.workflow.vault,
                 f"_system/ledgers/ingest-workflows/{value['workflow_id']}/bindings/{fingerprint(card['idempotency_key'])}.json")
             progress_path=binding_path.with_suffix('.execution.json')
-            if not progress_path.is_file():
-                continue
-            progress=_load_json(progress_path)
-            ended=next((r for r in snapshot.get('runs',[]) if r.get('id')==progress.get('run_id')
-                and r.get('ended_at')),None)
-            if ended is None or task.get('current_run_id') not in (None,ended['id']):
-                continue
+            progress=_load_json(progress_path) if progress_path.is_file() else {}
             claim_at=datetime.fromisoformat(leased['lease']['claimed_at'].replace('Z','+00:00')).timestamp()
-            if not float(ended['started_at'])<=claim_at<=float(ended['ended_at']):
+            matching=[r for r in snapshot.get('runs',[]) if r.get('ended_at')
+                and r.get('profile')==PROGRAM_ASSIGNEE
+                and float(r['started_at'])<=claim_at<float(r['ended_at'])+1
+                and (not progress or r.get('id')==progress.get('run_id'))]
+            ended=matching[0] if len(matching)==1 else None
+            if ended is None or task.get('current_run_id') not in (None,ended['id']):
                 continue
             node=pass_node(value,leased)
             if (task.get('created_by')!='ingest-workflow'
@@ -943,6 +949,8 @@ class IngestKanbanAdapter:
 
     def _eligible(self, workflow: Mapping[str, Any], node: Node,
                   nodes: list[Node]) -> bool:
+        if workflow.get('pass_skip_history') and node.kind=='pass-slice' and node.name.partition(':')[2] in self.workflow.skipped_pass_slices(workflow):
+            return False
         by_name = {item.name: item for item in nodes}
         return (self.enable_workers and self._canary_allows(workflow, node)
                 and all(domain_completed(self.workflow, workflow, by_name[parent])
@@ -1006,6 +1014,16 @@ class IngestKanbanAdapter:
                         _fail('WORKER_ACTIVE', 'native run must finish before execution amendment')
             return self.workflow.amend_execution(request, dry_run=dry_run)
 
+    def skip_pass_slices(self, request, *, dry_run=False):
+        if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
+            _fail('ACCESS_DENIED','skipping requires a trusted operator')
+        wid=str(request['workflow_id'])
+        lock=_vault_path(self.workflow.vault,f'_system/ledgers/ingest-workflows/.dispatch-locks/{wid}.lock')
+        with _exclusive_lock(lock), record_validation_scope():
+            from native_stop_inventory import verify_cancel_drain
+            verify_cancel_drain(self,wid,timeout=0)
+            return self.workflow.skip_pass_slices(request,dry_run=dry_run)
+
     def recover_pass_execution(self, request, *, dry_run=False):
         """Authorize one fresh native attempt without changing domain/slice inputs."""
         if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
@@ -1018,6 +1036,9 @@ class IngestKanbanAdapter:
         if not isinstance(request.get('reason'), str) or not request['reason'].strip():
             _fail('INVALID_SCHEMA', 'describe the corrected mechanical cause')
         entries = request.get('entries')
+        scope=request.get('recovery_scope','mechanical/v1')
+        if scope not in ('mechanical/v1','phase-packet-grouping/v1'):
+            _fail('INVALID_SCHEMA','unknown recovery scope')
         if (not isinstance(entries, list) or not entries or any(not isinstance(e, dict) for e in entries)
                 or len({e.get('node') for e in entries}) != len(entries)):
             _fail('INVALID_SCHEMA', 'recovery requires unique selected nodes')
@@ -1063,7 +1084,11 @@ class IngestKanbanAdapter:
                     item = next((s for s in slices if 'pass-slice:'+s['slice_id'] == name), None)
                     if item is None or item['state'] != 'cancelled':
                         _fail('INVALID_TRANSITION', 'only selected cancelled unfinished slices can recover')
-                    if any(name in r['nodes'] for r in value.get('execution_recovery_history', [])):
+                    previous=[r for r in value.get('execution_recovery_history', []) if name in r['nodes']]
+                    repeated=(previous and scope=='mechanical/v1') or any(
+                        _load_json(_vault_path(self.workflow.vault,r['report_ref']))['request'].get('recovery_scope','mechanical/v1')==scope
+                        for r in previous)
+                    if repeated:
                         _fail('RECOVERY_EXHAUSTED', 'one mechanical retry per slice; diagnose a repeated failure')
                     node = pass_node(value, item)
                     card = next((c for c in value['kanban']['task_map'] if c['node']==name), None)
@@ -1080,7 +1105,12 @@ class IngestKanbanAdapter:
                             or report.get('input_fingerprint') != node.input_fingerprint
                             or report.get('task_id') != card['task_id']):
                         _fail('STALE_INPUT', 'failure evidence or binding changed')
-                    codes = mechanical_failure_codes(report)
+                    codes = mechanical_failure_codes(report,scope)
+                    if scope=='phase-packet-grouping/v1':
+                        from hermes_source_units.semantic_budget import budget_policy_pin
+                        effective=self.workflow.execution_template(value,item['slice_id']) or self.workflow.pinned_templates(value)['pass-slice']
+                        if not semantic_template('pass-slice',effective) or batch['slice_config'].get('semantic_budget_policy')!=budget_policy_pin():
+                            _fail('STALE_PLAN','grouped-packet recovery requires the current pinned phase policy')
                     snapshot = self.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
                     task = snapshot.get('task', {})
                     if (task.get('id') != card['task_id'] or task.get('worker_pid')
@@ -1235,7 +1265,7 @@ class IngestKanbanAdapter:
                     if (value["dispatch_policy"]["mode"] == "full"
                             and not self.workflow.pending_pause(value)
                             and value["current_stage"] == "analyzing"
-                            and all(item["state"] == "completed"
+                            and all(item["state"] == "completed" or item['slice_id'] in self.workflow.skipped_pass_slices(value)
                                     for item in self.workflow.knowledge._slices(value["batch_id"]))):
                         transition = {"workflow_id": workflow_id, "actor": actor,
                                       "expected_revision": value["revision"],
@@ -1469,6 +1499,8 @@ class IngestKanbanAdapter:
                                 break
                     self.kanban.complete(slug, ids[node.name],
                                          summary)
+                elif node.kind=='pass-slice' and node.name.partition(':')[2] in self.workflow.skipped_pass_slices(updated):
+                    self.kanban.archive(slug,ids[node.name])
                 elif self._failed_card(workflow_id, node):
                     if not self._execution_blocked(workflow_id, node):
                         self.kanban.wait(slug, ids[node.name], 'blocked', 'Vault validation gate requires review')
@@ -1541,7 +1573,8 @@ class IngestKanbanAdapter:
                         for n in nodes),
                     "board_id": slug, "task_count": len(task_map),
                     "canary_complete": canary_done, "canary_report_ref": canary_report,
-                    "execution_blocked": [n.name for n in nodes if self._execution_blocked(workflow_id, n)],
+                    "execution_blocked": [n.name for n in nodes if self._execution_blocked(workflow_id, n)
+                        and not (n.kind=='pass-slice' and n.name.partition(':')[2] in self.workflow.skipped_pass_slices(updated))],
                     "pass_revision": ({'revision_id': updated['pass_revision']['revision_id'],
                                        'state': updated['pass_revision']['state']}
                                       if updated.get('pass_revision') else None)}
@@ -1567,6 +1600,8 @@ class IngestKanbanAdapter:
         if len(matching) != 1 or not node_name.startswith("pass-slice:"):
             _fail("ACCESS_DENIED", "Kanban task is not bound to this Pass slice")
         slice_id = node_name.partition(":")[2]
+        if slice_id in self.workflow.skipped_pass_slices(workflow):
+            _fail('PASS_SKIPPED','excluded work is a coverage gap, not worker evidence')
         value = self.workflow.knowledge._slice(workflow["batch_id"], slice_id)
         node = pass_node(workflow, value)
         if matching[0]["idempotency_key"] != (
@@ -1811,7 +1846,7 @@ class IngestKanbanAdapter:
                                            for item in lint.get("issues", [])
                                            if item.get("severity") == "error"]})
             release_ref = f"_system/knowledge-releases/{release_id}/manifest.json"
-            target = ("partial" if self.workflow.source_coverage(workflow)["failed"]
+            target = ("partial" if self.workflow.source_coverage(workflow)["failed"] or self.workflow.skipped_pass_tasks(workflow)
                       else "completed")
             updated = self._advance(workflow, target, [release_ref, report])
         else:
@@ -1874,7 +1909,22 @@ class IngestKanbanAdapter:
                     "document_id": record["document_id"], "version_id": record["version_id"],
                     "resource_id": record["resource_id"], "registry_revision": result["registry_revision"]}
 
-    def worker_begin(self, request: Mapping[str, Any]) -> dict[str, Any]:
+    def worker_begin(self, request: Mapping[str, Any], *, phase_grouped=False) -> dict[str, Any]:
+        owned = {}
+        try:
+            return self._worker_begin(request, phase_grouped=phase_grouped, lease_callback=owned.update)
+        except (ContractError, OSError, ValueError) as exc:
+            if owned:
+                with span('begin_failure_cleanup', workflow_id=request['workflow_id'], target_task_id=request['task_id']) as trace:
+                    try:
+                        with worker_binding(owned), workflow_write_guard(self.workflow.vault, kinds=('pass-slice',), actor=owned['actor']):
+                            result = self.worker_fail({**owned, 'code':getattr(exc, 'code', 'PREPARATION_FAILED'), 'message':str(exc)})
+                        trace.update(lease_released=bool(result.get('ok')), decision='own_begin_lease_released')
+                    except (ContractError, OSError, ValueError) as cleanup_error:
+                        trace.update(lease_released=False, decision='trusted_settlement_required', error=str(cleanup_error))
+            raise
+
+    def _worker_begin(self, request: Mapping[str, Any], *, phase_grouped=False, lease_callback=None) -> dict[str, Any]:
         self.validate_worker_request(request, beginning=True)
         if str(request["node"]).startswith("source-prepare:") or request["node"] == "exact-plan":
             workflow, node, source = self._pre_worker(request, beginning=True)
@@ -1908,6 +1958,8 @@ class IngestKanbanAdapter:
                 return result
             bound = {**request, 'expected_revision':result['slice']['revision'],
                      'template_hash':result['slice']['template_hash'], 'actor':workflow['actor']}
+            if lease_callback:
+                lease_callback(bound)
         with worker_binding(dict(bound)):
             prepared = self.workflow.knowledge.prepare_leased_slice(
                 workflow['batch_id'], value['slice_id'], worker_id, result['slice']['revision'],
@@ -1929,9 +1981,14 @@ class IngestKanbanAdapter:
                         self.worker_check(bound, verify_inputs=False)
                         packet = self.workflow.knowledge.model_packet(projections, workflow['batch_id'], persist=True)
                     # Canonical packages and task snapshots never reach the model.
+                    config = self.workflow.knowledge._batch(workflow['batch_id'])['slice_config']
+                    from hermes_source_units.semantic_budget import budget_policy_pin
+                    grouped = phase_grouped and semantic_template('pass-slice', effective) and config.get('semantic_budget_policy')==budget_policy_pin()
                     receipt = {'ok':True, 'leased':True, 'model_input':{'path':packet['path'],
                         'input_codepoints':packet['codepoints'],'task_count':len(projections)},
                                'input_codepoints':0, 'worker_request':bound}
+                    if grouped:
+                        receipt['model_input']['delivery'] = 'program_phase_groups/v1'
                     # Count the actual UTF-8 JSON presentation (codepoints), not
                     # an unformatted proxy. The renderer writes compact view files.
                     receipt['input_codepoints'] = packet['codepoints']
@@ -1940,8 +1997,13 @@ class IngestKanbanAdapter:
                         if measured == receipt['input_codepoints']:
                             break
                         receipt['input_codepoints'] = measured
-                    config = self.workflow.knowledge._batch(workflow['batch_id'])['slice_config']
-                    if receipt['input_codepoints'] > config['slice_max_input_codepoints']:
+                    if grouped:
+                        if len(projections) > config['slice_max_tasks']:
+                            _fail('ACCESS_DENIED', 'grouped packet requires the pinned fixed semantic contract')
+                        aggregate_limit = max(1,len(projections))*config['slice_max_input_codepoints'] + 4096
+                        if receipt['input_codepoints'] > aggregate_limit:
+                            _fail('READING_WINDOW_OVERSIZE', 'trusted aggregate packet exceeds its bounded staging limit')
+                    elif receipt['input_codepoints'] > config['slice_max_input_codepoints']:
                         _fail('READING_WINDOW_OVERSIZE', 'actual compact worker input exceeds budget')
                     return receipt
         return {"ok": True, "leased": True, "slice": result["slice"],

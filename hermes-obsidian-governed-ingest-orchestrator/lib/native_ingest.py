@@ -80,7 +80,7 @@ def read_pass_input(vault, *, begin=False, program=False):
     descriptor_path = workspace/'pass-input-descriptor.json'
     fresh = False
     if begin and not binding_path.exists():
-        result = adapter.worker_begin(binding)
+        result = adapter.worker_begin(binding, phase_grouped=True) if program else adapter.worker_begin(binding)
         if not result.get('leased'):
             reason = result.get('reason', 'not_leased')
             stopped = reason == 'batch_cancelled'
@@ -261,13 +261,15 @@ def workflow_status(vault, workflow_id=None, *, runtime=False):
            'stage':value['current_stage'], 'batch_id':value['batch_id'], 'pause':service.pause_status(value),
            'current_pass_revision':({k:revision[k] for k in ('revision_id','state')} if revision else None),
            'execution_config':plan['config'] if plan else None,
-           'execution_journal_pending':service._execution_journal(workflow_id).exists(),
+           'execution_journal_pending':(service._execution_journal(workflow_id).exists() or service._pass_skip_journal(workflow_id).exists()),
            'source_counts':{key:len(coverage[key]) for key in ('ready','failed','pending')}}
     if value['batch_id']:
         batch = service.knowledge._batch(value['batch_id'])
         slices = service.knowledge._slices(value['batch_id'])
         out.update(batch_revision=batch['revision'], batch_state=batch['state'],
                    slice_counts=dict(Counter(s['state'] for s in slices)), total_slices=len(slices),
+                   skipped_slices=len(service.skipped_pass_slices(value)),
+                   skipped_tasks=len(service.skipped_pass_tasks(value)),
                    active_leases=sum(bool(s['lease']['worker_id']) for s in slices),
                    pass_records=sum(len(list((service.vault/f'_system/knowledge-builds/task-{tid}/passes').glob('*.json')))
                                     for tid in batch['task_ids']),

@@ -125,7 +125,16 @@ def test_begin_wait_is_durable_and_does_not_create_binding(stopped,vault,monkeyp
 
 
 def test_missing_bounded_input_releases_only_own_lease(stopped,vault,monkeypatch):
+    from ingest_kanban import IngestKanbanAdapter
     adapter,value,amendment=stopped
+    # Fixed default workers now have a bounded packet. Inject the missing
+    # descriptor deliberately rather than depending on an obsolete template.
+    original_begin=IngestKanbanAdapter.worker_begin
+    def missing_descriptor(self,request,**kwargs):
+        result=original_begin(self,request,**kwargs)
+        result.pop('model_input',None)
+        return result
+    monkeypatch.setattr(IngestKanbanAdapter,'worker_begin',missing_descriptor)
     adapter.resume(workflow_request(workflow_id=value['workflow_id'],actor=value['actor'],expected_revision=value['revision']))
     current=adapter.workflow.status(value['workflow_id'])
     card=next(c for c in current['kanban']['task_map'] if adapter.workflow.knowledge._slice(

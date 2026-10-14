@@ -71,6 +71,7 @@ class ExecutionPlanMixin:
         return copy.deepcopy(plan) if cache is not None else plan
 
     def assert_execution_ready(self, workflow):
+        self.verify_pass_skips(workflow)
         if self._execution_journal(workflow['workflow_id']).exists():
             fail('EXECUTION_PLAN_PENDING', 'finish the authorized amendment before resume/dispatch')
         recovered = set()
@@ -85,9 +86,9 @@ class ExecutionPlanMixin:
                     or request['recovery_id'] != recovery['recovery_id']
                     or request['input_digest'] != recovery['input_digest']
                     or [e['node'] for e in report['entries']] != recovery['nodes']
-                    or recovered.intersection(recovery['nodes'])):
+                    or any((n,request.get('recovery_scope','mechanical/v1')) in recovered for n in recovery['nodes'])):
                 fail('STALE_INPUT', 'execution recovery identity changed or repeated')
-            recovered.update(recovery['nodes'])
+            recovered.update((n,request.get('recovery_scope','mechanical/v1')) for n in recovery['nodes'])
         plan = self.execution_plan(workflow)
         batch_ref = self.knowledge._batch(workflow['batch_id']).get('execution_plan_ref') if workflow['batch_id'] else None
         workflow_ref = workflow.get('execution_plan', {}).get('path')
