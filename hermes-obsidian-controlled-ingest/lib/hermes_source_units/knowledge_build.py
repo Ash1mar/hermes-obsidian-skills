@@ -1209,8 +1209,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         No domain output is revised or inferred here.
         """
         pointer = batch.get('execution_plan_ref')
+        skipped={s['slice_id'] for s in slices if any(self._task(t)['status']=='skipped' for t in s['task_ids'])}
         if not pointer or '/execution-plans/' not in pointer:
-            return set()
+            return skipped
         root = pointer.split('/execution-plans/', 1)[0]
         wid = root.rsplit('/', 1)[-1]
         completed = {tid for value in slices if value['state'] == 'completed'
@@ -1241,7 +1242,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                     or binding.get('task_id') != report.get('task_id')):
                 continue
             refused.update(tid for tid in old['task_ids'] if tid not in completed)
-        return {value['slice_id'] for value in slices
+        return skipped | {value['slice_id'] for value in slices
                 if value['state'] != 'completed' and refused.intersection(value['task_ids'])}
 
     def resume_cancelled_batch(self, batch_id: str, actor: str,

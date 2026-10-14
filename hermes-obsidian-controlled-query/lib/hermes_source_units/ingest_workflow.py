@@ -20,6 +20,7 @@ from .file_locks import kernel_lock, process_exists, host_identity
 from .ingest_pauses import WorkflowPauseMixin
 from .pass_revision import PassRevisionMixin
 from .execution_plan import ExecutionPlanMixin
+from .pass_skips import PassSkipMixin
 
 WORKFLOW_ROOT = "_system/ledgers/ingest-workflows"
 WORKFLOW_CONTRACT = "hermes-ingest-workflow/v1"
@@ -79,7 +80,7 @@ def display_phase(value: Mapping[str, Any]) -> dict[str, Any]:
     _fail("INVALID_SCHEMA", "workflow stage has no display phase")
 
 
-class FileIngestWorkflowService(ExecutionPlanMixin, PassRevisionMixin, WorkflowPauseMixin):
+class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionMixin, WorkflowPauseMixin):
     def __init__(self, vault_root: str | Path):
         self.knowledge = FileKnowledgeBuildService(vault_root)
         self.vault = self.knowledge.vault
@@ -571,15 +572,16 @@ class FileIngestWorkflowService(ExecutionPlanMixin, PassRevisionMixin, WorkflowP
                 coverage = self.source_coverage(value)
                 if coverage["pending"] or not coverage["ready"]:
                     _fail("INCOMPLETE_COVERAGE", "planning requires every source outcome and at least one ready source")
-            if target == "completed" and self.source_coverage(value)["failed"]:
+            if target == "completed" and (self.source_coverage(value)["failed"] or self.skipped_pass_tasks(value)):
                 _fail("INCOMPLETE_COVERAGE", "record final workflow as partial while source gaps remain")
             if target == "reducing" and value["scope"].get("execution_mode") == "canary_only":
                 _fail("INVALID_TRANSITION", "canary-only workflow stops after its eight Pass slices")
             if target == "reducing" and value["scope"].get("execution_mode") == "auto_full":
                 if (value["dispatch_policy"]["mode"] != "full" or
-                        any(item["state"] != "completed"
+                        any(item["state"] != "completed" and item['slice_id'] not in self.skipped_pass_slices(value)
                             for item in self.knowledge._slices(value["batch_id"]))):
                     _fail("INCOMPLETE_COVERAGE", "all Pass slices and canary promotion are required")
+                self.verify_pass_skips(value)
             if target == "analyzing" and value["batch_id"] is None:
                 batch_id = str(request.get("batch_id", ""))
                 coverage = self.source_coverage(value)

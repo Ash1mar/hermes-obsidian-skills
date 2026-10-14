@@ -142,6 +142,38 @@ start the Gateway. Foreign-host JSON markers cannot be removed by this plain-PID
 
 ## Auditable pre-batch repair
 
+### Explicit Pass gaps and grouped program staging
+
+With user authorization, `skip-pass-slices` excludes failed content without declaring it
+verified. Save a current actor/revision/digest request with a stable `operation_id` and
+`entries`: each has `slice_id`, `reason`, and `evidence` (`ref`, `sha256`) covering its
+task ownership through bound current or superseded failure reports. Preview then apply
+the same request using `python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault
+"<vault>" skip-pass-slices --dry-run --request "<request.json>"`, then omit `--dry-run`.
+The workflow and batch must be cancelled and quiescent; completed slices, source IDs,
+targets, readings and every Pass remain. A recoverable journal serializes task status
+updates and the gap manifest; interrupted updates block execution until that exact
+request finishes. Semantic/material refusals, unresolved original model requests,
+duplicate content and missing inspections can be excluded as gaps; their ownership
+is not automatically labelled a model error. Program budget/lease/permission failures
+must be repaired separately. Excluded ranges are never passed to Reduce as evidence.
+
+Only the fixed program worker may use `program_phase_groups/v1` staging: its aggregate
+packet is bounded by task count and the existing per-task input cap, and never delivered
+whole to the model. Candidate/citation groups still check full actual messages/schema,
+images, input/output and reserve limits before each SDK call. No truncation, expanded
+reading authority, new task IDs or model budget increase is permitted. An indivisible
+oversized task stays unresolved. After this evidenced admission fix, a selected budget
+failure can use `recover-pass-execution` with `recovery_scope: phase-packet-grouping/v1`;
+the program verifies the pinned fixed phase policy and allows one attempt for that
+distinct corrected cause. It cannot continually regrant the same budget failure.
+
+When all Pass slices are completed or explicitly excluded, the normal Pass pause
+includes hashed gap reports and records a partial outcome. No automatic continuation
+is implied. After separate continuation, reducer task lists and candidate evidence
+exclude skipped tasks; downstream validation retains skipped coverage and final
+workflow acceptance is partial. Partial products are not full-source verification.
+
 ### Selected mechanical Pass recovery
 
 Only a trusted operator with user authorization may recover selected cancelled unfinished

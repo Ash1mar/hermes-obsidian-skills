@@ -49,6 +49,9 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
     # Passes already have individual durable preflights and partial recovery.
     # Hold cancellation serialization for one atomic Pass, not the whole group.
     for index,item in enumerate(expanded['passes']):
+        from hermes_source_units.exact_duplicates import normalize_pass
+        item,removed=normalize_pass(item)
+        pass_audit={**audit,**({'exact_duplicate_normalization':{'removed':removed,'semantics_changed':False}} if removed else {})}
         with span('pass_total', task_id=item['task_id']):
             try:
                 live=adapter.worker_check(binding,verify_inputs=False)
@@ -65,7 +68,7 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
                         with span('pass_commit', task_id=item['task_id']):
                             result=service.record_pass_batch({**expanded,'passes':[item],'slice_id':checked['slice_id'],
                                 'worker_id':binding['worker_id'],'template_hash':binding['template_hash']},
-                                lock_timeout=WORKER_LOCK_TIMEOUT,lock_check=lambda:adapter.worker_check(binding,verify_inputs=False),submission_audit=audit,
+                                lock_timeout=WORKER_LOCK_TIMEOUT,lock_check=lambda:adapter.worker_check(binding,verify_inputs=False),submission_audit=pass_audit,
                                 prepared_passes={item['task_id']:prepared})
                             failures.extend(result['failures'])
                             for r in result['results']:

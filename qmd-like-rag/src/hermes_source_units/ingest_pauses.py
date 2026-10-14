@@ -56,7 +56,8 @@ class WorkflowPauseMixin:
                 records = [s for s in slices if s["slice_id"] in selected]
                 ready = (bool(selected) and len(records) == len(selected)
                          and (boundary != "canary" or len(selected) == 8)
-                         and all(s["state"] == "completed" and s["result_refs"] for s in records))
+                         and all((s["state"] == "completed" and s["result_refs"])
+                                 or (boundary=='pass' and s['slice_id'] in self.skipped_pass_slices(value)) for s in records))
                 if boundary == "pass" and not slices:
                     tasks = self.knowledge._batch(value["batch_id"])["task_ids"]
                     ready = bool(tasks) and all(self._task_passes_complete(t) for t in tasks)
@@ -152,15 +153,20 @@ class WorkflowPauseMixin:
                         *[item['ref'] for item in revision['evidence_hashes']]):
                 pin(ref)
         if boundary in ("canary", "pass"):
+            gaps=self.verify_pass_skips(value)
+            for pointer in value.get('pass_skip_history',[]):
+                pin(pointer['report_ref'])
             chosen = (value["dispatch_policy"]["slice_ids"] if boundary == "canary"
                       else [s["slice_id"] for s in self.knowledge._slices(value["batch_id"])])
             for sid in chosen:
                 item = self.knowledge._slice(value["batch_id"], sid)
+                if boundary=='pass' and sid in self.skipped_pass_slices(value):
+                    continue  # Explicit gap; never validate it as successful evidence.
                 if item["state"] != "completed" or not item["result_refs"]:
                     _fail("INCOMPLETE_COVERAGE", "pause requires durable completed Pass slices")
                 for ref in item["result_refs"]:
                     validate_record("knowledge_pass", _load_json(_vault_path(self.vault, ref)))
-            if boundary == "pass" and not all(self._task_passes_complete(t) for t in batch["task_ids"]):
+            if boundary == "pass" and not all(t in self.skipped_pass_tasks(value) or self._task_passes_complete(t) for t in batch["task_ids"]):
                 _fail("INCOMPLETE_COVERAGE", "every planned task requires candidate and citation Passes")
         for name, checkpoint in value["checkpoints"].items():
             if checkpoint.get("decision_ref"):
@@ -175,6 +181,8 @@ class WorkflowPauseMixin:
                 "stage": value["current_stage"], "scope": value["scope"],
                 "pinned_inputs": value["pinned_inputs"], "dispatch_policy": value["dispatch_policy"],
                 "source_outcomes": value.get("source_outcomes", []),
+                "pass_coverage_gaps": value.get('pass_skip_history',[]),
+                "pass_outcome": 'partial' if self.skipped_pass_tasks(value) else 'complete',
                 "checkpoints": value["checkpoints"], "files": files}
 
     def latch_pause(self, request):

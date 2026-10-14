@@ -20,7 +20,8 @@ def snapshot(adapter, binding):
     service = adapter.workflow.knowledge
     batch = service._batch(checked['batch_id'])
     kind, _, resource = binding['node'].partition(':')
-    tasks = [service._task(tid) for tid in batch['task_ids']]
+    adapter.workflow.verify_pass_skips(workflow)
+    tasks = [service._task(tid) for tid in batch['task_ids'] if tid not in adapter.workflow.skipped_pass_tasks(workflow)]
     if kind == 'resource-reduce':
         tasks = [t for t in tasks if {r['unit_ref']['resource_id'] for r in t['target_refs']} == {resource}]
     elif kind != 'global-reduce':
@@ -34,6 +35,9 @@ def snapshot(adapter, binding):
     eligible = {key:pair for key,pair in candidates.items()
         if pair[0]['pass_kind']=='citation' and (kind=='resource-reduce' or key in proposed)}
     view = {'phase':kind,'candidates':[]}
+    if workflow.get('pass_skip_history'):
+        view['coverage_limitations']={'excluded_task_count':len(adapter.workflow.skipped_pass_tasks(workflow)),
+            'note':'Some planned source ranges were explicitly skipped. They provide no evidence and must not be inferred or described as fully covered.'}
     packet, readings = fixed_evidence.original_evidence(service,
         [pair[0] for pair in eligible.values()], workflow['actor'], service._document_registry_revision())
     view['original_evidence'] = packet
@@ -58,6 +62,7 @@ def snapshot(adapter, binding):
         'passes':[fingerprint(p) for tid in sorted(passes) for p in passes[tid]],
         'document_registry_revision':service._document_registry_revision(),
         'reductions':reductions,'identities':None,'existing_pages':{}}
+    backend['coverage_gap_reports']=workflow.get('pass_skip_history',[])
     if kind=='global-reduce':
         view['proposals'] = [{'proposal':'p'+str(index), 'summary':p['summary'],
             'candidate_refs':list(dict.fromkeys(aliases[(r['pass_id'],r['candidate_id'])] for r in p['candidate_refs'])),

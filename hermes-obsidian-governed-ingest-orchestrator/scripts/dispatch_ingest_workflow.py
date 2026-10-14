@@ -34,6 +34,9 @@ def main() -> int:
     recovery = sub.add_parser('recover-pass-execution')
     recovery.add_argument('--request', required=True)
     recovery.add_argument('--dry-run', action='store_true')
+    skip = sub.add_parser('skip-pass-slices')
+    skip.add_argument('--request', required=True)
+    skip.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     temporary = None
     try:

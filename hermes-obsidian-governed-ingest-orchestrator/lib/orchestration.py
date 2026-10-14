@@ -52,7 +52,15 @@ def dispatch_ready_programs(vault, workflow_id):
         result = subprocess.run(['hermes', 'ingest-program-dispatch', '--vault', str(vault),
             '--workflow-id', workflow_id], capture_output=True, text=True, timeout=60)
     if result.returncode:
-        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or 'native program dispatch failed')
+        detail = result.stderr.strip() or result.stdout.strip() or 'native program dispatch failed'
+        try:
+            payload = json.loads(result.stdout)
+        except (ValueError, TypeError, AttributeError):
+            payload = {}
+        if isinstance(payload,dict) and (payload.get('code') == 'LOCK_BUSY'
+                or str(payload.get('error','')).startswith('LOCK_BUSY at $:')):
+            raise ContractError('LOCK_BUSY', '$', 'native dispatch is waiting for the current atomic commit')
+        raise RuntimeError(detail)
     return {'state':'dispatched'}
 
 
@@ -65,6 +73,8 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any], *, dry
         result = adapter.amend_execution(request, dry_run=dry_run)
     elif command == 'recover-pass-execution':
         result = adapter.recover_pass_execution(request, dry_run=dry_run)
+    elif command == 'skip-pass-slices':
+        result = adapter.skip_pass_slices(request, dry_run=dry_run)
     elif command == "worker-prepare-source":
         from source_preparation import prepare_source
         result = prepare_source(adapter, request)
