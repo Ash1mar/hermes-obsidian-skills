@@ -125,6 +125,7 @@ def test_begin_wait_is_durable_and_does_not_create_binding(stopped,vault,monkeyp
 
 
 def test_missing_bounded_input_releases_only_own_lease(stopped,vault,monkeypatch):
+    from ingest_kanban import IngestKanbanAdapter
     adapter,value,amendment=stopped
     # Fixed default workers now have a bounded packet. Inject the missing
     # descriptor deliberately rather than depending on an obsolete template.
