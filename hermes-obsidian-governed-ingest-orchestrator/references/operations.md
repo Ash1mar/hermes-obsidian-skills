@@ -171,6 +171,15 @@ failure can use `recover-pass-execution` with `recovery_scope: phase-packet-grou
 the program verifies the pinned fixed phase policy and allows one attempt for that
 distinct corrected cause. It cannot continually regrant the same budget failure.
 
+A complete phase request that fits its existing input, output and image bounds but
+fails only the correction reserve may be admitted as `single_attempt_no_correction`.
+Its plan and call audit record one attempt and zero correction reserve; an invalid
+response preserves partial results and stays held without a model correction call.
+No materials or task identities change. `correction-reserve-admission/v1` recovery
+accepts only the matching structured reserve-only failure, with the current pinned
+phase policy and the ordinary identity, hash and quiescence guards; one attempt per
+corrected cause remains enforced. Actual oversized input/output/images stay blocked.
+
 When all Pass slices are completed or explicitly excluded, the normal Pass pause
 includes hashed gap reports and records a partial outcome. No automatic continuation
 is implied. After separate continuation, reducer task lists and candidate evidence

@@ -86,7 +86,22 @@ def pass_node(workflow, value):
                     **({'recovery_digest': recovery['input_digest']} if recovery else {})}, []))
 
 
-def mechanical_failure_codes(report, scope='mechanical/v1'):
+def mechanical_failure_codes(report, scope='mechanical/v1', *, input_limit=30000):
+    if scope=='correction-reserve-admission/v1':
+        prefix='READING_WINDOW_OVERSIZE at $: '
+        suffix='; one whole task does not fit; no truncation or model call'
+        reason=report.get('reason','')
+        try:
+            usage=json.loads(reason[len(prefix):-len(suffix)]) if reason.startswith(prefix) and reason.endswith(suffix) else {}
+        except ValueError:
+            usage={}
+        numbers=[usage.get(k) for k in ('input_codepoints','correction_reserve_codepoints','estimated_output_tokens')]
+        if (report.get('error_code')=='READING_WINDOW_OVERSIZE'
+                and all(type(n) is int and n>=0 for n in numbers)
+                and 0<numbers[0]<=input_limit<numbers[0]+numbers[1]
+                and numbers[2]<=8192-1024 and usage.get('blocking_reasons')==['input_with_correction_reserve']):
+            return ['READING_WINDOW_OVERSIZE']
+        _fail('RECOVERY_NOT_ALLOWED','only a complete request blocked solely by correction reserve can recover')
     """Only structured, homogeneous mechanical failures permit a fresh attempt."""
     if (scope=='phase-packet-grouping/v1' and report.get('error_code')=='READING_WINDOW_OVERSIZE'
             and report.get('reason')=='READING_WINDOW_OVERSIZE at $: actual compact worker input exceeds budget'):
@@ -1037,7 +1052,7 @@ class IngestKanbanAdapter:
             _fail('INVALID_SCHEMA', 'describe the corrected mechanical cause')
         entries = request.get('entries')
         scope=request.get('recovery_scope','mechanical/v1')
-        if scope not in ('mechanical/v1','phase-packet-grouping/v1'):
+        if scope not in ('mechanical/v1','phase-packet-grouping/v1','correction-reserve-admission/v1'):
             _fail('INVALID_SCHEMA','unknown recovery scope')
         if (not isinstance(entries, list) or not entries or any(not isinstance(e, dict) for e in entries)
                 or len({e.get('node') for e in entries}) != len(entries)):
@@ -1105,8 +1120,8 @@ class IngestKanbanAdapter:
                             or report.get('input_fingerprint') != node.input_fingerprint
                             or report.get('task_id') != card['task_id']):
                         _fail('STALE_INPUT', 'failure evidence or binding changed')
-                    codes = mechanical_failure_codes(report,scope)
-                    if scope=='phase-packet-grouping/v1':
+                    codes = mechanical_failure_codes(report,scope,input_limit=batch['slice_config']['slice_max_input_codepoints'])
+                    if scope in ('phase-packet-grouping/v1','correction-reserve-admission/v1'):
                         from hermes_source_units.semantic_budget import budget_policy_pin
                         effective=self.workflow.execution_template(value,item['slice_id']) or self.workflow.pinned_templates(value)['pass-slice']
                         if not semantic_template('pass-slice',effective) or batch['slice_config'].get('semantic_budget_policy')!=budget_policy_pin():
