@@ -31,6 +31,9 @@ def main() -> int:
     amendment = sub.add_parser('amend-execution')
     amendment.add_argument('--request', required=True)
     amendment.add_argument('--dry-run', action='store_true')
+    recovery = sub.add_parser('recover-pass-execution')
+    recovery.add_argument('--request', required=True)
+    recovery.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     temporary = None
     try:
