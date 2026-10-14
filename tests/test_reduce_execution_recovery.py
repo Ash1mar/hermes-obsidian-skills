@@ -105,7 +105,7 @@ def test_cancelled_reduce_recovery_preserves_domain_and_pins_new_native_identity
     assert not any(c['node'] == 'build-finalize' for c in resumed['kanban']['task_map'])
     binding = json.loads((vault/f"_system/ledgers/ingest-workflows/{value['workflow_id']}/bindings/{fingerprint(fresh['idempotency_key'])}.json").read_text())
     assert adapter.worker_check(binding)['ok']
-    with pytest.raises(ContractError, match='ACCESS_DENIED'):
+    with pytest.raises(ContractError, match='STALE_INPUT'):
         adapter.worker_check({**binding, 'task_id':old['task_id']})
     assert not adapter._execution_blocked(value['workflow_id'], next(n for n in desired_graph(adapter.workflow, resumed) if n.name == fresh['node']))
 
