@@ -186,6 +186,24 @@ is implied. After separate continuation, reducer task lists and candidate eviden
 exclude skipped tasks; downstream validation retains skipped coverage and final
 workflow acceptance is partial. Partial products are not full-source verification.
 
+An explicit `deferral: bounded_input` entry in `skip-pass-slices` may exclude an
+unfinished citation whose complete current request truly exceeds the unchanged
+input cap. The trusted adapter verifies the current failed native binding, source
+bytes, pinned policy, persisted candidate and full citation plan under the same
+locks, and embeds that plan and packet hash in the gap report. A fitting request,
+candidate not yet produced, stale evidence, worker-origin request, permission
+failure or unknown program failure cannot use this deferral. It preserves every
+Pass and original reading, marks no verification success and excludes the selected
+allocation from downstream evidence. This is explicit budget deferral, not content
+misclassification or automatic retry. The ordinary dry-run/apply operation remains.
+
+Before a blocked coordinator exits, it runs the existing fast settlement until its
+exact ended Pass leases are cleared, with a 30-second bound. Native private grant,
+ended run and canonical binding checks remain; current native process inventory
+protects live workers even when the public JSON omits the PID. A stale recorded PID
+alone no longer keeps a dead worker's lease indefinitely. Unverified or unsettled
+shutdown reports an explicit error and keeps the affected work guarded.
+
 ### Selected mechanical Pass recovery
 
 Only a trusted operator with user authorization may recover selected cancelled unfinished

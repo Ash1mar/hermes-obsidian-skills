@@ -254,6 +254,23 @@ class KanbanCLI:
             return {key:getattr(task,key) for key in ('id','body','status','assignee',
                 'created_by','idempotency_key','current_run_id','worker_pid','claim_lock')}
 
+    def worker_is_active(self, slug, task_id, workflow_id, recorded_pid=None):
+        if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
+            _fail('ACCESS_DENIED','native process inventory requires a trusted reconciler')
+        if not Path('/proc').is_dir():
+            _fail('RUNTIME_UNVERIFIED','native process inventory is unavailable')
+        if recorded_pid:
+            try:
+                if (Path('/proc')/str(recorded_pid)/'cmdline').read_bytes():
+                    return True  # Conservatively protect even a reused or unmarked PID.
+            except FileNotFoundError:
+                pass
+            except PermissionError:
+                _fail('RUNTIME_UNVERIFIED','cannot inspect the recorded native PID')
+        from native_stop_inventory import workflow_processes
+        return any(p['kind']=='native_worker' and p['task_id']==task_id
+                   for p in workflow_processes(workflow_id,slug))
+
     @contextmanager
     def projection(self, slug):
         """One read projection only; native mutations and claims remain live."""
@@ -733,8 +750,10 @@ class IngestKanbanAdapter:
                 continue
             snapshot=self.kanban.task_snapshot(value['kanban']['board_id'],card['task_id'])
             task=self._completion_grant(value['kanban']['board_id'],card,snapshot)
+            active=(self.kanban.worker_is_active(value['kanban']['board_id'],card['task_id'],value['workflow_id'],task.get('worker_pid'))
+                    if hasattr(self.kanban,'worker_is_active') else bool(task.get('worker_pid')))
             if (task.get('id')!=card['task_id'] or task.get('status') not in ('archived','blocked','scheduled','done','ready')
-                    or task.get('worker_pid') or any(not r.get('ended_at') for r in snapshot.get('runs',[]))):
+                    or active or any(not r.get('ended_at') for r in snapshot.get('runs',[]))):
                 continue
             body=json.loads(task['body'])
             binding_path=_vault_path(self.workflow.vault,
@@ -1037,7 +1056,35 @@ class IngestKanbanAdapter:
         with _exclusive_lock(lock), record_validation_scope():
             from native_stop_inventory import verify_cancel_drain
             verify_cancel_drain(self,wid,timeout=0)
-            return self.workflow.skip_pass_slices(request,dry_run=dry_run)
+            return self.workflow.skip_pass_slices(request,dry_run=dry_run,budget_check=self._citation_budget_deferral)
+
+    def _citation_budget_deferral(self,value,batch,item,failure):
+        """Measure current complete evidence; budget refusal is an explicit gap."""
+        node=pass_node(value,item)
+        card=next((c for c in value['kanban']['task_map'] if c['node']==node.name),None)
+        if (failure.get('node')!=node.name or failure.get('input_fingerprint')!=node.input_fingerprint
+                or not card or failure.get('task_id')!=card['task_id']):
+            _fail('STALE_INPUT','budget failure is not the current selected attempt')
+        from hermes_source_units.semantic_budget import budget_policy_pin,PHASE_BALANCED_POLICY
+        effective=self.workflow.execution_template(value,item['slice_id']) or self.workflow.pinned_templates(value)['pass-slice']
+        if not semantic_template('pass-slice',effective) or batch['slice_config'].get('semantic_budget_policy')!=budget_policy_pin():
+            _fail('STALE_PLAN','budget deferral requires the current pinned fixed phase policy')
+        service=self.workflow.knowledge
+        for tid in item['task_ids']:
+            service._verify_planned_measurement(service._task(tid),batch['actor'],batch['document_registry_revision'],None)
+        import fixed_semantic as fixed
+        packet=service.model_packet([service.preview_model_input(t,batch) for t in item['task_ids']],batch['batch_id'],persist=False)['view']
+        packet=fixed.visible_packet(packet)
+        tasks=[t for t in packet['tasks'] if t['continuation']['action']=='citation']
+        if not tasks or any(t['continuation']['action'] not in ('citation','complete') for t in packet['tasks']):
+            _fail('SKIP_NOT_ALLOWED','candidate work must exist before citation budget deferral')
+        limit=batch['slice_config']['slice_max_input_codepoints']
+        _,plan=fixed.build_group_plan(packet,tasks,'citation',limit,fixed.image_catalog(self,packet),PHASE_BALANCED_POLICY,pinned=True)
+        if (plan['state']!='blocked' or plan.get('error',{}).get('code')!='READING_WINDOW_OVERSIZE'
+                or not any(g['input_codepoints']>limit for g in plan['groups'])):
+            _fail('SKIP_NOT_ALLOWED','complete citation input fits; budget deferral is not applicable')
+        return {'phase':'citation','packet_sha256':fingerprint(packet),'input_fingerprint':node.input_fingerprint,
+                'current_task_id':card['task_id'],'plan':plan,'materials_truncated':False,'verification_success':False}
 
     def recover_pass_execution(self, request, *, dry_run=False):
         """Authorize one fresh native attempt without changing domain/slice inputs."""

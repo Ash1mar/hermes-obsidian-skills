@@ -60,7 +60,7 @@ class PassSkipMixin:
             seen.update(pointer['task_ids']);reports.append(report)
         return reports
 
-    def skip_pass_slices(self,request,*,dry_run=False):
+    def skip_pass_slices(self,request,*,dry_run=False,budget_check=None):
         if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
             fail('ACCESS_DENIED','Pass skipping requires a trusted operator')
         self._check_request(request);wid=str(request['workflow_id']);op=request.get('operation_id','')
@@ -121,7 +121,16 @@ class PassSkipMixin:
                                 fail('ACCESS_DENIED','skip evidence must be this workflow failure report')
                             data=path.read_bytes();failure=json.loads(data)
                             if hashlib.sha256(data).hexdigest()!=evidence['sha256']:fail('STALE_INPUT','skip failure changed')
-                            category=skippable_failure(failure)
+                            budget_proof=None
+                            if entry.get('deferral')=='bounded_input':
+                                if failure.get('error_code')!='READING_WINDOW_OVERSIZE' or budget_check is None:
+                                    fail('SKIP_NOT_ALLOWED','budget deferral requires current bounded-input verification')
+                                budget_proof=budget_check(value,batch,item,failure)
+                                if not budget_proof or budget_proof.get('phase')!='citation':
+                                    fail('SKIP_NOT_ALLOWED','unverified budget deferral')
+                                category='CITATION_BUDGET_DEFERRED'
+                            else:
+                                category=skippable_failure(failure)
                             node=failure.get('node','');key=failure.get('idempotency_key','')
                             if not node.startswith('pass-slice:') or key!=f"ingest:{wid}:pass-slice:{failure.get('input_fingerprint')}":
                                 fail('STALE_INPUT','failure is not a bound Pass attempt')
@@ -133,6 +142,7 @@ class PassSkipMixin:
                                 fail('STALE_INPUT','failure binding changed')
                             covered.update(set(item['task_ids']).intersection(old_slice['task_ids']))
                             proofs.append({'ref':evidence['ref'],'sha256':evidence['sha256'],'category':category,'failure':failure})
+                            if budget_proof:proofs[-1]['budget_proof']=budget_proof
                         if not proofs or not covered or (covered!=set(item['task_ids']) and entry.get('scope')!='whole_failed_slice'):
                             fail('INCOMPLETE_COVERAGE','partial failure evidence requires an explicit whole unfinished slice exclusion')
                         targets={}
