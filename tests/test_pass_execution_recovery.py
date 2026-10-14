@@ -45,7 +45,8 @@ def test_recovery_preserves_results_and_rejects_old_grant(stopped, vault, monkey
     result = adapter.recover_pass_execution(request)
     assert result['applied'] and not result['resumed']
     current = adapter.workflow.status(value['workflow_id'])
-    assert current['state']=='cancelled' and current['pause_control']==value['pause_control']
+    assert current['state']=='cancelled' and current.get('pause_control')==value.get('pause_control')
+    assert current['scope']['pause_after']==value['scope']['pause_after']
     assert all(p.read_bytes()==b for p,b in domain.items())
     original = json.loads((vault/ref).read_text())
     assert json.loads((vault/result['report_ref']).read_text())['entries'][0]['failure']==original

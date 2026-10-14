@@ -1086,6 +1086,20 @@ class IngestKanbanAdapter:
                     if (task.get('id') != card['task_id'] or task.get('worker_pid')
                             or any(not r.get('ended_at') for r in snapshot.get('runs', []))):
                         _fail('WORKER_ACTIVE', 'selected native attempt is active or unverifiable')
+                    binding_path = _vault_path(self.workflow.vault,
+                        f'_system/ledgers/ingest-workflows/{wid}/bindings/{fingerprint(key)}.json')
+                    binding = _load_json(binding_path)
+                    body = json.loads(task.get('body', '{}'))
+                    expected = {'workflow_id':wid, 'node':name, 'vault':str(self.workflow.vault),
+                                'input_fingerprint':node.input_fingerprint, 'worker_binding':str(binding_path),
+                                'slice_template_hash':item['template_hash']}
+                    if (task.get('created_by') != 'ingest-workflow'
+                            or any(body.get(k) != v for k,v in expected.items())
+                            or any(binding.get(k) != v for k,v in {
+                                'workflow_id':wid, 'node':name, 'task_id':card['task_id'],
+                                'actor':value['actor'], 'input_fingerprint':node.input_fingerprint,
+                                'template_hash':item['template_hash']}.items())):
+                        _fail('STALE_INPUT', 'native card or immutable dispatcher binding changed')
                     for tid in item['task_ids']:
                         service._verify_planned_measurement(service._task(tid), batch['actor'],
                             batch['document_registry_revision'], None)
