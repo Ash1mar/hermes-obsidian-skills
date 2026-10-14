@@ -276,7 +276,9 @@ def prepare_request_projection(phase,view,output_schema,images=(),correction=Non
 
 
 @measured('semantic_call', lambda adapter, binding, phase, view, caller, limit, correction=None, **kwargs: {'vault':adapter.workflow.vault,'binding':binding,'phase':phase})
-def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None):
+def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2):
+    if attempt_limit==1 and correction:
+        raise ContractError('INVALID_TRANSITION','$','single-attempt admission does not permit a correction call')
     output_schema=slot_schema(phase,view.get('tasks',[])) if phase in ('candidate','citation') else schema(phase)
     images=[]
     if isinstance(caller,HermesCaller):
@@ -330,7 +332,8 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
             task_identities={f't{i}':tid for i,tid in enumerate(identity['task_ids'],1)})
         if policy:
             audit.update(semantic_budget_policy=budget_policy_pin(),estimate_unit='estimated tokens; byte-based heuristic, not tokenizer measurement',
-                estimated_correction_reserve_codepoints=correction_reserve(len(view['tasks']),policy))
+                estimated_correction_reserve_codepoints=correction_reserve(len(view['tasks']),policy) if attempt_limit>1 else 0,
+                semantic_attempt_limit=attempt_limit)
     ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls/{fingerprint(audit)}.json"
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(audit))
     try:
@@ -495,7 +498,16 @@ def group_usage(packet,tasks,phase,limit,images,policy):
     if codepoints+reserve>limit:reasons.append('input_with_correction_reserve')
     if output>policy['output_tokens']-policy['output_reserve']:reasons.append('output_estimate')
     if images is not None and not images_fit(selected):reasons.append('whole_image_budget')
+    attempt_limit=2
+    configured_reserve=reserve
+    if reasons==['input_with_correction_reserve'] and codepoints<=limit:
+        # This complete request fits. Admit one attempt rather than reserve a
+        # correction that cannot fit. The execution loop must never retry it.
+        reserve=0;attempt_limit=1;reasons=[]
     return {'input_codepoints':codepoints,'correction_reserve_codepoints':reserve,
+        'configured_correction_reserve_codepoints':configured_reserve,
+        'semantic_attempt_limit':attempt_limit,
+        'admission_mode':'single_attempt_no_correction' if attempt_limit==1 else 'with_bounded_correction',
         'estimated_output_tokens':output,'image_count':measured_images['image_count'],
         'image_bytes':measured_images['image_bytes'],'largest_image_bytes':measured_images['largest_image_bytes'],
         'image_max_count':measured_images['max_images'],'image_max_bytes':measured_images['max_bytes'],
@@ -680,7 +692,8 @@ def run_pass(adapter,binding,caller):
         for tasks in groups:
             correction=None
             recovery_checked=False;attempt=0
-            while attempt<2:
+            attempt_limit=group_usage(packet,tasks,phase,limit,images,policy)['semantic_attempt_limit'] if policy else 2
+            while attempt<attempt_limit:
                 recovered=None
                 try:
                     view=subset(packet,tasks,phase)
@@ -696,7 +709,7 @@ def run_pass(adapter,binding,caller):
                         remaining=[t for t in tasks if t['task'] not in found]
                         draft['slot_failures']=[{'task':t['task'],'code':'INCOMPLETE_COVERAGE','message':'no reusable audited result; obtain remaining semantic work'} for t in remaining]
                     else:
-                        draft,call_ref=model_call(adapter,binding,phase,view,caller,limit,correction,policy=policy)
+                        draft,call_ref=model_call(adapter,binding,phase,view,caller,limit,correction,policy=policy,attempt_limit=attempt_limit)
                     authored,confirmations,failures=prepare_pass_items(adapter,draft,packet,tasks,phase)
                     for action,key,payload in (('submit','passes',authored),('confirm','confirmations',confirmations)):
                         if not payload: continue
@@ -731,7 +744,9 @@ def run_pass(adapter,binding,caller):
                 if recovered:
                     continue  # Mechanical replay consumes no semantic correction budget.
                 attempt+=1
-                if attempt>=2:
+                if attempt>=attempt_limit:
+                    if attempt_limit==1:
+                        raise ContractError('SEMANTIC_DRAFT_REJECTED','$','single-attempt budget admission rejected; preserve valid partial Passes; no correction call')
                     raise ContractError('SEMANTIC_DRAFT_REJECTED','$','one bounded semantic correction was exhausted; preserve valid partial Passes')
     if deferred:
         raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',json.dumps({

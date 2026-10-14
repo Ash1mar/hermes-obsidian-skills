@@ -11,6 +11,7 @@ from hermes_source_units.validation import fingerprint
 import fixed_semantic as fixed
 import fixed_reduce
 from program_worker import admission_check
+from ingest_kanban import PROGRAM_ASSIGNEE
 
 
 def test_fixed_pass_admission_precedes_lease_and_preserves_runtime_guard(stopped,vault):
@@ -208,7 +209,7 @@ def test_pass_admission_holds_live_domain_capacity_without_claiming():
     slices=[{'lease':{'worker_id':'already-owned'}}]
     knowledge=SimpleNamespace(_slices=lambda b:slices,_batch=lambda b:{'slice_config':{'pass_worker_concurrency':1}})
     adapter=SimpleNamespace(validate_worker_request=lambda *a,**k:None,
-        _slice_worker=lambda *a:({'batch_id':'fixture'},{'state':'ready'}),workflow=SimpleNamespace(knowledge=knowledge))
+        _slice_worker=lambda *a:({'batch_id':'fixture'},{'state':'ready'}),workflow=SimpleNamespace(vault='/isolated',knowledge=knowledge))
     with pytest.raises(ContractError,match='PASS_ADMISSION_WAIT'):
         admission_check(adapter,{'node':'pass-slice:next','workflow_id':'fixture','task_id':'next'})
     assert slices==[{'lease':{'worker_id':'already-owned'}}]
@@ -342,7 +343,7 @@ def test_trusted_termination_settles_only_ended_current_lease(stopped,vault,monk
     snapshot={'task':{'id':binding['task_id'],'status':'running' if live else 'archived',
         'worker_pid':123 if live else None,'current_run_id':17 if live else None,
         'created_by':'ingest-workflow','body':json.dumps(row['body'])},
-        'runs':[{'id':17,'started_at':stamp-1,'ended_at':None if live else stamp+1}]}
+        'runs':[{'id':17,'profile':PROGRAM_ASSIGNEE,'started_at':stamp-1,'ended_at':None if live else stamp+1}]}
     monkeypatch.setattr(adapter.kanban,'task_snapshot',lambda *a:snapshot)
     adapter.execution_failure(binding,'LOCK_TIMEOUT','isolated shared lock failure')
     adapter._settle_ended_pass_leases(current)
