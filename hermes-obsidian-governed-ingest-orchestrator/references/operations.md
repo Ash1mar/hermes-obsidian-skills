@@ -142,6 +142,37 @@ start the Gateway. Foreign-host JSON markers cannot be removed by this plain-PID
 
 ## Auditable pre-batch repair
 
+### Selected mechanical Pass recovery
+
+Only a trusted operator with user authorization may recover selected cancelled unfinished
+Pass slices. Keep the workflow and batch cancelled, with no pending amendment, live lease,
+native run, worker/reconciler or dispatchable board card. Canary must already be released;
+no held boundary or unaccepted semantic revision may be crossed. Correct the evidenced
+mechanical cause before selecting a retry.
+
+Save one request outside the Vault with `workflow_id`, current `actor`, `expected_revision`,
+stable `recovery_id`, `reason`, and `entries` containing each exact `node`, current native
+`task_id` and SHA-256 of its current failure report as `failure_sha256`. Compute the complete
+`input_digest` using the existing mutation digest contract. Preview and apply the same file:
+
+```bash
+python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" recover-pass-execution --dry-run --request "<request.json>"
+python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" recover-pass-execution --request "<request.json>"
+```
+
+The program accepts only `WORKFLOW_STOPPED`, or structured `PASS_EXECUTION_BLOCKED`
+failures whose every constituent is `WORKFLOW_STOPPED`/`LOCK_TIMEOUT`. Unknown, mixed,
+budget, coverage, permission, material and semantic failures remain guarded. It rechecks
+source bytes, planned measurements, current bindings, ended native attempts and runtime
+quiescence. The recovery audit preserves the original failure payload and hash. One atomic
+workflow append changes only selected native execution fingerprints; old bindings, slice
+identities, domain inputs, partial/complete Passes, budgets and pause history remain intact.
+Interrupted report-only writes can finish using the same request; replay acknowledges the
+same record and never grants an extra attempt. At most one recovery is accepted per slice.
+Recovery leaves everything cancelled. A separately authorized normal resume projects fresh
+native cards for selected slices; old/foreign grants remain rejected. Continue to the next
+durable pause or stop when no runnable work remains, without marking deferred slices done.
+
 `python3 "<skill-dir>/scripts/manage_ingest_workflow.py" --vault "<vault>" repair-preparation --request "<request.json>"` requires a cancelled workflow with no batch. Include workflow_id, actor, expected_revision, input_digest, a stable repair_id, reason, existing Vault evidence_refs, complete templates from the installed orchestration.worker_pack(), and optional execution_mode. Each reset_sources entry must pin path and outcome_digest (`sha256:` plus fingerprint of the current failed outcome). Only those failed outcomes are reset; valid registrations and other source outcomes remain. The before.json snapshot, its hash and repair history retain the old record. Old template snapshots stay immutable and old cards lose their binding. The command is idempotent for the same repair ID and digest, and does not resume work. A subsequent normal resume projects new cards from the repaired contracts.
 
 For a bounded trial choose canary_only. All requested sources are prepared (real failed files remain explicit gaps), exact planning runs, and exactly eight ready Pass slices run. The dispatcher writes reports/canary.json after their durable completion, then stops eligibility; no automatic promotion, Reduce or release follows. Fewer than eight ready slices reports canary_unavailable. Use auto_full only for an explicitly requested full run.

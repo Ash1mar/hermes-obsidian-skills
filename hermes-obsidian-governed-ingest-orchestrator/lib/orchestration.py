@@ -63,6 +63,8 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any], *, dry
         result = adapter.sync(_mutation(value))
     elif command == 'amend-execution':
         result = adapter.amend_execution(request, dry_run=dry_run)
+    elif command == 'recover-pass-execution':
+        result = adapter.recover_pass_execution(request, dry_run=dry_run)
     elif command == "worker-prepare-source":
         from source_preparation import prepare_source
         result = prepare_source(adapter, request)

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import ast
 from contextlib import closing, contextmanager, nullcontext
 from datetime import datetime, timezone
 import hashlib
@@ -74,11 +75,34 @@ def pass_node(workflow, value):
     revision = next((r for r in reversed([*workflow.get('pass_revision_history', []),
         *([workflow['pass_revision']] if workflow.get('pass_revision') else [])])
         if value['slice_id'] in r['slice_ids']), None)
-    return Node('pass-slice:' + value['slice_id'], 'pass-slice', (),
+    name = 'pass-slice:' + value['slice_id']
+    recovery = next((r for r in reversed(workflow.get('execution_recovery_history', []))
+                     if name in r['nodes']), None)
+    return Node(name, 'pass-slice', (),
                 node_identity(workflow, 'pass-slice', {
                     'slice_id':value['slice_id'], 'input_fingerprint':value['input_fingerprint'],
                     'template_hash':value['template_hash'],
-                    **({'revision_digest': revision['input_digest']} if revision else {})}, []))
+                    **({'revision_digest': revision['input_digest']} if revision else {}),
+                    **({'recovery_digest': recovery['input_digest']} if recovery else {})}, []))
+
+
+def mechanical_failure_codes(report):
+    """Only structured, homogeneous mechanical failures permit a fresh attempt."""
+    if report.get('error_code') == 'WORKFLOW_STOPPED':
+        return ['WORKFLOW_STOPPED']
+    if report.get('error_code') != 'PASS_EXECUTION_BLOCKED':
+        _fail('RECOVERY_NOT_ALLOWED', 'only cancellation and lock failures are recoverable here')
+    prefix = 'PASS_EXECUTION_BLOCKED at $: '
+    reason = report.get('reason', '')
+    try:
+        failures = ast.literal_eval(reason[len(prefix):]) if reason.startswith(prefix) else None
+    except (ValueError, SyntaxError):
+        failures = None
+    if (not isinstance(failures, list) or not failures
+            or any(not isinstance(f, dict) or f.get('stage') != 'pass'
+                   or f.get('code') not in ('WORKFLOW_STOPPED', 'LOCK_TIMEOUT') for f in failures)):
+        _fail('RECOVERY_NOT_ALLOWED', 'mixed, semantic, evidence and unknown failures remain held')
+    return sorted({f['code'] for f in failures})
 
 
 @measured('desired_graph', lambda service, workflow: {'vault':service.vault,'workflow_id':workflow['workflow_id'],'stage':workflow['current_stage']})
@@ -981,6 +1005,111 @@ class IngestKanbanAdapter:
                     if any(run.get('status') == 'running' for run in snapshot.get('runs', [])):
                         _fail('WORKER_ACTIVE', 'native run must finish before execution amendment')
             return self.workflow.amend_execution(request, dry_run=dry_run)
+
+    def recover_pass_execution(self, request, *, dry_run=False):
+        """Authorize one fresh native attempt without changing domain/slice inputs."""
+        if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
+            _fail('ACCESS_DENIED', 'execution recovery requires a trusted operator')
+        self.workflow._check_request(request)
+        wid = str(request['workflow_id'])
+        rid = request.get('recovery_id', '')
+        if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', rid):
+            _fail('INVALID_SCHEMA', 'invalid recovery ID')
+        if not isinstance(request.get('reason'), str) or not request['reason'].strip():
+            _fail('INVALID_SCHEMA', 'describe the corrected mechanical cause')
+        entries = request.get('entries')
+        if (not isinstance(entries, list) or not entries or any(not isinstance(e, dict) for e in entries)
+                or len({e.get('node') for e in entries}) != len(entries)):
+            _fail('INVALID_SCHEMA', 'recovery requires unique selected nodes')
+        lock = _vault_path(self.workflow.vault, f'_system/ledgers/ingest-workflows/.dispatch-locks/{wid}.lock')
+        with _exclusive_lock(lock), _exclusive_lock(self.workflow._lock(wid)), record_validation_scope():
+            value = self.workflow.status(wid)
+            if request['actor'] != value['actor']:
+                _fail('ACTOR_MISMATCH', 'recovery actor differs')
+            prior = next((r for r in value.get('execution_recovery_history', []) if r['recovery_id'] == rid), None)
+            if prior:
+                if prior['input_digest'] != request['input_digest']:
+                    _fail('IDEMPOTENCY_CONFLICT', 'recovery ID already used')
+                data = _vault_path(self.workflow.vault, prior['report_ref']).read_bytes()
+                if hashlib.sha256(data).hexdigest() != prior['report_sha256']:
+                    _fail('STALE_INPUT', 'recovery evidence changed')
+                return {'ok':True, 'replayed':True, 'applied':False, 'workflow_id':wid,
+                        'revision':value['revision'], 'report_ref':prior['report_ref'], 'nodes':prior['nodes']}
+            value = self.workflow._mutation(request)
+            self.workflow.assert_execution_ready(value)
+            if (value['state'] != 'cancelled' or not value['cancel_requested'] or not value['batch_id']
+                    or value['current_stage'] != 'analyzing' or self.workflow.pending_pause(value)
+                    or value['dispatch_policy']['mode'] != 'full'):
+                _fail('INVALID_TRANSITION', 'recovery requires a cancelled, released Pass batch')
+            if value.get('pass_revision') and value['pass_revision']['state'] != 'accepted':
+                _fail('REVISION_REVIEW_REQUIRED', 'finish semantic revision review first')
+            from native_stop_inventory import verify_cancel_drain
+            verify_cancel_drain(self, wid, timeout=0)
+            states = self.kanban.task_states(value['kanban']['board_id'])
+            if any(s in ('ready', 'running', 'triage', 'todo') for s in states.values()):
+                _fail('WORKER_ACTIVE', 'native board must be nondispatchable')
+            service = self.workflow.knowledge
+            with _exclusive_lock(service._batch_lock_path(value['batch_id'])):
+                batch = service._batch(value['batch_id'])
+                slices = service._slices(value['batch_id'])
+                if (batch['state'] != 'cancelled' or not batch['cancel_requested']
+                        or any(s['lease']['worker_id'] or s['state']=='leased' for s in slices)):
+                    _fail('WORKER_ACTIVE', 'batch must be cancelled with no live leases')
+                self.workflow._verify_execution_evidence(value)
+                service.source.enable_session_cache()
+                audited = []
+                for entry in entries:
+                    name = entry.get('node')
+                    item = next((s for s in slices if 'pass-slice:'+s['slice_id'] == name), None)
+                    if item is None or item['state'] != 'cancelled':
+                        _fail('INVALID_TRANSITION', 'only selected cancelled unfinished slices can recover')
+                    if any(name in r['nodes'] for r in value.get('execution_recovery_history', [])):
+                        _fail('RECOVERY_EXHAUSTED', 'one mechanical retry per slice; diagnose a repeated failure')
+                    node = pass_node(value, item)
+                    card = next((c for c in value['kanban']['task_map'] if c['node']==name), None)
+                    if not card or card['task_id'] != entry.get('task_id'):
+                        _fail('STALE_INPUT', 'selected native binding changed')
+                    key = f'ingest:{wid}:pass-slice:{node.input_fingerprint}'
+                    if card['idempotency_key'] != key:
+                        _fail('STALE_INPUT', 'selected node identity changed')
+                    ref = f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint(name)[:16]}.json'
+                    path = _vault_path(self.workflow.vault, ref)
+                    data = path.read_bytes()
+                    report = json.loads(data)
+                    if (entry.get('failure_sha256') != hashlib.sha256(data).hexdigest()
+                            or report.get('input_fingerprint') != node.input_fingerprint
+                            or report.get('task_id') != card['task_id']):
+                        _fail('STALE_INPUT', 'failure evidence or binding changed')
+                    codes = mechanical_failure_codes(report)
+                    snapshot = self.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
+                    task = snapshot.get('task', {})
+                    if (task.get('id') != card['task_id'] or task.get('worker_pid')
+                            or any(not r.get('ended_at') for r in snapshot.get('runs', []))):
+                        _fail('WORKER_ACTIVE', 'selected native attempt is active or unverifiable')
+                    for tid in item['task_ids']:
+                        service._verify_planned_measurement(service._task(tid), batch['actor'],
+                            batch['document_registry_revision'], None)
+                    audited.append({'node':name, 'previous_task_id':card['task_id'],
+                        'previous_input_fingerprint':node.input_fingerprint, 'failure_ref':ref,
+                        'failure_sha256':hashlib.sha256(data).hexdigest(), 'failure':report, 'codes':codes})
+                result = {'ok':True, 'workflow_id':wid, 'recovery_id':rid, 'applied':not dry_run,
+                          'nodes':[e['node'] for e in audited], 'state':'cancelled', 'resumed':False}
+                if dry_run:
+                    return {**result, 'revision':value['revision'], 'entries':audited}
+                ref = f'_system/ledgers/ingest-workflows/{wid}/execution-recoveries/{rid}.json'
+                report = {'request':dict(request), 'entries':audited, 'batch_id':value['batch_id'],
+                          'domain_inputs_changed':False, 'semantic_retry_authorized':False}
+                path = _vault_path(self.workflow.vault, ref)
+                data = _json_bytes(report)
+                if path.exists() and path.read_bytes() != data:
+                    _fail('IDEMPOTENCY_CONFLICT', 'recovery evidence differs')
+                _write_atomic(path, data)
+                value.setdefault('execution_recovery_history', []).append({
+                    'recovery_id':rid, 'input_digest':request['input_digest'], 'report_ref':ref,
+                    'report_sha256':hashlib.sha256(data).hexdigest(), 'nodes':result['nodes']})
+                value['revision'] += 1
+                self.workflow._write(value)  # One atomic control-plane commit; no domain edits.
+                return {**result, 'revision':value['revision'], 'report_ref':ref}
 
     def continue_workflow(self, request: Mapping[str, Any]) -> dict[str, Any]:
         value = self.workflow.continue_workflow(request)
