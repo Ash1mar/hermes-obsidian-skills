@@ -38,6 +38,82 @@ def task_content(view, task):
     return fingerprint({'task':task,'qa_rule':view.get('qa_rule')})
 
 
+def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode, *, home=None):
+    """Replay an exact genuine reducer call under a fresh authorized native identity.
+
+    This uses existing native audit/transcript evidence, not a semantic cache.
+    Submission still performs all current domain/hash/coverage checks.
+    """
+    if phase not in ('resource-reduce', 'global-reduce', 'global-plan', 'page-write'):
+        return None
+    adapter.worker_check(binding)
+    workflow = adapter.workflow.status(binding['workflow_id'])
+    adapter.workflow.assert_execution_ready(workflow)
+    permitted = {binding['task_id']: None}
+    for recovery in workflow.get('execution_recovery_history', []):
+        report = _load_json(_vault_path(adapter.workflow.vault, recovery['report_ref']))
+        if report['request'].get('recovery_scope') != 'reduce-cancel/v1':
+            continue
+        for entry in report['entries']:
+            if entry['node'] == binding['node']:
+                permitted[entry['previous_task_id']] = entry
+    home = Path(home) if home is not None else Path.home()/'.hermes'
+    if not (home/'state.db').is_file():
+        return None
+    vault = adapter.workflow.vault
+    root = vault/'_system/ledgers/ingest-workflows'/binding['workflow_id']/'semantic-calls'
+    image_inputs = [{k:v for k,v in image.items() if k != 'url'} for image in images]
+    with sqlite3.connect('file:'+str(home/'state.db')+'?mode=ro', uri=True) as db:
+        for path in sorted(root.glob('*.json'), key=lambda p:p.stat().st_mtime, reverse=True):
+            try:
+                audit = _load_json(path)
+                if (audit.get('phase') != phase or audit.get('workflow_id') != binding['workflow_id']
+                        or audit.get('node') != binding['node'] or audit.get('reused_from_audit')
+                        or audit.get('native_task_id') not in permitted or audit.get('validated') is False
+                        or audit.get('template_hash') != binding.get('template_hash')
+                        or audit.get('schema_sha256') != fingerprint(output_schema)
+                        or audit.get('input_sha256') != fingerprint(wire)
+                        or audit.get('user_sha256') != fingerprint(wire['user'])
+                        or audit.get('image_inputs', []) != image_inputs):
+                    continue
+                previous = permitted[audit['native_task_id']]
+                if previous and (str(audit.get('native_run_id')) not in previous['ended_run_ids']
+                                 or audit['template_hash'] != previous['template_hash']):
+                    continue
+                model = audit.get('model', {})
+                if (model.get('origin') != 'hermes_native_model'
+                        or model.get('response_sha256') != audit['response_sha256']):
+                    continue
+                session = model.get('session_id')
+                if db.execute('SELECT source FROM sessions WHERE id=?', (session,)).fetchone() != ('kanban',):
+                    continue
+                rows = list(db.execute('SELECT role,content,tool_calls FROM messages WHERE session_id=?', (session,)))
+                if any(tools and tools != '[]' for _,_,tools in rows):
+                    continue
+                users = [c for role,c,_ in rows if role == 'user' and c == wire['user']]
+                raw = [c for role,c,_ in rows if role == 'assistant' and fingerprint(c) == audit['response_sha256']]
+                if len(users) != 1 or len(raw) != 1:
+                    continue
+                draft, _ = decode(raw[0])
+                validate(phase, draft)
+                if 'blocked_reason' in draft:
+                    continue
+            except (ContractError, ValueError, TypeError, KeyError):
+                continue
+            adapter.worker_check(binding)
+            replay = {**audit, 'native_task_id':binding['task_id'],
+                'native_run_id':__import__('os').environ.get('HERMES_KANBAN_RUN_ID'),
+                'model_elapsed_ms':0, 'receipt_refs':[],
+                'reused_from_audit':path.relative_to(vault).as_posix(),
+                'original_native_task_id':audit['native_task_id'],
+                'recovery_contract':'same-node-exact-reducer-call/v1'}
+            replay.pop('validated', None)
+            ref = f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}/semantic-calls/{fingerprint(replay)}.json'
+            _write_atomic(_vault_path(vault, ref), _json_bytes(replay))
+            return draft, ref
+    return None
+
+
 def recover(adapter, binding, phase, view, decode, system, *, home=None):
     """Existing native audit is the recovery interface, never edited domain data.
 

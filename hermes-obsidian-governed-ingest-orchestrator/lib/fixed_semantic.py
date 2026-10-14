@@ -299,6 +299,12 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
             adapter.worker_check(live)
         else: adapter.worker_check(binding)
     if isinstance(caller,HermesCaller): caller.input_limit=limit
+    if isinstance(caller,HermesCaller) and not correction:
+        from fixed_semantic_recovery import recover_reduce
+        recovered = recover_reduce(adapter, binding, phase, wire, output_schema, images, decode_semantic_response)
+        if recovered:
+            prepared['closed'] = True
+            return recovered
     started=time.monotonic()
     input_sha256=fingerprint(wire)
     with span('model_call',phase=phase,input_sha256=input_sha256) as model_trace:
@@ -763,6 +769,7 @@ def execute(adapter,binding_path,caller=None):
     ref,input_value=fixed_reduce.prepare(adapter,binding)
     kind=input_value['backend']['kind']; correction=None
     for attempt in range(2):
+        call_refs=[]
         try:
             phase='global-plan' if kind=='global-reduce' and input_value['view'].get('existing_pages') else kind
             draft,call_ref=model_call(adapter,binding,phase,input_value['view'],caller,30000,correction)
@@ -779,6 +786,10 @@ def execute(adapter,binding_path,caller=None):
             for write_ref in call_refs[1:]: attach_receipt(adapter,write_ref,result)
             return adapter.worker_complete(binding)
         except ContractError as exc:
+            if exc.code in ('INVALID_SCHEMA','UNRESOLVED_REFERENCE','DUPLICATE','INCOMPLETE_COVERAGE','SEMANTIC_REVIEW_REQUIRED'):
+                for rejected_ref in call_refs:
+                    attach_receipt(adapter, rejected_ref, {'ok':False, 'validated':False,
+                        'code':exc.code, 'reason':str(exc), 'state':'draft_rejected'})
             if exc.code not in ('INVALID_SCHEMA','UNRESOLVED_REFERENCE','DUPLICATE','INCOMPLETE_COVERAGE') or attempt: raise
             correction={'code':exc.code,'message':str(exc)[:500]}
     raise RuntimeError('unreachable semantic phase')

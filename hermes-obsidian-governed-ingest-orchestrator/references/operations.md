@@ -344,3 +344,57 @@ previews it; `amend-execution` applies the same request and remains cancelled.
 Resume and continuation are independent authorized actions. Workers never migrate their own
 input contracts or read mapping manifests. Their compact draft still passes the ordinary
 bound preflight, canonical validation and durable write pipeline.
+
+## Bounded Reduce cancellation and recovery
+
+Keep `config/orchestration.json`'s `program_worker_concurrency` at two. Native configured
+capacity can further reduce this bound, never increase it. Fixed program claims share a
+Vault mutex and recheck running native claims immediately before their ordinary claim CAS.
+Each fixed semantic worker calls the model sequentially, including per-page writing.
+The global reducer remains a single node. Other workflow consumers must be isolated during
+scoped deployment/observation; the upper bound is not permission to dispatch another stage.
+
+Use the existing operator control cancellation with one stable operation ID at the bounded
+deadline. Verify cancelled workflow/batch, no pending journal, actual native workers and
+reconciler stopped, no live leases and no runnable/triage native cards. Keep window costs
+separate from drain costs. A naturally reached `checkpoint_1` pause stays paused and must
+not be cancelled merely to obtain a stop receipt.
+
+If a resource/global reducer ended without a domain result, select its observed node,
+old native task ID and current failure file SHA. With explicit recovery authorization:
+
+```json
+{
+  "workflow_id": "<observed-workflow>",
+  "actor": "<observed-actor>",
+  "expected_revision": 0,
+  "input_digest": "<computed-mutation-digest>",
+  "recovery_id": "<stable-recovery-id>",
+  "recovery_scope": "reduce-cancel/v1",
+  "reason": "<authorized interrupted-attempt recovery>",
+  "entries": [{"node": "<resource-reduce:resource-id-or-global-reduce>",
+               "task_id": "<observed-native-task>", "failure_sha256": "<current-failure-file-sha256>"}]
+}
+```
+
+```bash
+python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" recover-reduce-execution --dry-run --request "<request.json>"
+python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" recover-reduce-execution --request "<request.json>"
+```
+
+Dry-run writes no recovery/domain record. Applying the same request preserves all completed
+reductions, Passes, reading packages, task ownership, gaps and pause evidence. The selected
+failure and ended attempt are recorded; a later separately authorized resume binds a fresh
+native card. The old binding never regains write authority. This supports only a released,
+cancelled Reduce stage with `NATIVE_WORKER_STOPPED` or `WORKFLOW_STOPPED`, one recovery per
+reducer. It cannot authorize semantic corrections, budget changes, source resets or retries
+of unchanged refusals; another failure requires diagnosis.
+
+Before a model call the current worker may replay an existing genuine native audit only for
+the same node, exact system/user/schema/image hashes, pinned template and authorized old
+ended run. Native session source, transcript and response hashes are checked. Rejected,
+refused, unrelated and changed calls are not replayed. This includes already returned
+global plans and page bodies not yet submitted when interrupted; no inferred missing page
+is created. Every recovered draft still passes fresh normal source/ACL/coverage and commit
+checks. A call stopped before its response was durably audited has no reusable result.
+Completed domain results use trusted reconciliation instead of another semantic call.
