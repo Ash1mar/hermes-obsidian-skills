@@ -1118,7 +1118,7 @@ class IngestKanbanAdapter:
             _fail('INVALID_SCHEMA', 'describe the corrected mechanical cause')
         entries = request.get('entries')
         scope=request.get('recovery_scope','mechanical/v1')
-        if scope not in ('mechanical/v1','phase-packet-grouping/v1','correction-reserve-admission/v1','legacy-slice-config/v1'):
+        if scope not in ('mechanical/v1','phase-packet-grouping/v1','correction-reserve-admission/v1','legacy-slice-config/v1','revision-citation-packet/v1'):
             _fail('INVALID_SCHEMA','unknown recovery scope')
         if (not isinstance(entries, list) or not entries or any(not isinstance(e, dict) for e in entries)
                 or len({e.get('node') for e in entries}) != len(entries)):
@@ -1139,7 +1139,7 @@ class IngestKanbanAdapter:
                         'revision':value['revision'], 'report_ref':prior['report_ref'], 'nodes':prior['nodes']}
             value = self.workflow._mutation(request)
             self.workflow.assert_execution_ready(value)
-            legacy_revision=(scope=='legacy-slice-config/v1' and value['current_stage']=='reducing'
+            legacy_revision=(scope in ('legacy-slice-config/v1','revision-citation-packet/v1') and value['current_stage']=='reducing'
                 and value.get('pass_revision',{}).get('revision_scope')=='reduce-dependencies/v1'
                 and value['pass_revision']['state']=='running'
                 and request.get('revision_id')==value['pass_revision']['revision_id'])
@@ -1147,7 +1147,7 @@ class IngestKanbanAdapter:
                     or (value['current_stage'] != 'analyzing' and not legacy_revision) or self.workflow.pending_pause(value)
                     or value['dispatch_policy']['mode'] != 'full'):
                 _fail('INVALID_TRANSITION', 'recovery requires a cancelled, released Pass batch')
-            if scope=='legacy-slice-config/v1' and not legacy_revision:
+            if scope in ('legacy-slice-config/v1','revision-citation-packet/v1') and not legacy_revision:
                 _fail('INVALID_TRANSITION','historical slice recovery requires the current dependency revision')
             if value.get('pass_revision') and value['pass_revision']['state'] != 'accepted' and not legacy_revision:
                 _fail('REVISION_REVIEW_REQUIRED', 'finish semantic revision review first')
@@ -1197,7 +1197,7 @@ class IngestKanbanAdapter:
                             or report.get('task_id') != card['task_id']):
                         _fail('STALE_INPUT', 'failure evidence or binding changed')
                     legacy_identity=None
-                    if legacy_revision:
+                    if scope=='legacy-slice-config/v1':
                         if (report.get('error_code')!='STALE_INPUT' or report.get('reason')!='STALE_INPUT at $: slice input fingerprint changed'):
                             _fail('RECOVERY_NOT_ALLOWED','only the corrected historical configuration mismatch can recover')
                         from hermes_source_units.legacy_slice_identity import verify_snapshot
@@ -1205,6 +1205,11 @@ class IngestKanbanAdapter:
                                 for tid in item['task_ids']]
                         _,legacy_identity=verify_snapshot(self.workflow,value,item,inputs,request.get('historical_snapshot_ref',''))
                         codes=['STALE_INPUT']
+                    elif scope=='revision-citation-packet/v1':
+                        from revision_packet_recovery import CAUSES
+                        if report.get('error_code') not in CAUSES or report.get('reason')!=CAUSES[report['error_code']]:
+                            _fail('RECOVERY_NOT_ALLOWED','only the corrected fixed revision packet contract can recover')
+                        codes=[report['error_code']]
                     else:
                         codes = mechanical_failure_codes(report,scope,input_limit=batch['slice_config']['slice_max_input_codepoints'])
                     if scope in ('phase-packet-grouping/v1','correction-reserve-admission/v1'):
@@ -1234,10 +1239,15 @@ class IngestKanbanAdapter:
                     for tid in item['task_ids']:
                         service._verify_planned_measurement(service._task(tid), batch['actor'],
                             batch['document_registry_revision'], None)
+                    packet_identity=None
+                    if scope=='revision-citation-packet/v1':
+                        from revision_packet_recovery import verify
+                        packet_identity=verify(self,value,item,binding)
                     audited.append({'node':name, 'previous_task_id':card['task_id'],
                         'previous_input_fingerprint':node.input_fingerprint, 'failure_ref':ref,
                         'failure_sha256':hashlib.sha256(data).hexdigest(), 'failure':report, 'codes':codes})
                     if legacy_identity:audited[-1]['legacy_identity']=legacy_identity
+                    if packet_identity:audited[-1]['revision_packet_identity']=packet_identity
                 result = {'ok':True, 'workflow_id':wid, 'recovery_id':rid, 'applied':not dry_run,
                           'nodes':[e['node'] for e in audited], 'state':'cancelled', 'resumed':False}
                 if dry_run:

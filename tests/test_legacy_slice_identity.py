@@ -66,12 +66,46 @@ def test_historical_revision_recovery_preserves_identity_and_validates_old_confi
     assert new['task_id']!=card['task_id']
     with pytest.raises(ContractError,match='ACCESS_DENIED'):
         a.worker_begin({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id'],'worker_id':'stale'})
-    assert a.worker_begin({'workflow_id':w['workflow_id'],'node':new['node'],'task_id':new['task_id'],'worker_id':'fresh'})['model_input']
+    begun=a.worker_begin({'workflow_id':w['workflow_id'],'node':new['node'],'task_id':new['task_id'],'worker_id':'fresh'})
+    assert begun['model_input']
+    from native_ingest import read_pass_input,worker_action
+    monkeypatch.setattr('native_ingest.IngestKanbanAdapter',lambda *_a,**_k:a)
+    monkeypatch.setattr('bound_pass_submission.IngestKanbanAdapter',lambda *_a,**_k:a)
+    workspace=vault/'native-revision-space';workspace.mkdir()
+    (workspace/'worker-request.json').write_bytes(_json_bytes(begun['worker_request']))
+    (workspace/'pass-input-descriptor.json').write_bytes(_json_bytes(begun['model_input']))
+    monkeypatch.setenv('HERMES_KANBAN_TASK',new['task_id'])
+    monkeypatch.setenv('HERMES_KANBAN_WORKSPACE',str(workspace))
+    assert read_pass_input(vault)['ok']
+    packet=json.loads((vault/begun['model_input']['path']).read_text())
+    view=packet['tasks'][0];prior=view['continuation']['candidate']
+    draft={'task':view['task'],'sequence':view['next_sequence'],
+        'candidates':prior['candidates'],'empty_reason':prior['empty_reason'],
+        'inspections':[{'source_ref':m['ref'],'finding':'Reviewed actual assigned material','qa':'usable','qa_note':''} for m in view['materials']]}
+    result=worker_action(vault,'submit',{'passes':[draft]})
+    assert result['ok'],result
+    target=next(t for t in fresh['pass_revision']['tasks'] if t['task_id'] in a.workflow.knowledge._slice(w['batch_id'],sid)['task_ids'])
+    latest=a.workflow.knowledge._pass_index([target['task_id']])[1][target['task_id']][-1]
+    assert latest['revision_id']==revision['revision_id'] and latest['supersedes_pass_id']==target['pass_id']
     item=a.workflow.knowledge._slice(w['batch_id'],sid)
     old=next(s for s in original['slices'] if s['slice_id']==sid)
     assert item['input_fingerprint']==old['input_fingerprint'] and item['task_ids']==old['task_ids']
     assert a.workflow.knowledge._batch(w['batch_id'])['slice_config']['slice_max_tasks']==12
     assert all(p.read_bytes()==data for p,data in before.items() if 'passes' in p.parts or 'readings' in p.parts)
+
+
+def test_revision_slots_require_authored_inspections_and_reject_confirmation():
+    from fixed_semantic_schema import slot_schema
+    from fixed_semantic import prepare_pass_items
+    tasks=[{'task':'t1','next_sequence':2,'continuation':{'action':'citation','candidate':{'revision_review':True}}}]
+    schema=slot_schema('citation',tasks)
+    assert 'confirmed_unchanged' not in json.dumps(schema)
+    assert 'revised' in json.dumps(schema)
+    authored,confirmations,failures=prepare_pass_items(None,{'reviews':[{'task':'t1','decision':'confirmed_unchanged',
+        'review_note':'Claims are unchanged'}]},None,tasks,'citation')
+    assert not authored and not confirmations and failures[0]['code']=='INVALID_SCHEMA'
+    mixed=slot_schema('citation',[{'task':'t1','candidate':{'revision_review':True}},{'task':'t2','candidate':{}}])
+    assert mixed['properties']['results']['properties']['t1']['$ref']!=mixed['properties']['results']['properties']['t2']['$ref']
 
 
 @pytest.mark.parametrize('tamper',['config','old_slice','template','source_input','released_digest','unbound'])

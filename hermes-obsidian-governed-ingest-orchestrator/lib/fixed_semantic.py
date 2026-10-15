@@ -662,6 +662,11 @@ def prepare_pass_items(adapter,draft,packet,tasks,phase):
     authored=[];confirmations=[];failures=list(draft.get('slot_failures',[]))
     for item in draft['drafts' if phase=='candidate' else 'reviews']:
         if item.get('decision')=='confirmed_unchanged':
+            task=next(t for t in tasks if t['task']==item['task'])
+            if task.get('continuation',{}).get('candidate',{}).get('revision_review'):
+                failures.append({'task':item['task'],'code':'INVALID_SCHEMA',
+                    'message':'A revision requires an authored citation with actual inspections, not unchanged confirmation'})
+                continue
             confirmations.append({k:item[k] for k in ('task','decision','review_note')})
             continue
         try:

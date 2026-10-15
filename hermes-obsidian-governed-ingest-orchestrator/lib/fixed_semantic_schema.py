@@ -74,8 +74,15 @@ def slot_schema(phase, tasks):
     for branch in branches:
         branch['properties'].pop('task')
         branch['required'].remove('task')
-    return {**closed({'results':closed({t['task']:{'$ref':'#/$defs/result'} for t in tasks})}),
-            '$defs':{'result':{'anyOf':[*branches,closed({'blocked_reason':TEXT})]}}}
+    revisions={t['task'] for t in tasks if phase=='citation' and
+        t.get('candidate',t.get('continuation',{}).get('candidate',{})).get('revision_review')}
+    blocked=closed({'blocked_reason':TEXT})
+    authored=[b for b in branches if b.get('properties',{}).get('decision',{}).get('const')!='confirmed_unchanged']
+    definitions={'result':{'anyOf':[*(authored if len(revisions)==len(tasks) else branches),blocked]}}
+    if revisions and len(revisions)!=len(tasks):definitions['revision']={'anyOf':[*authored,blocked]}
+    return {**closed({'results':closed({t['task']:{'$ref':'#/$defs/'+
+        ('revision' if t['task'] in revisions and len(revisions)!=len(tasks) else 'result')} for t in tasks})}),
+            '$defs':definitions}
 
 
 def strict_schema(value):
