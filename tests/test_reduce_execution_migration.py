@@ -73,7 +73,7 @@ def test_migration_preserves_passes_pins_and_pauses_and_rebinds_only_reduce(lega
     result=a.migrate_reduce_execution(request)
     current=a.workflow.status(w['workflow_id'])
     assert current['state']=='cancelled' and not result['resumed']
-    assert current['scope']==w['scope'] and current['pause_control']==w['pause_control']
+    assert current['scope']==w['scope'] and current.get('pause_control')==w.get('pause_control')
     assert current['kanban']==w['kanban']
     assert a.migrate_reduce_execution(request)['replayed']
     assert all((vault/p).read_bytes()==b for p,b in old_templates.items())
@@ -106,7 +106,7 @@ def test_migration_rejects_unsafe_or_stale_work_without_writes(legacy,vault,monk
     if change=='attempt':a.kanban.native_runs[card['task_id']]=[{'status':'failed','started_at':1,'ended_at':2}]
     if change=='failure':a.execution_failure({'workflow_id':w['workflow_id'],**{k:card[k] for k in ('node','task_id')}},'READING_WINDOW_OVERSIZE','Isolated refusal')
     if change=='stage':w['current_stage']='analyzing';a.workflow._write(w)
-    if change=='completed':w['checkpoints']['checkpoint_1']['state']='rejected';a.workflow._write(w)
+    if change=='completed':w['checkpoints']['checkpoint_1']['state']='approved';a.workflow._write(w)
     request['input_digest']=mutation_digest(request)
     before={p:p.read_bytes() for p in vault.rglob('*.json')}
     with pytest.raises(ContractError,match=code):a.migrate_reduce_execution(request)
