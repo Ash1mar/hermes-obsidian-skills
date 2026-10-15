@@ -52,6 +52,15 @@ and execution budgets remain mandatory. Missing/tampered history stays blocked. 
 nodes remain isolated; a local legacy-path refusal alone does not justify cancelling unrelated
 revision work.
 
+The existing `mechanical/v1` recovery also covers selected unfinished slices of the
+current running dependency revision, with its exact `revision_id`. Ordinary source,
+failure-hash, binding, no-consumer and one-retry guards remain mandatory. An incomplete
+native-model-request transport report is eligible only when the last actual native
+attempt ended explicitly as `Vault workflow cancelled`, without a completed result;
+its observed revision packet and selected predecessors must still match current input.
+Other generic program/permission/semantic errors stay blocked. Recovery does not accept
+the revision or release its review hold.
+
 Fixed revision packets use the pinned revision template for typed-submission capability,
 including original slices. Their result slots allow only authored revisions or explicit
 blocking, never first-citation unchanged confirmation. For a failed attempt admitted through
