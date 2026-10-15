@@ -4,12 +4,57 @@ import hashlib
 import json
 from pathlib import Path
 import pytest
-from test_p3_knowledge_build import vault,workflow_request,ROOT
-from test_reduce_execution_recovery import stopped_reducer,sync
+from test_p3_knowledge_build import vault,workflow_request,ROOT,plan_sliced_batch,start_and_pin,IngestKanbanAdapter
+from test_reduce_execution_recovery import stopped_reducer,sync,EndedKanban,resource_fixture
 from hermes_source_units import ContractError
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.reduce_dependency_revision import assert_unconsumed_resources,snapshot
 from reduce_readiness import scan
+
+
+def repair_fixture(vault,monkeypatch,qa=False):
+    """Real fixture slices and pauses, with QA authored before downstream binding."""
+    k=plan_sliced_batch(vault,2,'inventory-batch')
+    a=IngestKanbanAdapter(vault,EndedKanban(),enable_workers=True)
+    w=start_and_pin(vault,workflow_request(workflow_id='inventory-workflow',actor='agent',expected_revision=0,
+        profile='compact-3',batch_id='inventory-batch',scope={'source_paths':[],'knowledge_selector':'all-current',
+        'execution_mode':'auto_full','provider':'skip','pause_after':['pass','checkpoint_1']}))
+    w['dispatch_policy']={'mode':'full','slice_ids':[],'selection_digest':None};a.workflow._write(w)
+    w=sync(a,w['workflow_id'])
+    from hermes_source_units.workflow_guard import worker_binding,workflow_write_guard
+    for card in w['kanban']['task_map']:
+        if not card['node'].startswith('pass-slice:'):continue
+        begun=a.worker_begin({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id'],'worker_id':'fixture'})
+        binding=begun['worker_request']
+        if 'task_snapshots' not in begun:
+            with worker_binding(binding):
+                begun=k.prepare_leased_slice(w['batch_id'],card['node'].partition(':')[2],binding['worker_id'],binding['expected_revision'],
+                    check=lambda:a.worker_check(binding,verify_inputs=False),timeout=3,
+                    write_guard=lambda:workflow_write_guard(vault,kinds=('pass-slice',),actor='agent'))
+        for task,pkg in zip(begun['task_snapshots'],begun['reading_packages']):
+            for seq in (0,1):
+                draft={'task_id':task['task_id'],'actor':'agent','expected_revision':k._task(task['task_id'])['revision'],
+                    'registry_revision':1,'reading_package_id':pkg['reading_package_id'],'sequence':seq,
+                    'pass_kind':'candidate' if seq==0 else 'citation','empty_reason':'',
+                    'inspections':[{'source_ref':task['target_refs'][0],'finding':'fixture inspected original',
+                        'qa':'needs-qa' if qa else 'usable','qa_note':'fixture original limitation' if qa else ''}],
+                    'candidates':[{'candidate_id':'claim','name':'Claim','kind':'fact','identity_rationale':'original fixture evidence',
+                        'finding':'Original fixture claim','applicability':'fixture','conditions':[],'exceptions':[],
+                        'support_refs':[task['target_refs'][0]]}]}
+                with worker_binding(binding),workflow_write_guard(vault,kinds=('pass-slice',)):
+                    assert k.record_pass_batch({'batch_id':w['batch_id'],'passes':[draft]})['ok']
+        a.worker_complete(binding)
+    w=sync(a,w['workflow_id'])
+    a.continue_workflow(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=w['revision'],
+        continue_id='fixture-open-reduce',boundary='pass',evidence_digest=w['pause_control']['evidence_digest']))
+    w=a.workflow.status(w['workflow_id']);cards=[c for c in w['kanban']['task_map'] if c['node'].startswith('resource-reduce:')]
+    resource_fixture(a,cards[0]);w=sync(a,w['workflow_id']);card=next(c for c in w['kanban']['task_map'] if c['node']==cards[-1]['node'])
+    failure=a.execution_failure({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id']},'SEMANTIC_REVIEW_REQUIRED','Isolated unresolved original QA')
+    a.kanban.ended.add(card['task_id'])
+    a.cancel(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=w['revision']))
+    w=a.workflow.status(w['workflow_id'])
+    monkeypatch.setattr('native_stop_inventory.workflow_processes',lambda *_a:[])
+    return a,w,card,failure
 
 
 def test_whole_batch_inventory_is_read_only_and_counts_all_tasks(vault,monkeypatch):
@@ -28,9 +73,7 @@ def test_whole_batch_inventory_is_read_only_and_counts_all_tasks(vault,monkeypat
 
 @pytest.mark.parametrize('consumed',[False,True])
 def test_dependency_revision_protects_independent_completed_source(vault,monkeypatch,consumed):
-    a,w,card,_,_=stopped_reducer(vault,monkeypatch);k=a.workflow.knowledge;b=k._batch(w['batch_id'])
-    w['pause_control']={'boundary':None,'evidence_digest':None,'report_ref':None,'history':[]}
-    a.workflow._write(w)
+    a,w,card,_=repair_fixture(vault,monkeypatch);k=a.workflow.knowledge;b=k._batch(w['batch_id'])
     selected_source=(k._resource_reduction(b['batch_id'],b['resource_reduction_ids'][0])['resource_id'] if consumed else card['node'].partition(':')[2])
     tid=next(t for t in b['task_ids'] if k._task(t)['target_refs'][0]['unit_ref']['resource_id']==selected_source)
     prior=max(k._pass_index([tid])[1][tid],key=lambda r:r['sequence'])
@@ -52,10 +95,11 @@ def test_dependency_revision_protects_independent_completed_source(vault,monkeyp
     if not consumed:
         completed=next(c for c in w['kanban']['task_map'] if c['node']=='resource-reduce:'+k._resource_reduction(b['batch_id'],b['resource_reduction_ids'][0])['resource_id'])
         a.revise_passes(q)
-        narrowed=sync(a,w['workflow_id'])
+        a.resume(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=a.workflow.status(w['workflow_id'])['revision']))
+        narrowed=a.workflow.status(w['workflow_id'])
         assert next(c for c in narrowed['kanban']['task_map'] if c['node']==completed['node'])==completed
         assert (vault/reduction_path).read_bytes()==before[vault/reduction_path]
-        assert narrowed['state']=='cancelled' and narrowed['pass_revision']['state']=='running'
+        assert narrowed['pass_revision']['state']=='running'
 
 
 def test_completed_reduce_binding_survives_narrow_revision_graph(vault,monkeypatch):
@@ -75,21 +119,11 @@ def test_completed_reduce_binding_survives_narrow_revision_graph(vault,monkeypat
 
 @pytest.mark.parametrize('case',['valid','usable','consumed','stale','worker'])
 def test_qa_task_deferral_preserves_originals_and_never_resumes(vault,monkeypatch,case):
-    a,w,card,_,_=stopped_reducer(vault,monkeypatch);k=a.workflow.knowledge;b=k._batch(w['batch_id'])
+    a,w,card,failed=repair_fixture(vault,monkeypatch,qa=case!='usable');k=a.workflow.knowledge;b=k._batch(w['batch_id'])
     source=card['node'].partition(':')[2]
     if case=='consumed':source=k._resource_reduction(b['batch_id'],b['resource_reduction_ids'][0])['resource_id']
     tid=next(t for t in b['task_ids'] if k._task(t)['target_refs'][0]['unit_ref']['resource_id']==source)
     prior=max(k._pass_index([tid])[1][tid],key=lambda r:r['sequence'])
-    if case!='usable':
-        # Isolated fixture only: append authored-looking QA history to test mechanics.
-        current=copy.deepcopy(prior);current.update(sequence=prior['sequence']+1,revision_id='fixture-qa',supersedes_pass_id=prior['pass_id'])
-        current['inspections'][0].update(qa='needs-qa',qa_note='Isolated original evidence limitation')
-        current['pass_id']=fingerprint({f:v for f,v in current.items() if f!='pass_id'})
-        root=vault/f'_system/knowledge-builds/task-{tid}/passes';(root/(current['pass_id']+'.json')).write_text(json.dumps(current))
-        prior=current
-        w=sync(a,w['workflow_id'])
-        card=next(c for c in w['kanban']['task_map'] if c['node']==card['node'])
-    failed=a.execution_failure({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id']},'SEMANTIC_REVIEW_REQUIRED','Isolated unresolved original QA')
     reviewer=vault/'_system/reports/deferral-review.json';reviewer.write_text(json.dumps({'scope':tid,'decision':'defer all candidates; gap remains'}))
     q=workflow_request(workflow_id=w['workflow_id'],actor=w['actor'],expected_revision=w['revision'],operation_id='defer-original-qa',
         reason='Explicitly defer incomplete original evidence',evidence_refs=['_system/reports/deferral-review.json'],
