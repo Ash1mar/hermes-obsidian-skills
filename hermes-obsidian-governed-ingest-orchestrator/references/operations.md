@@ -356,6 +356,39 @@ Gateway dispatch, replace its bindings or repeat resume to make this check pass.
 No in-flight stop or semantic recovery acceptance can be claimed without a real
 compatible native Reduce attempt.
 
+### Before the first legacy Reduce attempt
+
+With explicit migration authorization, prepare a request naming the observed workflow,
+stable migration ID and reason. It pins the current source contracts and installed
+target hashes; it does not mutate the workflow:
+
+```bash
+python3 "<skill-dir>/scripts/prepare_reduce_migration.py" --vault "<vault>" --workflow-id "<observed-id>" --migration-id "<stable-id>" --reason "<authorized reason>" --output "<request.json>"
+python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" migrate-reduce-execution --dry-run --request "<request.json>"
+python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" migrate-reduce-execution --request "<request.json>"
+```
+
+The trusted operator reviews and applies the same request. It requires cancelled
+workflow/batch, a released Reduce stage, no live consumers/leases/journal or dispatchable
+native cards, complete non-skipped Pass evidence, unchanged source/measurement identities,
+and no actual Reduce attempt, bound failure, reduction, build or checkpoint result.
+Zero-duration cancellation parking rows without a worker PID are administrative records;
+other native attempts are rejected. This is not a retry or a migration of prior results.
+
+Only `resource-reduce`, `global-reduce` and `checkpoint-1-validate` active pins change.
+The installed fixed templates must match the requested target hashes. Original template
+files and bindings remain audit evidence; a hashed migration report records both pin sets
+and previous native identities. One atomic workflow write activates the new pins and
+history, without changing batch/domain artifacts, Pass identities, budgets, gaps, policies,
+pause history or current cancelled state. Interrupted immutable staging can replay the
+same request; a different migration ID cannot repeat the migration. A later authorized
+resume projects fresh Reduce cards, archives obsolete cards through normal reconciliation
+and rejects old bindings. Changed migration evidence or template bytes block execution.
+Build Finalize, later stages, pause release, publishing and Provider sync are not migrated
+or authorized by this operation.
+
+### Bounded fixed execution
+
 Keep `config/orchestration.json`'s `program_worker_concurrency` at two. Native configured
 capacity can further reduce this bound, never increase it. Fixed program claims share a
 Vault mutex and recheck running native claims immediately before their ordinary claim CAS.
