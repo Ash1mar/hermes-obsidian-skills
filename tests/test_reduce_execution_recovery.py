@@ -146,3 +146,48 @@ def test_reduce_recovery_is_one_retry_and_report_tamper_blocks_resume(vault, mon
     with pytest.raises(ContractError, match='RECOVERY_EXHAUSTED'): adapter.recover_reduce_execution(again)
     (vault/result['report_ref']).write_text('{}')
     with pytest.raises(ContractError, match='STALE_INPUT'): adapter.workflow.assert_execution_ready(current)
+
+
+@pytest.mark.parametrize('change', ['valid','original_attempted','replacement_attempted','body','binding','reason'])
+def test_cancelled_unattempted_reduce_projection_recovery(vault,monkeypatch,change):
+    adapter,value,old,request,ref=stopped_reducer(vault,monkeypatch)
+    slug=value['kanban']['board_id'];node=next(n for n in desired_graph(adapter.workflow,value) if n.name==old['node'])
+    body=json.dumps(adapter.kanban.by_id[old['task_id']]['body'])
+    adapter.kanban.archive(slug,old['task_id'])
+    fresh=adapter.kanban.create_node(slug,node,old['idempotency_key'],[],body,enable_workers=False)
+    current={**old,'task_id':fresh}
+    value['kanban']['task_map']=[current if c['node']==old['node'] else c for c in value['kanban']['task_map']]
+    adapter.workflow._write(value)
+    ref=adapter.execution_failure({'workflow_id':value['workflow_id'],'node':old['node'],'task_id':fresh},
+        'DISPATCH_ARTIFACT_CHANGED','canonical dispatcher binding differs; trusted repair required')
+    original_snapshot=adapter.kanban.task_snapshot
+    def snapshot(board,tid):
+        result=original_snapshot(board,tid)
+        if tid==old['task_id']:
+            result['runs']=[{'id':1,'profile':'ingest-program','outcome':'scheduled',
+                'started_at':1,'ended_at':1,'summary':'Vault workflow cancelled','worker_pid':None}]
+            if change=='original_attempted':result['runs'][0]['ended_at']=2
+        if tid==fresh and change=='replacement_attempted':result['runs']=[{'id':2,'started_at':2,'ended_at':3}]
+        return result
+    monkeypatch.setattr(adapter.kanban,'task_snapshot',snapshot)
+    path=vault/f"_system/ledgers/ingest-workflows/{value['workflow_id']}/bindings/{fingerprint(old['idempotency_key'])}.json"
+    if change=='body':adapter.kanban.by_id[old['task_id']]['body']['input_fingerprint']='changed'
+    if change=='binding':
+        binding=json.loads(path.read_text());binding['actor']='foreign';path.write_text(json.dumps(binding))
+    if change=='reason':
+        failure=json.loads((vault/ref).read_text());failure['reason']='unknown';(vault/ref).write_text(json.dumps(failure))
+    request.update(recovery_id='cancelled-projection-recovery',entries=[{'node':old['node'],'task_id':fresh,
+        'failure_sha256':hashlib.sha256((vault/ref).read_bytes()).hexdigest()}])
+    request['input_digest']=mutation_digest(request)
+    before={p:p.read_bytes() for p in vault.rglob('*.json')}
+    if change!='valid':
+        with pytest.raises(ContractError,match='STALE_INPUT|RECOVERY_NOT_ALLOWED'):
+            adapter.recover_reduce_execution(request)
+        assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
+        return
+    assert not adapter.recover_reduce_execution(request,dry_run=True)['applied']
+    assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
+    result=adapter.recover_reduce_execution(request)
+    report=json.loads((vault/result['report_ref']).read_text())
+    assert report['entries'][0]['cancelled_projection']['canonical_task_id']==old['task_id']
+    assert path.read_bytes()==before[path] and not result['resumed']

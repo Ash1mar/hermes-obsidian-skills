@@ -13,6 +13,34 @@ def fail(code, message):
     raise ContractError(code, '$', message)
 
 
+def cancelled_projection_binding(adapter,value,node,card,report,binding,path,current):
+    """Authenticate a never-executed cancelled card displaced by graph narrowing."""
+    if (report.get('reason')!='canonical dispatcher binding differs; trusted repair required'
+            or binding.get('task_id')==card['task_id'] or current.get('runs')
+            or current['task'].get('status') not in ('archived','blocked','scheduled')
+            or current['task'].get('worker_pid') or current['task'].get('current_run_id')):
+        fail('RECOVERY_NOT_ALLOWED','projection recovery requires an unattempted replacement')
+    expected={'workflow_id':value['workflow_id'],'node':node.name,'actor':value['actor'],
+        'task_id':binding.get('task_id'),'input_fingerprint':node.input_fingerprint,
+        'template_hash':next(p['template_hash'] for p in value['template_pins'] if p['kind']==node.kind)}
+    if binding!=expected or not isinstance(binding.get('task_id'),str):
+        fail('STALE_INPUT','original canonical binding differs')
+    original=adapter.kanban.task_snapshot(value['kanban']['board_id'],binding['task_id'])
+    task=original.get('task',{});runs=original.get('runs',[])
+    body=json.loads(task.get('body','{}'))
+    if (task.get('id')!=binding['task_id'] or task.get('status')!='archived'
+            or task.get('created_by')!='ingest-workflow' or task.get('worker_pid') or task.get('current_run_id')
+            or any(body.get(k)!=v for k,v in {'workflow_id':value['workflow_id'],'node':node.name,
+                'vault':str(adapter.workflow.vault),'input_fingerprint':node.input_fingerprint,
+                'worker_binding':str(path),'template_hash':expected['template_hash'],'executor':'semantic-v1'}.items())):
+        fail('STALE_INPUT','archived canonical native identity differs')
+    if not runs or any(r.get('profile')!='ingest-program' or r.get('outcome')!='scheduled'
+            or r.get('summary')!='Vault workflow cancelled' or r.get('worker_pid')
+            or not r.get('ended_at') or r.get('started_at')!=r['ended_at'] for r in runs):
+        fail('RECOVERY_NOT_ALLOWED','original card must have only zero-execution cancellation receipts')
+    return original
+
+
 def recover_reduce_execution(adapter, request, *, dry_run=False):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         fail('ACCESS_DENIED', 'Reduce recovery requires a trusted operator')
@@ -89,22 +117,24 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                         or report.get('input_fingerprint') != node.input_fingerprint
                         or report.get('idempotency_key') != key):
                     fail('STALE_INPUT', 'failure evidence or binding changed')
-                allowed=('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED')
+                projection=scope=='reduce-cancel/v1' and report.get('error_code')=='DISPATCH_ARTIFACT_CHANGED'
+                allowed=('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED')
                 if report.get('error_code') not in allowed or (scope=='source-packets/v1' and node.kind!='resource-reduce'):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
                 snap = adapter.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
                 task, runs = snap.get('task', {}), snap.get('runs', [])
-                if (task.get('id') != card['task_id'] or task.get('worker_pid') or not runs
+                if (task.get('id') != card['task_id'] or task.get('worker_pid') or (not runs and not projection)
                         or any(not r.get('ended_at') for r in runs)):
                     fail('WORKER_ACTIVE', 'native attempt must be verifiably ended')
                 path = _vault_path(service.vault, f'_system/ledgers/ingest-workflows/{wid}/bindings/{fingerprint(key)}.json')
                 binding = _load_json(path)
+                original=cancelled_projection_binding(adapter,value,node,card,report,binding,path,snap) if projection else None
                 body = json.loads(task.get('body', '{}'))
                 template_hash = next(p['template_hash'] for p in value['template_pins'] if p['kind'] == node.kind)
                 if (task.get('created_by') != 'ingest-workflow'
                         or executor_for(node.kind, templates[node.kind]) != 'semantic-v1'
                         or any(binding.get(k) != v for k, v in {
-                            'workflow_id': wid, 'node': name, 'task_id': card['task_id'], 'actor': value['actor'],
+                            'workflow_id': wid, 'node': name, 'task_id': binding['task_id'] if projection else card['task_id'], 'actor': value['actor'],
                             'input_fingerprint': node.input_fingerprint, 'template_hash': template_hash}.items())
                         or any(body.get(k) != v for k, v in {
                             'workflow_id': wid, 'node': name, 'vault': str(service.vault), 'executor': 'semantic-v1',
@@ -126,6 +156,11 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     'previous_input_fingerprint': node.input_fingerprint, 'failure_ref': ref,
                     'failure_sha256': hashlib.sha256(data).hexdigest(), 'failure': report,
                     'ended_run_ids': [str(r['id']) for r in runs], 'template_hash': template_hash})
+                if original:
+                    audited[-1]['cancelled_projection']={'canonical_task_id':binding['task_id'],
+                        'canonical_binding_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
+                        'cancelled_zero_execution_run_ids':[str(r['id']) for r in original['runs']],
+                        'replacement_attempts':0,'semantic_retry_authorized':False}
                 if scope=='source-packets/v1':
                     import fixed_reduce
                     from fixed_reduce_packets import plan, CONTRACT
