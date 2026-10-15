@@ -18,4 +18,4 @@ if __name__=='__main__':
     path.write_text(json.dumps(report,ensure_ascii=False,indent=2)+'\n',encoding='utf-8')
     print(json.dumps({'report_id':report['report_id'],'counts':report['counts'],
         'sources':[{k:s[k] for k in ('resource_id','disposition','budget')} for s in report['sources']],
-        'native_model_calls':0,'resumed':False},ensure_ascii=False))
+        'global_budget':report['global_budget'],'native_model_calls':0,'resumed':False},ensure_ascii=False))

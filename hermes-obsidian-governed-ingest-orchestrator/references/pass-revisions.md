@@ -29,6 +29,10 @@ budgets; and lists existing QA and bound native failures without stopping at the
 task error. A budget held behind missing evidence is explicitly unverified. QA is not
 automatically a failure. This report calls no model and never resumes. It is a finite
 inventory of mechanically discoverable issues, not proof of semantic or network health.
+It also measures global input from currently completed source proposals. A fitting
+prefix does not establish global readiness; a prefix already over budget is a concrete
+blocker to resolve before attempting global execution. No source proposal is discarded
+to make that measurement fit.
 
 Use the trusted preparation command, which records mechanical missing-ref/trigger/package
 diagnostics and other-task coverage, then preview the requests before applying:

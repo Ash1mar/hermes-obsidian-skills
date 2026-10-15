@@ -12,6 +12,31 @@ from hermes_source_units.reading_dependencies import CONTRACT, citation_dependen
 from hermes_source_units.reduce_dependency_revision import snapshot
 
 
+def global_budget(adapter,w):
+    """Measure the currently available completed-source prefix, never a model call."""
+    from fixed_reduce import preview_snapshot
+    from fixed_semantic import prepare_request_projection
+    from fixed_semantic_schema import schema
+    from fixed_semantic_media import image_catalog,select_images
+    k=adapter.workflow.knowledge;batch=k._batch(w['batch_id'])
+    if not batch['resource_reduction_ids']:return {'status':'not_yet_available','complete_input':False}
+    card=next((c for c in w['kanban']['task_map'] if c['node']=='global-reduce'),None)
+    if not card:return {'status':'binding_unavailable','complete_input':False}
+    try:
+        binding=_load_json(_vault_path(adapter.workflow.vault,
+            f'_system/ledgers/ingest-workflows/{w["workflow_id"]}/bindings/{fingerprint(card["idempotency_key"])}.json'))
+        view=preview_snapshot(adapter,binding)['view']
+        phase='global-plan' if view.get('existing_pages') else 'global-reduce'
+        images=select_images(view['original_evidence']['tasks'],image_catalog(adapter,view['original_evidence']))
+        size=prepare_request_projection(phase,view,schema(phase),images)['input_size']
+        return {'status':'oversize' if size>30000 else 'current_prefix_fits','phase':phase,
+            'input_codepoints':size,'limit':30000,'available_completed_sources':len(batch['resource_reduction_ids']),
+            'candidates':len(view['candidates']),'proposals':len(view['proposals']),'complete_input':False,
+            'note':'Only currently completed source proposals; a fitting prefix is not global readiness, an oversized prefix is already a budget blocker.'}
+    except (ContractError,OSError,ValueError,KeyError) as exc:
+        return {'status':'held','complete_input':False,'reason':str(exc)}
+
+
 def scan(adapter,wid,*,budgets=True):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise ContractError('ACCESS_DENIED','$','readiness requires a trusted stopped operator')
@@ -145,6 +170,7 @@ def scan(adapter,wid,*,budgets=True):
             elif source['actionable_gap_tasks']:source['disposition']='targeted_dependency_review'
             elif source['current_failure']:source['disposition']='held_native_failure'
             else:source['disposition']='mechanically_ready'
+        global_input=global_budget(adapter,w) if budgets else {'status':'not_checked','complete_input':False}
         evidence=snapshot(service,w)
         if any(hashlib.sha256(p.read_bytes()).hexdigest()!=sha for p,sha in initial.items()):
             raise ContractError('STALE_INPUT','$','workflow/batch changed during inventory')
@@ -154,6 +180,7 @@ def scan(adapter,wid,*,budgets=True):
         'runtime_contract_sha256':hashlib.sha256(b''.join((root/n).read_bytes() for n in ('fixed_reduce.py','fixed_evidence.py','fixed_reduce_packets.py','fixed_semantic.py'))).hexdigest(),
         'control_hashes':{p.relative_to(service.vault).as_posix():sha for p,sha in initial.items()},'evidence':evidence,
         'native_model_calls':0,'resumed':False,'drain':drain,'tasks':rows,'slices':slice_checks,'sources':list(sources.values()),'issues':issues,
+        'global_budget':global_input,
         'counts':{'tasks':len(rows),'citations':sum(r.get('latest_kind')=='citation' for r in rows),
             'excluded_tasks':sum(bool(r.get('excluded')) for r in rows),
             'excluded_incomplete_history':sum(bool(r.get('excluded_history_limitation')) for r in rows),

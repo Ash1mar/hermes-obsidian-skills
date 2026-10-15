@@ -67,6 +67,7 @@ def test_whole_batch_inventory_is_read_only_and_counts_all_tasks(vault,monkeypat
     assert len(result['sources'])==2 and sum(bool(s['completed']) for s in result['sources'])==1
     assert all(s['budget']['status']=='fits' for s in result['sources'])
     assert result['native_model_calls']==0 and not result['resumed']
+    assert result['global_budget']['status']=='current_prefix_fits' and not result['global_budget']['complete_input']
     assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
     assert all(r['rendered_mapping_valid'] for r in result['tasks'])
 
