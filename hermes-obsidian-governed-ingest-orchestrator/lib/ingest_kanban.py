@@ -1555,6 +1555,8 @@ class IngestKanbanAdapter:
                 key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
                 if previous['idempotency_key']==key and self._completed_pass_binding(value, node, key)==previous['task_id']:
                     task_map.append(dict(previous))
+                    if native_states.get(previous['task_id']) not in ('done','archived'):
+                        self.kanban.complete(slug,previous['task_id'],'Authoritative Vault Pass committed; review hold preserved')
             current_keys = {item["idempotency_key"] for item in task_map}
             if value["kanban"]["board_id"] == slug:
                 for previous in value["kanban"]["task_map"]:

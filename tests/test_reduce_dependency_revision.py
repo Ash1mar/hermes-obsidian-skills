@@ -69,6 +69,8 @@ def test_dependency_revision_keeps_released_pauses_and_waits_for_review(paused,v
     assert current['pass_revision']['state']=='awaiting_review'
     assert current['pause_control']==w['pause_control']
     assert a.workflow.pending_pause(current)=='revision_review'
+    assert all(a.kanban.task_snapshot('',c['task_id'])['task']['status']=='done'
+               for c in current['kanban']['task_map'] if c['node'].partition(':')[2] in selected)
     assert all(p.read_bytes()==b for p,b in old_passes.items())
     with pytest.raises(ContractError,match='WORKFLOW_PAUSED'):a.workflow.assert_not_paused(current)
 
