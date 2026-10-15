@@ -98,3 +98,22 @@ def test_transport_failure_requires_actual_ended_native_cancellation(change):
 def test_inspection_draft_rejection_keeps_authority_failures_held(message,semantic,expected):
     from native_pass_identity import pass_failure
     assert pass_failure(ContractError('INCOMPLETE_COVERAGE','$',message),semantic=semantic)['state']==expected
+
+
+@pytest.mark.parametrize('change',['valid','missing_timeline','sdk_started','audited_call'])
+def test_bootstrap_recovery_cannot_repeat_a_model_attempt(tmp_path,monkeypatch,change):
+    from types import SimpleNamespace
+    from revision_packet_recovery import verify_bootstrap,cause_key
+    assert cause_key({'error_code':'PROGRAM_EXECUTION_FAILED','reason':"'expected_revision'"})=='canonical-binding-bootstrap'
+    assert cause_key({'error_code':'PROGRAM_EXECUTION_FAILED','reason':'other failure'}) is None
+    workflow={'workflow_id':'isolated'};binding={'task_id':'native'}
+    timeline=tmp_path/'timeline';timeline.mkdir()
+    monkeypatch.setattr('hermes_source_units.runtime_telemetry.runtime_directory',lambda *_:timeline)
+    if change!='missing_timeline':(timeline/'123.jsonl').write_text(json.dumps({'name':'sdk_model_request' if change=='sdk_started' else 'materials_prepare'})+'\n')
+    root=tmp_path/'_system/ledgers/ingest-workflows/isolated/semantic-calls';root.mkdir(parents=True)
+    if change=='audited_call':(root/'call.json').write_text(json.dumps({'native_task_id':'native'}))
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path))
+    if change=='valid':verify_bootstrap(adapter,workflow,binding,{'runs':[{'worker_pid':123,'ended_at':2}]})
+    else:
+        with pytest.raises(ContractError,match='RECOVERY_NOT_ALLOWED'):
+            verify_bootstrap(adapter,workflow,binding,{'runs':[{'worker_pid':123,'ended_at':2}]})

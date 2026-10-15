@@ -74,7 +74,10 @@ requires exactly one original citation call with an unused two-call correction b
 current matching pending input, and preserved correctly bound partial citations. It
 continues only that one remaining correction for the rejected slot; already completed
 tasks are not replayed. Any new failure exhausts that grant. Arbitrary permission,
-stale-input and semantic errors remain ineligible.
+stale-input and semantic errors remain ineligible. Packet recovery is limited to once
+per recognized corrected cause. A canonical-binding bootstrap KeyError can recover only
+with a matching pending packet, an ended native run, no semantic audit and a present
+native timeline showing no SDK model attempt; it retains any earlier remaining quota.
 
 ## Held Pass boundary revisions
 

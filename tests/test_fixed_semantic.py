@@ -220,7 +220,7 @@ def test_pass_admission_holds_live_domain_capacity_without_claiming():
 
 @pytest.mark.parametrize('aggregate_rejected',[False,True])
 @pytest.mark.parametrize('citation_changes',[False,True])
-def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypatch,aggregate_rejected,citation_changes,phase_balanced=False):
+def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypatch,aggregate_rejected,citation_changes,phase_balanced=False,canonical_input=False):
     from pathlib import Path
     from hermes_source_units import mutation_digest
     adapter,value,amendment=stopped
@@ -297,7 +297,8 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
             assert adapter.worker_check(actual)['ok']
             return None
         monkeypatch.setattr(fixed_semantic_recovery,'recover',verify_live_recovery_binding)
-    result=fixed.run_pass(adapter,binding,caller)
+    entry_binding={k:v for k,v in binding.items() if k!='expected_revision'} if canonical_input else binding
+    result=fixed.run_pass(adapter,entry_binding,caller)
     assert result['domain_complete'] and calls==(['candidate','candidate','citation'] if aggregate_rejected else ['candidate','citation'])
     assert expansion_guards and all(g is None for g in expansion_guards)
     assert all(p.read_bytes()==raw for p,raw in before.items())
@@ -325,6 +326,10 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
         fixed.model_call(adapter,binding,'candidate',{'tasks':[]},lambda *a:pytest.fail('called'),1)
     with pytest.raises(ContractError):
         fixed.model_call(adapter,binding,'candidate',{'tasks':[]},lambda *a:pytest.fail('called'),30000)
+
+
+def test_native_canonical_entry_reads_current_leased_binding(stopped,vault,monkeypatch):
+    test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypatch,False,False,canonical_input=True)
 
 
 @pytest.mark.parametrize('live',[False,True])

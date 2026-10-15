@@ -692,7 +692,9 @@ def run_pass(adapter,binding,caller):
         for entry in report['entries']:
             if entry['node']==binding['node']:
                 correction_tasks.update(entry.get('revision_packet_identity',{}).get('remaining_correction_task_ids',[]))
-    checked_ids={f't{i}':tid for i,tid in enumerate(adapter.worker_check(binding)['task_ids'],1)}
+    with ACTION_LOCK:
+        live_binding=_load_json(Path(os.environ['HERMES_KANBAN_WORKSPACE'])/'worker-request.json')
+        checked_ids={f't{i}':tid for i,tid in enumerate(adapter.worker_check(live_binding)['task_ids'],1)}
     config=adapter.workflow.knowledge._batch(value['batch_id'])['slice_config']
     limit=config['slice_max_input_codepoints'];policy=None
     if config.get('semantic_budget_policy'):
