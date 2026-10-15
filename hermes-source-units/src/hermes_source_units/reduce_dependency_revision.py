@@ -11,6 +11,20 @@ REVIEW_SCOPE='reduce-review/v1'
 REDUCE_SCOPES=(SCOPE,REVIEW_SCOPE)
 
 
+def assert_unconsumed_resources(service,value,task_ids):
+    """Independent completed sources are reusable, never reopened by a local repair."""
+    batch=service.knowledge._batch(value['batch_id'])
+    if batch['run_ids'] or batch.get('global_reduction_id'):
+        raise ContractError('INVALID_TRANSITION','$','global/build consumption closes citation changes')
+    selected=set(task_ids)
+    resources={r['unit_ref']['resource_id'] for tid in selected
+               for r in service.knowledge._task(tid)['target_refs']}
+    for rid in batch.get('resource_reduction_ids',[]):
+        reduction=service.knowledge._resource_reduction(batch['batch_id'],rid)
+        if reduction['resource_id'] in resources or selected.intersection(t['task_id'] for t in reduction['tasks']):
+            raise ContractError('INVALID_TRANSITION','$','selected source has already consumed Pass evidence')
+
+
 def scoped(value):
     return value.get('pass_revision',{}).get('revision_scope') in REDUCE_SCOPES
 
@@ -26,6 +40,8 @@ def snapshot(service,value):
         root=service.vault/f'_system/knowledge-builds/task-{tid}'
         for kind in ('passes','readings'):
             for path in (root/kind).glob('*.json'):pin(path)
+    for rid in batch.get('resource_reduction_ids',[]):
+        pin(service.knowledge._resource_reduction_path(batch['batch_id'],rid))
     for outcome in value['source_outcomes']:
         for ref in (outcome['path'],*outcome['artifact_refs']):pin(_vault_path(service.vault,ref))
     for template in value['template_pins']:pin(_vault_path(service.vault,template['path']))
@@ -62,6 +78,7 @@ def authorize(service,value,request):
     selected={item['task_id'] for item in request.get('tasks',[])}
     if not selected or not selected.issubset(set(batch['task_ids'])-service.skipped_pass_tasks(value)):
         fail('INVALID_SCOPE','select only existing non-skipped citation tasks')
+    assert_unconsumed_resources(service,value,selected)
     failures=request.get('reduce_failures',[])
     resources=set()
     for item in failures:
@@ -78,7 +95,7 @@ def authorize(service,value,request):
         resources.add(node.partition(':')[2])
     for item in request['tasks']:
         task=service.knowledge._task(item['task_id'])
-        if {r['unit_ref']['resource_id'] for r in task['target_refs']}-resources:
+        if failures and {r['unit_ref']['resource_id'] for r in task['target_refs']}-resources:
             fail('INVALID_SCOPE','task must belong to an evidenced failed resource')
         service.knowledge._verify_planned_measurement(task,batch['actor'],batch['document_registry_revision'],None)
         records=service.knowledge._pass_index([item['task_id']])[1][item['task_id']]

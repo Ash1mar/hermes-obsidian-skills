@@ -46,9 +46,13 @@ class PassSkipMixin:
             report=json.loads(data)
             if (report['request']['workflow_id']!=value['workflow_id'] or report['batch_id']!=value['batch_id']
                     or report['request']['actor']!=value['actor'] or report['request']['input_digest']!=pointer['input_digest']
-                    or [e['slice_id'] for e in report['entries']]!=pointer['slice_ids']
+                    or (report.get('contract')!='reduce-task-coverage-gaps/v1' and [e['slice_id'] for e in report['entries']]!=pointer['slice_ids'])
                     or report['task_ids']!=pointer['task_ids'] or seen.intersection(pointer['task_ids'])):
                 fail('STALE_INPUT','Pass gap identity/coverage changed')
+            if report.get('contract')=='reduce-task-coverage-gaps/v1':
+                from .reduce_task_skip import verify
+                verify(self,value,report,pointer)
+                seen.update(pointer['task_ids']);reports.append(report);continue
             for entry in report['entries']:
                 item=self.knowledge._slice(value['batch_id'],entry['slice_id'])
                 if item['task_ids']!=entry['task_ids'] or item['input_fingerprint']!=entry['slice_input_fingerprint']:

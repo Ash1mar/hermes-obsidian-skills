@@ -3,11 +3,36 @@
 ## Missing original dependency inspections discovered during Reduce
 
 The same revision interface supports `revision_scope: reduce-dependencies/v1` only for
-a cancelled, released Reduce before any resource/global reduction or build result.
+a cancelled, released Reduce before global/build consumption. Independent completed
+source reductions are protected and reusable; a selected source with any completed
+reduction cannot be revised or excluded.
 It requires the existing full dispatch policy, no live native consumers/leases, exact
-current resource failure task IDs and SHA-256 values, and latest non-skipped citations
+current resource failure task IDs and SHA-256 values when failure evidence is supplied,
+and latest non-skipped citations
 that actually lack inspections of currently required registered dependencies. It does
 not reopen unaffected tasks or permit arbitrary semantic correction through this scope.
+Whole-batch inventory may discover a real missing inspection before that source has
+failed. Such a revision can omit `reduce_failures`; the runtime still recomputes every
+selected citation's actual dependency gap and checks unconsumed source ownership.
+This is not permission for a semantic retry or to infer inspections from other tasks.
+
+Before preparing any new model work, run the stopped, read-only inventory:
+
+```bash
+python3 "<skill-dir>/scripts/check_reduce_readiness.py" --vault "<vault>" --workflow-id "<observed-id>" --output "<fresh-report.json>"
+```
+
+It inventories every task, including empty citations, explicit skips and incomplete
+work; checks current identity, hashes, original dependencies, rendered mappings,
+slice reopening compatibility, canonical reducer bindings and complete-evidence packet
+budgets; and lists existing QA and bound native failures without stopping at the first
+task error. A budget held behind missing evidence is explicitly unverified. QA is not
+automatically a failure. This report calls no model and never resumes. It is a finite
+inventory of mechanically discoverable issues, not proof of semantic or network health.
+It also measures global input from currently completed source proposals. A fitting
+prefix does not establish global readiness; a prefix already over budget is a concrete
+blocker to resolve before attempting global execution. No source proposal is discarded
+to make that measurement fit.
 
 Use the trusted preparation command, which records mechanical missing-ref/trigger/package
 diagnostics and other-task coverage, then preview the requests before applying:
@@ -18,7 +43,7 @@ python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" revi
 python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" revise-passes --request "<operator-dir>/revision-request.json"
 ```
 
-The request pins unchanged pause history as `evidence_digest`, bound inspection failures,
+The request pins unchanged pause history as `evidence_digest`, supplied inspection failures,
 original package/latest citation identities, diagnostic evidence and a fixed semantic
 revision template. Applying remains cancelled and never resumes. Native fixed workers
 receive only selected tasks, their predecessor citations and complete current required
@@ -38,6 +63,34 @@ Other-task inspection cannot stand in for the current citation. Current required
 source hashes, native binding and ordinary Pass submission checks remain authoritative.
 No evidence truncation, optionalizing required assets, source reset or model fallback is
 allowed. A single indivisible task that cannot fit stays blocked with its original evidence.
+
+## Explicit deferral of unresolved original QA
+
+Use existing per-candidate `omitted_candidate_refs` for a model's source-grounded
+semantic omissions, with concrete reasons. Never fabricate a successful proposal for
+an unsupported claim. If a known QA-limited task must be explicitly deferred before
+native Reduce can proceed, `skip-reduce-tasks` is the stopped operator interface:
+
+```bash
+python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" skip-reduce-tasks --dry-run --request "<reviewed-request.json>"
+python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" skip-reduce-tasks --request "<reviewed-request.json>"
+```
+
+The request has workflow_id, actor, expected_revision, stable operation_id, reason,
+persisted evidence_refs, entries and mutation input_digest. Each entry pins task_id,
+latest pass_id, reason, failure_ref and failure_sha256. It requires a current bound
+source semantic hold and that citation's recorded `needs-qa`; program, dependency,
+hash/binding and transport failures are not reasons to discard content. Review existing
+registered adjacent evidence first. The operation defers **all candidates of the exact
+selected task**, never a whole slice implicitly. Preview exposes those candidate IDs
+and target ranges so unnecessary collateral exclusion can be avoided.
+
+It reuses the existing coverage-gap ledger and crash journal, preserves original Passes,
+readings and slice ownership, protects unrelated completed source reductions, and keeps
+the workflow cancelled. It does not establish permanent unavailability. Gap reports
+are hash-bound, reach downstream inputs, and make final acceptance partial. A later
+resume requires separate authorization. No such deferral is automatically applied by
+inventory or repair preparation; do not drop every `needs-qa` task or skip to meet budget.
 
 After a legacy revision narrows the graph, an unattempted Reduce card may have been
 archived and recreated under its unchanged key. `recover-reduce-execution` with the

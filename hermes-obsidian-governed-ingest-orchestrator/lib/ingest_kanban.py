@@ -667,8 +667,32 @@ class IngestKanbanAdapter:
             return False
         value = self.workflow.status(workflow_id)
         current = next((c for c in value['kanban']['task_map'] if c['node'] == node.name), None)
-        return not (node.kind == 'pass-slice' and domain_completed(self.workflow, value, node)
+        return not (node.kind in ('pass-slice','resource-reduce') and domain_completed(self.workflow, value, node)
                     and current and report.get('task_id') != current['task_id'])
+
+    def _completed_reduce_binding(self,value,node,key):
+        """Preserve an independent completed reducer through a narrower revision graph."""
+        if node.kind!='resource-reduce' or not domain_completed(self.workflow,value,node):return None
+        try:
+            k=self.workflow.knowledge;batch=k._batch(value['batch_id'])
+            reduction=next(k._resource_reduction(batch['batch_id'],r) for r in batch['resource_reduction_ids']
+                if k._resource_reduction(batch['batch_id'],r)['resource_id']==node.name.partition(':')[2])
+            for item in reduction['tasks']:
+                task=k._task(item['task_id'])
+                if task['revision']!=item['revision'] or task['status']!='running':return None
+            path=_vault_path(self.workflow.vault,f'_system/ledgers/ingest-workflows/{value["workflow_id"]}/bindings/{fingerprint(key)}.json')
+            record=_load_json(path);tid=record['task_id']
+            pin=next(p for p in value['template_pins'] if p['kind']==node.kind)
+            if record!={'workflow_id':value['workflow_id'],'node':node.name,'task_id':tid,'actor':value['actor'],
+                'input_fingerprint':node.input_fingerprint,'template_hash':pin['template_hash']}:return None
+            snap=self.kanban.task_snapshot(value['kanban']['board_id'],tid);native=snap['task'];body=json.loads(native['body'])
+            if (native['id']!=tid or native['status'] not in ('done','archived') or native.get('created_by')!='ingest-workflow'
+                    or native.get('worker_pid') or native.get('current_run_id')
+                    or any(body.get(f)!=v for f,v in {'workflow_id':value['workflow_id'],'node':node.name,
+                        'input_fingerprint':node.input_fingerprint,'template_hash':pin['template_hash'],
+                        'vault':str(self.workflow.vault),'worker_binding':str(path),'executor':'semantic-v1'}.items())):return None
+            return tid
+        except (ContractError,OSError,ValueError,KeyError,TypeError,StopIteration):return None
 
     def _completed_pass_binding(self, value, node, key):
         """Reuse a verified completed native identity, including an archived one."""
@@ -1068,6 +1092,15 @@ class IngestKanbanAdapter:
             from native_stop_inventory import verify_cancel_drain
             verify_cancel_drain(self,wid,timeout=0)
             return self.workflow.skip_pass_slices(request,dry_run=dry_run,budget_check=self._citation_budget_deferral)
+
+    def skip_reduce_tasks(self, request, *, dry_run=False):
+        from hermes_source_units.reduce_task_skip import skip
+        from native_stop_inventory import verify_cancel_drain
+        wid=str(request['workflow_id'])
+        lock=_vault_path(self.workflow.vault,f'_system/ledgers/ingest-workflows/.dispatch-locks/{wid}.lock')
+        with _exclusive_lock(lock), record_validation_scope():
+            verify_cancel_drain(self,wid,timeout=0)
+            return skip(self.workflow,request,dry_run=dry_run)
 
     def _citation_budget_deferral(self,value,batch,item,failure):
         """Measure current complete evidence; budget refusal is an explicit gap."""
@@ -1515,7 +1548,7 @@ class IngestKanbanAdapter:
                                  if value['kanban']['board_id'] == slug
                                  and item['node'] == node.name and item['idempotency_key'] == key
                                  and self._failed_card(workflow_id, node)), None)
-                completed_task = self._completed_pass_binding(value, node, key)
+                completed_task = self._completed_pass_binding(value, node, key) or self._completed_reduce_binding(value,node,key)
                 existing=next((c for c in value['kanban']['task_map'] if c['node']==node.name and c['idempotency_key']==key
                     and native_states.get(c['task_id']) not in (None,'archived')),None)
                 task_id = completed_task or (previous['task_id'] if previous else existing['task_id'] if existing else self.kanban.create_node(
@@ -1553,8 +1586,16 @@ class IngestKanbanAdapter:
             # archived cards under an immutable binding.
             projected_names = {item['node'] for item in task_map}
             for previous in value['kanban']['task_map']:
-                if previous['node'] in projected_names or not previous['node'].startswith('pass-slice:'):
+                if previous['node'] in projected_names:
                     continue
+                if previous['node'].startswith('resource-reduce:'):
+                    prefix=f'ingest:{workflow_id}:resource-reduce:'
+                    if previous['idempotency_key'].startswith(prefix):
+                        retained=Node(previous['node'],'resource-reduce',(),previous['idempotency_key'][len(prefix):])
+                        if self._completed_reduce_binding(value,retained,previous['idempotency_key'])==previous['task_id']:
+                            task_map.append(dict(previous))
+                    continue
+                if not previous['node'].startswith('pass-slice:'):continue
                 item = self.workflow.knowledge._slice(value['batch_id'], previous['node'].partition(':')[2])
                 node = pass_node(value, item)
                 key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"

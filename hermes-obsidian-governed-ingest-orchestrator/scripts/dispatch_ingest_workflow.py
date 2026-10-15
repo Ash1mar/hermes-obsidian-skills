@@ -44,6 +44,9 @@ def main() -> int:
     skip = sub.add_parser('skip-pass-slices')
     skip.add_argument('--request', required=True)
     skip.add_argument('--dry-run', action='store_true')
+    reduce_skip = sub.add_parser('skip-reduce-tasks')
+    reduce_skip.add_argument('--request', required=True)
+    reduce_skip.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     temporary = None
     try:
