@@ -39,6 +39,19 @@ source hashes, native binding and ordinary Pass submission checks remain authori
 No evidence truncation, optionalizing required assets, source reset or model fallback is
 allowed. A single indivisible task that cannot fit stays blocked with its original evidence.
 
+For a legacy `knowledge-pass/v1` slice whose creation configuration differs from a later
+execution amendment, `recover-pass-execution` scope `legacy-slice-config/v1` may authenticate
+an operator-supplied historical snapshot against the released exact-plan digest. The request
+pins the current `revision_id`, `historical_snapshot_ref` and exact failed node/task/SHA entries.
+Both original batch and slice bytes must match exact-plan's file hashes; current ordered task
+inputs, ownership and template must reproduce the full original slice fingerprint. Only the
+specific `slice input fingerprint changed` refusal is eligible. Recovery remains cancelled,
+grants one fresh bound attempt and never changes slices, sources, Passes, pauses or current
+batch limits. Workers repeat this authenticated creation check; current evidence, permissions
+and execution budgets remain mandatory. Missing/tampered history stays blocked. Other failed
+nodes remain isolated; a local legacy-path refusal alone does not justify cancelling unrelated
+revision work.
+
 ## Held Pass boundary revisions
 
 Use this general operator recovery for reviewed semantic/citation errors at the current durable `canary` or `pass` pause, before Reduce consumes the evidence. Preserve the same workflow/batch, source outcomes, plan, immutable Pass files and unselected task results. This interface does not authorize crossing a boundary.
