@@ -29,6 +29,7 @@ class PassRevisionMixin:
         projection=copy.deepcopy(projection)
         projection['view']['continuation']={'action':'citation','candidate':{
             'sequence':prior['sequence'],'candidate_pass_id':prior['pass_id'],'revision_review':True,
+            'review_reason':target['reason'],
             'candidates':[{**c,'support_refs':[self.knowledge._model_handle(r,projection['mapping']) for r in c['support_refs']]}
                           for c in prior['candidates']],'empty_reason':prior['empty_reason']}}
         return projection
@@ -38,7 +39,7 @@ class PassRevisionMixin:
         return bool(revision and revision['state'] == 'running'
                     and node.startswith('pass-slice:')
                     and node.partition(':')[2] in revision['slice_ids']
-                    and ((revision.get('revision_scope')=='reduce-dependencies/v1' and value['current_stage']=='reducing')
+                    and ((revision.get('revision_scope') in ('reduce-dependencies/v1','reduce-review/v1') and value['current_stage']=='reducing')
                          or value.get('pause_control', {}).get('boundary') == revision['boundary']))
 
     def revision_instructions(self, value):
@@ -92,7 +93,7 @@ class PassRevisionMixin:
             value = self._mutation(request)
             if value.get('pass_revision') and value['pass_revision']['state'] == 'running':
                 fail('INVALID_TRANSITION', 'previous revision must be reviewed before another revision')
-            dependency_scope=request.get('revision_scope')=='reduce-dependencies/v1'
+            dependency_scope=request.get('revision_scope') in ('reduce-dependencies/v1','reduce-review/v1')
             boundary = 'pass' if dependency_scope else value.get('pause_control', {}).get('boundary')
             if dependency_scope:
                 from .reduce_dependency_revision import authorize
@@ -171,7 +172,7 @@ class PassRevisionMixin:
                     and not any(ref == self.knowledge._task_path(item['task_id']).relative_to(self.vault).as_posix() for item in tasks)
                     and ref != self.knowledge._batch_path(value['batch_id']).relative_to(self.vault).as_posix()]}
             if dependency_scope:
-                value['pass_revision']['revision_scope']='reduce-dependencies/v1'
+                value['pass_revision']['revision_scope']=request['revision_scope']
             value['revision'] += 1
             self._write(value)
             return value
@@ -213,7 +214,7 @@ class PassRevisionMixin:
                 ref, digest = item['ref'], item['sha256']
                 if hashlib.sha256(_vault_path(self.vault, ref).read_bytes()).hexdigest() != digest:
                     fail('SOURCE_CHANGED', 'revision changed protected or review evidence')
-            dependency_scope=revision.get('revision_scope')=='reduce-dependencies/v1'
+            dependency_scope=revision.get('revision_scope') in ('reduce-dependencies/v1','reduce-review/v1')
             if dependency_scope:
                 from .reduce_dependency_revision import snapshot
                 evidence=snapshot(self,value)
@@ -251,7 +252,7 @@ class PassRevisionMixin:
             revision = value.get('pass_revision')
             if not revision or revision['state'] != 'awaiting_review' or request.get('revision_id') != revision['revision_id']:
                 fail('INVALID_TRANSITION', 'accept requires current completed revision')
-            expected=revision.get('review_evidence_digest') if revision.get('revision_scope')=='reduce-dependencies/v1' else value['pause_control']['evidence_digest']
+            expected=revision.get('review_evidence_digest') if revision.get('revision_scope') in ('reduce-dependencies/v1','reduce-review/v1') else value['pause_control']['evidence_digest']
             if request.get('evidence_digest') != expected:
                 fail('STALE_INPUT', 'review must pin current pause digest')
             self._verify_pause_snapshot(value)

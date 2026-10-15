@@ -83,6 +83,39 @@ def test_dependency_revision_rejects_unaffected_tasks_and_stale_failure(paused,v
     assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
 
 
+@pytest.mark.parametrize('change',['valid','stale_digest','foreign_task','multiple'])
+def test_reduce_review_isolates_one_task_and_exposes_recorded_reason(paused,vault,monkeypatch,change):
+    test_dependency_revision_keeps_released_pauses_and_waits_for_review(paused,vault,monkeypatch)
+    a=paused[0];w=a.workflow.status(paused[1]['workflow_id'])
+    monkeypatch.setattr(a.kanban,'task_states',lambda _:{tid:a.kanban.task_snapshot('',tid)['task']['status'] for tid in a.kanban.by_id},raising=False)
+    target=w['pass_revision']['tasks'][0];prior=max(a.workflow.knowledge._pass_index([target['task_id']])[1][target['task_id']],key=lambda p:p['sequence'])
+    request=workflow_request(workflow_id=w['workflow_id'],actor=w['actor'],expected_revision=w['revision'],
+        revision_id='isolated-review',revision_scope='reduce-review/v1',evidence_digest=w['pass_revision']['review_evidence_digest'],
+        tasks=[{'task_id':target['task_id'],'pass_id':prior['pass_id'],'reason':'Check only the supported scope of this task; shared pools do not grant support.'}],
+        reason='Review current citation support',evidence_refs=paused[2]['evidence_refs'],worker_template=(ROOT/'hermes-obsidian-governed-ingest-orchestrator/references/workers/pass-slice.md').read_text())
+    if change=='stale_digest':request['evidence_digest']='sha256:'+'0'*64
+    if change=='foreign_task':request['tasks'][0]['task_id']='foreign-task'
+    if change=='multiple':request['tasks'].append(dict(request['tasks'][0]))
+    from hermes_source_units import mutation_digest
+    request['input_digest']=mutation_digest(request)
+    before={p:p.read_bytes() for p in vault.rglob('*.json')}
+    if change!='valid':
+        with pytest.raises(ContractError,match='INVALID_TRANSITION' if change=='stale_digest' else 'INVALID_SCOPE'):
+            a.revise_passes(request,dry_run=True)
+        assert before=={p:p.read_bytes() for p in vault.rglob('*.json')};return
+    assert a.revise_passes(request,dry_run=True)['task_count']==1
+    assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
+    result=a.revise_passes(request);assert not result['resumed'] and not result['background_dispatch']
+    sync(a,w['workflow_id']);current=a.workflow.status(w['workflow_id'])
+    assert current['pass_revision_history'][-1]['state']=='awaiting_review'
+    card=next(c for c in current['kanban']['task_map'] if c['node']=='pass-slice:'+current['pass_revision']['slice_ids'][0])
+    begun=a.worker_begin({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id'],'worker_id':'isolated-review-worker'})
+    packet=json.loads((vault/begun['model_input']['path']).read_text())
+    assert len(packet['tasks'])==1
+    assert packet['tasks'][0]['continuation']['candidate']['review_reason']==request['tasks'][0]['reason']
+    assert all(p.read_bytes()==data for p,data in before.items() if '/passes/' in str(p))
+
+
 def test_gap_diagnostic_identifies_pass_package_ref_and_trigger_without_inferring_inspection(vault):
     k,package=dependency_fixture(vault)
     record={'task_id':'dependency-task','pass_id':'old-citation','reading_package_id':package['package_id'],
