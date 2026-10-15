@@ -113,6 +113,8 @@ def test_reduce_review_isolates_one_task_and_exposes_recorded_reason(paused,vaul
     packet=json.loads((vault/begun['model_input']['path']).read_text())
     assert len(packet['tasks'])==1
     assert packet['tasks'][0]['continuation']['candidate']['review_reason']==request['tasks'][0]['reason']
+    exposed=packet['tasks'][0]['continuation']['candidate']['inspections']
+    assert len(exposed)==len(prior['inspections']) and all(i['source_ref'].startswith('m') for i in exposed)
     assert all(p.read_bytes()==data for p,data in before.items() if '/passes/' in str(p))
 
 

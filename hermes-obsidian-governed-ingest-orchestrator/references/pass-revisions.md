@@ -86,7 +86,8 @@ For an explicitly authorized substantive finding at an unconsumed Reduce
 It pins the current review digest and latest citation, requires a drained native
 hold and no consumed Reduce/build result, and selects exactly one citation from
 that held review. The program supplies only that task's complete authorized packet
-and exposes its persisted task reason as `candidate.review_reason`; no foreign
+and exposes its persisted task reason as `candidate.review_reason` plus prior
+inspection findings with their own local material refs; no foreign
 task's shared material pool is supplied. Original citations, other results and
 released pause history remain protected. Apply does not dispatch: separately resume
 the same workflow. Native workers author the next citation, and the new result

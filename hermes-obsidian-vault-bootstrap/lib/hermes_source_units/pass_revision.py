@@ -30,6 +30,8 @@ class PassRevisionMixin:
         projection['view']['continuation']={'action':'citation','candidate':{
             'sequence':prior['sequence'],'candidate_pass_id':prior['pass_id'],'revision_review':True,
             'review_reason':target['reason'],
+            'inspections':[{**i,'source_ref':self.knowledge._model_handle(i['source_ref'],projection['mapping'])}
+                           for i in prior['inspections']],
             'candidates':[{**c,'support_refs':[self.knowledge._model_handle(r,projection['mapping']) for r in c['support_refs']]}
                           for c in prior['candidates']],'empty_reason':prior['empty_reason']}}
         return projection
