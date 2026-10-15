@@ -347,6 +347,15 @@ bound preflight, canonical validation and durable write pipeline.
 
 ## Bounded Reduce cancellation and recovery
 
+Before a bounded run, inspect the existing workflow's pinned Reduce templates and
+the executor selected for its native cards. The fixed concurrency bound and semantic
+response recovery below apply to fixed program workers, not legacy `model` cards.
+Installing this Skill does not migrate those immutable pins. A legacy Reduce workflow
+without a supported contract amendment must remain stopped; do not enable general
+Gateway dispatch, replace its bindings or repeat resume to make this check pass.
+No in-flight stop or semantic recovery acceptance can be claimed without a real
+compatible native Reduce attempt.
+
 Keep `config/orchestration.json`'s `program_worker_concurrency` at two. Native configured
 capacity can further reduce this bound, never increase it. Fixed program claims share a
 Vault mutex and recheck running native claims immediately before their ordinary claim CAS.
