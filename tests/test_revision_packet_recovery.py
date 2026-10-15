@@ -9,7 +9,7 @@ from hermes_source_units import ContractError
 from hermes_source_units.source_units import _json_bytes
 
 
-@pytest.mark.parametrize('change',['valid','foreign_reason','packet_bytes','predecessor','cancelled_request','stopped_revision'])
+@pytest.mark.parametrize('change',['valid','foreign_reason','packet_bytes','predecessor','cancelled_request','stopped_revision','inspection_refusal'])
 def test_packet_recovery_authenticates_native_input_and_original_citation(paused,vault,monkeypatch,change):
     a,w,revision=setup_scope(paused,vault,monkeypatch)
     monkeypatch.setattr(a.kanban,'task_states',lambda _:{tid:a.kanban.task_snapshot('',tid)['task']['status'] for tid in a.kanban.by_id},raising=False)
@@ -45,6 +45,12 @@ def test_packet_recovery_authenticates_native_input_and_original_citation(paused
                 'summary':'Vault workflow cancelled','started_at':10,'ended_at':11}]}
         monkeypatch.setattr(a.kanban,'task_snapshot',cancelled_snapshot)
     if change=='stopped_revision':code='WORKFLOW_STOPPED';reason='Workflow cancelled before submission'
+    if change=='inspection_refusal':
+        code='PASS_EXECUTION_BLOCKED'
+        reason="PASS_EXECUTION_BLOCKED at $: [{'stage':'pass','code':'INCOMPLETE_COVERAGE','message':'INCOMPLETE_COVERAGE at $: required reading dependency has not been inspected; retain original evidence','task':'t1'}]"
+        root=vault/f"_system/ledgers/ingest-workflows/{w['workflow_id']}/semantic-calls";root.mkdir(exist_ok=True)
+        (root/'one-call.json').write_text(json.dumps({'native_task_id':card['task_id'],'phase':'citation','semantic_attempt_limit':2,
+            'task_identities':{'t1':current['pass_revision']['tasks'][0]['task_id']}}))
     ref=a.execution_failure({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id']},code,reason)
     if change=='packet_bytes':
         path=vault/context['packet_ref'];path.write_text(path.read_text()+' ')
@@ -56,7 +62,7 @@ def test_packet_recovery_authenticates_native_input_and_original_citation(paused
         reason='Retry only a corrected fixed revision transport contract',entries=[{
             'node':card['node'],'task_id':card['task_id'],'failure_sha256':hashlib.sha256((vault/ref).read_bytes()).hexdigest()}])
     before={p:p.read_bytes() for p in vault.rglob('*.json')}
-    valid=change in ('valid','cancelled_request','stopped_revision')
+    valid=change in ('valid','cancelled_request','stopped_revision','inspection_refusal')
     if not valid:
         with pytest.raises(ContractError,match='RECOVERY_NOT_ALLOWED' if change=='foreign_reason' else 'STALE_INPUT'):
             a.recover_pass_execution(request,dry_run=True)
@@ -64,6 +70,7 @@ def test_packet_recovery_authenticates_native_input_and_original_citation(paused
         result=a.recover_pass_execution(request,dry_run=True)
         assert not result['applied']
         if change!='stopped_revision':assert result['entries'][0]['revision_packet_identity']['predecessors']==context['candidates']
+        if change=='inspection_refusal':assert result['entries'][0]['revision_packet_identity']['remaining_semantic_attempts']==1
     assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
     if valid:
         assert a.recover_pass_execution(request)['applied']
@@ -82,3 +89,12 @@ def test_transport_failure_requires_actual_ended_native_cancellation(change):
     if change=='live':run['ended_at']=None
     if change=='other_outcome':run['summary']='Program failed'
     with pytest.raises(ContractError,match='RECOVERY_NOT_ALLOWED'):interrupted_codes(report,snapshot)
+
+
+@pytest.mark.parametrize('message,semantic,expected',[
+ ('required reading dependency has not been inspected; retain original evidence',True,'draft_rejected'),
+ ('required reading dependency has not been inspected; retain original evidence',False,'recovery_required'),
+ ('other missing evidence',True,'recovery_required')])
+def test_inspection_draft_rejection_keeps_authority_failures_held(message,semantic,expected):
+    from native_pass_identity import pass_failure
+    assert pass_failure(ContractError('INCOMPLETE_COVERAGE','$',message),semantic=semantic)['state']==expected

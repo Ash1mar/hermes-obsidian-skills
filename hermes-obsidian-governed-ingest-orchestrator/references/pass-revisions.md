@@ -68,7 +68,13 @@ the old packet contract, `recover-pass-execution` scope `revision-citation-packe
 the current revision ID and exact failure binding. It recognizes only the old bounded-slice
 capability refusal or reviewed-candidate mismatch, then authenticates the original native
 input/packet, current required evidence and selected predecessor citations before granting
-one fresh attempt. Arbitrary permission, stale-input and semantic errors remain ineligible.
+one fresh attempt. It also recognizes the exact required-inspection draft refusal that
+the older native classifier incorrectly escalated to an execution failure. This path
+requires exactly one original citation call with an unused two-call correction budget,
+current matching pending input, and preserved correctly bound partial citations. It
+continues only that one remaining correction for the rejected slot; already completed
+tasks are not replayed. Any new failure exhausts that grant. Arbitrary permission,
+stale-input and semantic errors remain ineligible.
 
 ## Held Pass boundary revisions
 

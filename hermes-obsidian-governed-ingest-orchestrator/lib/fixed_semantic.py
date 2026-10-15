@@ -686,6 +686,13 @@ def run_pass(adapter,binding,caller):
     images=image_catalog(adapter,packet)
     if isinstance(caller,HermesCaller): caller.image_catalog=images
     value=adapter.workflow.status(binding['workflow_id'])
+    correction_tasks=set()
+    for recovery in value.get('execution_recovery_history',[]):
+        report=_load_json(_vault_path(adapter.workflow.vault,recovery['report_ref']))
+        for entry in report['entries']:
+            if entry['node']==binding['node']:
+                correction_tasks.update(entry.get('revision_packet_identity',{}).get('remaining_correction_task_ids',[]))
+    checked_ids={f't{i}':tid for i,tid in enumerate(adapter.worker_check(binding)['task_ids'],1)}
     config=adapter.workflow.knowledge._batch(value['batch_id'])['slice_config']
     limit=config['slice_max_input_codepoints'];policy=None
     if config.get('semantic_budget_policy'):
@@ -711,6 +718,8 @@ def run_pass(adapter,binding,caller):
             correction=None
             recovery_checked=False;attempt=0
             attempt_limit=group_usage(packet,tasks,phase,limit,images,policy)['semantic_attempt_limit'] if policy else 2
+            if phase=='citation' and any(checked_ids[t['task']] in correction_tasks for t in tasks):
+                attempt=attempt_limit-1  # Continue the recorded unused correction, not a fresh two-call budget.
             while attempt<attempt_limit:
                 recovered=None
                 try:
