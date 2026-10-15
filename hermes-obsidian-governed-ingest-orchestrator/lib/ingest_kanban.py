@@ -161,6 +161,9 @@ def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any
         return nodes
 
     batch = service.knowledge._batch(batch_id)
+    revision=workflow.get('pass_revision',{})
+    if revision.get('revision_scope')=='reduce-dependencies/v1' and revision['state']=='awaiting_review':
+        return []
     if workflow.get('pass_revision') and workflow['pass_revision']['state'] == 'running':
         return [pass_node(workflow, service.knowledge._slice(batch_id, sid))
                 for sid in workflow['pass_revision']['slice_ids']]
@@ -1237,8 +1240,17 @@ class IngestKanbanAdapter:
         value = self.workflow.continue_workflow(request)
         return self.sync(self._mutation(value))
 
-    def revise_passes(self, request):
-        value = self.workflow.revise_passes(request)
+    def revise_passes(self, request, *, dry_run=False):
+        if request.get('revision_scope')=='reduce-dependencies/v1':
+            from native_stop_inventory import verify_cancel_drain
+            verify_cancel_drain(self,request['workflow_id'],timeout=0)
+            value=self.workflow.revise_passes(request,dry_run=dry_run)
+            if dry_run:return value
+            return {'ok':True,'workflow_id':value['workflow_id'],'revision':value['revision'],
+                    'state':value['state'],'background_dispatch':False,'resumed':False,
+                    'pass_revision':{'revision_id':value['pass_revision']['revision_id'],'state':'running'}}
+        value = self.workflow.revise_passes(request,dry_run=dry_run)
+        if dry_run:return value
         return self.sync(self._mutation(value))
 
     def arm_canary(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -1671,7 +1683,9 @@ class IngestKanbanAdapter:
                 or (policy.get("mode") == "canary" and
                     node_name.partition(":")[2] not in policy.get("slice_ids", []))):
             _fail("ACCESS_DENIED", "Pass slice is outside the armed canary")
-        if workflow["cancel_requested"] or workflow["current_stage"] != "analyzing":
+        dependency_revision=(workflow['current_stage']=='reducing' and self.workflow.revision_allows(workflow,node_name)
+                             and workflow['pass_revision'].get('revision_scope')=='reduce-dependencies/v1')
+        if workflow["cancel_requested"] or (workflow["current_stage"] != "analyzing" and not dependency_revision):
             _fail("WORKFLOW_STOPPED", "Pass work is outside the active analyzing stage")
         matching = [item for item in workflow["kanban"]["task_map"]
                     if item["node"] == node_name and item.get("task_id") == task_id]
@@ -1703,7 +1717,8 @@ class IngestKanbanAdapter:
             if [i['task_id'] for i in group] != value['task_ids']:
                 _fail('STALE_INPUT', 'compact slice task ownership changed')
             for expected, measured in zip(group, inputs):
-                projection = self.workflow.knowledge.preview_model_input(expected['task_id'], batch) if verify_inputs else None
+                dependency_revision=self.workflow.revision_allows(workflow,node_name) and workflow['pass_revision'].get('revision_scope')=='reduce-dependencies/v1'
+                projection = self.workflow.knowledge.preview_model_input(expected['task_id'], batch) if verify_inputs and not dependency_revision else None
                 if (measured['fingerprint'] != expected['canonical_fingerprint'] or
                         projection is not None and projection['input_id'] != expected['input_id']):
                     _fail('STALE_INPUT', 'canonical or model input changed after execution planning')
@@ -2043,7 +2058,8 @@ class IngestKanbanAdapter:
                 workflow['batch_id'], value['slice_id'], worker_id, result['slice']['revision'],
                 check=lambda: self.worker_check(bound, verify_inputs=False), timeout=WORKER_LOCK_TIMEOUT,
                 write_guard=lambda: workflow_write_guard(self.workflow.vault,kinds=('pass-slice',),actor=workflow['actor']))
-            effective = (self.workflow.execution_template(workflow, value['slice_id'])
+            effective = (self.workflow.revision_instructions(workflow) if self.workflow.revision_allows(workflow,node_name) else
+                         self.workflow.execution_template(workflow, value['slice_id'])
                          or self.workflow.pinned_templates(workflow)['pass-slice'])
             if ((self.workflow.execution_template(workflow, value['slice_id']) is not None
                     and not self.workflow.revision_allows(workflow, node_name))
@@ -2053,7 +2069,8 @@ class IngestKanbanAdapter:
                     projections = []
                     for descriptor in prepared['reading_packages']:
                         package = _load_json(_vault_path(self.workflow.vault, descriptor['path']))
-                        projections.append(self.workflow.knowledge.model_input(descriptor['task_id'], package))
+                        projection=self.workflow.knowledge.model_input(descriptor['task_id'], package)
+                        projections.append(self.workflow.revision_projection(workflow,descriptor['task_id'],projection))
                     self.worker_check(bound)
                     with workflow_write_guard(self.workflow.vault,kinds=('pass-slice',),actor=workflow['actor']):
                         self.worker_check(bound, verify_inputs=False)
@@ -2115,8 +2132,8 @@ class IngestKanbanAdapter:
         if expires <= datetime.now(timezone.utc):
             _fail("LEASE_EXPIRED", "slice lease expired")
         return {"ok": True, "batch_id": workflow["batch_id"],
-                "slice_id": value["slice_id"], "task_ids": ([t['task_id'] for t in workflow['pass_revision']['tasks']
-                    if t['task_id'] in value['task_ids']] if self.workflow.revision_allows(workflow, request['node']) else value["task_ids"]),
+                "slice_id": value["slice_id"], "task_ids": ([tid for tid in value['task_ids']
+                    if any(t['task_id']==tid for t in workflow['pass_revision']['tasks'])] if self.workflow.revision_allows(workflow, request['node']) else value["task_ids"]),
                 "input_fingerprint": value["input_fingerprint"],
                 "worker_request": dict(request)}
 

@@ -21,8 +21,13 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
     wid, rid = request['workflow_id'], request.get('recovery_id', '')
     if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', rid):
         fail('INVALID_SCHEMA', 'invalid recovery ID')
-    if request.get('recovery_scope') != 'reduce-cancel/v1':
-        fail('INVALID_SCHEMA', 'Reduce recovery requires reduce-cancel/v1')
+    scope=request.get('recovery_scope')
+    if scope not in ('reduce-cancel/v1','source-packets/v1'):
+        fail('INVALID_SCHEMA', 'Reduce recovery requires a supported explicit correction scope')
+    if scope=='source-packets/v1':
+        from fixed_reduce_packets import contract_hash
+        if request.get('target_contract_sha256')!=contract_hash():
+            fail('STALE_INPUT','source packet implementation differs from the reviewed request')
     if not isinstance(request.get('reason'), str) or not request['reason'].strip():
         fail('INVALID_SCHEMA', 'describe the authorized cancellation recovery')
     entries = request.get('entries')
@@ -69,7 +74,8 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     fail('INVALID_TRANSITION', 'only interrupted resource/global Reduce can recover')
                 if domain_completed(service, value, node):
                     fail('INVALID_TRANSITION', 'reuse completed Reduce through trusted reconciliation, never regenerate it')
-                if any(name in r['nodes'] for r in value.get('execution_recovery_history', [])):
+                if any(name in r['nodes'] and _load_json(_vault_path(service.vault,r['report_ref']))['request'].get('recovery_scope')==scope
+                       for r in value.get('execution_recovery_history', [])):
                     fail('RECOVERY_EXHAUSTED', 'one cancellation recovery per reducer; diagnose further failure')
                 card = next((c for c in value['kanban']['task_map'] if c['node'] == name), None)
                 key = f'ingest:{wid}:{node.kind}:{node.input_fingerprint}'
@@ -83,7 +89,8 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                         or report.get('input_fingerprint') != node.input_fingerprint
                         or report.get('idempotency_key') != key):
                     fail('STALE_INPUT', 'failure evidence or binding changed')
-                if report.get('error_code') not in ('NATIVE_WORKER_STOPPED', 'WORKFLOW_STOPPED'):
+                allowed=('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED')
+                if report.get('error_code') not in allowed or (scope=='source-packets/v1' and node.kind!='resource-reduce'):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
                 snap = adapter.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
                 task, runs = snap.get('task', {}), snap.get('runs', [])
@@ -119,6 +126,14 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     'previous_input_fingerprint': node.input_fingerprint, 'failure_ref': ref,
                     'failure_sha256': hashlib.sha256(data).hexdigest(), 'failure': report,
                     'ended_run_ids': [str(r['id']) for r in runs], 'template_hash': template_hash})
+                if scope=='source-packets/v1':
+                    import fixed_reduce
+                    from fixed_reduce_packets import plan, CONTRACT
+                    from fixed_semantic import prepare_request_projection
+                    preview=fixed_reduce.preview_snapshot(adapter,binding)
+                    packets=plan(adapter,preview,prepare_request_projection)
+                    audited[-1]['corrected_input']={'contract':CONTRACT,'snapshot_sha256':preview['input_id'],
+                        'packets':[{k:v for k,v in p.items() if k!='view'} for p in packets]}
             result = {'ok': True, 'workflow_id': wid, 'recovery_id': rid, 'applied': not dry_run,
                       'nodes': [e['node'] for e in audited], 'state': 'cancelled', 'resumed': False}
             if dry_run:

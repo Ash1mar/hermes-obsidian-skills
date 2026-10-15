@@ -32,6 +32,10 @@ RULES.update({
     'global-plan':RULES['global-reduce'].replace('into draft pages','into page plans').replace('Return readable Markdown without unresolved short-handle links.','Choose exact page identities and paths using the complete provided identity directory; page bodies are written separately. Do not treat omission as a way to satisfy a budget.'),
     'page-write':'Write the one planned page from all its selected citation evidence and QA. Preserve facts, units, AND/OR, scope, conditions, exceptions and conflicts. Compare and faithfully update the supplied existing page when present. Identity, coverage and path are already fixed by the plan; return only Markdown content in JSON. Do not invent unread evidence or short-handle links.',
     'page-review':'Review this draft against all its supplied citation evidence, QA and the existing parent page when present. Check facts, AND/OR, units, scope, conditions, exceptions, conflicts and preservation of required prior content. Approve only after actual semantic review; otherwise request revision with a concrete reason. Return only decision and review_note; do not generate hashes, requests or an approval on behalf of the user.'})
+RULES['resource-reduce']+=' The input may be one bounded packet of a resource. Propose groups only within its candidates; do not infer other packets. Global coordination resolves relationships across packets, including same-source relationships.'
+RULES['global-reduce']+=' Reuse source proposals by default; adjust them when evidence warrants cross-packet or cross-resource equivalence, conflict or identity differences. Do not restart source grouping without a concrete reason.'
+RULES['global-plan']+=' Reuse source proposals by default and resolve cross-packet relationships, including packets of the same resource.'
+RULES['citation']+=' When candidate.revision_review is true, review the supplied predecessor citation and all required dependencies, then return a revised result with actual necessary inspections even if its claims stay unchanged. Do not use confirmed_unchanged for a revision.'
 for _phase in ('candidate','citation'):
     RULES[_phase]+=' Materials marked required_dependency must be read and inspected as necessary context; they do not expand the core assignment. If a prior candidate lacks these inspections, return a revised review with the new inspections rather than confirming unchanged. Merely associated linked_assets are navigation, not missing required evidence.'
 RULES['candidate']+=' Use existing fields compactly: name is a short rule/topic; finding states the essential fact or rule, not a paragraph-by-paragraph restatement. Put scope in applicability and necessary conditions/exceptions in their fields without repeating them in finding. Keep exact numbers, units and AND/OR. Add cross-paragraph explanation only when needed for interpretation. support_refs point to original authorized evidence; inspection qa/qa_note retain uncertainty and conversion limits. Brevity never permits loss of qualifications or required coverage.'
@@ -615,10 +619,16 @@ def merge_citation_review(adapter,review,packet):
         _,context=load_context(adapter.workflow.vault,binding,checked)
     alias=review['task']
     task_id=dict(zip((f't{i}' for i in range(1,len(checked['task_ids'])+1)),checked['task_ids']))[alias]
-    paths=list((adapter.workflow.vault/f'_system/knowledge-builds/task-{task_id}/passes').glob('0000-*.json'))
+    observed=context['candidates'].get(alias)
+    paths=[p for p in (adapter.workflow.vault/f'_system/knowledge-builds/task-{task_id}/passes').glob('*.json') if observed and observed in p.name]
     if len(paths)!=1:
         raise ContractError('STALE_INPUT','$','citation requires its observed original candidate')
     prior=_load_json(paths[0]);validate_record('knowledge_pass',prior)
+    if prior['pass_kind']=='citation':
+        workflow=adapter.workflow.status(binding['workflow_id'])
+        revision=workflow.get('pass_revision',{})
+        if not adapter.workflow.revision_allows(workflow,binding['node']) or not any(t['task_id']==task_id and t['pass_id']==prior['pass_id'] for t in revision.get('tasks',[])):
+            raise ContractError('ACCESS_DENIED','$','citation predecessor requires an authorized revision')
     if (prior['pass_id']!=context['candidates'].get(alias)
             or fingerprint({k:v for k,v in prior.items() if k!='pass_id'})!=prior['pass_id']):
         raise ContractError('STALE_INPUT','$','reviewed candidate changed')
@@ -768,6 +778,25 @@ def execute(adapter,binding_path,caller=None):
     if binding['node']=='build-finalize': return fixed_review.execute(adapter,binding,caller,model_call,attach_receipt)
     ref,input_value=fixed_reduce.prepare(adapter,binding)
     kind=input_value['backend']['kind']; correction=None
+    if kind=='resource-reduce':
+        from fixed_reduce_packets import plan, merge, validate_packet, CONTRACT
+        packets=plan(adapter,input_value,prepare_request_projection)
+        plan_ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-inputs/packets-{input_value['input_id']}.json"
+        _write_atomic(_vault_path(adapter.workflow.vault,plan_ref),_json_bytes({
+            'contract':CONTRACT,'input_ref':ref,'packets':[{k:v for k,v in p.items() if k!='view'} for p in packets]}))
+        drafts=[];calls=[]
+        for packet in packets:
+            adapter.worker_check(binding)
+            draft,call_ref=model_call(adapter,binding,kind,packet['view'],caller,30000,attempt_limit=1)
+            calls.append(call_ref)
+            try: validate_packet(packet,draft)
+            except ContractError as exc:
+                attach_receipt(adapter,call_ref,{'ok':False,'validated':False,'code':exc.code,'reason':str(exc),'state':'draft_rejected'})
+                raise
+            drafts.append(draft)
+        result=fixed_reduce.submit(adapter,binding,ref,merge(input_value,packets,drafts))
+        for call_ref in calls:attach_receipt(adapter,call_ref,result)
+        return adapter.worker_complete(binding)
     for attempt in range(2):
         call_refs=[]
         try:

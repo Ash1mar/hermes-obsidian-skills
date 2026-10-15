@@ -1,5 +1,6 @@
 """Read original, authorized evidence for downstream use; never rewrite Passes."""
 import copy
+import json
 
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _vault_path
@@ -22,14 +23,14 @@ def original_evidence(service, records, actor, registry):
                 or record['actor'] != actor or record['pass_kind'] != 'citation'
                 or record['reading_window_id'] != package['window']['window_id']):
             raise ContractError('STALE_INPUT', '$', 'citation reading authority changed')
-        from hermes_source_units.reading_dependencies import required_reading
-        from hermes_source_units.knowledge_build import _covers
+        from hermes_source_units.reading_dependencies import required_reading, citation_dependency_gaps
         if key not in supplements:
             _, supplements[key] = required_reading(service.source, package)
         supplement = supplements[key]
-        if any(not any(_covers(i['source_ref'], ref) for i in record['inspections'])
-               for ref in supplement['required_refs']):
-            raise ContractError('INCOMPLETE_COVERAGE', '$', 'required original dependency lacks citation inspection')
+        gaps = citation_dependency_gaps(service.source, package, record, supplement)
+        if gaps:
+            raise ContractError('INCOMPLETE_COVERAGE', '$', json.dumps({
+                'reason':'required original dependency lacks citation inspection','gaps':gaps},ensure_ascii=False))
         if key in readings:
             continue
         projection = service.model_input(key[0], package, persist=False)
