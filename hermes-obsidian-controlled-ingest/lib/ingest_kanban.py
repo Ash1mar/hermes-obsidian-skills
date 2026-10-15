@@ -1683,7 +1683,9 @@ class IngestKanbanAdapter:
                 or (policy.get("mode") == "canary" and
                     node_name.partition(":")[2] not in policy.get("slice_ids", []))):
             _fail("ACCESS_DENIED", "Pass slice is outside the armed canary")
-        if workflow["cancel_requested"] or workflow["current_stage"] != "analyzing":
+        dependency_revision=(workflow['current_stage']=='reducing' and self.workflow.revision_allows(workflow,node_name)
+                             and workflow['pass_revision'].get('revision_scope')=='reduce-dependencies/v1')
+        if workflow["cancel_requested"] or (workflow["current_stage"] != "analyzing" and not dependency_revision):
             _fail("WORKFLOW_STOPPED", "Pass work is outside the active analyzing stage")
         matching = [item for item in workflow["kanban"]["task_map"]
                     if item["node"] == node_name and item.get("task_id") == task_id]
