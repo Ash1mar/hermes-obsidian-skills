@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import copy
+import ast
 import hashlib
 import json
 import os
@@ -17,6 +18,31 @@ from .runtime_telemetry import span
 
 def fail(code, message):
     raise ContractError(code, '$', message)
+
+
+PACKET_CAUSES={
+    'ACCESS_DENIED':'ACCESS_DENIED at $: ACCESS_DENIED at $: typed submission requires a bounded model slice',
+    'STALE_INPUT':'STALE_INPUT at $: STALE_INPUT at $: reviewed candidate identity changed'}
+
+
+def inspection_slots(report):
+    prefix='PASS_EXECUTION_BLOCKED at $: '
+    if report.get('error_code')!='PASS_EXECUTION_BLOCKED' or not report.get('reason','').startswith(prefix):return []
+    try:failures=ast.literal_eval(report['reason'][len(prefix):])
+    except (ValueError,SyntaxError):return []
+    if (not isinstance(failures,list) or not failures or any(not isinstance(f,dict)
+            or f.get('stage')!='pass' or f.get('code')!='INCOMPLETE_COVERAGE'
+            or f.get('message')!='INCOMPLETE_COVERAGE at $: required reading dependency has not been inspected; retain original evidence'
+            or not isinstance(f.get('task'),str) for f in failures)):return []
+    return [f['task'] for f in failures]
+
+
+def packet_recovery_cause(report):
+    if inspection_slots(report):return 'inspection-classification'
+    code=report.get('error_code')
+    if code in PACKET_CAUSES and report.get('reason')==PACKET_CAUSES[code]:return code
+    if code=='PROGRAM_EXECUTION_FAILED' and report.get('reason')=="'expected_revision'":return 'canonical-binding-bootstrap'
+    return None
 
 
 class ExecutionPlanMixin:
@@ -104,14 +130,21 @@ class ExecutionPlanMixin:
                 fail('STALE_INPUT', 'execution recovery evidence changed')
             report = json.loads(data)
             request = report['request']
+            scope=request.get('recovery_scope','mechanical/v1')
+            keys=[]
+            for entry in report['entries']:
+                cause=packet_recovery_cause(entry.get('failure',{})) if scope=='revision-citation-packet/v1' else None
+                if scope=='revision-citation-packet/v1' and (not cause or not entry.get('revision_packet_identity')):
+                    fail('STALE_INPUT','packet recovery lacks its recognized cause or native input proof')
+                keys.append((entry['node'],scope,cause))
             if (request['workflow_id'] != workflow['workflow_id']
                     or request['actor'] != workflow['actor']
                     or request['recovery_id'] != recovery['recovery_id']
                     or request['input_digest'] != recovery['input_digest']
                     or [e['node'] for e in report['entries']] != recovery['nodes']
-                    or any((n,request.get('recovery_scope','mechanical/v1')) in recovered for n in recovery['nodes'])):
+                    or any(key in recovered for key in keys)):
                 fail('STALE_INPUT', 'execution recovery identity changed or repeated')
-            recovered.update((n,request.get('recovery_scope','mechanical/v1')) for n in recovery['nodes'])
+            recovered.update(keys)
         plan = self.execution_plan(workflow)
         batch_ref = self.knowledge._batch(workflow['batch_id']).get('execution_plan_ref') if workflow['batch_id'] else None
         workflow_ref = workflow.get('execution_plan', {}).get('path')
