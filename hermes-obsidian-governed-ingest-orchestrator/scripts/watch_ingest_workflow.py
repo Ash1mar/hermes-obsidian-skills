@@ -92,6 +92,10 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                     if wake.is_set():
                         continue
                     result = adapter._sync_current(workflow_id,max_attempts=1,yield_requested=wake.is_set)
+                if (result.get('pause',{}).get('boundary')=='revision_review' and not result.get('background_dispatch')):
+                    adapter.workflow._verify_pause_snapshot(adapter.workflow.status(workflow_id))
+                    print('Workflow paused for citation revision review',flush=True)
+                    return
                 if (result.get("pause", {}).get("boundary")
                         and result["pause"].get("evidence_digest") and not result.get('background_dispatch')):
                     print("Workflow paused after " + result["pause"]["boundary"], flush=True)

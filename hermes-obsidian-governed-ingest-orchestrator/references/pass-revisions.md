@@ -81,6 +81,19 @@ native timeline showing no SDK model attempt; it retains any earlier remaining q
 
 ## Held Pass boundary revisions
 
+For an explicitly authorized substantive finding at an unconsumed Reduce
+`revision_review`, use the same `revise-passes` operation with `reduce-review/v1`.
+It pins the current review digest and latest citation, requires a drained native
+hold and no consumed Reduce/build result, and selects exactly one citation from
+that held review. The program supplies only that task's complete authorized packet
+and exposes its persisted task reason as `candidate.review_reason` plus prior
+inspection findings with their own local material refs; no foreign
+task's shared material pool is supplied. Original citations, other results and
+released pause history remain protected. Apply does not dispatch: separately resume
+the same workflow. Native workers author the next citation, and the new result
+returns to the same derived review hold. Explicit acceptance and a separate authorized
+resume are still required. This is not a source reset or a way to waive support checks.
+
 Use this general operator recovery for reviewed semantic/citation errors at the current durable `canary` or `pass` pause, before Reduce consumes the evidence. Preserve the same workflow/batch, source outcomes, plan, immutable Pass files and unselected task results. This interface does not authorize crossing a boundary.
 
 1. Inspect status, current pause report/digest, completed slice and latest citation Pass IDs. Confirm no active leases/native workers. Read reviewer findings and store their evidence in the Vault. Do not modify domain outputs to create review evidence.

@@ -34,7 +34,7 @@ class WorkflowPauseMixin:
     def pending_pause(self, value: Mapping[str, Any]) -> str | None:
         """Also detect an unlatched boundary, so worker writes fail closed."""
         revision=value.get('pass_revision',{})
-        if revision.get('revision_scope')=='reduce-dependencies/v1' and revision['state']=='awaiting_review':
+        if revision.get('revision_scope') in ('reduce-dependencies/v1','reduce-review/v1') and revision['state']=='awaiting_review':
             return 'revision_review'
         control = value.get("pause_control", {})
         if control.get("boundary"):

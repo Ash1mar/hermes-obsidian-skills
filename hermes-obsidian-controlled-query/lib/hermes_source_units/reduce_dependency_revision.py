@@ -7,10 +7,12 @@ from .validation import ContractError, fingerprint
 from .reading_dependencies import citation_dependency_gaps
 
 SCOPE='reduce-dependencies/v1'
+REVIEW_SCOPE='reduce-review/v1'
+REDUCE_SCOPES=(SCOPE,REVIEW_SCOPE)
 
 
 def scoped(value):
-    return value.get('pass_revision',{}).get('revision_scope')==SCOPE
+    return value.get('pass_revision',{}).get('revision_scope') in REDUCE_SCOPES
 
 
 def snapshot(service,value):
@@ -34,6 +36,22 @@ def snapshot(service,value):
 
 def authorize(service,value,request):
     def fail(code,message):raise ContractError(code,'$',message)
+    if request.get('revision_scope')==REVIEW_SCOPE:
+        prior=value.get('pass_revision',{})
+        if (not scoped(value) or prior.get('state')!='awaiting_review' or service.pending_pause(value)!='revision_review'
+                or value['current_stage']!='reducing' or value['cancel_requested']
+                or request.get('evidence_digest')!=prior.get('review_evidence_digest')
+                or value['dispatch_policy']['mode']!='full'):
+            fail('INVALID_TRANSITION','Reduce review revision requires the current authenticated review hold')
+        evidence=service._verify_pause_snapshot(value)
+        service.assert_execution_ready(value);service._verify_execution_evidence(value)
+        selected={t['task_id'] for t in request.get('tasks',[])}
+        if len(request.get('tasks',[]))!=1 or not selected.issubset({t['task_id'] for t in prior['tasks']}):
+            fail('INVALID_SCOPE','review revision isolates one citation from the held review')
+        batch=service.knowledge._batch(value['batch_id'])
+        for tid in selected:
+            service.knowledge._verify_planned_measurement(service.knowledge._task(tid),batch['actor'],batch['document_registry_revision'],None)
+        return evidence
     if (value['state']!='cancelled' or not value['cancel_requested'] or value['current_stage']!='reducing'
             or service.pending_pause(value) or value['dispatch_policy']['mode']!='full'
             or request.get('evidence_digest')!='sha256:'+fingerprint(value['pause_control'])):

@@ -162,7 +162,7 @@ def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any
 
     batch = service.knowledge._batch(batch_id)
     revision=workflow.get('pass_revision',{})
-    if revision.get('revision_scope')=='reduce-dependencies/v1' and revision['state']=='awaiting_review':
+    if revision.get('revision_scope') in ('reduce-dependencies/v1','reduce-review/v1') and revision['state']=='awaiting_review':
         return []
     if workflow.get('pass_revision') and workflow['pass_revision']['state'] == 'running':
         return [pass_node(workflow, service.knowledge._slice(batch_id, sid))
@@ -1287,9 +1287,14 @@ class IngestKanbanAdapter:
         return self.sync(self._mutation(value))
 
     def revise_passes(self, request, *, dry_run=False):
-        if request.get('revision_scope')=='reduce-dependencies/v1':
-            from native_stop_inventory import verify_cancel_drain
-            verify_cancel_drain(self,request['workflow_id'],timeout=0)
+        if request.get('revision_scope') in ('reduce-dependencies/v1','reduce-review/v1'):
+            from native_stop_inventory import verify_cancel_drain,workflow_processes
+            if request['revision_scope']=='reduce-dependencies/v1':verify_cancel_drain(self,request['workflow_id'],timeout=0)
+            else:
+                current=self.workflow.status(request['workflow_id'])
+                if workflow_processes(current['workflow_id'],current['kanban']['board_id']) or any(
+                        state in ('ready','running','triage','todo') for state in self.kanban.task_states(current['kanban']['board_id']).values()):
+                    _fail('WORKER_ACTIVE','review revision requires a drained native review hold')
             value=self.workflow.revise_passes(request,dry_run=dry_run)
             if dry_run:return value
             return {'ok':True,'workflow_id':value['workflow_id'],'revision':value['revision'],
@@ -1555,6 +1560,8 @@ class IngestKanbanAdapter:
                 key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
                 if previous['idempotency_key']==key and self._completed_pass_binding(value, node, key)==previous['task_id']:
                     task_map.append(dict(previous))
+                    if native_states.get(previous['task_id']) not in ('done','archived'):
+                        self.kanban.complete(slug,previous['task_id'],'Authoritative Vault Pass committed; review hold preserved')
             current_keys = {item["idempotency_key"] for item in task_map}
             if value["kanban"]["board_id"] == slug:
                 for previous in value["kanban"]["task_map"]:
@@ -1730,7 +1737,7 @@ class IngestKanbanAdapter:
                     node_name.partition(":")[2] not in policy.get("slice_ids", []))):
             _fail("ACCESS_DENIED", "Pass slice is outside the armed canary")
         dependency_revision=(workflow['current_stage']=='reducing' and self.workflow.revision_allows(workflow,node_name)
-                             and workflow['pass_revision'].get('revision_scope')=='reduce-dependencies/v1')
+                             and workflow['pass_revision'].get('revision_scope') in ('reduce-dependencies/v1','reduce-review/v1'))
         if workflow["cancel_requested"] or (workflow["current_stage"] != "analyzing" and not dependency_revision):
             _fail("WORKFLOW_STOPPED", "Pass work is outside the active analyzing stage")
         matching = [item for item in workflow["kanban"]["task_map"]
@@ -1763,7 +1770,7 @@ class IngestKanbanAdapter:
             if [i['task_id'] for i in group] != value['task_ids']:
                 _fail('STALE_INPUT', 'compact slice task ownership changed')
             for expected, measured in zip(group, inputs):
-                dependency_revision=self.workflow.revision_allows(workflow,node_name) and workflow['pass_revision'].get('revision_scope')=='reduce-dependencies/v1'
+                dependency_revision=self.workflow.revision_allows(workflow,node_name) and workflow['pass_revision'].get('revision_scope') in ('reduce-dependencies/v1','reduce-review/v1')
                 projection = self.workflow.knowledge.preview_model_input(expected['task_id'], batch) if verify_inputs and not dependency_revision else None
                 if (measured['fingerprint'] != expected['canonical_fingerprint'] or
                         projection is not None and projection['input_id'] != expected['input_id']):
