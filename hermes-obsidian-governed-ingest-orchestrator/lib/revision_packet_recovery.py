@@ -10,6 +10,22 @@ CAUSES={
     'STALE_INPUT':'STALE_INPUT at $: STALE_INPUT at $: reviewed candidate identity changed'}
 
 
+def interrupted_codes(report,snapshot):
+    """A generic transport refusal needs an actual ended native cancellation."""
+    from ingest_kanban import mechanical_failure_codes
+    if report.get('error_code')!='PROGRAM_EXECUTION_FAILED':
+        return mechanical_failure_codes(report)
+    attempt=next((r for r in reversed(snapshot.get('runs',[])) if r.get('worker_pid')),None)
+    if (report.get('reason')!='native model request did not complete; inspect its session'
+            or not attempt or attempt.get('summary')!='Vault workflow cancelled'
+            or attempt.get('status')!='scheduled' or attempt.get('outcome')!='scheduled'
+            or not attempt.get('ended_at') or not attempt.get('started_at')
+            or attempt['ended_at']<attempt['started_at']
+            or snapshot.get('task',{}).get('completed_at') or snapshot.get('task',{}).get('result')):
+        raise ContractError('RECOVERY_NOT_ALLOWED','$','transport failure lacks ended native cancellation evidence')
+    return ['WORKFLOW_STOPPED']
+
+
 def verify(adapter,workflow,item,binding):
     revision=workflow['pass_revision'];service=adapter.workflow.knowledge
     targets={t['task_id']:t for t in revision['tasks']}

@@ -9,7 +9,7 @@ from hermes_source_units import ContractError
 from hermes_source_units.source_units import _json_bytes
 
 
-@pytest.mark.parametrize('change',['valid','foreign_reason','packet_bytes','predecessor'])
+@pytest.mark.parametrize('change',['valid','foreign_reason','packet_bytes','predecessor','cancelled_request','stopped_revision'])
 def test_packet_recovery_authenticates_native_input_and_original_citation(paused,vault,monkeypatch,change):
     a,w,revision=setup_scope(paused,vault,monkeypatch)
     monkeypatch.setattr(a.kanban,'task_states',lambda _:{tid:a.kanban.task_snapshot('',tid)['task']['status'] for tid in a.kanban.by_id},raising=False)
@@ -35,23 +35,50 @@ def test_packet_recovery_authenticates_native_input_and_original_citation(paused
     current=a.workflow.status(w['workflow_id'])
     reason='ACCESS_DENIED at $: ACCESS_DENIED at $: typed submission requires a bounded model slice'
     if change=='foreign_reason':reason='ACCESS_DENIED at $: unrelated permission failure'
-    ref=a.execution_failure({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id']},'ACCESS_DENIED',reason)
+    code='ACCESS_DENIED'
+    if change=='cancelled_request':
+        code='PROGRAM_EXECUTION_FAILED';reason='native model request did not complete; inspect its session'
+        original=a.kanban.task_snapshot
+        def cancelled_snapshot(*args):
+            result=original(*args)
+            return {**result,'runs':[{'worker_pid':123,'status':'scheduled','outcome':'scheduled',
+                'summary':'Vault workflow cancelled','started_at':10,'ended_at':11}]}
+        monkeypatch.setattr(a.kanban,'task_snapshot',cancelled_snapshot)
+    if change=='stopped_revision':code='WORKFLOW_STOPPED';reason='Workflow cancelled before submission'
+    ref=a.execution_failure({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id']},code,reason)
     if change=='packet_bytes':
         path=vault/context['packet_ref'];path.write_text(path.read_text()+' ')
     if change=='predecessor':
         context['candidates']['t1']='0'*64;context_ref.write_bytes(_json_bytes(context))
     request=workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision'],
-        revision_id=revision['revision_id'],recovery_id='fixed-packet-recovery',recovery_scope='revision-citation-packet/v1',
+        revision_id=revision['revision_id'],recovery_id='fixed-packet-recovery',
+        recovery_scope='mechanical/v1' if change in ('cancelled_request','stopped_revision') else 'revision-citation-packet/v1',
         reason='Retry only a corrected fixed revision transport contract',entries=[{
             'node':card['node'],'task_id':card['task_id'],'failure_sha256':hashlib.sha256((vault/ref).read_bytes()).hexdigest()}])
     before={p:p.read_bytes() for p in vault.rglob('*.json')}
-    if change!='valid':
+    valid=change in ('valid','cancelled_request','stopped_revision')
+    if not valid:
         with pytest.raises(ContractError,match='RECOVERY_NOT_ALLOWED' if change=='foreign_reason' else 'STALE_INPUT'):
             a.recover_pass_execution(request,dry_run=True)
     else:
         result=a.recover_pass_execution(request,dry_run=True)
-        assert not result['applied'] and result['entries'][0]['revision_packet_identity']['predecessors']==context['candidates']
+        assert not result['applied']
+        if change!='stopped_revision':assert result['entries'][0]['revision_packet_identity']['predecessors']==context['candidates']
     assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
-    if change=='valid':
+    if valid:
         assert a.recover_pass_execution(request)['applied']
         assert a.workflow.status(w['workflow_id'])['cancel_requested']
+
+
+@pytest.mark.parametrize('change',['missing','other_reason','completed','live','other_outcome'])
+def test_transport_failure_requires_actual_ended_native_cancellation(change):
+    from revision_packet_recovery import interrupted_codes
+    report={'error_code':'PROGRAM_EXECUTION_FAILED','reason':'native model request did not complete; inspect its session'}
+    run={'worker_pid':123,'status':'scheduled','outcome':'scheduled','summary':'Vault workflow cancelled','started_at':10,'ended_at':11}
+    snapshot={'task':{},'runs':[run]}
+    if change=='missing':snapshot['runs']=[]
+    if change=='other_reason':report['reason']='unrelated failure'
+    if change=='completed':snapshot['task']['completed_at']=11
+    if change=='live':run['ended_at']=None
+    if change=='other_outcome':run['summary']='Program failed'
+    with pytest.raises(ContractError,match='RECOVERY_NOT_ALLOWED'):interrupted_codes(report,snapshot)

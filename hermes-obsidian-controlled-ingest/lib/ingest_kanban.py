@@ -1139,7 +1139,7 @@ class IngestKanbanAdapter:
                         'revision':value['revision'], 'report_ref':prior['report_ref'], 'nodes':prior['nodes']}
             value = self.workflow._mutation(request)
             self.workflow.assert_execution_ready(value)
-            legacy_revision=(scope in ('legacy-slice-config/v1','revision-citation-packet/v1') and value['current_stage']=='reducing'
+            legacy_revision=(scope in ('mechanical/v1','legacy-slice-config/v1','revision-citation-packet/v1') and value['current_stage']=='reducing'
                 and value.get('pass_revision',{}).get('revision_scope')=='reduce-dependencies/v1'
                 and value['pass_revision']['state']=='running'
                 and request.get('revision_id')==value['pass_revision']['revision_id'])
@@ -1210,6 +1210,8 @@ class IngestKanbanAdapter:
                         if report.get('error_code') not in CAUSES or report.get('reason')!=CAUSES[report['error_code']]:
                             _fail('RECOVERY_NOT_ALLOWED','only the corrected fixed revision packet contract can recover')
                         codes=[report['error_code']]
+                    elif legacy_revision and scope=='mechanical/v1':
+                        codes=None  # Verify the ended native cancellation below.
                     else:
                         codes = mechanical_failure_codes(report,scope,input_limit=batch['slice_config']['slice_max_input_codepoints'])
                     if scope in ('phase-packet-grouping/v1','correction-reserve-admission/v1'):
@@ -1222,6 +1224,9 @@ class IngestKanbanAdapter:
                     if (task.get('id') != card['task_id'] or task.get('worker_pid')
                             or any(not r.get('ended_at') for r in snapshot.get('runs', []))):
                         _fail('WORKER_ACTIVE', 'selected native attempt is active or unverifiable')
+                    if legacy_revision and scope=='mechanical/v1':
+                        from revision_packet_recovery import interrupted_codes
+                        codes=interrupted_codes(report,snapshot)
                     binding_path = _vault_path(self.workflow.vault,
                         f'_system/ledgers/ingest-workflows/{wid}/bindings/{fingerprint(key)}.json')
                     binding = _load_json(binding_path)
@@ -1240,7 +1245,8 @@ class IngestKanbanAdapter:
                         service._verify_planned_measurement(service._task(tid), batch['actor'],
                             batch['document_registry_revision'], None)
                     packet_identity=None
-                    if scope=='revision-citation-packet/v1':
+                    if scope=='revision-citation-packet/v1' or (legacy_revision and scope=='mechanical/v1'
+                            and report.get('error_code')=='PROGRAM_EXECUTION_FAILED'):
                         from revision_packet_recovery import verify
                         packet_identity=verify(self,value,item,binding)
                     audited.append({'node':name, 'previous_task_id':card['task_id'],
