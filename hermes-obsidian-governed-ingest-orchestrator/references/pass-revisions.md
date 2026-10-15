@@ -39,6 +39,15 @@ source hashes, native binding and ordinary Pass submission checks remain authori
 No evidence truncation, optionalizing required assets, source reset or model fallback is
 allowed. A single indivisible task that cannot fit stays blocked with its original evidence.
 
+After a legacy revision narrows the graph, an unattempted Reduce card may have been
+archived and recreated under its unchanged key. `recover-reduce-execution` with the
+existing `reduce-cancel/v1` scope admits the exact canonical-binding projection refusal
+only when the replacement has no attempts and the original archived canonical card
+matches the complete current identity and has only zero-duration, no-worker cancellation
+receipts. It preserves the canonical file and records both native identities. This grants
+no semantic replay, never accepts an attempted/foreign/changed binding, and remains a
+cancelled, one-recovery-per-node operation requiring separate authorized resume.
+
 For a legacy `knowledge-pass/v1` slice whose creation configuration differs from a later
 execution amendment, `recover-pass-execution` scope `legacy-slice-config/v1` may authenticate
 an operator-supplied historical snapshot against the released exact-plan digest. The request
