@@ -720,6 +720,11 @@ def run_pass(adapter,binding,caller):
             attempt_limit=group_usage(packet,tasks,phase,limit,images,policy)['semantic_attempt_limit'] if policy else 2
             if phase=='citation' and any(checked_ids[t['task']] in correction_tasks for t in tasks):
                 attempt=attempt_limit-1  # Continue the recorded unused correction, not a fresh two-call budget.
+                correction={'failures':[{'task':t['task'],'code':'INCOMPLETE_COVERAGE',
+                    'message':'Previous draft omitted a required inspection. Inspect every required_dependency material, including context, and return actual inspections. Required handles: '+
+                        ', '.join(m['ref'] for m in t['materials'] if m.get('required_dependency'))}
+                    for t in tasks if checked_ids[t['task']] in correction_tasks]}
+                recovery_checked=True  # A known rejected draft is not a reusable correction.
             while attempt<attempt_limit:
                 recovered=None
                 try:
