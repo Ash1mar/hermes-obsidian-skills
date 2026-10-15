@@ -1,22 +1,12 @@
 """Authenticate a failed revision's observed bounded packet before one corrected retry."""
-import ast
 from hermes_source_units import ContractError
+from hermes_source_units.execution_plan import (PACKET_CAUSES as CAUSES,
+    inspection_slots,packet_recovery_cause as cause_key)
 from hermes_source_units.source_units import _load_json,_vault_path
 from hermes_source_units.validation import fingerprint
 from native_pass_identity import load_context
 
 SCOPE='revision-citation-packet/v1'
-CAUSES={
-    'ACCESS_DENIED':'ACCESS_DENIED at $: ACCESS_DENIED at $: typed submission requires a bounded model slice',
-    'STALE_INPUT':'STALE_INPUT at $: STALE_INPUT at $: reviewed candidate identity changed'}
-
-
-def cause_key(report):
-    if inspection_slots(report):return 'inspection-classification'
-    code=report.get('error_code')
-    if report.get('reason')==CAUSES.get(code) and code in CAUSES:return code
-    if code=='PROGRAM_EXECUTION_FAILED' and report.get('reason')=="'expected_revision'":return 'canonical-binding-bootstrap'
-    return None
 
 
 def verify_bootstrap(adapter,workflow,binding,snapshot):
@@ -32,18 +22,6 @@ def verify_bootstrap(adapter,workflow,binding,snapshot):
         import json
         if any('sdk_model_request' in json.loads(line).values() for line in path.read_text().splitlines()):
             raise ContractError('RECOVERY_NOT_ALLOWED','$','native model attempt already started')
-
-
-def inspection_slots(report):
-    prefix='PASS_EXECUTION_BLOCKED at $: '
-    if report.get('error_code')!='PASS_EXECUTION_BLOCKED' or not report.get('reason','').startswith(prefix):return []
-    try:failures=ast.literal_eval(report['reason'][len(prefix):])
-    except (ValueError,SyntaxError):return []
-    if (not isinstance(failures,list) or not failures or any(not isinstance(f,dict)
-            or f.get('stage')!='pass' or f.get('code')!='INCOMPLETE_COVERAGE'
-            or f.get('message')!='INCOMPLETE_COVERAGE at $: required reading dependency has not been inspected; retain original evidence'
-            or not isinstance(f.get('task'),str) for f in failures)):return []
-    return [f['task'] for f in failures]
 
 
 def interrupted_codes(report,snapshot):
