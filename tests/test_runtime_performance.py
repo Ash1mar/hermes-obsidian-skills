@@ -127,7 +127,7 @@ def test_native_capacity_snapshot_counts_claims_and_leases_once(monkeypatch, tmp
         _slices=lambda _: [{'slice_id':'s1','lease':{'worker_id':'w1'}}])
     cards=[{'task_id':f't{i}','node':f'pass-slice:s{i}'} for i in range(1,5)]
     value={'cancel_requested':False,'batch_id':'batch','kanban':{'board_id':'board','task_map':cards}}
-    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,status=lambda _:value,
+    adapter=SimpleNamespace(program_worker_concurrency=2,workflow=SimpleNamespace(vault=tmp_path,status=lambda _:value,
         pending_pause=lambda _:False,knowledge=leased))
     adapter.reconcile_pass_workers=lambda _:None
     tasks=[SimpleNamespace(id=f't{i}',status='running' if i<=2 else 'ready',assignee='ingest-program') for i in range(1,5)]
@@ -135,6 +135,7 @@ def test_native_capacity_snapshot_counts_claims_and_leases_once(monkeypatch, tmp
     kb=SimpleNamespace(list_tasks=lambda _:reads.append('list') or tasks,
         get_task=lambda *args:pytest.fail('full capacity must not inspect or claim candidates'))
     kd=SimpleNamespace(reap_worker_zombies=lambda:None,configured_max_in_progress=lambda:None,
+        count_running_tasks=lambda _:2,count_running_tasks_other_boards=lambda _:0,
         resolve_max_in_progress=lambda _:None,_memory_pressure_level=lambda:'normal')
     class Connection:
         def close(self):pass

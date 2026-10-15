@@ -64,6 +64,7 @@ def refill(monkeypatch, tmp_path):
         idempotency_key=card["idempotency_key"], current_run_id=100 + index,
         claim_lock=f"claim-{index}", worker_pid=None)
         for index, card in enumerate(cards)]
+    state.cards, state.tasks = cards, tasks
 
     def status(wid):
         assert wid == "ingest-refill"
@@ -82,7 +83,7 @@ def refill(monkeypatch, tmp_path):
         _batch=lambda _: {"slice_config": {"pass_worker_concurrency": 2}},
         _slices=lambda _: [{"slice_id": f"s{i}", "lease": {"worker_id": None}} for i in range(1, 3)],
     )
-    state.adapter = SimpleNamespace(reconcile_pass_workers=fast, workflow=SimpleNamespace(
+    state.adapter = SimpleNamespace(program_worker_concurrency=2, reconcile_pass_workers=fast, workflow=SimpleNamespace(
         vault=tmp_path, status=status, pending_pause=lambda _: state.pause, knowledge=knowledge))
 
     def list_tasks(conn):
@@ -101,6 +102,8 @@ def refill(monkeypatch, tmp_path):
         kanban_db_path=lambda **kw: tmp_path / "native.db",
         workspaces_root=lambda **kw: tmp_path / "workspaces")
     kd = SimpleNamespace(reap_worker_zombies=lambda: events.append("reap"),
+        count_running_tasks=lambda conn: sum(t.status == 'running' for t in tasks),
+        count_running_tasks_other_boards=lambda board: 0,
         configured_max_in_progress=lambda: None, resolve_max_in_progress=lambda _: None,
         _memory_pressure_level=lambda: "normal", check_respawn_guard=lambda *a: None,
         _restart_safe_worker_argv=lambda task, argv: argv,
@@ -157,6 +160,23 @@ def test_native_refill_reconciles_after_reap_before_fresh_capacity(refill):
     assert events[events.index("fast-reconcile") + 1] == "status"
     assert events.index("admission:t1") < events.index("claim:t1") < events.index("spawn")
     assert sum(item.startswith("claim:") for item in events) == 2
+
+
+def test_reduce_dispatch_cap_two_even_when_native_config_is_unbounded(refill):
+    from native_program_dispatch import effective_capacity
+    assert effective_capacity(refill.adapter, None) == 2
+    assert effective_capacity(refill.adapter, 8) == 2
+    assert effective_capacity(refill.adapter, 1) == 1
+    for card, task in zip(refill.cards, refill.tasks):
+        card['node'] = 'resource-reduce:' + task.id
+    extra = dict(refill.cards[-1], task_id='t3', node='resource-reduce:t3', idempotency_key='key-3')
+    refill.cards.append(extra)
+    task = copy_task = SimpleNamespace(**vars(refill.tasks[-1]))
+    copy_task.id, copy_task.idempotency_key = 't3', 'key-3'
+    copy_task.body = json.dumps({'executor':'semantic-v1', 'workflow_id':'ingest-refill', 'worker_binding':'t3'})
+    refill.tasks.append(task)
+    assert dispatcher.dispatch_programs(refill.adapter, 'ingest-refill') == ['t1','t2']
+    assert refill.tasks[-1].status == 'ready'
 
 
 @pytest.mark.parametrize("change", ["pause", "cancel"])

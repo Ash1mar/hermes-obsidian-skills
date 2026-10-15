@@ -14,13 +14,27 @@ import sys
 
 from program_worker import ASSIGNEE, canonical_binding, admission_check
 from hermes_source_units import ContractError
+from hermes_source_units.source_units import _exclusive_lock, _vault_path
 from hermes_source_units.runtime_telemetry import measured, span
+
+
+def effective_capacity(adapter, native_cap):
+    """Fixed workers each issue model calls serially, including every reducer."""
+    return min(adapter.program_worker_concurrency, native_cap) if native_cap is not None else adapter.program_worker_concurrency
 
 
 @measured('program_dispatch', lambda adapter, workflow_id: {'vault':adapter.workflow.vault,'workflow_id':workflow_id})
 def dispatch_programs(adapter, workflow_id):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise RuntimeError('program dispatcher requires a trusted operator process')
+    # Serialize fixed-program capacity selection and native claims across this
+    # Vault's workflows, including direct native CLI calls outside a watcher.
+    lock = _vault_path(adapter.workflow.vault, '_system/ledgers/ingest-workflows/.dispatch-locks/program-capacity.lock')
+    with _exclusive_lock(lock):
+        return _dispatch_programs(adapter, workflow_id)
+
+
+def _dispatch_programs(adapter, workflow_id):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kc, kanban_db_dispatch as kd, kanban_db_workspace as kw
     from hermes_cli.profiles import profile_exists
     value = adapter.workflow.status(workflow_id)
@@ -43,7 +57,7 @@ def dispatch_programs(adapter, workflow_id):
         if (value['cancel_requested'] or adapter.workflow.pending_pause(value)
                 or value['kanban']['board_id'] != board):
             return []
-        cap = kd.resolve_max_in_progress(kd.configured_max_in_progress())
+        cap = effective_capacity(adapter, kd.resolve_max_in_progress(kd.configured_max_in_progress()))
         pressure = kd._memory_pressure_level()
         with span('capacity_snapshot'):
             tasks = {task.id:task for task in kb.list_tasks(conn)}
@@ -112,6 +126,10 @@ def dispatch_programs(adapter, workflow_id):
                 return spawned
             # Native claim enforces parents, opens a run and uses ready->running CAS.
             with span('native_claim',binding=request) as claim_trace:
+                # The dispatcher owns the Vault's capacity mutex. Recheck live
+                # capacity here; native claim owns its own non-nestable CAS txn.
+                if kd.count_running_tasks(conn) + kd.count_running_tasks_other_boards(board) >= cap:
+                    return spawned
                 claimed = kb.claim_task(conn, task.id, claimer='ingest-program-dispatch')
                 if claimed:
                     claim_trace['native_run_id']=str(claimed.current_run_id)

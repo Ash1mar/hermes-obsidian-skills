@@ -132,6 +132,11 @@ def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any
     workflow_id = workflow["workflow_id"]
     def add(name: str, kind: str, parents: tuple[str, ...], inputs: Any,
             gate: bool = False) -> str:
+        if kind in ('resource-reduce', 'global-reduce'):
+            recovery = next((r for r in reversed(workflow.get('execution_recovery_history', []))
+                             if name in r['nodes']), None)
+            if recovery:
+                inputs = {'domain_inputs': inputs, 'recovery_digest': recovery['input_digest']}
         parents_fingerprints = [next(item.input_fingerprint for item in nodes if item.name == parent)
                                for parent in parents]
         nodes.append(Node(name, kind, parents, node_identity(workflow, kind, inputs, parents_fingerprints), gate))
@@ -573,6 +578,9 @@ class IngestKanbanAdapter:
         config = _load_json(Path(__file__).resolve().parents[2] /
                             "hermes-obsidian-governed-ingest-orchestrator/config/orchestration.json")
         self.source_prepare_concurrency = int(config.get("source_prepare_concurrency", 2))
+        self.program_worker_concurrency = int(config.get('program_worker_concurrency', 2))
+        if self.program_worker_concurrency < 1:
+            _fail('INVALID_SCHEMA', 'program_worker_concurrency must be positive')
         if self.source_prepare_concurrency < 1:
             _fail("INVALID_SCHEMA", "source_prepare_concurrency must be positive")
 
@@ -1085,6 +1093,14 @@ class IngestKanbanAdapter:
             _fail('SKIP_NOT_ALLOWED','complete citation input fits; budget deferral is not applicable')
         return {'phase':'citation','packet_sha256':fingerprint(packet),'input_fingerprint':node.input_fingerprint,
                 'current_task_id':card['task_id'],'plan':plan,'materials_truncated':False,'verification_success':False}
+
+    def recover_reduce_execution(self, request, *, dry_run=False):
+        from reduce_execution_recovery import recover_reduce_execution
+        return recover_reduce_execution(self, request, dry_run=dry_run)
+
+    def migrate_reduce_execution(self, request, *, dry_run=False):
+        from reduce_execution_migration import migrate_reduce_execution
+        return migrate_reduce_execution(self, request, dry_run=dry_run)
 
     def recover_pass_execution(self, request, *, dry_run=False):
         """Authorize one fresh native attempt without changing domain/slice inputs."""

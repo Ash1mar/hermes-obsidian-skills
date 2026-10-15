@@ -73,6 +73,10 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any], *, dry
         result = adapter.amend_execution(request, dry_run=dry_run)
     elif command == 'recover-pass-execution':
         result = adapter.recover_pass_execution(request, dry_run=dry_run)
+    elif command == 'recover-reduce-execution':
+        result = adapter.recover_reduce_execution(request, dry_run=dry_run)
+    elif command == 'migrate-reduce-execution':
+        result = adapter.migrate_reduce_execution(request, dry_run=dry_run)
     elif command == 'skip-pass-slices':
         result = adapter.skip_pass_slices(request, dry_run=dry_run)
     elif command == "worker-prepare-source":

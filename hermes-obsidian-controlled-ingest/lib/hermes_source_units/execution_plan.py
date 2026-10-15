@@ -74,6 +74,29 @@ class ExecutionPlanMixin:
         self.verify_pass_skips(workflow)
         if self._execution_journal(workflow['workflow_id']).exists():
             fail('EXECUTION_PLAN_PENDING', 'finish the authorized amendment before resume/dispatch')
+        migrations = workflow.get('reduce_migration_history', [])
+        if len(migrations) > 1:
+            fail('STALE_INPUT', 'Reduce execution can migrate only once')
+        for migration in migrations:
+            data = _vault_path(self.vault, migration['report_ref']).read_bytes()
+            if hashlib.sha256(data).hexdigest() != migration['report_sha256']:
+                fail('STALE_INPUT', 'Reduce migration evidence changed')
+            report = json.loads(data)
+            request = report['request']
+            active = {p['kind']:p for p in workflow['template_pins']}
+            if (request['workflow_id'] != workflow['workflow_id'] or request['actor'] != workflow['actor']
+                    or request['migration_scope'] != 'reduce-fixed/v1'
+                    or request['migration_id'] != migration['migration_id']
+                    or request['input_digest'] != migration['input_digest']
+                    or report['batch_id'] != workflow['batch_id']
+                    or request['previous_pins_digest'] != 'sha256:'+fingerprint(report['old_pins'])
+                    or {p['kind']:p['template_hash'] for p in report['new_pins']} != request['target_template_hashes']
+                    or any(active.get(p['kind']) != p for p in report['new_pins'])):
+                fail('STALE_INPUT', 'Reduce migration identity or active pins changed')
+            for pin in [*report['old_pins'], *report['new_pins']]:
+                original = _vault_path(self.vault, pin['path']).read_bytes()
+                if 'sha256:'+hashlib.sha256(original).hexdigest() != pin['template_hash']:
+                    fail('TEMPLATE_CHANGED', 'Reduce migration template bytes changed')
         recovered = set()
         for recovery in workflow.get('execution_recovery_history', []):
             data = _vault_path(self.vault, recovery['report_ref']).read_bytes()
