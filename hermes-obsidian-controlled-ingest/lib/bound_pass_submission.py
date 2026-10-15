@@ -28,7 +28,9 @@ def submit_bound(vault, binding, request, *, confirmation=False, adapter=None):
     service.source.enable_session_cache()
     checked = adapter.worker_check(binding)
     workflow = adapter.workflow.status(binding['workflow_id'])
-    effective = (adapter.workflow.execution_template(workflow, checked['slice_id'])
+    effective = (adapter.workflow.revision_instructions(workflow)
+                 if adapter.workflow.revision_allows(workflow,binding['node']) else None)
+    effective = (effective or adapter.workflow.execution_template(workflow, checked['slice_id'])
                  or adapter.workflow.pinned_templates(workflow)['pass-slice'])
     if (service._slice(checked['batch_id'], checked['slice_id'])['template_id'] != RENDERER
             and not semantic_template('pass-slice', effective)):

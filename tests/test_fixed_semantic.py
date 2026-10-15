@@ -149,7 +149,8 @@ def test_image_budget_preserves_nine_complete_images_and_reports_actual_limits()
         require_images_fit([{'bytes':budget['max_bytes']+1}])
 
 
-def test_audited_recovery_requires_same_task_input_and_native_response(tmp_path):
+@pytest.mark.parametrize('revision_review',[False,True])
+def test_audited_recovery_requires_same_task_input_and_native_response(tmp_path,revision_review):
     import sqlite3
     from types import SimpleNamespace
     from fixed_semantic_recovery import recover
@@ -158,6 +159,7 @@ def test_audited_recovery_requires_same_task_input_and_native_response(tmp_path)
     binding={'workflow_id':wid,'task_id':'fresh-native','node':'pass-slice:new','template_hash':'current'}
     task={'task':'t1','materials':[{'ref':'m1','role':'core','text_ref':'c1','heading':0}],
           'candidate':{'candidates':[]},'limits':{}}
+    if revision_review:task['candidate']['revision_review']=True
     view={'tasks':[task],'texts':{'c1':'Condition AND exception.'},'headings':{'0':['Scope']}}
     user='Native task prior-native\n'+json.dumps({'phase':'citation','input':view})+'\nImage 1: t1/m1'
     raw=json.dumps({'reviews':[{'task':'t1','decision':'confirmed_unchanged','review_note':'Source reviewed.'}]})
@@ -176,7 +178,8 @@ def test_audited_recovery_requires_same_task_input_and_native_response(tmp_path)
     adapter=SimpleNamespace(worker_check=lambda b:{'batch_id':'b','task_ids':['same-task']},
         workflow=SimpleNamespace(vault=tmp_path,knowledge=SimpleNamespace(_slice=lambda *a:{'task_ids':['same-task']})))
     result= recover(adapter,binding,'citation',view,fixed.decode_semantic_response,'fixed system',home=home)
-    assert result[0]['reviews'][0]['task']=='t1'
+    if revision_review:assert result is None
+    else:assert result[0]['reviews'][0]['task']=='t1'
     changed=copy.deepcopy(view);changed['texts']['c1']='Changed OR scope.'
     assert recover(adapter,binding,'citation',changed,fixed.decode_semantic_response,'fixed system',home=home) is None
     assert recover(adapter,binding,'citation',view,fixed.decode_semantic_response,'changed instructions',home=home) is None

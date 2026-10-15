@@ -39,6 +39,28 @@ source hashes, native binding and ordinary Pass submission checks remain authori
 No evidence truncation, optionalizing required assets, source reset or model fallback is
 allowed. A single indivisible task that cannot fit stays blocked with its original evidence.
 
+For a legacy `knowledge-pass/v1` slice whose creation configuration differs from a later
+execution amendment, `recover-pass-execution` scope `legacy-slice-config/v1` may authenticate
+an operator-supplied historical snapshot against the released exact-plan digest. The request
+pins the current `revision_id`, `historical_snapshot_ref` and exact failed node/task/SHA entries.
+Both original batch and slice bytes must match exact-plan's file hashes; current ordered task
+inputs, ownership and template must reproduce the full original slice fingerprint. Only the
+specific `slice input fingerprint changed` refusal is eligible. Recovery remains cancelled,
+grants one fresh bound attempt and never changes slices, sources, Passes, pauses or current
+batch limits. Workers repeat this authenticated creation check; current evidence, permissions
+and execution budgets remain mandatory. Missing/tampered history stays blocked. Other failed
+nodes remain isolated; a local legacy-path refusal alone does not justify cancelling unrelated
+revision work.
+
+Fixed revision packets use the pinned revision template for typed-submission capability,
+including original slices. Their result slots allow only authored revisions or explicit
+blocking, never first-citation unchanged confirmation. For a failed attempt admitted through
+the old packet contract, `recover-pass-execution` scope `revision-citation-packet/v1` requires
+the current revision ID and exact failure binding. It recognizes only the old bounded-slice
+capability refusal or reviewed-candidate mismatch, then authenticates the original native
+input/packet, current required evidence and selected predecessor citations before granting
+one fresh attempt. Arbitrary permission, stale-input and semantic errors remain ineligible.
+
 ## Held Pass boundary revisions
 
 Use this general operator recovery for reviewed semantic/citation errors at the current durable `canary` or `pass` pause, before Reduce consumes the evidence. Preserve the same workflow/batch, source outcomes, plan, immutable Pass files and unselected task results. This interface does not authorize crossing a boundary.

@@ -1118,7 +1118,7 @@ class IngestKanbanAdapter:
             _fail('INVALID_SCHEMA', 'describe the corrected mechanical cause')
         entries = request.get('entries')
         scope=request.get('recovery_scope','mechanical/v1')
-        if scope not in ('mechanical/v1','phase-packet-grouping/v1','correction-reserve-admission/v1'):
+        if scope not in ('mechanical/v1','phase-packet-grouping/v1','correction-reserve-admission/v1','legacy-slice-config/v1','revision-citation-packet/v1'):
             _fail('INVALID_SCHEMA','unknown recovery scope')
         if (not isinstance(entries, list) or not entries or any(not isinstance(e, dict) for e in entries)
                 or len({e.get('node') for e in entries}) != len(entries)):
@@ -1139,11 +1139,17 @@ class IngestKanbanAdapter:
                         'revision':value['revision'], 'report_ref':prior['report_ref'], 'nodes':prior['nodes']}
             value = self.workflow._mutation(request)
             self.workflow.assert_execution_ready(value)
+            legacy_revision=(scope in ('legacy-slice-config/v1','revision-citation-packet/v1') and value['current_stage']=='reducing'
+                and value.get('pass_revision',{}).get('revision_scope')=='reduce-dependencies/v1'
+                and value['pass_revision']['state']=='running'
+                and request.get('revision_id')==value['pass_revision']['revision_id'])
             if (value['state'] != 'cancelled' or not value['cancel_requested'] or not value['batch_id']
-                    or value['current_stage'] != 'analyzing' or self.workflow.pending_pause(value)
+                    or (value['current_stage'] != 'analyzing' and not legacy_revision) or self.workflow.pending_pause(value)
                     or value['dispatch_policy']['mode'] != 'full'):
                 _fail('INVALID_TRANSITION', 'recovery requires a cancelled, released Pass batch')
-            if value.get('pass_revision') and value['pass_revision']['state'] != 'accepted':
+            if scope in ('legacy-slice-config/v1','revision-citation-packet/v1') and not legacy_revision:
+                _fail('INVALID_TRANSITION','historical slice recovery requires the current dependency revision')
+            if value.get('pass_revision') and value['pass_revision']['state'] != 'accepted' and not legacy_revision:
                 _fail('REVISION_REVIEW_REQUIRED', 'finish semantic revision review first')
             from native_stop_inventory import verify_cancel_drain
             verify_cancel_drain(self, wid, timeout=0)
@@ -1154,6 +1160,8 @@ class IngestKanbanAdapter:
             with _exclusive_lock(service._batch_lock_path(value['batch_id'])):
                 batch = service._batch(value['batch_id'])
                 slices = service._slices(value['batch_id'])
+                if legacy_revision and (batch['run_ids'] or batch.get('resource_reduction_ids') or batch.get('global_reduction_id')):
+                    _fail('INVALID_TRANSITION','historical slice recovery cannot change consumed Pass evidence')
                 if (batch['state'] != 'cancelled' or not batch['cancel_requested']
                         or any(s['lease']['worker_id'] or s['state']=='leased' for s in slices)):
                     _fail('WORKER_ACTIVE', 'batch must be cancelled with no live leases')
@@ -1165,6 +1173,8 @@ class IngestKanbanAdapter:
                     item = next((s for s in slices if 'pass-slice:'+s['slice_id'] == name), None)
                     if item is None or item['state'] != 'cancelled':
                         _fail('INVALID_TRANSITION', 'only selected cancelled unfinished slices can recover')
+                    if legacy_revision and item['slice_id'] not in value['pass_revision']['slice_ids']:
+                        _fail('ACCESS_DENIED','slice is outside the authorized dependency revision')
                     previous=[r for r in value.get('execution_recovery_history', []) if name in r['nodes']]
                     repeated=(previous and scope=='mechanical/v1') or any(
                         _load_json(_vault_path(self.workflow.vault,r['report_ref']))['request'].get('recovery_scope','mechanical/v1')==scope
@@ -1186,7 +1196,22 @@ class IngestKanbanAdapter:
                             or report.get('input_fingerprint') != node.input_fingerprint
                             or report.get('task_id') != card['task_id']):
                         _fail('STALE_INPUT', 'failure evidence or binding changed')
-                    codes = mechanical_failure_codes(report,scope,input_limit=batch['slice_config']['slice_max_input_codepoints'])
+                    legacy_identity=None
+                    if scope=='legacy-slice-config/v1':
+                        if (report.get('error_code')!='STALE_INPUT' or report.get('reason')!='STALE_INPUT at $: slice input fingerprint changed'):
+                            _fail('RECOVERY_NOT_ALLOWED','only the corrected historical configuration mismatch can recover')
+                        from hermes_source_units.legacy_slice_identity import verify_snapshot
+                        inputs=[{'task_id':tid,'fingerprint':service._slice_task_input(batch,service._task(tid),remeasure=True)['fingerprint']}
+                                for tid in item['task_ids']]
+                        _,legacy_identity=verify_snapshot(self.workflow,value,item,inputs,request.get('historical_snapshot_ref',''))
+                        codes=['STALE_INPUT']
+                    elif scope=='revision-citation-packet/v1':
+                        from revision_packet_recovery import CAUSES
+                        if report.get('error_code') not in CAUSES or report.get('reason')!=CAUSES[report['error_code']]:
+                            _fail('RECOVERY_NOT_ALLOWED','only the corrected fixed revision packet contract can recover')
+                        codes=[report['error_code']]
+                    else:
+                        codes = mechanical_failure_codes(report,scope,input_limit=batch['slice_config']['slice_max_input_codepoints'])
                     if scope in ('phase-packet-grouping/v1','correction-reserve-admission/v1'):
                         from hermes_source_units.semantic_budget import budget_policy_pin
                         effective=self.workflow.execution_template(value,item['slice_id']) or self.workflow.pinned_templates(value)['pass-slice']
@@ -1214,9 +1239,15 @@ class IngestKanbanAdapter:
                     for tid in item['task_ids']:
                         service._verify_planned_measurement(service._task(tid), batch['actor'],
                             batch['document_registry_revision'], None)
+                    packet_identity=None
+                    if scope=='revision-citation-packet/v1':
+                        from revision_packet_recovery import verify
+                        packet_identity=verify(self,value,item,binding)
                     audited.append({'node':name, 'previous_task_id':card['task_id'],
                         'previous_input_fingerprint':node.input_fingerprint, 'failure_ref':ref,
                         'failure_sha256':hashlib.sha256(data).hexdigest(), 'failure':report, 'codes':codes})
+                    if legacy_identity:audited[-1]['legacy_identity']=legacy_identity
+                    if packet_identity:audited[-1]['revision_packet_identity']=packet_identity
                 result = {'ok':True, 'workflow_id':wid, 'recovery_id':rid, 'applied':not dry_run,
                           'nodes':[e['node'] for e in audited], 'state':'cancelled', 'resumed':False}
                 if dry_run:
@@ -1727,9 +1758,11 @@ class IngestKanbanAdapter:
             if observed != value['input_fingerprint']:
                 _fail('STALE_INPUT', 'compact execution fingerprint changed')
         elif not value.get("reslice_count"):
+            from hermes_source_units.legacy_slice_identity import creation_config
+            config=creation_config(self.workflow,workflow,value,inputs,batch['slice_config'])
             observed = "sha256:" + fingerprint({
                 "batch_id": workflow["batch_id"], "task_inputs": inputs,
-                "slice_config": batch["slice_config"],
+                "slice_config": config,
                 "template_id": value["template_id"],
                 "template_hash": value["template_hash"],
             })

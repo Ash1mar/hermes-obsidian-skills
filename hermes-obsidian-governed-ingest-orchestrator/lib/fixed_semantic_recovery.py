@@ -166,6 +166,9 @@ def recover(adapter, binding, phase, view, decode, system, *, home=None):
                     old_task=next(t for t in old_view['tasks'] if t['task']==item['task'])
                     alias,content=pending[tid]
                     if task_content(old_view,old_task)!=content:continue
+                    if (phase=='citation' and old_task.get('candidate',{}).get('revision_review')
+                            and item.get('decision')!='revised'):
+                        continue  # Unchanged confirmation cannot fill a revision's missing inspections.
                     recovered.append({**item,'task':alias})
             except (ContractError,ValueError,TypeError,KeyError,StopIteration):continue
             if not recovered:continue

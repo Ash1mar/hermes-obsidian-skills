@@ -29,6 +29,18 @@ only its selected evidence and exact checked parent. With an empty directory the
 single global call remains sufficient. No fuzzy partition silently separates
 conflicting candidate semantics; an oversized indivisible plan still blocks.
 
+Resource calls produce concise proposals only. Existing `candidate_refs` record exact
+membership; `summary` names the group and necessary applicability/condition/conflict/QA
+boundaries, and `identity_hints`/`path_hints` remain suggestions. They do not write page
+bodies or repeat candidate findings. Full necessary original evidence remains available.
+Global coordination starts from those proposals and preserves compatible groups by default.
+It resolves cross-proposal equivalence, conflict, scope and identity differences, including
+packets from the same source. When splitting, merging or omitting a proposal, the existing
+`reason` names the affected pN handles and concrete grounds. Page writing and the one later
+substantive page review retain their existing evidence and coverage contracts. There is no
+new schema, routing layer or automatic semantic approval; program coverage validation does
+not prove the model's grouping reasons correct.
+
 Build Finalize now reviews one owned draft page per fixed call against citation
 facts/QA and its verified parent. The model returns only a semantic decision and
 actual review note. The program binds all page/run hashes and rechecks the entire
