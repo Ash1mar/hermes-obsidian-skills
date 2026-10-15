@@ -16,7 +16,7 @@ def repair_fixture(vault,monkeypatch,qa=False):
     """Real fixture slices and pauses, with QA authored before downstream binding."""
     k=plan_sliced_batch(vault,2,'inventory-batch')
     a=IngestKanbanAdapter(vault,EndedKanban(),enable_workers=True)
-    w=start_and_pin(vault,workflow_request(workflow_id='inventory-workflow',actor='agent',expected_revision=0,
+    w=start_and_pin(vault,workflow_request(workflow_id='ingest-inventory-workflow',actor='agent',expected_revision=0,
         profile='compact-3',batch_id='inventory-batch',scope={'source_paths':[],'knowledge_selector':'all-current',
         'execution_mode':'auto_full','provider':'skip','pause_after':['pass','checkpoint_1']}))
     w['dispatch_policy']={'mode':'full','slice_ids':[],'selection_digest':None};a.workflow._write(w)
