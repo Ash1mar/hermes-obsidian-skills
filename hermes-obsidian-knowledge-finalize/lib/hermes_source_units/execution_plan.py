@@ -74,7 +74,10 @@ class ExecutionPlanMixin:
         self.verify_pass_skips(workflow)
         if self._execution_journal(workflow['workflow_id']).exists():
             fail('EXECUTION_PLAN_PENDING', 'finish the authorized amendment before resume/dispatch')
-        for migration in workflow.get('reduce_migration_history', []):
+        migrations = workflow.get('reduce_migration_history', [])
+        if len(migrations) > 1:
+            fail('STALE_INPUT', 'Reduce execution can migrate only once')
+        for migration in migrations:
             data = _vault_path(self.vault, migration['report_ref']).read_bytes()
             if hashlib.sha256(data).hexdigest() != migration['report_sha256']:
                 fail('STALE_INPUT', 'Reduce migration evidence changed')
