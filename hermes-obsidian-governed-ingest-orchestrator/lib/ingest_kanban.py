@@ -1179,7 +1179,7 @@ class IngestKanbanAdapter:
                     repeated=(previous and scope=='mechanical/v1') or any(
                         _load_json(_vault_path(self.workflow.vault,r['report_ref']))['request'].get('recovery_scope','mechanical/v1')==scope
                         for r in previous)
-                    if repeated:
+                    if repeated and scope!='revision-citation-packet/v1':
                         _fail('RECOVERY_EXHAUSTED', 'one mechanical retry per slice; diagnose a repeated failure')
                     node = pass_node(value, item)
                     card = next((c for c in value['kanban']['task_map'] if c['node']==name), None)
@@ -1206,9 +1206,15 @@ class IngestKanbanAdapter:
                         _,legacy_identity=verify_snapshot(self.workflow,value,item,inputs,request.get('historical_snapshot_ref',''))
                         codes=['STALE_INPUT']
                     elif scope=='revision-citation-packet/v1':
-                        from revision_packet_recovery import CAUSES,inspection_slots
-                        if not inspection_slots(report) and (report.get('error_code') not in CAUSES or report.get('reason')!=CAUSES[report['error_code']]):
+                        from revision_packet_recovery import cause_key
+                        cause=cause_key(report)
+                        if not cause:
                             _fail('RECOVERY_NOT_ALLOWED','only the corrected fixed revision packet contract can recover')
+                        for recovery in previous:
+                            prior_report=_load_json(_vault_path(self.workflow.vault,recovery['report_ref']))
+                            if prior_report['request'].get('recovery_scope')==scope and any(
+                                    e['node']==name and cause_key(e['failure'])==cause for e in prior_report['entries']):
+                                _fail('RECOVERY_EXHAUSTED','this corrected packet cause already received its one recovery')
                         codes=[report['error_code']]
                     elif legacy_revision and scope=='mechanical/v1':
                         codes=None  # Verify the ended native cancellation below.
@@ -1247,8 +1253,10 @@ class IngestKanbanAdapter:
                     packet_identity=None
                     if scope=='revision-citation-packet/v1' or (legacy_revision and scope=='mechanical/v1'
                             and report.get('error_code')=='PROGRAM_EXECUTION_FAILED'):
-                        from revision_packet_recovery import verify,inspection_slots,unspent_correction
-                        packet_identity=verify(self,value,item,binding,partial=bool(inspection_slots(report)))
+                        from revision_packet_recovery import verify,inspection_slots,unspent_correction,cause_key,verify_bootstrap
+                        bootstrap=cause_key(report)=='canonical-binding-bootstrap'
+                        if bootstrap:verify_bootstrap(self,value,binding,snapshot)
+                        packet_identity=verify(self,value,item,binding,partial=bootstrap or bool(inspection_slots(report)))
                         packet_identity=unspent_correction(self,value,binding,report,packet_identity)
                     audited.append({'node':name, 'previous_task_id':card['task_id'],
                         'previous_input_fingerprint':node.input_fingerprint, 'failure_ref':ref,

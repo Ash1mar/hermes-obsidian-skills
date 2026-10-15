@@ -11,6 +11,29 @@ CAUSES={
     'STALE_INPUT':'STALE_INPUT at $: STALE_INPUT at $: reviewed candidate identity changed'}
 
 
+def cause_key(report):
+    if inspection_slots(report):return 'inspection-classification'
+    code=report.get('error_code')
+    if report.get('reason')==CAUSES.get(code) and code in CAUSES:return code
+    if code=='PROGRAM_EXECUTION_FAILED' and report.get('reason')=="'expected_revision'":return 'canonical-binding-bootstrap'
+    return None
+
+
+def verify_bootstrap(adapter,workflow,binding,snapshot):
+    from hermes_source_units.runtime_telemetry import runtime_directory
+    root=adapter.workflow.vault/'_system/ledgers/ingest-workflows'/workflow['workflow_id']/'semantic-calls'
+    if any(_load_json(p).get('native_task_id')==binding['task_id'] for p in root.glob('*.json')):
+        raise ContractError('RECOVERY_NOT_ALLOWED','$','bootstrap recovery cannot repeat a model attempt')
+    runs=[r for r in snapshot.get('runs',[]) if r.get('worker_pid')]
+    if not runs:raise ContractError('RECOVERY_NOT_ALLOWED','$','bootstrap recovery requires an ended actual native run')
+    for run in runs:
+        path=runtime_directory(adapter.workflow.vault,workflow['workflow_id'])/f"{run['worker_pid']}.jsonl"
+        if not path.is_file():raise ContractError('RECOVERY_NOT_ALLOWED','$','native timeline is missing')
+        import json
+        if any('sdk_model_request' in json.loads(line).values() for line in path.read_text().splitlines()):
+            raise ContractError('RECOVERY_NOT_ALLOWED','$','native model attempt already started')
+
+
 def inspection_slots(report):
     prefix='PASS_EXECUTION_BLOCKED at $: '
     if report.get('error_code')!='PASS_EXECUTION_BLOCKED' or not report.get('reason','').startswith(prefix):return []
