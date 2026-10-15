@@ -20,6 +20,7 @@
   "ingest_workflow.py": "9044b176fd24ef275d0fa3dd93888c1166a21bf29b13f26ec776af3971f14d79",
   "interfaces.py": "5d824d42fbea30efc0608260bbd21089d8b170816c85b43bb0dc6d45edb36373",
   "knowledge_build.py": "364121e7a785e2f7b2a83b99a0f90c4020dd7d489e15ddb9ca783c4301015cc0",
+  "legacy_slice_identity.py": "499c817b008df7620e62b39bf57dcb9b9018548be87862dfc11b31d436e6d964",
   "model_presentation.py": "bfd7b6737207534a6104d867eac6fa5efc42194cb85ad9140aeb03050ab978f0",
   "model_projection.py": "3ab971cbfc0aa4895cdde9d5c6c855bdbef7f75433c880037f6e54eadc0b98c4",
   "pass_revision.py": "ca030524858ac1c5d8934754c2d97e5401d11f9ac195a83a2d5844870469d67b",
