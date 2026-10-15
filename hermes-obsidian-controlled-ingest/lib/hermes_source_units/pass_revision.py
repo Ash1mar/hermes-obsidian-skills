@@ -106,7 +106,10 @@ class PassRevisionMixin:
                     fail('INVALID_TRANSITION', 'revision requires the current held canary/pass pause')
                 evidence = self._verify_pause_snapshot(value)
             batch = self.knowledge._batch(value['batch_id'])
-            if batch['run_ids'] or batch.get('resource_reduction_ids') or batch.get('global_reduction_id'):
+            if dependency_scope:
+                from .reduce_dependency_revision import assert_unconsumed_resources
+                assert_unconsumed_resources(self,value,[t['task_id'] for t in request.get('tasks',[])])
+            elif batch['run_ids'] or batch.get('resource_reduction_ids') or batch.get('global_reduction_id'):
                 fail('INVALID_TRANSITION', 'revision cannot change already consumed Pass evidence')
             raw = request.get('tasks', [])
             if not raw or len({item['task_id'] for item in raw}) != len(raw):

@@ -16,6 +16,7 @@ from hermes_source_units.validation import fingerprint,record_validation_scope
 from hermes_source_units.reading_dependencies import citation_dependency_gaps
 from hermes_source_units.knowledge_build import _covers
 from fixed_reduce_packets import contract_hash
+from reduce_readiness import scan
 
 
 def prepare(vault,wid,rid,output):
@@ -27,7 +28,10 @@ def prepare(vault,wid,rid,output):
     if w['state']!='cancelled' or w['current_stage']!='reducing':
         raise ContractError('INVALID_TRANSITION','$','requires cancelled Reduce')
     verify_cancel_drain(a,wid,timeout=0);a.workflow.assert_execution_ready(w)
-    failures=[];budget=[];resources=set()
+    inventory=scan(a,wid,budgets=False)
+    if inventory['issues'] or inventory['counts']['task_errors']:
+        raise ContractError('READINESS_BLOCKED','$','resolve mechanical inventory errors before preparing any revision')
+    failures=[];budget=[]
     for card in w['kanban']['task_map']:
         if not card['node'].startswith('resource-reduce:'):continue
         ref=f"_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint(card['node'])[:16]}.json"
@@ -38,15 +42,18 @@ def prepare(vault,wid,rid,output):
         entry={'node':card['node'],'task_id':card['task_id'],'failure_sha256':hashlib.sha256(data).hexdigest()}
         if failure.get('error_code')=='READING_WINDOW_OVERSIZE':budget.append(entry)
         if failure.get('error_code')=='INCOMPLETE_COVERAGE' and 'required original dependency lacks citation inspection' in failure.get('reason',''):
-            failures.append(entry);resources.add(card['node'].partition(':')[2])
+            failures.append(entry)
     batch=k._batch(w['batch_id']);skipped=a.workflow.skipped_pass_tasks(w)
     tasks=[k._task(t) for t in batch['task_ids'] if t not in skipped]
     candidates,by_task=k._pass_index(t['task_id'] for t in tasks)
     selected={r['pass_id']:r for r,c in candidates.values() if r['pass_kind']=='citation'}
+    completed={k._resource_reduction(batch['batch_id'],r)['resource_id'] for r in batch['resource_reduction_ids']}
+    inventory_tasks={r['task_id']:r for r in inventory['tasks']}
     gaps=[];items=[]
     for record in selected.values():
         task=next(t for t in tasks if t['task_id']==record['task_id'])
-        if not {r['unit_ref']['resource_id'] for r in task['target_refs']}.issubset(resources):continue
+        if {r['unit_ref']['resource_id'] for r in task['target_refs']}.intersection(completed):continue
+        if not inventory_tasks[task['task_id']]['gaps']:continue
         package=_load_json(_vault_path(a.workflow.vault,
             f"_system/knowledge-builds/task-{task['task_id']}/readings/{record['reading_package_id']}.json"))
         missing=citation_dependency_gaps(k.source,package,record)
@@ -60,7 +67,7 @@ def prepare(vault,wid,rid,output):
                 for t in tasks if any(r['unit_ref']==gap['missing_ref']['unit_ref'] for r in t['target_refs'])]
         gaps.extend(missing)
         items.append({'task_id':task['task_id'],'pass_id':record['pass_id'],'reason':'Append an authored citation after inspecting the currently required original dependencies'})
-    report={'workflow_id':wid,'batch_id':w['batch_id'],'failure_bindings':failures,'gaps':gaps,
+    report={'workflow_id':wid,'batch_id':w['batch_id'],'failure_bindings':failures,'gaps':gaps,'inventory':inventory,
             'note':'Other-task inspection does not fill this citation. Original packages and Passes are immutable.'}
     ref=f'_system/reports/reduce-dependency-{rid}.json';path=_vault_path(a.workflow.vault,ref)
     data=_json_bytes(report)
@@ -77,8 +84,8 @@ def prepare(vault,wid,rid,output):
             entries=budget,target_contract_sha256=contract_hash())
     if items:
         request('revision-request.json',revision_id=rid+'-dependencies',revision_scope='reduce-dependencies/v1',
-            evidence_digest='sha256:'+fingerprint(w['pause_control']),tasks=items,reduce_failures=failures,
-            reason='User authorized selected historical citation supplement review before any Reduce consumption',
+            evidence_digest='sha256:'+fingerprint(w['pause_control']),tasks=items,reduce_failures=[],
+            reason='Whole-batch inventory selected actual historical dependency gaps in unconsumed sources; independent completed sources are protected',
             evidence_refs=[ref],worker_template=(Path(__file__).resolve().parents[1]/'references/workers/pass-slice.md').read_text(encoding='utf-8'))
     return {'ok':True,'workflow_id':wid,'budget_nodes':len(budget),'revision_tasks':len(items),
             'missing_refs':len(gaps),'evidence_ref':ref,'resumed':False}

@@ -81,6 +81,8 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any], *, dry
         result = adapter.revise_passes(request, dry_run=dry_run)
     elif command == 'skip-pass-slices':
         result = adapter.skip_pass_slices(request, dry_run=dry_run)
+    elif command == 'skip-reduce-tasks':
+        result = adapter.skip_reduce_tasks(request, dry_run=dry_run)
     elif command == "worker-prepare-source":
         from source_preparation import prepare_source
         result = prepare_source(adapter, request)
