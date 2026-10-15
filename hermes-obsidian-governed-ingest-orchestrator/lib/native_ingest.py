@@ -122,7 +122,9 @@ def read_pass_input(vault, *, begin=False, program=False):
                 binding['worker_id'], binding['expected_revision'], check=lambda: adapter.worker_check(binding,verify_inputs=False),
                 timeout=WORKER_LOCK_TIMEOUT,write_guard=lambda: workflow_write_guard(
                     service.vault,kinds=('pass-slice',),actor=binding['actor']))
-        projections = [service.model_input(p['task_id'], _load_json(_vault_path(service.vault, p['path'])))
+        workflow=adapter.workflow.status(binding['workflow_id'])
+        projections = [adapter.workflow.revision_projection(workflow,p['task_id'],
+                       service.model_input(p['task_id'], _load_json(_vault_path(service.vault, p['path']))))
                        for p in prepared['reading_packages']]
         live = service.model_packet(projections, checked['batch_id'])
         # Semantic progress may change continuation, never reading authority.

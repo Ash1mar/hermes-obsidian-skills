@@ -1,5 +1,46 @@
 # Completed Pass semantic revisions
 
+## Missing original dependency inspections discovered during Reduce
+
+The same revision interface supports `revision_scope: reduce-dependencies/v1` only for
+a cancelled, released Reduce before any resource/global reduction or build result.
+It requires the existing full dispatch policy, no live native consumers/leases, exact
+current resource failure task IDs and SHA-256 values, and latest non-skipped citations
+that actually lack inspections of currently required registered dependencies. It does
+not reopen unaffected tasks or permit arbitrary semantic correction through this scope.
+
+Use the trusted preparation command, which records mechanical missing-ref/trigger/package
+diagnostics and other-task coverage, then preview the requests before applying:
+
+```bash
+python3 "<skill-dir>/scripts/prepare_reduce_repairs.py" --vault "<vault>" --workflow-id "<observed-id>" --repair-id "<stable-id>" --output-dir "<operator-dir>"
+python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" revise-passes --dry-run --request "<operator-dir>/revision-request.json"
+python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" revise-passes --request "<operator-dir>/revision-request.json"
+```
+
+The request pins unchanged pause history as `evidence_digest`, bound inspection failures,
+original package/latest citation identities, diagnostic evidence and a fixed semantic
+revision template. Applying remains cancelled and never resumes. Native fixed workers
+receive only selected tasks, their predecessor citations and complete current required
+reading supplements. They must author a next citation, preserving existing records;
+an unchanged-confirmation receipt cannot fill missing inspection. New presentation does
+not replace the original package or alter canonical task/slice ownership and budgets.
+
+During revision the graph dispatches selected citation workers only. Completion records
+`awaiting_review` and a separate `review_report_ref`/`review_evidence_digest`; released
+pause history is never rewritten or released again. `revision_review` is a durable review
+hold derived from that revision state, not a new configurable stage. It blocks all Reduce
+work and cannot be released by `continue-workflow`. Explicit `accept-pass-revision` must
+pin that review digest and reviewer evidence. Acceptance and a later authorized resume
+are separate; do not auto-accept a bounded observation or repeat valid Passes.
+
+Other-task inspection cannot stand in for the current citation. Current required refs,
+source hashes, native binding and ordinary Pass submission checks remain authoritative.
+No evidence truncation, optionalizing required assets, source reset or model fallback is
+allowed. A single indivisible task that cannot fit stays blocked with its original evidence.
+
+## Held Pass boundary revisions
+
 Use this general operator recovery for reviewed semantic/citation errors at the current durable `canary` or `pass` pause, before Reduce consumes the evidence. Preserve the same workflow/batch, source outcomes, plan, immutable Pass files and unselected task results. This interface does not authorize crossing a boundary.
 
 1. Inspect status, current pause report/digest, completed slice and latest citation Pass IDs. Confirm no active leases/native workers. Read reviewer findings and store their evidence in the Vault. Do not modify domain outputs to create review evidence.

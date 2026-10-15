@@ -14,6 +14,19 @@ from .validation import ContractError, canonical_json, fingerprint
 CONTRACT = 'explicit-registered-reading-dependencies/v1'
 
 
+def citation_dependency_gaps(source, package, record, supplement=None):
+    """Locate actual missing inspection authority, without inferring it from another task."""
+    from .knowledge_build import _covers
+    if supplement is None:
+        _, supplement = required_reading(source, package)
+    return [{'task_id':record['task_id'], 'pass_id':record['pass_id'],
+             'reading_package_id':record['reading_package_id'], 'missing_ref':ref,
+             'links':[link for link in supplement['links'] if link['dependency']==ref],
+             'present_original_package':any(_covers(m['source_ref'],ref) for m in package['materials'])}
+            for ref in supplement['required_refs']
+            if not any(_covers(i['source_ref'],ref) for i in record['inspections'])]
+
+
 def required_reading(source, package):
     access={'actor':package['actor'],'purpose':'construction',
             'registry_revision':package['document_registry_revision']}

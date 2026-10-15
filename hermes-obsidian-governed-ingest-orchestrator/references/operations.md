@@ -389,6 +389,23 @@ or authorized by this operation.
 
 ### Bounded fixed execution
 
+Source reducers first plan sequential candidate packets with complete original packages,
+instructions, schema and image limits. Each packet returns proposals only; normal
+source submission verifies the union exactly once, and global coordination handles
+relationships across those packets. Exact duplicates may share a handle within a
+reading; distinct readings stay independently packetable. No full-source fallback,
+truncation, topic classifier or extra native scheduling layer is introduced.
+
+For a current source `READING_WINDOW_OVERSIZE` failure, the trusted preparation script
+`prepare_reduce_repairs.py` can create a `recover-reduce-execution` request using
+`recovery_scope: source-packets/v1` and `target_contract_sha256`. Dry-run verifies the
+exact ended failure/binding and proves that every complete candidate packet now fits
+the installed request/image contract before granting one fresh native identity.
+It preserves domain inputs and old failures, never resumes, and does not authorize
+an unchanged indivisible oversize, inspection gap, semantic failure or global retry.
+Cancellation and packet correction have separate one-attempt scopes; a repeated failure
+under the same cause requires diagnosis. Use the same reviewed request for apply.
+
 Keep `config/orchestration.json`'s `program_worker_concurrency` at two. Native configured
 capacity can further reduce this bound, never increase it. Fixed program claims share a
 Vault mutex and recheck running native claims immediately before their ordinary claim CAS.

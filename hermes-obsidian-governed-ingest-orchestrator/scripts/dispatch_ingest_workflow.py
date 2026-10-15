@@ -26,6 +26,7 @@ def main() -> int:
                  "disarm-canary"):
         command = sub.add_parser(name)
         command.add_argument("--request", required=True)
+        if name=='revise-passes':command.add_argument('--dry-run',action='store_true')
         if name in ("worker-begin", "worker-check", "worker-heartbeat"):
             command.add_argument("--request-output")
     amendment = sub.add_parser('amend-execution')

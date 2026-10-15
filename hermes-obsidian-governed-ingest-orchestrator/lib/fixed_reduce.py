@@ -16,6 +16,23 @@ def fail(code, message):
 
 def snapshot(adapter, binding):
     checked = adapter.worker_check(binding)
+    return _snapshot(adapter,binding,checked)
+
+
+def preview_snapshot(adapter,binding):
+    """Read-only operator planning; this never grants worker write authority."""
+    import os
+    workflow=adapter.workflow.status(binding['workflow_id'])
+    if (os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT')
+            or workflow['state']!='cancelled' or not workflow['cancel_requested']):
+        fail('ACCESS_DENIED','input preview requires a stopped trusted operator')
+    if not any(c['task_id']==binding['task_id'] and c['node']==binding['node']
+               for c in workflow['kanban']['task_map']):
+        fail('STALE_INPUT','preview must name the current native binding')
+    return _snapshot(adapter,binding,{'batch_id':workflow['batch_id']})
+
+
+def _snapshot(adapter,binding,checked):
     workflow = adapter.workflow.status(binding['workflow_id'])
     service = adapter.workflow.knowledge
     batch = service._batch(checked['batch_id'])
@@ -46,7 +63,11 @@ def snapshot(adapter, binding):
     for key, (record,candidate) in sorted(eligible.items()):
         observation = {k:copy.deepcopy(v) for k,v in candidate.items() if k not in ('candidate_id','support_refs')}
         observation['evidence_qa'] = [{k:v for k,v in i.items() if k!='source_ref'} for i in record['inspections']]
-        digest = fingerprint(observation)
+        # A source packet's indivisible unit is one citation plus its complete
+        # original package. Do not fuse identical claims across distinct readings
+        # into an unbounded evidence bundle before budget partitioning.
+        digest = fingerprint({'observation':observation,'reading':readings[(record['task_id'],record['reading_package_id'])]['reading']}
+                             if kind=='resource-reduce' else observation)
         handle = grouped.get(digest)
         if handle is None:
             handle = 'c'+str(len(mapping)+1); grouped[digest]=handle; mapping[handle]=[]
@@ -115,6 +136,15 @@ def page_view(adapter, value, page):
         readings={r['reading'] for c in candidates for r in c['source_evidence']}
         view['original_evidence']=fixed_evidence.selected(value['view']['original_evidence'],readings)
     return view
+
+
+def resource_view(value, handles):
+    candidates=[c for c in value['view']['candidates'] if c['candidate'] in handles]
+    result={k:copy.deepcopy(v) for k,v in value['view'].items() if k not in ('candidates','original_evidence')}
+    result['candidates']=copy.deepcopy(candidates)
+    readings={r['reading'] for c in candidates for r in c['source_evidence']}
+    result['original_evidence']=fixed_evidence.selected(value['view']['original_evidence'],readings)
+    return result
 
 
 def expand(value, draft):

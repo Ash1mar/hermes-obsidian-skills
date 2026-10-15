@@ -33,6 +33,9 @@ class WorkflowPauseMixin:
 
     def pending_pause(self, value: Mapping[str, Any]) -> str | None:
         """Also detect an unlatched boundary, so worker writes fail closed."""
+        revision=value.get('pass_revision',{})
+        if revision.get('revision_scope')=='reduce-dependencies/v1' and revision['state']=='awaiting_review':
+            return 'revision_review'
         control = value.get("pause_control", {})
         if control.get("boundary"):
             return control["boundary"]
@@ -190,6 +193,8 @@ class WorkflowPauseMixin:
         with _exclusive_lock(self._lock(str(request["workflow_id"]))):
             value = self._mutation(request)
             boundary = self.pending_pause(value)
+            if boundary=='revision_review':
+                return value
             if not boundary or value.get("pause_control", {}).get("boundary"):
                 return value
             if boundary == "exact_plan" and not self.knowledge._batch(value["batch_id"]).get("slices_initialized"):

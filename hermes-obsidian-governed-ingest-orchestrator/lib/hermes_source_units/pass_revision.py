@@ -15,12 +15,31 @@ def fail(code, message):
 
 
 class PassRevisionMixin:
+    def revision_projection(self,value,task_id,projection):
+        revision=value.get('pass_revision')
+        target=next((t for t in revision['tasks'] if t['task_id']==task_id),None) if revision and revision['state']=='running' else None
+        if not target:
+            return projection
+        records=self.knowledge._pass_index([task_id])[1][task_id]
+        if any(p.get('revision_id')==revision['revision_id'] for p in records):
+            return projection
+        prior=next((p for p in records if p['pass_id']==target['pass_id']),None)
+        if not prior or projection['view']['next_sequence']!=target['sequence']:
+            fail('STALE_INPUT','revision predecessor or next sequence changed')
+        projection=copy.deepcopy(projection)
+        projection['view']['continuation']={'action':'citation','candidate':{
+            'sequence':prior['sequence'],'candidate_pass_id':prior['pass_id'],'revision_review':True,
+            'candidates':[{**c,'support_refs':[self.knowledge._model_handle(r,projection['mapping']) for r in c['support_refs']]}
+                          for c in prior['candidates']],'empty_reason':prior['empty_reason']}}
+        return projection
+
     def revision_allows(self, value, node):
         revision = value.get('pass_revision')
         return bool(revision and revision['state'] == 'running'
                     and node.startswith('pass-slice:')
                     and node.partition(':')[2] in revision['slice_ids']
-                    and value.get('pause_control', {}).get('boundary') == revision['boundary'])
+                    and ((revision.get('revision_scope')=='reduce-dependencies/v1' and value['current_stage']=='reducing')
+                         or value.get('pause_control', {}).get('boundary') == revision['boundary']))
 
     def revision_instructions(self, value):
         revision = value.get('pass_revision')
@@ -32,6 +51,14 @@ class PassRevisionMixin:
         return data.decode('utf-8')
 
     def _verify_pause_snapshot(self, value):
+        from .reduce_dependency_revision import scoped, snapshot
+        if scoped(value):
+            revision=value['pass_revision']
+            evidence=snapshot(self,value)
+            report=_load_json(_vault_path(self.vault,revision['review_report_ref']))
+            if evidence!=report['evidence'] or 'sha256:'+fingerprint(evidence)!=revision['review_evidence_digest']:
+                fail('STALE_INPUT','dependency revision review evidence changed')
+            return evidence
         control = value['pause_control']
         evidence = self._pause_evidence(value, control['boundary'])
         report = _load_json(_vault_path(self.vault, control['report_ref']))
@@ -40,7 +67,7 @@ class PassRevisionMixin:
             fail('STALE_INPUT', 'current pause evidence changed')
         return evidence
 
-    def revise_passes(self, request):
+    def revise_passes(self, request, *, dry_run=False):
         """Authorize selected completed citation tasks; never release the pause."""
         self._check_request(request)
         if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
@@ -58,15 +85,23 @@ class PassRevisionMixin:
                         fail('IDEMPOTENCY_CONFLICT', 'revision ID already used')
                     if _load_json(_vault_path(self.vault, old['request_ref'])) != dict(request):
                         fail('SOURCE_CHANGED', 'revision request evidence changed')
+                    if dry_run:
+                        return {'ok':True,'applied':False,'replayed':True,'workflow_id':value['workflow_id'],
+                                'revision':value['revision'],'resumed':False,'state':value['state']}
                     return value
             value = self._mutation(request)
             if value.get('pass_revision') and value['pass_revision']['state'] == 'running':
                 fail('INVALID_TRANSITION', 'previous revision must be reviewed before another revision')
-            boundary = value.get('pause_control', {}).get('boundary')
-            if (boundary not in ('canary', 'pass') or value['current_stage'] != 'analyzing'
-                    or value['cancel_requested'] or request.get('evidence_digest') != value['pause_control']['evidence_digest']):
-                fail('INVALID_TRANSITION', 'revision requires the current held canary/pass pause')
-            evidence = self._verify_pause_snapshot(value)
+            dependency_scope=request.get('revision_scope')=='reduce-dependencies/v1'
+            boundary = 'pass' if dependency_scope else value.get('pause_control', {}).get('boundary')
+            if dependency_scope:
+                from .reduce_dependency_revision import authorize
+                evidence=authorize(self,value,request)
+            else:
+                if (boundary not in ('canary', 'pass') or value['current_stage'] != 'analyzing'
+                        or value['cancel_requested'] or request.get('evidence_digest') != value['pause_control']['evidence_digest']):
+                    fail('INVALID_TRANSITION', 'revision requires the current held canary/pass pause')
+                evidence = self._verify_pause_snapshot(value)
             batch = self.knowledge._batch(value['batch_id'])
             if batch['run_ids'] or batch.get('resource_reduction_ids') or batch.get('global_reduction_id'):
                 fail('INVALID_TRANSITION', 'revision cannot change already consumed Pass evidence')
@@ -110,6 +145,11 @@ class PassRevisionMixin:
             template = request.get('worker_template', '')
             if not isinstance(template, str) or not template.strip():
                 fail('TEMPLATE_UNAVAILABLE', 'revision requires a pinned worker contract')
+            if dependency_scope and '<!-- hermes-fixed-semantic/v1 -->' not in template:
+                fail('TEMPLATE_UNAVAILABLE','dependency revision requires the fixed semantic contract')
+            if dry_run:
+                return {'ok':True,'applied':False,'workflow_id':value['workflow_id'],'revision':value['revision'],
+                        'task_count':len(tasks),'slice_ids':sorted(selected),'resumed':False,'state':value['state']}
             root = f"_system/ledgers/ingest-workflows/{value['workflow_id']}/pass-revisions/{revision_id}"
             payloads = {'request.json': _json_bytes(dict(request)), 'before.json': _json_bytes(dict(value)),
                         'worker.md': template.encode('utf-8')}
@@ -130,6 +170,8 @@ class PassRevisionMixin:
                                for sid in selected)
                     and not any(ref == self.knowledge._task_path(item['task_id']).relative_to(self.vault).as_posix() for item in tasks)
                     and ref != self.knowledge._batch_path(value['batch_id']).relative_to(self.vault).as_posix()]}
+            if dependency_scope:
+                value['pass_revision']['revision_scope']='reduce-dependencies/v1'
             value['revision'] += 1
             self._write(value)
             return value
@@ -171,13 +213,21 @@ class PassRevisionMixin:
                 ref, digest = item['ref'], item['sha256']
                 if hashlib.sha256(_vault_path(self.vault, ref).read_bytes()).hexdigest() != digest:
                     fail('SOURCE_CHANGED', 'revision changed protected or review evidence')
-            evidence = self._pause_evidence(value, revision['boundary'])
+            dependency_scope=revision.get('revision_scope')=='reduce-dependencies/v1'
+            if dependency_scope:
+                from .reduce_dependency_revision import snapshot
+                evidence=snapshot(self,value)
+            else:
+                evidence = self._pause_evidence(value, revision['boundary'])
             digest = 'sha256:' + fingerprint(evidence)
             root = str(_vault_path(self.vault, revision['request_ref']).parent.relative_to(self.vault).as_posix())
             ref = root + '/pause.json'
             report = {'contract': 'hermes-ingest-pause/v1', 'evidence_digest': digest, 'evidence': evidence}
             _write_atomic(_vault_path(self.vault, ref), _json_bytes(report))
-            value['pause_control'].update(report_ref=ref, evidence_digest=digest)
+            if dependency_scope:
+                revision.update(review_report_ref=ref,review_evidence_digest=digest)
+            else:
+                value['pause_control'].update(report_ref=ref, evidence_digest=digest)
             revision['state'] = 'awaiting_review'
             value['revision'] += 1
             self._write(value)
@@ -201,7 +251,8 @@ class PassRevisionMixin:
             revision = value.get('pass_revision')
             if not revision or revision['state'] != 'awaiting_review' or request.get('revision_id') != revision['revision_id']:
                 fail('INVALID_TRANSITION', 'accept requires current completed revision')
-            if request.get('evidence_digest') != value['pause_control']['evidence_digest']:
+            expected=revision.get('review_evidence_digest') if revision.get('revision_scope')=='reduce-dependencies/v1' else value['pause_control']['evidence_digest']
+            if request.get('evidence_digest') != expected:
                 fail('STALE_INPUT', 'review must pin current pause digest')
             self._verify_pause_snapshot(value)
             refs = request.get('evidence_refs', [])
