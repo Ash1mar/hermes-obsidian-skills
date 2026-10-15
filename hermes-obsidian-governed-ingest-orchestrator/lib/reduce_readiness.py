@@ -51,7 +51,7 @@ def scan(adapter,wid,*,budgets=True):
             try:
                 task=k._task(tid);row.update(resources=sorted({r['unit_ref']['resource_id'] for r in task['target_refs']}),
                     status=task['status'],excluded=tid in skipped,target_refs=task['target_refs'])
-                for resource in row['resources']:sources.setdefault(resource,{'resource_id':resource,'tasks':[],'completed':None,'current_failure':None,'budget':{'status':'not_checked'}})['tasks'].append(tid)
+                for resource in row['resources']:sources.setdefault(resource,{'resource_id':resource,'tasks':[],'completed':completed.get(resource),'current_failure':None,'budget':{'status':'not_checked'}})['tasks'].append(tid)
                 k._live_units(task['target_refs'],w['actor'],batch['document_registry_revision'])
                 k._verify_planned_measurement(task,w['actor'],batch['document_registry_revision'],None)
                 candidates,by=k._pass_index([tid]);records=sorted(by.get(tid,[]),key=lambda p:p['sequence'])
@@ -76,7 +76,10 @@ def scan(adapter,wid,*,budgets=True):
                 for inspection in latest['inspections']:k._model_handle(inspection['source_ref'],projection['mapping'])
                 row['rendered_mapping_valid']=True
             except (ContractError,OSError,ValueError,KeyError) as exc:
-                row['errors'].append({'code':getattr(exc,'code','CHECK_FAILED'),'reason':str(exc)})
+                detail={'code':getattr(exc,'code','CHECK_FAILED'),'reason':str(exc)}
+                if row.get('excluded') and detail['code']=='INCOMPLETE_PASSES':
+                    row['excluded_history_limitation']=detail
+                else:row['errors'].append(detail)
         indexed={r['task_id']:r for r in rows}
         from hermes_source_units.legacy_slice_identity import creation_config
         for item in k._slices(batch['batch_id']):
@@ -152,6 +155,9 @@ def scan(adapter,wid,*,budgets=True):
         'control_hashes':{p.relative_to(service.vault).as_posix():sha for p,sha in initial.items()},'evidence':evidence,
         'native_model_calls':0,'resumed':False,'drain':drain,'tasks':rows,'slices':slice_checks,'sources':list(sources.values()),'issues':issues,
         'counts':{'tasks':len(rows),'citations':sum(r.get('latest_kind')=='citation' for r in rows),
+            'excluded_tasks':sum(bool(r.get('excluded')) for r in rows),
+            'excluded_incomplete_history':sum(bool(r.get('excluded_history_limitation')) for r in rows),
+            'active_citations':sum(r.get('latest_kind')=='citation' and not r.get('excluded') for r in rows),
             'empty_citations':sum(r.get('latest_kind')=='citation' and r.get('candidate_count')==0 for r in rows),
             'gap_tasks':sum(bool(r['gaps']) for r in rows),'missing_inspections':sum(len(r['gaps']) for r in rows),
             'actionable_gap_tasks':sum(bool(r['gaps']) and r.get('candidate_count',0)>0 and not r.get('excluded') for r in rows),

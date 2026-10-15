@@ -12,7 +12,7 @@ from hermes_source_units.reduce_dependency_revision import assert_unconsumed_res
 from reduce_readiness import scan
 
 
-def test_whole_batch_inventory_is_read_only_and_counts_empty_results(vault,monkeypatch):
+def test_whole_batch_inventory_is_read_only_and_counts_all_tasks(vault,monkeypatch):
     a,w,card,request,ref=stopped_reducer(vault,monkeypatch)
     monkeypatch.setattr('native_stop_inventory.verify_cancel_drain',lambda *_a,**_k:{'actual_consumers':0})
     before={p:p.read_bytes() for p in vault.rglob('*.json')}
@@ -29,6 +29,8 @@ def test_whole_batch_inventory_is_read_only_and_counts_empty_results(vault,monke
 @pytest.mark.parametrize('consumed',[False,True])
 def test_dependency_revision_protects_independent_completed_source(vault,monkeypatch,consumed):
     a,w,card,_,_=stopped_reducer(vault,monkeypatch);k=a.workflow.knowledge;b=k._batch(w['batch_id'])
+    w['pause_control']={'boundary':None,'evidence_digest':None,'report_ref':None,'history':[]}
+    a.workflow._write(w)
     selected_source=(k._resource_reduction(b['batch_id'],b['resource_reduction_ids'][0])['resource_id'] if consumed else card['node'].partition(':')[2])
     tid=next(t for t in b['task_ids'] if k._task(t)['target_refs'][0]['unit_ref']['resource_id']==selected_source)
     prior=max(k._pass_index([tid])[1][tid],key=lambda r:r['sequence'])
@@ -47,6 +49,13 @@ def test_dependency_revision_protects_independent_completed_source(vault,monkeyp
     domain=snapshot(a.workflow,w)
     reduction_path=k._resource_reduction_path(b['batch_id'],b['resource_reduction_ids'][0]).relative_to(vault).as_posix()
     assert reduction_path in domain['files']
+    if not consumed:
+        completed=next(c for c in w['kanban']['task_map'] if c['node']=='resource-reduce:'+k._resource_reduction(b['batch_id'],b['resource_reduction_ids'][0])['resource_id'])
+        a.revise_passes(q)
+        narrowed=sync(a,w['workflow_id'])
+        assert next(c for c in narrowed['kanban']['task_map'] if c['node']==completed['node'])==completed
+        assert (vault/reduction_path).read_bytes()==before[vault/reduction_path]
+        assert narrowed['state']=='cancelled' and narrowed['pass_revision']['state']=='running'
 
 
 def test_completed_reduce_binding_survives_narrow_revision_graph(vault,monkeypatch):
@@ -78,6 +87,8 @@ def test_qa_task_deferral_preserves_originals_and_never_resumes(vault,monkeypatc
         current['pass_id']=fingerprint({f:v for f,v in current.items() if f!='pass_id'})
         root=vault/f'_system/knowledge-builds/task-{tid}/passes';(root/(current['pass_id']+'.json')).write_text(json.dumps(current))
         prior=current
+        w=sync(a,w['workflow_id'])
+        card=next(c for c in w['kanban']['task_map'] if c['node']==card['node'])
     failed=a.execution_failure({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id']},'SEMANTIC_REVIEW_REQUIRED','Isolated unresolved original QA')
     reviewer=vault/'_system/reports/deferral-review.json';reviewer.write_text(json.dumps({'scope':tid,'decision':'defer all candidates; gap remains'}))
     q=workflow_request(workflow_id=w['workflow_id'],actor=w['actor'],expected_revision=w['revision'],operation_id='defer-original-qa',
