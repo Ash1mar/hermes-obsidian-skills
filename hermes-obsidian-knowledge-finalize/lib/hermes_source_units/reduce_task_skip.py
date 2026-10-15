@@ -79,6 +79,12 @@ def skip(service,request,*,dry_run=False):
                     if fingerprint({f:v for f,v in latest.items() if f!='pass_id'})!=latest['pass_id']:fail('SOURCE_CHANGED','citation fingerprint changed')
                     qa=[i for i in latest['inspections'] if i['qa']=='needs-qa']
                     if not qa:fail('SKIP_NOT_ALLOWED','only recorded unresolved original QA may defer; repair program/dependency/transport faults')
+                    package_ref=f'_system/knowledge-builds/task-{tid}/readings/{latest["reading_package_id"]}.json'
+                    package=_load_json(_vault_path(service.vault,package_ref))
+                    k._reading_package_fingerprint(package,latest['reading_package_id'])
+                    from .reading_dependencies import citation_dependency_gaps
+                    if citation_dependency_gaps(k.source,package,latest):
+                        fail('SKIP_NOT_ALLOWED','required dependency inspection gaps require repair before QA deferral')
                     failure_ref=e['failure_ref'];path=_vault_path(service.vault,failure_ref)
                     failure=_load_json(path);node=failure.get('node','');card=next((c for c in value['kanban']['task_map'] if c['node']==node),None)
                     resources={r['unit_ref']['resource_id'] for r in task['target_refs']}
@@ -88,7 +94,7 @@ def skip(service,request,*,dry_run=False):
                             or failure.get('error_code')!='SEMANTIC_REVIEW_REQUIRED'
                             or hashlib.sha256(path.read_bytes()).hexdigest()!=e['failure_sha256']):fail('STALE_INPUT','pin the current source semantic hold')
                     for p in (service.vault/f'_system/knowledge-builds/task-{tid}/passes').glob('*.json'):pin(p.relative_to(service.vault).as_posix())
-                    pin(f'_system/knowledge-builds/task-{tid}/readings/{latest["reading_package_id"]}.json')
+                    pin(package_ref)
                     after=copy.deepcopy(task);after.update(status='skipped',reason=e['reason'],revision=task['revision']+1)
                     validate_record('work',after)
                     updates.append({'ref':k._task_path(tid).relative_to(service.vault).as_posix(),

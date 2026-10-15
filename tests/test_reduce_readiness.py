@@ -117,7 +117,7 @@ def test_completed_reduce_binding_survives_narrow_revision_graph(vault,monkeypat
     path.write_bytes(original)
 
 
-@pytest.mark.parametrize('case',['valid','usable','consumed','stale','worker'])
+@pytest.mark.parametrize('case',['valid','usable','consumed','stale','worker','dependency'])
 def test_qa_task_deferral_preserves_originals_and_never_resumes(vault,monkeypatch,case):
     a,w,card,failed=repair_fixture(vault,monkeypatch,qa=case!='usable');k=a.workflow.knowledge;b=k._batch(w['batch_id'])
     source=card['node'].partition(':')[2]
@@ -131,6 +131,7 @@ def test_qa_task_deferral_preserves_originals_and_never_resumes(vault,monkeypatc
             'failure_ref':failed,'failure_sha256':hashlib.sha256((vault/failed).read_bytes()).hexdigest()}])
     if case=='stale':q['entries'][0]['pass_id']='0'*64
     if case=='worker':monkeypatch.setenv('HERMES_KANBAN_TASK','untrusted')
+    if case=='dependency':monkeypatch.setattr('hermes_source_units.reading_dependencies.citation_dependency_gaps',lambda *_a:[{'missing_ref':'fixture missing inspection'}])
     from hermes_source_units import mutation_digest
     q['input_digest']=mutation_digest(q)
     protected={p:p.read_bytes() for p in (vault/'_system/knowledge-builds').rglob('*.json') if '/passes/' in p.as_posix() or '/readings/' in p.as_posix()}
