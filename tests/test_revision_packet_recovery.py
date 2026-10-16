@@ -93,11 +93,25 @@ def test_transport_failure_requires_actual_ended_native_cancellation(change):
 
 @pytest.mark.parametrize('message,semantic,expected',[
  ('required reading dependency has not been inspected; retain original evidence',True,'draft_rejected'),
+ ('INCOMPLETE_COVERAGE at $: required reading dependency has not been inspected; retain original evidence',True,'draft_rejected'),
+ ('INCOMPLETE_COVERAGE at $: required reading dependency has not been inspected; retain original evidence',False,'recovery_required'),
  ('required reading dependency has not been inspected; retain original evidence',False,'recovery_required'),
  ('other missing evidence',True,'recovery_required')])
 def test_inspection_draft_rejection_keeps_authority_failures_held(message,semantic,expected):
     from native_pass_identity import pass_failure
     assert pass_failure(ContractError('INCOMPLETE_COVERAGE','$',message),semantic=semantic)['state']==expected
+
+
+def test_aggregate_inspection_receipt_retains_partial_results_and_correction(tmp_path):
+    from native_ingest import compact_semantic_receipt
+    message=str(ContractError('INCOMPLETE_COVERAGE','$','required reading dependency has not been inspected; retain original evidence'))
+    result={'ok':False,'validated':False,'results':[{'task':'t2','created':True,'sequence':2,'pass_kind':'citation'}],
+        'failures':[{'stage':'pass','code':'INCOMPLETE_COVERAGE','message':message,'item_id':'pending-task'}]}
+    receipt=compact_semantic_receipt(tmp_path,{'workflow_id':'ingest-fixture'},result,['pending-task','valid-task'])
+    assert receipt['state']=='draft_rejected' and receipt['next_action']=='correct_semantic_draft'
+    assert receipt['recovery_owner']=='worker' and receipt['results']==result['results']
+    assert receipt['failures'][0]['message']==message and receipt['failures'][0]['task']=='t1'
+    assert json.loads((tmp_path/receipt['receipt_ref']).read_text())==result
 
 
 @pytest.mark.parametrize('change',['valid','missing_timeline','sdk_started','audited_call'])
