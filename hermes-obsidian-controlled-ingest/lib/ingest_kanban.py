@@ -1193,8 +1193,6 @@ class IngestKanbanAdapter:
             with _exclusive_lock(service._batch_lock_path(value['batch_id'])):
                 batch = service._batch(value['batch_id'])
                 slices = service._slices(value['batch_id'])
-                if legacy_revision and (batch['run_ids'] or batch.get('resource_reduction_ids') or batch.get('global_reduction_id')):
-                    _fail('INVALID_TRANSITION','historical slice recovery cannot change consumed Pass evidence')
                 if (batch['state'] != 'cancelled' or not batch['cancel_requested']
                         or any(s['lease']['worker_id'] or s['state']=='leased' for s in slices)):
                     _fail('WORKER_ACTIVE', 'batch must be cancelled with no live leases')
@@ -1208,6 +1206,10 @@ class IngestKanbanAdapter:
                         _fail('INVALID_TRANSITION', 'only selected cancelled unfinished slices can recover')
                     if legacy_revision and item['slice_id'] not in value['pass_revision']['slice_ids']:
                         _fail('ACCESS_DENIED','slice is outside the authorized dependency revision')
+                    if legacy_revision:
+                        from hermes_source_units.reduce_dependency_revision import assert_unconsumed_resources
+                        selected={t['task_id'] for t in value['pass_revision']['tasks']}
+                        assert_unconsumed_resources(self.workflow,value,selected.intersection(item['task_ids']))
                     previous=[r for r in value.get('execution_recovery_history', []) if name in r['nodes']]
                     repeated=(previous and scope=='mechanical/v1') or any(
                         _load_json(_vault_path(self.workflow.vault,r['report_ref']))['request'].get('recovery_scope','mechanical/v1')==scope
