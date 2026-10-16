@@ -71,7 +71,8 @@ def verify(adapter,value,request,*,home=None):
             if body.get('phase')!='citation' or text[end:]!=('\n'+labels if labels else ''):
                 fail('STALE_INPUT','native citation request framing differs')
             from fixed_semantic_media import image_catalog,select_images
-            images=select_images(view['tasks'],image_catalog(adapter,view))
+            images=(select_images(view['tasks'],image_catalog(adapter,view))
+                    if any(m.get('asset') for t in view['tasks'] for m in t.get('materials',[])) else [])
             if [{k:v for k,v in i.items() if k!='url'} for i in images]!=call.get('image_inputs',[]):
                 fail('SOURCE_CHANGED','native image authority differs from registered assets')
             snapshot=adapter.kanban.task_snapshot(value['kanban']['board_id'],call['native_task_id'])
