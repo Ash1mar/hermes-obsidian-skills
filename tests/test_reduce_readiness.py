@@ -118,6 +118,36 @@ def test_completed_reduce_binding_survives_narrow_revision_graph(vault,monkeypat
     path.write_bytes(original)
 
 
+@pytest.mark.parametrize('failure_kind',['historical','current','malformed','none','cancelled_workflow'])
+def test_running_dependency_revision_reopens_only_unattempted_cancelled_work(vault,monkeypatch,failure_kind):
+    a,w,card,_=repair_fixture(vault,monkeypatch);k=a.workflow.knowledge;b=k._batch(w['batch_id'])
+    tid=next(t for t in b['task_ids'] if k._task(t)['target_refs'][0]['unit_ref']['resource_id']==card['node'].partition(':')[2])
+    prior=max(k._pass_index([tid])[1][tid],key=lambda r:r['sequence'])
+    evidence=vault/'_system/reports/reopen-review.json';evidence.write_text('isolated dependency inventory')
+    q=workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=w['revision'],revision_id='reopen-repair',
+        revision_scope='reduce-dependencies/v1',evidence_digest='sha256:'+fingerprint(w['pause_control']),
+        tasks=[{'task_id':tid,'pass_id':prior['pass_id'],'reason':'Required isolated dependency'}],reduce_failures=[],
+        reason='Explicit selected dependency repair',evidence_refs=['_system/reports/reopen-review.json'],
+        worker_template=(ROOT/'hermes-obsidian-governed-ingest-orchestrator/references/workers/pass-slice.md').read_text())
+    monkeypatch.setattr('hermes_source_units.reduce_dependency_revision.citation_dependency_gaps',lambda *_a:[{'missing_ref':'isolated'}])
+    a.revise_passes(q)
+    a.resume(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=a.workflow.status(w['workflow_id'])['revision']))
+    live=a.workflow.status(w['workflow_id']);sid=live['pass_revision']['slice_ids'][0];item=k._slice(w['batch_id'],sid)
+    current=next(c for c in live['kanban']['task_map'] if c['node']=='pass-slice:'+sid)
+    # Fault injection is confined to this fixture: cancellation can retain an
+    # old refusal even after an explicit new revision or authenticated recovery.
+    item.update(state='cancelled',revision=item['revision']+1);k._clear_lease(item);k._write_slice(item)
+    path=vault/f'_system/ledgers/ingest-workflows/{w["workflow_id"]}/reports/failed-{fingerprint(current["node"])[:16]}.json'
+    if failure_kind not in ('none','cancelled_workflow'):
+        path.write_text(json.dumps({'node':current['node'],'error_code':'SEMANTIC_REVIEW_REQUIRED',
+            **({} if failure_kind=='malformed' else {'task_id':current['task_id'] if failure_kind=='current' else 'ended-previous-native'})}))
+    if failure_kind=='cancelled_workflow':live['cancel_requested']=True
+    before={p:p.read_bytes() for p in vault.rglob('*.json') if p!=k._slice_path(w['batch_id'],sid)}
+    a.workflow.prepare_pass_revision(live)
+    assert k._slice(w['batch_id'],sid)['state']==('ready' if failure_kind in ('historical','none') else 'cancelled')
+    assert all(p.read_bytes()==data for p,data in before.items())
+
+
 @pytest.mark.parametrize('case',['valid','usable','consumed','stale','worker','dependency'])
 def test_qa_task_deferral_preserves_originals_and_never_resumes(vault,monkeypatch,case):
     a,w,card,failed=repair_fixture(vault,monkeypatch,qa=case!='usable');k=a.workflow.knowledge;b=k._batch(w['batch_id'])
