@@ -103,6 +103,20 @@ def test_dependency_revision_protects_independent_completed_source(vault,monkeyp
         assert narrowed['pass_revision']['state']=='running'
 
 
+def test_inventory_keeps_bound_failure_when_projection_omits_reducer(vault,monkeypatch):
+    a,w,card,_=repair_fixture(vault,monkeypatch)
+    w['kanban']['task_map']=[c for c in w['kanban']['task_map'] if c['node']!=card['node']]
+    w['revision']+=1;a.workflow._write(w)
+    before=a.workflow._path(w['workflow_id']).read_bytes()
+    report=scan(a,w['workflow_id'],budgets=False)
+    source=next(s for s in report['sources'] if s['resource_id']==card['node'].partition(':')[2])
+    assert source['binding']['status']=='absent' and source['current_failure'] is None
+    assert source['prior_failure']['error_code']=='SEMANTIC_REVIEW_REQUIRED'
+    assert source['prior_failure']['current_input_matches']
+    assert source['disposition']=='held_prior_native_failure'
+    assert a.workflow._path(w['workflow_id']).read_bytes()==before
+
+
 def test_completed_reduce_binding_survives_narrow_revision_graph(vault,monkeypatch):
     a,w,card,_,_=stopped_reducer(vault,monkeypatch)
     k=a.workflow.knowledge;b=k._batch(w['batch_id']);r=k._resource_reduction(b['batch_id'],b['resource_reduction_ids'][0])

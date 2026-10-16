@@ -137,6 +137,21 @@ def scan(adapter,wid,*,budgets=True):
                 qa_tasks=[r['task_id'] for r in active if r['qa']])
             name='resource-reduce:'+resource;card=next((c for c in w['kanban']['task_map'] if c['node']==name),None)
             source['binding']={'status':'absent' if not card else 'unchecked'}
+            # A revision can temporarily remove unfinished reducers from task_map.
+            # Their authenticated prior failures remain part of the finite inventory.
+            if not card:
+                path=_vault_path(service.vault,f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint(name)[:16]}.json')
+                if path.is_file():
+                    failure=_load_json(path);key=failure.get('idempotency_key')
+                    prior=_vault_path(service.vault,f'_system/ledgers/ingest-workflows/{wid}/bindings/{fingerprint(key)}.json')
+                    pin=next((p for p in w['template_pins'] if p['kind']=='resource-reduce'),None)
+                    expected={'workflow_id':wid,'node':name,'task_id':failure.get('task_id'),'actor':w['actor'],
+                        'input_fingerprint':failure.get('input_fingerprint'),'template_hash':pin['template_hash'] if pin else None}
+                    if (failure.get('node')==name and key==f'ingest:{wid}:resource-reduce:{failure.get("input_fingerprint")}'
+                            and prior.is_file() and _load_json(prior)==expected):
+                        source['prior_failure']={'ref':path.relative_to(service.vault).as_posix(),
+                            'sha256':hashlib.sha256(path.read_bytes()).hexdigest(),**failure,
+                            'current_input_matches':name in nodes and nodes[name].input_fingerprint==failure.get('input_fingerprint')}
             if card:
                 try:
                     node=nodes[name];key=f'ingest:{wid}:{node.kind}:{node.input_fingerprint}'
@@ -168,6 +183,8 @@ def scan(adapter,wid,*,budgets=True):
             elif any(r['errors'] for r in active) or source['binding']['status']=='blocked' or source['budget']['status']=='blocked':source['disposition']='program_or_input_repair'
             elif source['actionable_gap_tasks']:source['disposition']='targeted_dependency_review'
             elif source['current_failure']:source['disposition']='held_native_failure'
+            elif source.get('prior_failure',{}).get('current_input_matches'):source['disposition']='held_prior_native_failure'
+            elif source['binding']['status']=='absent':source['disposition']='binding_not_projected'
             else:source['disposition']='mechanically_ready'
         global_input=global_budget(adapter,w) if budgets else {'status':'not_checked','complete_input':False}
         evidence=snapshot(service,w)
