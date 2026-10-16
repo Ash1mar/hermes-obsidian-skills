@@ -119,16 +119,27 @@ def prepare(adapter, binding):
 def global_plan_view(value):
     """Provisional routing only; full evidence remains in the bound snapshot."""
     original=value['view']
-    view={k:copy.deepcopy(original[k]) for k in ('phase','proposals','existing_pages','coverage_limitations') if k in original}
-    view['candidates']=[]
+    view={k:copy.deepcopy(original[k]) for k in ('phase','existing_pages','coverage_limitations') if k in original}
+    columns={'proposals':['proposal','summary','candidate_refs','identity_hints','path_hints'],
+             'candidates':['candidate','kind','name','applicability','conditions','exceptions','evidence_qa']}
+    view.update(columns=columns,proposals=[[copy.deepcopy(p.get(k)) for k in columns['proposals']]
+        for p in original.get('proposals',[])],candidates=[],qa={})
+    qa_keys={}
     for candidate in original['candidates']:
         row={k:copy.deepcopy(candidate[k]) for k in ('candidate','kind','name','applicability','conditions','exceptions') if k in candidate}
         qa=[]
         for item in candidate.get('evidence_qa',[]):
             boundary={k:v for k,v in item.items() if k!='finding' or item.get('qa')!='usable'}
             if boundary not in qa:qa.append(copy.deepcopy(boundary))
-        if qa:row['evidence_qa']=qa
-        view['candidates'].append(row)
+        refs=[]
+        for boundary in qa:
+            digest=fingerprint(boundary)
+            if digest not in qa_keys:
+                qa_keys[digest]='q'+str(len(qa_keys)+1)
+                view['qa'][qa_keys[digest]]=boundary
+            refs.append(qa_keys[digest])
+        row['evidence_qa']=refs
+        view['candidates'].append([row.get(k) for k in columns['candidates']])
     return view
 
 

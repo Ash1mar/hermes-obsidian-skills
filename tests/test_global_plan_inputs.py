@@ -27,13 +27,16 @@ def fixture_value(oversize=False):
 
 def test_provisional_routing_keeps_all_groups_scope_and_qa_without_raw_reading():
     value=fixture_value();before=copy.deepcopy(value);view=fixed_reduce.global_plan_view(value)
-    assert view['proposals']==value['view']['proposals'] and view['existing_pages']==[]
+    proposals=[dict(zip(view['columns']['proposals'],row)) for row in view['proposals']]
+    candidates=[dict(zip(view['columns']['candidates'],row)) for row in view['candidates']]
+    assert proposals==value['view']['proposals'] and view['existing_pages']==[]
     assert view['coverage_limitations']==value['view']['coverage_limitations']
-    assert [c['candidate'] for c in view['candidates']]==['c1','c2']
-    assert all(c['conditions']==['A OR B'] and c['exceptions']==['unless C'] for c in view['candidates'])
-    assert all(c['evidence_qa'][1]['finding']=='Do not assert equation' for c in view['candidates'])
+    assert [c['candidate'] for c in candidates]==['c1','c2']
+    assert all(c['conditions']==['A OR B'] and c['exceptions']==['unless C'] for c in candidates)
+    assert all(view['qa'][c['evidence_qa'][1]]['finding']=='Do not assert equation' for c in candidates)
+    assert candidates[0]['evidence_qa']==candidates[1]['evidence_qa'] and len(view['qa'])==2
     assert 'original_evidence' not in view and 'Repeated inspection' not in json.dumps(view)
-    assert all('finding' not in c and 'source_evidence' not in c for c in view['candidates'])
+    assert all('finding' not in c and 'source_evidence' not in c for c in candidates)
     assert value==before
 
 

@@ -400,8 +400,9 @@ def test_image_transport_verifies_registered_bytes_and_ignores_linked_assets(tmp
 
 
 def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
+    from test_reduce_execution_recovery import EndedKanban
     service,_,_,_=prepare_layered_reduce_batch(vault,'fixed-reduce')
-    adapter=IngestKanbanAdapter(vault,FakeKanban(True),enable_workers=True)
+    adapter=IngestKanbanAdapter(vault,EndedKanban(),enable_workers=True)
     value=start_and_pin(vault,workflow_request(workflow_id='ingest-fixed',actor='agent',expected_revision=0,
         profile='compact-3',batch_id='fixed-reduce',scope={'source_paths':[],
         'knowledge_selector':'all-current','execution_mode':'auto_full','provider':'skip','pause_after':['checkpoint_1','build_finalize']}))
@@ -418,7 +419,7 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
     calls=[]
     def caller(phase,view,output_schema,correction):
         calls.append(phase); assert correction is None
-        refs=[c['candidate'] for c in view['candidates']]
+        refs=[c[0] for c in view['candidates']] if phase=='global-plan' else [c['candidate'] for c in view['candidates']]
         if phase!='global-plan':
             assert view['original_evidence']['texts']
             assert all(c['source_evidence'] for c in view['candidates'])

@@ -27,6 +27,9 @@ identity hints and page content. Global planning always uses the complete compac
 identity directory and source proposals with candidate routing scope, conditions,
 exceptions and QA boundaries. It does not receive raw reading packages or repeated
 candidate findings. This is provisional routing, not factual equivalence or approval.
+Planning uses table rows with explicit field columns and a shared QA dictionary to
+remove repeated keys and identical QA values. Scope, conditions, exceptions, proposal
+membership and identity/path hints are retained exactly; full readings stay unchanged.
 Each planned page is then written using its full selected original evidence and exact
 checked parent, including when there are no existing pages. Writing verifies the
 proposed grouping and preserves source/version differences; incompatible identities
