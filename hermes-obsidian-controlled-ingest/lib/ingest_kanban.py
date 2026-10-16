@@ -78,12 +78,17 @@ def pass_node(workflow, value):
     name = 'pass-slice:' + value['slice_id']
     recovery = next((r for r in reversed(workflow.get('execution_recovery_history', []))
                      if name in r['nodes']), None)
+    dispositions=[]
+    for pointer in workflow.get('pass_skip_history',[]):
+        if revision and pointer.get('revision_id')==revision['revision_id'] and value['slice_id'] in pointer.get('continuation_slice_ids',[]):
+            dispositions.append(pointer['report_sha256'])
     return Node(name, 'pass-slice', (),
                 node_identity(workflow, 'pass-slice', {
                     'slice_id':value['slice_id'], 'input_fingerprint':value['input_fingerprint'],
                     'template_hash':value['template_hash'],
                     **({'revision_digest': revision['input_digest']} if revision else {}),
-                    **({'recovery_digest': recovery['input_digest']} if recovery else {})}, []))
+                    **({'recovery_digest': recovery['input_digest']} if recovery else {}),
+                    **({'disposition_digests':dispositions} if dispositions else {})}, []))
 
 
 def mechanical_failure_codes(report, scope='mechanical/v1', *, input_limit=30000):
@@ -455,7 +460,11 @@ def domain_completed(service: FileIngestWorkflowService,
         return True
     if node.kind == "pass-slice":
         slice_id = node.name.partition(":")[2]
-        return service.knowledge._slice(workflow["batch_id"], slice_id)["state"] == "completed"
+        if service.knowledge._slice(workflow["batch_id"], slice_id)["state"] == "completed":return True
+        from hermes_source_units.reduce_task_skip import revision_slice_covered
+        return any(r.get('revision_scope')=='reduce-dependencies/v1' and r['state']=='accepted'
+            and slice_id in r['slice_ids'] and revision_slice_covered(service,workflow,r,slice_id)
+            for r in [*workflow.get('pass_revision_history',[]),*([workflow['pass_revision']] if workflow.get('pass_revision') else [])])
     if node.kind == "resource-reduce":
         resource_id = node.name.partition(":")[2]
         batch = service.knowledge._batch(workflow["batch_id"])
@@ -1100,7 +1109,8 @@ class IngestKanbanAdapter:
         lock=_vault_path(self.workflow.vault,f'_system/ledgers/ingest-workflows/.dispatch-locks/{wid}.lock')
         with _exclusive_lock(lock), record_validation_scope():
             verify_cancel_drain(self,wid,timeout=0)
-            return skip(self.workflow,request,dry_run=dry_run)
+            from revision_disposition import verify
+            return skip(self.workflow,request,dry_run=dry_run,revision_check=lambda value,q:verify(self,value,q))
 
     def _citation_budget_deferral(self,value,batch,item,failure):
         """Measure current complete evidence; budget refusal is an explicit gap."""
@@ -2278,6 +2288,7 @@ class IngestKanbanAdapter:
                                              str(request["task_id"]))
         result_refs = []
         for task_id in value["task_ids"]:
+            if task_id in self.workflow.skipped_pass_tasks(workflow):continue
             root = _vault_path(self.workflow.vault,
                                f"_system/knowledge-builds/task-{task_id}/passes")
             records = []
