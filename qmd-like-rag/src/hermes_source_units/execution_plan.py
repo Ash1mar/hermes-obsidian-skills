@@ -136,6 +136,11 @@ class ExecutionPlanMixin:
                 cause=packet_recovery_cause(entry.get('failure',{})) if scope=='revision-citation-packet/v1' else None
                 if scope=='revision-citation-packet/v1' and (not cause or not entry.get('revision_packet_identity')):
                     fail('STALE_INPUT','packet recovery lacks its recognized cause or native input proof')
+                if scope=='reduce-cancel/v1':
+                    cause=entry.get('previous_task_id')
+                    if (not isinstance(cause,str) or not cause or entry.get('failure',{}).get('error_code')
+                            not in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED')):
+                        fail('STALE_INPUT','Reduce cancellation recovery lacks its exact ended native identity')
                 keys.append((entry['node'],scope,cause))
             if (request['workflow_id'] != workflow['workflow_id']
                     or request['actor'] != workflow['actor']
