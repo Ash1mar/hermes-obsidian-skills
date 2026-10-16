@@ -50,13 +50,13 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
     if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', rid):
         fail('INVALID_SCHEMA', 'invalid recovery ID')
     scope=request.get('recovery_scope')
-    if scope not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1'):
+    if scope not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3'):
         fail('INVALID_SCHEMA', 'Reduce recovery requires a supported explicit correction scope')
     if scope=='source-packets/v1':
         from fixed_reduce_packets import contract_hash
         if request.get('target_contract_sha256')!=contract_hash():
             fail('STALE_INPUT','source packet implementation differs from the reviewed request')
-    if scope=='source-hold/v1':
+    if scope in ('source-hold/v1','source-hold/v2','source-hold/v3'):
         from source_hold_recovery import contract_hash
         if request.get('target_contract_sha256')!=contract_hash():
             fail('STALE_INPUT','source hold recovery contract differs')
@@ -106,12 +106,15 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     fail('INVALID_TRANSITION', 'only interrupted resource/global Reduce can recover')
                 if domain_completed(service, value, node):
                     fail('INVALID_TRANSITION', 'reuse completed Reduce through trusted reconciliation, never regenerate it')
-                if any(name in r['nodes'] and _load_json(_vault_path(service.vault,r['report_ref']))['request'].get('recovery_scope')==scope
-                       for r in value.get('execution_recovery_history', [])):
-                    fail('RECOVERY_EXHAUSTED', 'one cancellation recovery per reducer; diagnose further failure')
+                previous_reports=[_load_json(_vault_path(service.vault,r['report_ref']))
+                    for r in value.get('execution_recovery_history',[]) if name in r['nodes']]
+                if any(r['request'].get('recovery_scope')==scope and
+                       (scope!='reduce-cancel/v1' or any(e['node']==name and
+                         e['previous_task_id']==entry.get('task_id') for e in r['entries'])) for r in previous_reports):
+                    fail('RECOVERY_EXHAUSTED', 'one cancellation recovery per exact native attempt; diagnose further failure')
                 card = next((c for c in value['kanban']['task_map'] if c['node'] == name), None)
                 key = f'ingest:{wid}:{node.kind}:{node.input_fingerprint}'
-                if not card and scope=='source-hold/v1':
+                if not card and scope in ('source-hold/v1','source-hold/v2','source-hold/v3'):
                     # A completed supplement narrows task_map. Authenticate the
                     # unchanged canonical card below, never fabricate a new binding.
                     path=_vault_path(service.vault,f'_system/ledgers/ingest-workflows/{wid}/bindings/{fingerprint(key)}.json')
@@ -128,9 +131,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                         or report.get('idempotency_key') != key):
                     fail('STALE_INPUT', 'failure evidence or binding changed')
                 projection=scope=='reduce-cancel/v1' and report.get('error_code')=='DISPATCH_ARTIFACT_CHANGED'
-                allowed=(('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope=='source-hold/v1' else
+                allowed=(('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
                     ('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED'))
-                if report.get('error_code') not in allowed or (scope in ('source-packets/v1','source-hold/v1') and node.kind!='resource-reduce'):
+                if report.get('error_code') not in allowed or (scope in ('source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3') and node.kind!='resource-reduce'):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
                 snap = adapter.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
                 task, runs = snap.get('task', {}), snap.get('runs', [])
@@ -167,7 +170,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     'previous_input_fingerprint': node.input_fingerprint, 'failure_ref': ref,
                     'failure_sha256': hashlib.sha256(data).hexdigest(), 'failure': report,
                     'ended_run_ids': [str(r['id']) for r in runs], 'template_hash': template_hash})
-                if scope=='source-hold/v1':
+                if scope in ('source-hold/v1','source-hold/v2','source-hold/v3'):
                     from source_hold_recovery import verify
                     audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))
                 if original:
@@ -189,7 +192,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 return {**result, 'revision': value['revision'], 'entries': audited}
             ref = f'_system/ledgers/ingest-workflows/{wid}/execution-recoveries/{rid}.json'
             report = {'request': dict(request), 'entries': audited, 'batch_id': value['batch_id'],
-                      'domain_inputs_changed': False, 'semantic_retry_authorized': scope=='source-hold/v1'}
+                      'domain_inputs_changed': False, 'semantic_retry_authorized': scope in ('source-hold/v1','source-hold/v2','source-hold/v3')}
             path = _vault_path(service.vault, ref)
             data = _json_bytes(report)
             if path.exists() and path.read_bytes() != data:

@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import copy
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -12,7 +12,7 @@ import uuid
 
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _vault_path, _write_atomic, _json_bytes
-from hermes_source_units.validation import fingerprint, validate_record
+from hermes_source_units.validation import fingerprint, validate_record, record_validation_scope
 from hermes_source_units.runtime_telemetry import measured, span
 from native_ingest import worker_action, read_pass_input
 from native_pass_identity import visible_packet, load_context
@@ -251,7 +251,12 @@ def wire_prompt(phase,view,output_schema,correction=None):
         # The actual request carries the schema once at the API boundary.
         body['required_result_slots']=[t['task'] for t in view.get('tasks',[])]
     if correction: body['correction'] = _stable_objects(correction)
-    return {'system':COMMON+'\n'+RULES[phase],
+    system=COMMON+'\n'+RULES[phase]
+    if phase=='resource-reduce' and view.get('hold_resolution',{}).get('audit_role')=='prior-review-not-source':
+        system+=' Prior candidate.evidence_qa findings are earlier review narratives, not source material or extra claims to prove. Never require an original matching that narrative. Retain QA status/notes and real source limits. Ground each candidate in its supplied original_evidence and existing support_refs; several support refs are valid and need not identify a unique material per subclaim. An omitted cN is unverified coverage loss, not verification. Omit unsupported claims with concrete reasons and retain supported claims. An omitted-context count alone does not mean assigned core is absent. Missing assigned material objects, changed evidence, permission or feeding faults still block; identify the actual absent reading/material. Do not infer or repair text, omit for grouping/budget, or change citations.'
+    elif phase=='resource-reduce' and 'hold_resolution' in view:
+        system+=' For this authorized partial source reduction, distinguish candidate support from request integrity. An explicitly omitted cN is an unverified coverage loss, never verified evidence. After inspecting its supplied originals, omit an unsupported or unreadable candidate with a concrete reason and preserve the verifiable candidates; this does not require a pre-existing QA flag. Do not omit merely for wording, grouping difficulty or budget. A genuinely absent required material object, changed evidence, permission or binding problem must still block; do not hide a program feeding defect as a source limitation.'
+    return {'system':system,
         'user':'Semantic input v1\n'+json.dumps(body,ensure_ascii=False,separators=(',',':'))}
 
 
@@ -310,6 +315,18 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
         if recovered:
             prepared['closed'] = True
             return recovered
+        if phase=='resource-reduce' and 'hold_resolution' not in view:
+            from source_hold_recovery import resolved_view
+            clarified=resolved_view(adapter,binding,view)
+            if clarified is not view:
+                prepared['closed']=True
+                return model_call(adapter,binding,phase,clarified,caller,limit,policy=policy,attempt_limit=attempt_limit)
+        if phase=='resource-reduce' and 'hold_resolution' in view:
+            from source_hold_recovery import resolved_audit_view
+            clarified=resolved_audit_view(adapter,binding,view)
+            if clarified is not view:
+                prepared['closed']=True
+                return model_call(adapter,binding,phase,clarified,caller,limit,policy=policy,attempt_limit=attempt_limit)
     started=time.monotonic()
     input_sha256=fingerprint(wire)
     with span('model_call',phase=phase,input_sha256=input_sha256) as model_trace:
@@ -358,9 +375,14 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
         validate(phase,value)
         if 'blocked_reason' in value: raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',value['blocked_reason'])
         return value,ref
+    except ContractError as exc:
+        exc.semantic_audit_ref=ref
+        raise
     except json.JSONDecodeError as exc:
-        raise ContractError('INVALID_SCHEMA','$',
-            f'semantic response is not one JSON object: {exc.msg} at line {exc.lineno}, column {exc.colno}') from exc
+        error=ContractError('INVALID_SCHEMA','$',
+            f'semantic response is not one JSON object: {exc.msg} at line {exc.lineno}, column {exc.colno}')
+        error.semantic_audit_ref=ref
+        raise error from exc
 
 
 def decode_semantic_response(raw):
@@ -798,6 +820,14 @@ def execute(adapter,binding_path,caller=None):
     caller=caller or HermesCaller()
     if binding['node'].startswith('pass-slice:'): return run_pass(adapter,binding,caller)
     if binding['node']=='build-finalize': return fixed_review.execute(adapter,binding,caller,model_call,attach_receipt)
+    # Parsing only: execution_projection rereads/hashes current bytes on every
+    # access. Worker checks, cancellation and bound submission stay unchanged.
+    projection=getattr(adapter.workflow,'execution_projection',None)
+    with (projection() if projection else nullcontext()), record_validation_scope():
+        return run_reduce(adapter,binding,caller)
+
+
+def run_reduce(adapter,binding,caller):
     ref,input_value=fixed_reduce.prepare(adapter,binding)
     kind=input_value['backend']['kind']; correction=None
     if kind=='resource-reduce':
@@ -806,18 +836,30 @@ def execute(adapter,binding_path,caller=None):
         plan_ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-inputs/packets-{input_value['input_id']}.json"
         _write_atomic(_vault_path(adapter.workflow.vault,plan_ref),_json_bytes({
             'contract':CONTRACT,'input_ref':ref,'packets':[{k:v for k,v in p.items() if k!='view'} for p in packets]}))
-        drafts=[];calls=[]
+        drafts=[];calls=[];deferred=[]
         for packet in packets:
             adapter.worker_check(binding)
-            from source_hold_recovery import resolved_view
-            view=resolved_view(adapter,binding,packet['view'])
-            draft,call_ref=model_call(adapter,binding,kind,view,caller,30000,attempt_limit=1)
-            calls.append(call_ref)
-            try: validate_packet(packet,draft)
+            call_ref=None
+            try:
+                draft,call_ref=model_call(adapter,binding,kind,packet['view'],caller,30000,attempt_limit=1)
+                validate_packet(packet,draft)
             except ContractError as exc:
-                attach_receipt(adapter,call_ref,{'ok':False,'validated':False,'code':exc.code,'reason':str(exc),'state':'draft_rejected'})
-                raise
-            drafts.append(draft)
+                call_ref=call_ref or getattr(exc,'semantic_audit_ref',None)
+                if not call_ref or exc.code not in ('SEMANTIC_REVIEW_REQUIRED','INVALID_SCHEMA','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','DUPLICATE'):
+                    raise
+                attach_receipt(adapter,call_ref,{'ok':False,'validated':False,'code':exc.code,'reason':str(exc),'state':'packet_deferred'})
+                deferred.append({'candidate_refs':packet['candidate_refs'],'audit_ref':call_ref,'code':exc.code,'reason':str(exc)})
+                continue
+            drafts.append(draft);calls.append(call_ref)
+        if deferred:
+            report_ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/reports/source-packets-deferred-{input_value['input_id']}.json"
+            _write_atomic(_vault_path(adapter.workflow.vault,report_ref),_json_bytes({
+                'contract':'source-packets-deferred/v1','binding':binding,'input_ref':ref,
+                'completed_packet_count':len(drafts),'successful_call_refs':calls,'held_packets':deferred,
+                'source_submitted':False,'unchanged_semantic_retries':0}))
+            raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',
+                'Source remains held; valid packets preserved and later packets attempted; report: '+report_ref+'\n'
+                +'\n'.join(d['reason'] for d in deferred))
         result=fixed_reduce.submit(adapter,binding,ref,merge(input_value,packets,drafts))
         for call_ref in calls:attach_receipt(adapter,call_ref,result)
         return adapter.worker_complete(binding)

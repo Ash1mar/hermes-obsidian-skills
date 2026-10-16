@@ -148,6 +148,31 @@ def test_reduce_recovery_is_one_retry_and_report_tamper_blocks_resume(vault, mon
     with pytest.raises(ContractError, match='STALE_INPUT'): adapter.workflow.assert_execution_ready(current)
 
 
+def test_independently_cancelled_fresh_attempt_needs_its_own_bound_recovery(vault,monkeypatch):
+    adapter,w,old,request,ref=stopped_reducer(vault,monkeypatch)
+    adapter.recover_reduce_execution(request)
+    current=adapter.workflow.status(w['workflow_id'])
+    adapter.resume(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
+    current=adapter.workflow.status(w['workflow_id'])
+    fresh=next(c for c in current['kanban']['task_map'] if c['node']==old['node'])
+    assert fresh['task_id']!=old['task_id']
+    ref=adapter.execution_failure({'workflow_id':w['workflow_id'],'node':fresh['node'],'task_id':fresh['task_id']},
+                                  'WORKFLOW_STOPPED','Explicit later observation cancellation')
+    adapter.kanban.ended.add(fresh['task_id'])
+    adapter.cancel(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
+    current=adapter.workflow.status(w['workflow_id'])
+    again=workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision'],
+        recovery_id='later-explicit-stop',recovery_scope='reduce-cancel/v1',reason='User continues the finite unfinished list',
+        entries=[{'node':fresh['node'],'task_id':fresh['task_id'],'failure_sha256':hashlib.sha256((vault/ref).read_bytes()).hexdigest()}])
+    assert not adapter.recover_reduce_execution(again,dry_run=True)['applied']
+    assert adapter.recover_reduce_execution(again)['applied']
+    assert adapter.workflow.status(w['workflow_id'])['state']=='cancelled'
+    current=adapter.workflow.status(w['workflow_id'])
+    duplicate={**again,'recovery_id':'duplicate-same-attempt','expected_revision':current['revision']}
+    duplicate['input_digest']=mutation_digest(duplicate)
+    with pytest.raises(ContractError,match='RECOVERY_EXHAUSTED'):adapter.recover_reduce_execution(duplicate)
+
+
 @pytest.mark.parametrize('change', ['valid','original_attempted','replacement_attempted','body','binding','reason'])
 def test_cancelled_unattempted_reduce_projection_recovery(vault,monkeypatch,change):
     adapter,value,old,request,ref=stopped_reducer(vault,monkeypatch)

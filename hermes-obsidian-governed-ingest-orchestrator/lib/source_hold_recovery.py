@@ -9,7 +9,8 @@ from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _vault_path
 from hermes_source_units.validation import fingerprint
 
-SCOPE = 'source-hold/v1'
+SCOPE = 'source-hold/v3'
+SCOPES = ('source-hold/v1', 'source-hold/v2', SCOPE)
 
 
 def fail(message):
@@ -45,10 +46,10 @@ def original(vault, entry):
 def entries(workflow, vault, node):
     for pointer in reversed(workflow.get('execution_recovery_history', [])):
         report = _load_json(_vault_path(vault, pointer['report_ref']))
-        if report['request'].get('recovery_scope') == SCOPE:
+        if report['request'].get('recovery_scope') in SCOPES:
             for entry in report['entries']:
                 if entry['node'] == node:
-                    yield entry
+                    yield {**entry, '_recovery_scope':report['request']['recovery_scope']}
 
 
 def rebind_view(adapter, workflow, binding, snapshot):
@@ -81,7 +82,9 @@ def presence(view):
         result[task['task']] = refs
     for candidate in view['candidates']:
         for link in candidate['source_evidence']:
-            if not set(link['support_refs']) <= set(result.get(link['reading'], [])):
+            handles=[r if isinstance(r,str) else r.get('ref') if isinstance(r,dict) else None
+                     for r in link['support_refs']]
+            if any(not isinstance(r,str) for r in handles) or not set(handles) <= set(result.get(link['reading'], [])):
                 fail('candidate support is absent from its own original reading')
     return result
 
@@ -89,20 +92,54 @@ def presence(view):
 def resolved_view(adapter, binding, view):
     workflow = adapter.workflow.status(binding['workflow_id'])
     entry = next(entries(workflow, adapter.workflow.vault, binding['node']), None)
-    if entry is None or entry.get('blocked_view_sha256') != fingerprint(view):
+    if entry is None:
         return view
-    # Only this previously refused packet changes. Successful packets retain exact bytes.
+    # Called only after exact successful packet replay misses. No accepted call
+    # is repeated just to acquire the clarified disposition instructions.
     return clarify(view)
 
 
 def clarify(view):
     return {**view, 'hold_resolution': {
         'materials_present': presence(view),
-        'rule': 'This index proves presence only, not semantic correctness. Inspect the supplied original text/images and QA. '
-                'If a candidate cannot be verified because of recorded source QA, explicitly omit that candidate using '
+        'rule': 'This index proves presence only, not semantic correctness. Inspect each candidate against its own supplied original text/images and QA. '
+                'If the inspected material does not verify a candidate, explicitly omit that candidate using '
                 'omitted_candidate_refs and explain the coverage loss in reason. Preserve other verifiable candidates. '
                 'Do not repair source text, infer missing facts, or describe omissions as verified coverage. '
                 'A genuinely missing required asset or invalid binding must still block.'}}
+
+
+def resolved_audit_view(adapter,binding,view):
+    """Keep v2 exact-success replay before clarifying the earlier audit's role."""
+    if view.get('hold_resolution',{}).get('audit_role'):
+        return view
+    workflow=adapter.workflow.status(binding['workflow_id'])
+    entry=next(entries(workflow,adapter.workflow.vault,binding['node']),None)
+    if entry is None or entry['_recovery_scope']!=SCOPE:
+        return view
+    return clarify_audit(view)
+
+
+def clarify_audit(view):
+    return {**view,'hold_resolution':{'materials_present':presence(view),
+        'audit_role':'prior-review-not-source',
+        'rule':'Prior inspection findings are audit metadata, not required originals. Ground claims in their supplied materials, retain QA limits, and record unsupported candidates as unverified coverage losses.'}}
+
+
+def unclarified_view(view, authorized_view_sha256):
+    """Authenticate old program framing separately; every evidence field stays exact."""
+    if 'hold_resolution' not in view:
+        return view
+    base={k:v for k,v in view.items() if k!='hold_resolution'}
+    marker=view['hold_resolution']
+    authorized=({authorized_view_sha256} if isinstance(authorized_view_sha256,str)
+                else set(authorized_view_sha256 or []))
+    if (fingerprint(base) not in authorized or not isinstance(marker,dict)
+            or set(marker) not in ({'materials_present','rule'},{'materials_present','rule','audit_role'})
+            or ('audit_role' in marker and marker['audit_role']!='prior-review-not-source') or not isinstance(marker['rule'],str)
+            or not marker['rule'].strip() or marker['materials_present']!=presence(base)):
+        fail('old clarification lacks its authenticated packet and exact material index')
+    return base
 
 
 def transport_messages(rows, entry):
@@ -164,21 +201,31 @@ def verify(adapter, workflow, node, binding, entry, failure, runs, *, home=None)
             if not draft.get('blocked_reason') or draft['blocked_reason'] not in failure['reason']:
                 fail('selected audit does not explain the source hold')
             body,_ = json.JSONDecoder().raw_decode(_request_text(users[0]))
-            matches = [p for p in plan(adapter, old, prepare_request_projection) if p['view'] == body.get('input')]
+            prior=next(entries(workflow,adapter.workflow.vault,node.name),None)
+            planned=plan(adapter,old,prepare_request_projection)
+            authorized=( {fingerprint(p['view']) for p in planned}
+                if prior and prior['_recovery_scope'] in ('source-hold/v2',SCOPE) and prior['source_identity']==identity
+                else prior.get('blocked_view_sha256') if prior else None)
+            base=unclarified_view(body['input'],authorized)
+            matches = [p for p in planned if p['view'] == base]
             if len(matches) != 1 or body.get('phase') != 'resource-reduce':
                 fail('refused packet differs from current complete source evidence')
             packet = matches[0]; presence(packet['view'])
             from fixed_semantic_media import image_catalog, select_images
             images=select_images(packet['view']['original_evidence']['tasks'],
                                  image_catalog(adapter,packet['view']['original_evidence']))
-            prepared=prepare_request_projection('resource-reduce',packet['view'],schema('resource-reduce'),images)
-            if (fingerprint(prepared['wire']) != audit['input_sha256']
+            prepared=prepare_request_projection('resource-reduce',body['input'],schema('resource-reduce'),images)
+            wires=[prepared['wire']]
+            if 'hold_resolution' in body['input'] and prior and prior['_recovery_scope']=='source-hold/v1':
+                base_wire=prepare_request_projection('resource-reduce',base,schema('resource-reduce'),images)['wire']
+                wires.append({**prepared['wire'],'system':base_wire['system']})
+            if (audit['input_sha256'] not in {fingerprint(w) for w in wires}
                     or prepared['wire']['user'] != users[0]
                     or [{k:v for k,v in i.items() if k!='url'} for i in images] != audit.get('image_inputs',[])):
                 fail('native system, user, schema or registered images changed')
             proof.update(native_audit_ref=ref, native_audit_sha256=entry['native_audit_sha256'],
                          blocked_view_sha256=fingerprint(packet['view']))
-            preview=clarify(packet['view'])
+            preview=clarify_audit(packet['view'])
             if prepare_request_projection('resource-reduce',preview,schema('resource-reduce'),images)['input_size'] > 30000:
                 fail('complete clarified packet exceeds the bound')
         elif failure['error_code'] == 'PROGRAM_EXECUTION_FAILED':

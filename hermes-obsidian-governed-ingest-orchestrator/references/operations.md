@@ -446,7 +446,9 @@ reductions, Passes, reading packages, task ownership, gaps and pause evidence. T
 failure and ended attempt are recorded; a later separately authorized resume binds a fresh
 native card. The old binding never regains write authority. This supports only a released,
 cancelled Reduce stage with `NATIVE_WORKER_STOPPED` or `WORKFLOW_STOPPED`, one recovery per
-reducer. It cannot authorize semantic corrections, budget changes, source resets or retries
+exact ended native attempt. A later independently cancelled attempt needs its own current
+failure hash, ended run and explicit operator request; no automatic loop is added.
+It cannot authorize semantic corrections, budget changes, source resets or retries
 of unchanged refusals; another failure requires diagnosis.
 
 An explicitly reviewed old source hold may instead use `source-hold/v1` with
@@ -471,6 +473,34 @@ in the backend and global input; this does not remove or reduce current coverage
 loss. Any source input change rejects recovery/replay. Previously successful packets
 remain byte-identical; only the authenticated refused packet gains clarification.
 Refused responses are never reused. No durable pause is released by this operation.
+
+New corrections use `source-hold/v2` with the same identity-bound entry shape and
+one explicit recovery per source under this disposition contract. It distinguishes
+an unsupported candidate from a request-integrity failure: an omission is an
+unverified coverage loss, not verification, and does not need an earlier QA flag.
+Missing required material objects, stale evidence, permissions and feeding defects
+still block. The native model must inspect the originals, retain verifiable claims,
+and give concrete loss reasons; grouping difficulty or budget is not a loss reason.
+Exact successful base packets are replayed first. Only an unfinished packet without
+a matching success receives measured presence/disposition framing, with one actual
+model call and unchanged size limits. Legacy refusal framing is authenticated against
+its prior authorized packet and exact material index; every candidate/evidence field,
+original user bytes, source snapshot, schema, images and native response remain checked.
+
+`source-hold/v3` additionally disambiguates earlier inspection narratives from source
+material. QA status/notes and real source limits remain intact; a narrative is neither
+another required asset nor evidence supporting a claim. Several valid support refs
+are allowed without a one-material-per-subclaim rule. Exact v1/base and v2 successful
+calls are tried before the new framing, preserving supported partial outcomes. Native
+program framing from a v2 source-wide grant is authenticated against the complete
+unchanged source packet plan, not only its first originally refused packet.
+
+The source packet executor isolates an audited local semantic/schema/coverage refusal:
+it marks that call unvalidated, records held candidate handles and continues each later
+packet once. It does not retry the refused packet. Permission, identity, source and
+budget failures stop execution. With any held packet, no source reduction is submitted
+and no worker completion is claimed; `source-packets-deferred/v1` records successful
+audit refs and the finite unresolved list. Full-source coverage remains mandatory.
 
 Before a model call the current worker may replay an existing genuine native audit only for
 the same node, exact system/user/schema/image hashes, pinned template and authorized old

@@ -106,3 +106,45 @@ def test_transport_terminal_message_is_not_a_successful_domain_response(answer):
     else:
         assert recovery.transport_messages(rows,entry)=='original request'
         with pytest.raises(ContractError):recovery.transport_messages(rows,{**entry,'transport_response_sha256':'0'*64})
+
+
+@pytest.mark.parametrize('change',['valid','unauthorized','material','candidate','instruction_type'])
+def test_legacy_framing_cannot_hide_changed_source_evidence(change):
+    from test_reduce_packets import value
+    base=value(10)['view'];view=recovery.clarify(base);authorized=fingerprint(base)
+    if change=='unauthorized':authorized=None
+    if change=='material':view['hold_resolution']['materials_present']['t1'].append('foreign')
+    if change=='candidate':view=copy.deepcopy(view);view['candidates'][0]['finding']='changed source meaning'
+    if change=='instruction_type':view['hold_resolution']['rule']={'untrusted':'object'}
+    if change=='valid':assert recovery.unclarified_view(view,authorized)==base
+    else:
+        with pytest.raises(ContractError):recovery.unclarified_view(view,authorized)
+
+
+def test_exact_success_replay_precedes_any_disposition_clarification(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    import fixed_semantic as fixed
+    class Native:
+        def __call__(self,*args):raise AssertionError('must not repeat accepted semantic work')
+    monkeypatch.setattr(fixed,'HermesCaller',Native)
+    def unnecessary(*args):raise AssertionError('an accepted exact call must not acquire new instructions')
+    monkeypatch.setattr(recovery,'resolved_view',unnecessary)
+    draft={'proposals':[],'omitted_candidate_refs':[],'reason':'Genuine isolated replay fixture'}
+    monkeypatch.setattr('fixed_semantic_recovery.recover_reduce',lambda *args:(draft,'isolated-audit'))
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,knowledge=SimpleNamespace(source=None)),
+                            worker_check=lambda _: {'ok':True})
+    view={'candidates':[],'original_evidence':{'tasks':[],'texts':{}}}
+    assert fixed.model_call(adapter,{'node':'resource-reduce:fixture'},'resource-reduce',view,Native(),30000,attempt_limit=1)==(draft,'isolated-audit')
+
+
+def test_audit_role_framing_keeps_qa_and_typed_support_spans():
+    from test_reduce_packets import value
+    base=value(10)['view']
+    ref={'ref':'m1','span':{'start':1,'end':3}}
+    base['candidates'][0]['source_evidence'][0]['support_refs']=[ref]
+    base['candidates'][0]['evidence_qa']=[{'qa':'needs-qa','qa_note':'Retain original limit','finding':'Earlier review narrative'}]
+    view=recovery.clarify_audit(base)
+    assert view['candidates']==base['candidates'] and view['hold_resolution']['materials_present']['t1']==['m1']
+    assert recovery.unclarified_view(view,{fingerprint(base)})==base
+    view['hold_resolution']['audit_role']='untrusted-source'
+    with pytest.raises(ContractError):recovery.unclarified_view(view,{fingerprint(base)})
