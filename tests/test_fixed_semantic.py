@@ -419,16 +419,19 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
     def caller(phase,view,output_schema,correction):
         calls.append(phase); assert correction is None
         refs=[c['candidate'] for c in view['candidates']]
-        assert view['original_evidence']['texts']
-        assert all(c['source_evidence'] for c in view['candidates'])
+        if phase!='global-plan':
+            assert view['original_evidence']['texts']
+            assert all(c['source_evidence'] for c in view['candidates'])
         assert 'pass_id' not in json.dumps(view) and 'task_id' not in json.dumps(view)
+        if phase=='page-write':
+            return fixture_response({'content':'# Pump X\n\nTransfers coolant; requires filtered fluid.\n'})
         if phase=='resource-reduce':
             return fixture_response({'proposals':[{'candidate_refs':refs,'summary':'Pump X evidence',
                 'identity_hints':[{'kind':'entity','identity_key':'project-a:pump-x','canonical_name':'Pump X','aliases':[]}],
                 'path_hints':['30_Cards/fixed-pump.md']}], 'omitted_candidate_refs':[],'reason':'Fixture grouping'})
         return fixture_response({'pages':[{'candidate_refs':refs,
             'identity':{'kind':'entity','identity_key':'project-a:pump-x','canonical_name':'Pump X','aliases':[]},
-            'path':'30_Cards/fixed-pump.md','content':'# Pump X\n\nTransfers coolant; requires filtered fluid.\n'}],
+            'path':'30_Cards/fixed-pump.md'}],
             'omitted_candidate_refs':[],'reason':'Fixture coordination'})
     current=adapter.workflow.status(value['workflow_id'])
     resources=[c for c in current['kanban']['task_map'] if c['node'].startswith('resource-reduce:')]
@@ -450,7 +453,7 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
     card=next(c for c in current['kanban']['task_map'] if c['node']=='global-reduce')
     row=next(r for r in adapter.kanban.tasks.values() if r['id']==card['task_id'])
     assert fixed.execute(adapter,row['body']['worker_binding'],caller)['ok']; sync()
-    assert calls==['resource-reduce','resource-reduce','global-reduce']
+    assert calls==['resource-reduce','resource-reduce','global-plan','page-write']
     assert service._batch('fixed-reduce')['global_reduction_id']
     assert len(service._batch('fixed-reduce')['run_ids'])==1
     assert not list((vault/'_system/reports/retrieval').glob('*'))

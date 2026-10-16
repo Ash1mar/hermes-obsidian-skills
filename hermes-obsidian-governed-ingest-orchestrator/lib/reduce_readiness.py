@@ -14,7 +14,7 @@ from hermes_source_units.reduce_dependency_revision import snapshot
 
 def global_budget(adapter,w):
     """Measure the currently available completed-source prefix, never a model call."""
-    from fixed_reduce import preview_snapshot
+    from fixed_reduce import preview_snapshot,global_plan_view
     from fixed_semantic import prepare_request_projection
     from fixed_semantic_schema import schema
     from fixed_semantic_media import image_catalog,select_images
@@ -25,10 +25,9 @@ def global_budget(adapter,w):
     try:
         binding=_load_json(_vault_path(adapter.workflow.vault,
             f'_system/ledgers/ingest-workflows/{w["workflow_id"]}/bindings/{fingerprint(card["idempotency_key"])}.json'))
-        view=preview_snapshot(adapter,binding)['view']
-        phase='global-plan' if view.get('existing_pages') else 'global-reduce'
-        images=select_images(view['original_evidence']['tasks'],image_catalog(adapter,view['original_evidence']))
-        size=prepare_request_projection(phase,view,schema(phase),images)['input_size']
+        value=preview_snapshot(adapter,binding);view=global_plan_view(value)
+        phase='global-plan'
+        size=prepare_request_projection(phase,view,schema(phase))['input_size']
         return {'status':'oversize' if size>30000 else 'current_prefix_fits','phase':phase,
             'input_codepoints':size,'limit':30000,'available_completed_sources':len(batch['resource_reduction_ids']),
             'candidates':len(view['candidates']),'proposals':len(view['proposals']),'complete_input':False,

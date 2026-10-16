@@ -23,10 +23,15 @@ Only exactly identical semantics and QA share a cN handle. The program expands
 all originals, checks complete adopt/omit coverage and current input hashes,
 assigns revisions/run identities and submits under the existing workflow guard.
 Exact existing identity determines create/update; the model determines meaning,
-identity hints and page content. When existing pages exist, global planning uses
-their complete compact identity directory, then writes each planned page using
-only its selected evidence and exact checked parent. With an empty directory the
-single global call remains sufficient. No fuzzy partition silently separates
+identity hints and page content. Global planning always uses the complete compact
+identity directory and source proposals with candidate routing scope, conditions,
+exceptions and QA boundaries. It does not receive raw reading packages or repeated
+candidate findings. This is provisional routing, not factual equivalence or approval.
+Each planned page is then written using its full selected original evidence and exact
+checked parent, including when there are no existing pages. Writing verifies the
+proposed grouping and preserves source/version differences; incompatible identities
+remain blocked. All complete page requests are budget-checked before any body call.
+No fuzzy partition silently separates
 conflicting candidate semantics; an oversized indivisible plan still blocks.
 
 Resource calls produce concise proposals only. Existing `candidate_refs` record exact
