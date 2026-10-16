@@ -224,7 +224,8 @@ class PassRevisionMixin:
             revision = value.get('pass_revision')
             if not revision or revision['state'] != 'running':
                 return value
-            if not all(self.knowledge._slice(value['batch_id'], sid)['state'] == 'completed' for sid in revision['slice_ids']):
+            from .reduce_task_skip import revision_slice_covered
+            if not all(revision_slice_covered(self,value,revision,sid) for sid in revision['slice_ids']):
                 return value
             for task in revision['tasks']:
                 records = self.knowledge._pass_index([task['task_id']])[1].get(task['task_id'], [])

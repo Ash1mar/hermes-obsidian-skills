@@ -16,6 +16,14 @@ def fail(code,message):raise ContractError(code,'$',message)
 def verify(service,value,report,pointer):
     if pointer['slice_ids'] or report['task_ids']!=pointer['task_ids']:
         fail('STALE_INPUT','Reduce deferral must preserve slice ownership')
+    if (pointer.get('revision_id')!=report.get('revision_id')
+            or pointer.get('continuation_slice_ids',[])!=report.get('continuation_slice_ids',[])):
+        fail('STALE_INPUT','partial revision disposition identity changed')
+    revision=value.get('pass_revision',{})
+    if report.get('revision_id') and revision.get('revision_id')==report['revision_id']:
+        removed={tid for p in value['pass_skip_history'] if p.get('revision_id')==report['revision_id'] for tid in p['task_ids']}
+        if {t['task_id'] for t in revision['tasks']}!={t['task_id'] for t in report['original_revision_tasks']}-removed:
+            fail('STALE_INPUT','active revision differs from its explicit coverage disposition')
     for entry in report['entries']:
         task=service.knowledge._task(entry['task_id'])
         if task['status']!='skipped' or fingerprint(task['target_refs'])!=entry['target_fingerprint']:
@@ -25,7 +33,7 @@ def verify(service,value,report,pointer):
             fail('SOURCE_CHANGED','deferred original evidence changed')
 
 
-def skip(service,request,*,dry_run=False):
+def skip(service,request,*,dry_run=False,revision_check=None):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         fail('ACCESS_DENIED','Reduce deferral requires a trusted operator')
     service._check_request(request);wid=request['workflow_id'];op=request.get('operation_id','')
@@ -50,7 +58,12 @@ def skip(service,request,*,dry_run=False):
         if (value['state']!='cancelled' or not value['cancel_requested'] or value['current_stage']!='reducing'
                 or service.pending_pause(value) or value['dispatch_policy']['mode']!='full'):
             fail('INVALID_TRANSITION','deferral requires cancelled released Reduce')
-        if value.get('pass_revision') and value['pass_revision']['state']!='accepted':fail('REVISION_REVIEW_REQUIRED','finish citation review first')
+        revision=value.get('pass_revision',{})
+        partial=(revision.get('state')=='running' and revision.get('revision_scope')=='reduce-dependencies/v1'
+                 and request.get('revision_id')==revision.get('revision_id'))
+        if partial and not {e['task_id'] for e in entries}<={t['task_id'] for t in revision['tasks']}:
+            fail('INVALID_SCOPE','disposition must name only the current revision tasks')
+        if revision and revision['state']!='accepted' and not partial:fail('REVISION_REVIEW_REQUIRED','finish citation review first')
         k=service.knowledge
         with _exclusive_lock(k._batch_lock_path(value['batch_id'])):
             batch=k._batch(value['batch_id'])
@@ -64,6 +77,8 @@ def skip(service,request,*,dry_run=False):
             else:
                 service.assert_execution_ready(value);service._verify_execution_evidence(value)
                 audited=[];updates=[];protected={}
+                proof=revision_check(value,request) if partial and revision_check else None
+                if partial and proof is None:fail('ARTIFACT_REQUIRED','partial revision requires authenticated native disposition evidence')
                 def pin(ref):protected[ref]=hashlib.sha256(_vault_path(service.vault,ref).read_bytes()).hexdigest()
                 refs=request.get('evidence_refs',[])
                 if not refs or not request.get('reason','').strip():fail('ARTIFACT_REQUIRED','deferral needs persisted reviewer evidence and reason')
@@ -78,21 +93,26 @@ def skip(service,request,*,dry_run=False):
                     if latest['pass_id']!=e.get('pass_id') or latest['pass_kind']!='citation':fail('STALE_INPUT','pin the latest citation')
                     if fingerprint({f:v for f,v in latest.items() if f!='pass_id'})!=latest['pass_id']:fail('SOURCE_CHANGED','citation fingerprint changed')
                     qa=[i for i in latest['inspections'] if i['qa']=='needs-qa']
-                    if not qa:fail('SKIP_NOT_ALLOWED','only recorded unresolved original QA may defer; repair program/dependency/transport faults')
+                    if not qa and not partial:fail('SKIP_NOT_ALLOWED','only recorded unresolved original QA may defer; repair program/dependency/transport faults')
                     package_ref=f'_system/knowledge-builds/task-{tid}/readings/{latest["reading_package_id"]}.json'
                     package=_load_json(_vault_path(service.vault,package_ref))
                     k._reading_package_fingerprint(package,latest['reading_package_id'])
                     from .reading_dependencies import citation_dependency_gaps
-                    if citation_dependency_gaps(k.source,package,latest):
+                    if not partial and citation_dependency_gaps(k.source,package,latest):
                         fail('SKIP_NOT_ALLOWED','required dependency inspection gaps require repair before QA deferral')
-                    failure_ref=e['failure_ref'];path=_vault_path(service.vault,failure_ref)
-                    failure=_load_json(path);node=failure.get('node','');card=next((c for c in value['kanban']['task_map'] if c['node']==node),None)
-                    resources={r['unit_ref']['resource_id'] for r in task['target_refs']}
-                    if (path!=_vault_path(service.vault,f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint(node)[:16]}.json')
-                            or not node.startswith('resource-reduce:') or resources!={node.partition(':')[2]} or not card
-                            or failure.get('task_id')!=card['task_id'] or failure.get('idempotency_key')!=card['idempotency_key']
-                            or failure.get('error_code')!='SEMANTIC_REVIEW_REQUIRED'
-                            or hashlib.sha256(path.read_bytes()).hexdigest()!=e['failure_sha256']):fail('STALE_INPUT','pin the current source semantic hold')
+                    if partial:
+                        if tid not in {t['task_id'] for t in revision['tasks']}:fail('INVALID_SCOPE','disposition must name this revision task')
+                        native=proof['entries'][tid];failure_ref=native['native_audit_ref'];pin(failure_ref);pin(native['packet_ref'])
+                        failure={'native_review':native,'verification_success':False}
+                    else:
+                        failure_ref=e['failure_ref'];path=_vault_path(service.vault,failure_ref)
+                        failure=_load_json(path);node=failure.get('node','');card=next((c for c in value['kanban']['task_map'] if c['node']==node),None)
+                        resources={r['unit_ref']['resource_id'] for r in task['target_refs']}
+                        if (path!=_vault_path(service.vault,f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint(node)[:16]}.json')
+                                or not node.startswith('resource-reduce:') or resources!={node.partition(':')[2]} or not card
+                                or failure.get('task_id')!=card['task_id'] or failure.get('idempotency_key')!=card['idempotency_key']
+                                or failure.get('error_code')!='SEMANTIC_REVIEW_REQUIRED'
+                                or hashlib.sha256(path.read_bytes()).hexdigest()!=e['failure_sha256']):fail('STALE_INPUT','pin the current source semantic hold')
                     for p in (service.vault/f'_system/knowledge-builds/task-{tid}/passes').glob('*.json'):pin(p.relative_to(service.vault).as_posix())
                     pin(package_ref)
                     after=copy.deepcopy(task);after.update(status='skipped',reason=e['reason'],revision=task['revision']+1)
@@ -101,10 +121,14 @@ def skip(service,request,*,dry_run=False):
                         'before_sha256':hashlib.sha256(k._task_path(tid).read_bytes()).hexdigest(),'after':after})
                     audited.append({'task_id':tid,'target_fingerprint':fingerprint(task['target_refs']),'target_refs':task['target_refs'],
                         'pass_id':latest['pass_id'],'withheld_candidate_ids':[c['candidate_id'] for c in latest['candidates']],
-                        'qa':qa,'reason':e['reason'],'failure_ref':failure_ref,'failure_sha256':e['failure_sha256'],'failure':failure})
+                        'qa':qa,'reason':e['reason'],'failure_ref':failure_ref,
+                        'failure_sha256':hashlib.sha256(_vault_path(service.vault,failure_ref).read_bytes()).hexdigest(),'failure':failure})
                 report={'contract':'reduce-task-coverage-gaps/v1','request':dict(request),'batch_id':batch['batch_id'],
                     'entries':audited,'task_ids':[e['task_id'] for e in audited],'protected_files':protected,
                     'verification_success':False,'domain_outputs_preserved':True,'permanently_unavailable':False}
+                if partial:
+                    report.update(revision_id=revision['revision_id'],original_revision_tasks=copy.deepcopy(revision['tasks']),
+                        continuation_slice_ids=proof['continuation_slice_ids'],uncalled_task_ids=proof['uncalled_task_ids'])
             if dry_run:return {'ok':True,'applied':False,'resumed':False,'coverage_gaps':report['entries']}
             if not journal.exists():_write_atomic(journal,_json_bytes({'request':dict(request),'report':report,'updates':updates}))
             for update in updates:
@@ -117,6 +141,26 @@ def skip(service,request,*,dry_run=False):
             if path.exists() and path.read_bytes()!=data:fail('IDEMPOTENCY_CONFLICT','deferral evidence differs')
             _write_atomic(path,data)
             value.setdefault('pass_skip_history',[]).append({'operation_id':op,'input_digest':request['input_digest'],
-                'report_ref':ref,'report_sha256':hashlib.sha256(data).hexdigest(),'slice_ids':[],'task_ids':report['task_ids']})
+                'report_ref':ref,'report_sha256':hashlib.sha256(data).hexdigest(),'slice_ids':[],'task_ids':report['task_ids'],
+                **({'revision_id':report['revision_id'],'continuation_slice_ids':report['continuation_slice_ids']} if report.get('revision_id') else {})})
+            if report.get('revision_id'):
+                value['pass_revision']['tasks']=[t for t in value['pass_revision']['tasks'] if t['task_id'] not in report['task_ids']]
             value['revision']+=1;service._write(value);journal.unlink()
             return {'ok':True,'applied':True,'revision':value['revision'],'report_ref':ref,'resumed':False,'state':'cancelled','skipped_tasks':len(report['task_ids'])}
+
+
+def revision_slice_covered(service,value,revision,sid):
+    """A reviewed coverage loss closes no lease and fabricates no worker result."""
+    item=service.knowledge._slice(value['batch_id'],sid)
+    if item['state']=='completed':return True
+    if item['lease']['worker_id'] or item['state'] not in ('cancelled','blocked'):return False
+    reports=[_load_json(_vault_path(service.vault,p['report_ref'])) for p in value.get('pass_skip_history',[])]
+    reports=[p for p in reports if p.get('revision_id')==revision['revision_id']
+             and set(p['task_ids']).intersection(item['task_ids'])]
+    if not reports:return False
+    for target in revision['tasks']:
+        if target['task_id'] not in item['task_ids']:continue
+        records=service.knowledge._pass_index([target['task_id']])[1][target['task_id']]
+        if not any(p.get('revision_id')==revision['revision_id'] and p.get('supersedes_pass_id')==target['pass_id']
+                   and p['sequence']==target['sequence'] for p in records):return False
+    return True

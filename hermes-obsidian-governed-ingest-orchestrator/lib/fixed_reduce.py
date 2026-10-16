@@ -116,6 +116,33 @@ def prepare(adapter, binding):
     return ref,value
 
 
+def global_plan_view(value):
+    """Provisional routing only; full evidence remains in the bound snapshot."""
+    original=value['view']
+    view={k:copy.deepcopy(original[k]) for k in ('phase','existing_pages','coverage_limitations') if k in original}
+    columns={'proposals':['proposal','summary','candidate_refs','identity_hints','path_hints'],
+             'candidates':['candidate','kind','name','applicability','conditions','exceptions','evidence_qa']}
+    view.update(columns=columns,proposals=[[copy.deepcopy(p.get(k)) for k in columns['proposals']]
+        for p in original.get('proposals',[])],candidates=[],qa={})
+    qa_keys={}
+    for candidate in original['candidates']:
+        row={k:copy.deepcopy(candidate[k]) for k in ('candidate','kind','name','applicability','conditions','exceptions') if k in candidate}
+        qa=[]
+        for item in candidate.get('evidence_qa',[]):
+            boundary={k:v for k,v in item.items() if k!='finding' or item.get('qa')!='usable'}
+            if boundary not in qa:qa.append(copy.deepcopy(boundary))
+        refs=[]
+        for boundary in qa:
+            digest=fingerprint(boundary)
+            if digest not in qa_keys:
+                qa_keys[digest]='q'+str(len(qa_keys)+1)
+                view['qa'][qa_keys[digest]]=boundary
+            refs.append(qa_keys[digest])
+        row['evidence_qa']=refs
+        view['candidates'].append([row.get(k) for k in columns['candidates']])
+    return view
+
+
 def page_view(adapter, value, page):
     """Exact selected prior content, never a model-controlled file lookup."""
     backend=value['backend']; identity=page['identity']
@@ -132,6 +159,8 @@ def page_view(adapter, value, page):
     handles=set(page['candidate_refs'])
     candidates=[c for c in value['view']['candidates'] if c['candidate'] in handles]
     view={'identity':identity,'path':page['path'],'candidates':candidates,'existing_page':parent}
+    if 'coverage_limitations' in value['view']:
+        view['coverage_limitations']=copy.deepcopy(value['view']['coverage_limitations'])
     if 'original_evidence' in value['view']:
         readings={r['reading'] for c in candidates for r in c['source_evidence']}
         view['original_evidence']=fixed_evidence.selected(value['view']['original_evidence'],readings)

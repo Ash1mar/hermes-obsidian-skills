@@ -400,8 +400,9 @@ def test_image_transport_verifies_registered_bytes_and_ignores_linked_assets(tmp
 
 
 def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
+    from test_reduce_execution_recovery import EndedKanban
     service,_,_,_=prepare_layered_reduce_batch(vault,'fixed-reduce')
-    adapter=IngestKanbanAdapter(vault,FakeKanban(True),enable_workers=True)
+    adapter=IngestKanbanAdapter(vault,EndedKanban(),enable_workers=True)
     value=start_and_pin(vault,workflow_request(workflow_id='ingest-fixed',actor='agent',expected_revision=0,
         profile='compact-3',batch_id='fixed-reduce',scope={'source_paths':[],
         'knowledge_selector':'all-current','execution_mode':'auto_full','provider':'skip','pause_after':['checkpoint_1','build_finalize']}))
@@ -418,17 +419,20 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
     calls=[]
     def caller(phase,view,output_schema,correction):
         calls.append(phase); assert correction is None
-        refs=[c['candidate'] for c in view['candidates']]
-        assert view['original_evidence']['texts']
-        assert all(c['source_evidence'] for c in view['candidates'])
+        refs=[c[0] for c in view['candidates']] if phase=='global-plan' else [c['candidate'] for c in view['candidates']]
+        if phase!='global-plan':
+            assert view['original_evidence']['texts']
+            assert all(c['source_evidence'] for c in view['candidates'])
         assert 'pass_id' not in json.dumps(view) and 'task_id' not in json.dumps(view)
+        if phase=='page-write':
+            return fixture_response({'content':'# Pump X\n\nTransfers coolant; requires filtered fluid.\n'})
         if phase=='resource-reduce':
             return fixture_response({'proposals':[{'candidate_refs':refs,'summary':'Pump X evidence',
                 'identity_hints':[{'kind':'entity','identity_key':'project-a:pump-x','canonical_name':'Pump X','aliases':[]}],
                 'path_hints':['30_Cards/fixed-pump.md']}], 'omitted_candidate_refs':[],'reason':'Fixture grouping'})
         return fixture_response({'pages':[{'candidate_refs':refs,
             'identity':{'kind':'entity','identity_key':'project-a:pump-x','canonical_name':'Pump X','aliases':[]},
-            'path':'30_Cards/fixed-pump.md','content':'# Pump X\n\nTransfers coolant; requires filtered fluid.\n'}],
+            'path':'30_Cards/fixed-pump.md'}],
             'omitted_candidate_refs':[],'reason':'Fixture coordination'})
     current=adapter.workflow.status(value['workflow_id'])
     resources=[c for c in current['kanban']['task_map'] if c['node'].startswith('resource-reduce:')]
@@ -450,7 +454,7 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
     card=next(c for c in current['kanban']['task_map'] if c['node']=='global-reduce')
     row=next(r for r in adapter.kanban.tasks.values() if r['id']==card['task_id'])
     assert fixed.execute(adapter,row['body']['worker_binding'],caller)['ok']; sync()
-    assert calls==['resource-reduce','resource-reduce','global-reduce']
+    assert calls==['resource-reduce','resource-reduce','global-plan','page-write']
     assert service._batch('fixed-reduce')['global_reduction_id']
     assert len(service._batch('fixed-reduce')['run_ids'])==1
     assert not list((vault/'_system/reports/retrieval').glob('*'))
