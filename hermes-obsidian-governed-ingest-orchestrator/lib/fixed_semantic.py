@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import copy
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -12,7 +12,7 @@ import uuid
 
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _vault_path, _write_atomic, _json_bytes
-from hermes_source_units.validation import fingerprint, validate_record
+from hermes_source_units.validation import fingerprint, validate_record, record_validation_scope
 from hermes_source_units.runtime_telemetry import measured, span
 from native_ingest import worker_action, read_pass_input
 from native_pass_identity import visible_packet, load_context
@@ -798,6 +798,14 @@ def execute(adapter,binding_path,caller=None):
     caller=caller or HermesCaller()
     if binding['node'].startswith('pass-slice:'): return run_pass(adapter,binding,caller)
     if binding['node']=='build-finalize': return fixed_review.execute(adapter,binding,caller,model_call,attach_receipt)
+    # Parsing only: execution_projection rereads/hashes current bytes on every
+    # access. Worker checks, cancellation and bound submission stay unchanged.
+    projection=getattr(adapter.workflow,'execution_projection',None)
+    with (projection() if projection else nullcontext()), record_validation_scope():
+        return run_reduce(adapter,binding,caller)
+
+
+def run_reduce(adapter,binding,caller):
     ref,input_value=fixed_reduce.prepare(adapter,binding)
     kind=input_value['backend']['kind']; correction=None
     if kind=='resource-reduce':

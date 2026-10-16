@@ -446,7 +446,9 @@ reductions, Passes, reading packages, task ownership, gaps and pause evidence. T
 failure and ended attempt are recorded; a later separately authorized resume binds a fresh
 native card. The old binding never regains write authority. This supports only a released,
 cancelled Reduce stage with `NATIVE_WORKER_STOPPED` or `WORKFLOW_STOPPED`, one recovery per
-reducer. It cannot authorize semantic corrections, budget changes, source resets or retries
+exact ended native attempt. A later independently cancelled attempt needs its own current
+failure hash, ended run and explicit operator request; no automatic loop is added.
+It cannot authorize semantic corrections, budget changes, source resets or retries
 of unchanged refusals; another failure requires diagnosis.
 
 An explicitly reviewed old source hold may instead use `source-hold/v1` with
