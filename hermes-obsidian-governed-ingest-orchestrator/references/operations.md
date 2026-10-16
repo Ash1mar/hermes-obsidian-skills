@@ -449,6 +449,29 @@ cancelled Reduce stage with `NATIVE_WORKER_STOPPED` or `WORKFLOW_STOPPED`, one r
 reducer. It cannot authorize semantic corrections, budget changes, source resets or retries
 of unchanged refusals; another failure requires diagnosis.
 
+An explicitly reviewed old source hold may instead use `source-hold/v1` with
+`target_contract_sha256` from `source_hold_recovery.contract_hash()`. Each entry also
+pins its original `snapshot_ref`/`snapshot_sha256`. A semantic refusal must pin its
+`native_audit_ref`/`native_audit_sha256`; a transport failure must pin its native
+`transport_session_id`, `transport_user_sha256` and `transport_response_sha256`.
+The program authenticates the ended actual run, unchanged canonical binding (even
+when an accepted supplement narrowed task_map), current source identity, immutable
+snapshot, native transcript and either exact refused packet or proven connection
+failure. Only one such recovery per source is admitted; no automatic retry follows.
+The refused packet receives a measured material-presence index and explicit
+permission to omit only unverifiable candidates with a coverage-loss reason. It
+does not supply facts, repair OCR or approve content. Native source omissions and
+their reasons remain in the formal reduction; other candidates stay eligible.
+
+For this explicit migration only, a changed batch-wide excluded-task counter is
+historical request metadata when all source tasks, hashes, candidates, original
+materials, QA and the warning text still match exactly. The original full request
+view is retained, allowing exact genuine packet replay. Current loss reports remain
+in the backend and global input; this does not remove or reduce current coverage
+loss. Any source input change rejects recovery/replay. Previously successful packets
+remain byte-identical; only the authenticated refused packet gains clarification.
+Refused responses are never reused. No durable pause is released by this operation.
+
 Before a model call the current worker may replay an existing genuine native audit only for
 the same node, exact system/user/schema/image hashes, pinned template and authorized old
 ended run. Native session source, transcript and response hashes are checked. Rejected,

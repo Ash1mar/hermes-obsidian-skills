@@ -50,12 +50,16 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
     if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', rid):
         fail('INVALID_SCHEMA', 'invalid recovery ID')
     scope=request.get('recovery_scope')
-    if scope not in ('reduce-cancel/v1','source-packets/v1'):
+    if scope not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1'):
         fail('INVALID_SCHEMA', 'Reduce recovery requires a supported explicit correction scope')
     if scope=='source-packets/v1':
         from fixed_reduce_packets import contract_hash
         if request.get('target_contract_sha256')!=contract_hash():
             fail('STALE_INPUT','source packet implementation differs from the reviewed request')
+    if scope=='source-hold/v1':
+        from source_hold_recovery import contract_hash
+        if request.get('target_contract_sha256')!=contract_hash():
+            fail('STALE_INPUT','source hold recovery contract differs')
     if not isinstance(request.get('reason'), str) or not request['reason'].strip():
         fail('INVALID_SCHEMA', 'describe the authorized cancellation recovery')
     entries = request.get('entries')
@@ -107,6 +111,12 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     fail('RECOVERY_EXHAUSTED', 'one cancellation recovery per reducer; diagnose further failure')
                 card = next((c for c in value['kanban']['task_map'] if c['node'] == name), None)
                 key = f'ingest:{wid}:{node.kind}:{node.input_fingerprint}'
+                if not card and scope=='source-hold/v1':
+                    # A completed supplement narrows task_map. Authenticate the
+                    # unchanged canonical card below, never fabricate a new binding.
+                    path=_vault_path(service.vault,f'_system/ledgers/ingest-workflows/{wid}/bindings/{fingerprint(key)}.json')
+                    stored=_load_json(path)
+                    card={'node':name,'task_id':stored['task_id'],'idempotency_key':key}
                 if not card or card['task_id'] != entry.get('task_id') or card['idempotency_key'] != key:
                     fail('STALE_INPUT', 'selected native identity changed')
                 ref = f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint(name)[:16]}.json'
@@ -118,8 +128,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                         or report.get('idempotency_key') != key):
                     fail('STALE_INPUT', 'failure evidence or binding changed')
                 projection=scope=='reduce-cancel/v1' and report.get('error_code')=='DISPATCH_ARTIFACT_CHANGED'
-                allowed=('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED')
-                if report.get('error_code') not in allowed or (scope=='source-packets/v1' and node.kind!='resource-reduce'):
+                allowed=(('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope=='source-hold/v1' else
+                    ('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED'))
+                if report.get('error_code') not in allowed or (scope in ('source-packets/v1','source-hold/v1') and node.kind!='resource-reduce'):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
                 snap = adapter.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
                 task, runs = snap.get('task', {}), snap.get('runs', [])
@@ -156,6 +167,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     'previous_input_fingerprint': node.input_fingerprint, 'failure_ref': ref,
                     'failure_sha256': hashlib.sha256(data).hexdigest(), 'failure': report,
                     'ended_run_ids': [str(r['id']) for r in runs], 'template_hash': template_hash})
+                if scope=='source-hold/v1':
+                    from source_hold_recovery import verify
+                    audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))
                 if original:
                     audited[-1]['cancelled_projection']={'canonical_task_id':binding['task_id'],
                         'canonical_binding_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),
@@ -175,7 +189,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 return {**result, 'revision': value['revision'], 'entries': audited}
             ref = f'_system/ledgers/ingest-workflows/{wid}/execution-recoveries/{rid}.json'
             report = {'request': dict(request), 'entries': audited, 'batch_id': value['batch_id'],
-                      'domain_inputs_changed': False, 'semantic_retry_authorized': False}
+                      'domain_inputs_changed': False, 'semantic_retry_authorized': scope=='source-hold/v1'}
             path = _vault_path(service.vault, ref)
             data = _json_bytes(report)
             if path.exists() and path.read_bytes() != data:

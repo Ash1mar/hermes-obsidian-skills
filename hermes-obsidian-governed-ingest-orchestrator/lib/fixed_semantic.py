@@ -809,7 +809,9 @@ def execute(adapter,binding_path,caller=None):
         drafts=[];calls=[]
         for packet in packets:
             adapter.worker_check(binding)
-            draft,call_ref=model_call(adapter,binding,kind,packet['view'],caller,30000,attempt_limit=1)
+            from source_hold_recovery import resolved_view
+            view=resolved_view(adapter,binding,packet['view'])
+            draft,call_ref=model_call(adapter,binding,kind,view,caller,30000,attempt_limit=1)
             calls.append(call_ref)
             try: validate_packet(packet,draft)
             except ContractError as exc:
