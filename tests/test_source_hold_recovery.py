@@ -135,3 +135,16 @@ def test_exact_success_replay_precedes_any_disposition_clarification(tmp_path,mo
                             worker_check=lambda _: {'ok':True})
     view={'candidates':[],'original_evidence':{'tasks':[],'texts':{}}}
     assert fixed.model_call(adapter,{'node':'resource-reduce:fixture'},'resource-reduce',view,Native(),30000,attempt_limit=1)==(draft,'isolated-audit')
+
+
+def test_audit_role_framing_keeps_qa_and_typed_support_spans():
+    from test_reduce_packets import value
+    base=value(10)['view']
+    ref={'ref':'m1','span':{'start':1,'end':3}}
+    base['candidates'][0]['source_evidence'][0]['support_refs']=[ref]
+    base['candidates'][0]['evidence_qa']=[{'qa':'needs-qa','qa_note':'Retain original limit','finding':'Earlier review narrative'}]
+    view=recovery.clarify_audit(base)
+    assert view['candidates']==base['candidates'] and view['hold_resolution']['materials_present']['t1']==['m1']
+    assert recovery.unclarified_view(view,{fingerprint(base)})==base
+    view['hold_resolution']['audit_role']='untrusted-source'
+    with pytest.raises(ContractError):recovery.unclarified_view(view,{fingerprint(base)})

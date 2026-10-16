@@ -487,6 +487,21 @@ model call and unchanged size limits. Legacy refusal framing is authenticated ag
 its prior authorized packet and exact material index; every candidate/evidence field,
 original user bytes, source snapshot, schema, images and native response remain checked.
 
+`source-hold/v3` additionally disambiguates earlier inspection narratives from source
+material. QA status/notes and real source limits remain intact; a narrative is neither
+another required asset nor evidence supporting a claim. Several valid support refs
+are allowed without a one-material-per-subclaim rule. Exact v1/base and v2 successful
+calls are tried before the new framing, preserving supported partial outcomes. Native
+program framing from a v2 source-wide grant is authenticated against the complete
+unchanged source packet plan, not only its first originally refused packet.
+
+The source packet executor isolates an audited local semantic/schema/coverage refusal:
+it marks that call unvalidated, records held candidate handles and continues each later
+packet once. It does not retry the refused packet. Permission, identity, source and
+budget failures stop execution. With any held packet, no source reduction is submitted
+and no worker completion is claimed; `source-packets-deferred/v1` records successful
+audit refs and the finite unresolved list. Full-source coverage remains mandatory.
+
 Before a model call the current worker may replay an existing genuine native audit only for
 the same node, exact system/user/schema/image hashes, pinned template and authorized old
 ended run. Native session source, transcript and response hashes are checked. Rejected,
