@@ -52,7 +52,7 @@ def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode,
     permitted = {binding['task_id']: None}
     for recovery in workflow.get('execution_recovery_history', []):
         report = _load_json(_vault_path(adapter.workflow.vault, recovery['report_ref']))
-        if report['request'].get('recovery_scope') != 'reduce-cancel/v1':
+        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-hold/v1'):
             continue
         for entry in report['entries']:
             if entry['node'] == binding['node']:
@@ -90,7 +90,9 @@ def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode,
                 rows = list(db.execute('SELECT role,content,tool_calls FROM messages WHERE session_id=?', (session,)))
                 if any(tools and tools != '[]' for _,_,tools in rows):
                     continue
-                users = [c for role,c,_ in rows if role == 'user' and c == wire['user']]
+                from revision_disposition import native_user
+                users = [u for role,c,_ in rows if role == 'user'
+                         and (u:=native_user(c,audit)) is not None and u == wire['user']]
                 raw = [c for role,c,_ in rows if role == 'assistant' and fingerprint(c) == audit['response_sha256']]
                 if len(users) != 1 or len(raw) != 1:
                     continue

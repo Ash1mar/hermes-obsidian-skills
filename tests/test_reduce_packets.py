@@ -32,6 +32,11 @@ def test_source_packets_fit_actual_request_and_preserve_whole_original_readings(
         'identity_hints':[],'path_hints':[]}],'omitted_candidate_refs':[],'reason':'Isolated fixture'} for p in planned]
     merged=packets.merge(original,planned,drafts)
     assert [r for p in merged['proposals'] for r in p['candidate_refs']]==['c1','c2','c3']
+    drafts[0]={'proposals':[],'omitted_candidate_refs':planned[0]['candidate_refs'],
+               'reason':'Recorded truncated source; unverified claims excluded, not covered.'}
+    loss=packets.merge(original,planned,drafts)
+    assert loss['omitted_candidate_refs']==planned[0]['candidate_refs']
+    assert drafts[0]['reason'] in loss['reason']
 
 
 def test_one_indivisible_candidate_remains_blocked_before_any_call():

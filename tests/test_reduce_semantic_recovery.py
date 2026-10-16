@@ -105,3 +105,16 @@ def test_reduce_replay_rechecks_current_authority_before_reuse(tmp_path):
         if count == 2: raise ContractError('WORKFLOW_STOPPED', '$', 'cancelled during replay verification')
     c.adapter.worker_check = checked
     with pytest.raises(ContractError, match='WORKFLOW_STOPPED'): replay(c)
+
+
+def test_source_hold_authorizes_exact_native_replay_with_persisted_image_marker(tmp_path):
+    c=call_fixture(tmp_path,'resource-reduce')
+    ref=c.workflow['execution_recovery_history'][0]['report_ref']
+    report=json.loads((tmp_path/ref).read_text());report['request']['recovery_scope']='source-hold/v1'
+    (tmp_path/ref).write_text(json.dumps(report))
+    images=[{'sha256':'original-image','references':[]}]
+    c.audit['image_inputs']=images;c.audit_path.write_text(json.dumps(c.audit))
+    with sqlite3.connect(c.home/'state.db') as db:
+        db.execute("UPDATE messages SET content=content || ? WHERE role='user'",('\n[screenshot]',))
+    assert replay(c,images=images)[0]==c.draft
+    assert replay(c,images=[{**images[0],'sha256':'changed'}]) is None

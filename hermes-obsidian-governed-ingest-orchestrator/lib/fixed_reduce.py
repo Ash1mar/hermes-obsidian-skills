@@ -104,6 +104,9 @@ def _snapshot(adapter,binding,checked):
                 'path':subject['current_path'],
                 'qa_status':page['qa_status'],'business_status':page['business_status'],'visibility':page['visibility']})
     result = {'contract':'fixed-reduce-input/v1','binding':dict(binding),'view':view,'backend':backend}
+    if kind=='resource-reduce':
+        from source_hold_recovery import rebind_view
+        result=rebind_view(adapter,workflow,binding,result)
     result['input_id']=fingerprint(result)
     return result
 

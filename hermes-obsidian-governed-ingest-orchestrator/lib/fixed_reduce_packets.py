@@ -61,8 +61,10 @@ def merge(value, packets, drafts):
         seen.update(refs);proposals.extend(copy.deepcopy(draft['proposals']));omitted.extend(draft['omitted_candidate_refs'])
     if seen!={c['candidate'] for c in value['view']['candidates']}:
         raise ContractError('INCOMPLETE_COVERAGE','$','source packet coverage is incomplete')
+    reasons=[d['reason'] for d in drafts if d['omitted_candidate_refs']]
     return {'proposals':proposals,'omitted_candidate_refs':omitted,
-            'reason':'Program collected source-local packet proposals; global coordination must resolve relationships across packets.'}
+            'reason':'Program collected source-local packet proposals; global coordination must resolve relationships across packets.'
+                     + (' Explicit coverage losses: '+'; '.join(reasons) if reasons else '')}
 
 
 def validate_packet(packet,draft):
