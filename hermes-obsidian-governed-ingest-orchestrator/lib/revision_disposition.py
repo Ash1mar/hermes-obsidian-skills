@@ -21,6 +21,15 @@ def evidence(view,task):
     return task_content({**view,'qa_rule':None},task)
 
 
+def native_user(content,call):
+    if fingerprint(content)==call['user_sha256']:return content
+    # Hermes appends one literal screenshot marker per persisted image part.
+    count=len(call.get('image_inputs',[]));suffix='\n[screenshot]'*count
+    if count and content.endswith(suffix) and fingerprint(content[:-len(suffix)])==call['user_sha256']:
+        return content[:-len(suffix)]
+    return None
+
+
 def verify(adapter,value,request,*,home=None):
     """No model calls. Uncalled work cannot be excluded or repeat failed calls."""
     revision=value['pass_revision'];targets={t['task_id']:t for t in revision['tasks']}
@@ -52,11 +61,19 @@ def verify(adapter,value,request,*,home=None):
                     or db.execute('SELECT source FROM sessions WHERE id=?',(session,)).fetchone()!=('kanban',)):
                 fail('STALE_INPUT','untrusted native citation call')
             messages=list(db.execute('SELECT role,content,tool_calls FROM messages WHERE session_id=?',(session,)))
-            users=[c for r,c,_ in messages if r=='user' and fingerprint(c)==call['user_sha256']]
+            users=[u for r,c,_ in messages if r=='user' and (u:=native_user(c,call)) is not None]
             responses=[c for r,c,_ in messages if r=='assistant' and fingerprint(c)==call['response_sha256']]
             if len(users)!=1 or len(responses)!=1 or any(t and t!='[]' for _,_,t in messages):
                 fail('STALE_INPUT','native request/response hashes or tool authority differ')
-            body=json.JSONDecoder().raw_decode(_request_text(users[0]))[0];view=body['input']
+            text=_request_text(users[0]);body,end=json.JSONDecoder().raw_decode(text);view=body['input']
+            labels='\n'.join('Image '+str(n)+': '+', '.join(r['task']+'/'+r['material'] for r in i['references'])
+                             for n,i in enumerate(call.get('image_inputs',[]),1))
+            if body.get('phase')!='citation' or text[end:]!=('\n'+labels if labels else ''):
+                fail('STALE_INPUT','native citation request framing differs')
+            from fixed_semantic_media import image_catalog,select_images
+            images=select_images(view['tasks'],image_catalog(adapter,view))
+            if [{k:v for k,v in i.items() if k!='url'} for i in images]!=call.get('image_inputs',[]):
+                fail('SOURCE_CHANGED','native image authority differs from registered assets')
             snapshot=adapter.kanban.task_snapshot(value['kanban']['board_id'],call['native_task_id'])
             runs=[r for r in snapshot.get('runs',[]) if str(r['id'])==str(call['native_run_id'])]
             if (snapshot['task'].get('worker_pid') or snapshot['task'].get('current_run_id')
