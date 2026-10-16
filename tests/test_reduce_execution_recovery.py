@@ -156,7 +156,7 @@ def test_independently_cancelled_fresh_attempt_needs_its_own_bound_recovery(vaul
     current=adapter.workflow.status(w['workflow_id'])
     fresh=next(c for c in current['kanban']['task_map'] if c['node']==old['node'])
     assert fresh['task_id']!=old['task_id']
-    ref=adapter.execution_failure({'workflow_id:w['workflow_id'],'node':fresh['node'],'task_id':fresh['task_id']},
+    ref=adapter.execution_failure({'workflow_id':w['workflow_id'],'node':fresh['node'],'task_id':fresh['task_id']},
                                   'WORKFLOW_STOPPED','Explicit later observation cancellation')
     adapter.kanban.ended.add(fresh['task_id'])
     adapter.cancel(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
