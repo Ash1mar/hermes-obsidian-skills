@@ -190,9 +190,25 @@ class PassRevisionMixin:
         self.revision_instructions(value)
         batch_id = value['batch_id']
         with _exclusive_lock(self.knowledge._batch_lock_path(batch_id)):
+            batch = self.knowledge._batch(batch_id)
             for sid in revision['slice_ids']:
                 item = self.knowledge._slice(batch_id, sid)
-                if item['state'] == 'completed':
+                reopen = item['state'] == 'completed'
+                if (item['state'] == 'cancelled' and not value['cancel_requested']
+                        and not batch['cancel_requested'] and value['current_stage'] == 'reducing'
+                        and revision.get('revision_scope') in ('reduce-dependencies/v1','reduce-review/v1')):
+                    # A previous revision's refusal may have held this slice at
+                    # batch resume. The current authorized card must still run
+                    # its own missing work; current failures require recovery.
+                    node = 'pass-slice:' + sid
+                    card = next((c for c in value['kanban']['task_map'] if c['node'] == node), None)
+                    path = _vault_path(self.vault,
+                        f'_system/ledgers/ingest-workflows/{value["workflow_id"]}/reports/failed-{fingerprint(node)[:16]}.json')
+                    failure = _load_json(path) if path.exists() else None
+                    reopen = bool(card and (failure is None or (
+                        failure.get('node') == node and isinstance(failure.get('task_id'), str)
+                        and failure['task_id'] != card['task_id'])))
+                if reopen:
                     pending = [t for t in revision['tasks'] if t['task_id'] in item['task_ids']
                                and not any(p.get('revision_id') == revision['revision_id']
                                    for p in self.knowledge._pass_index([t['task_id']])[1].get(t['task_id'], []))]
