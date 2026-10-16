@@ -251,7 +251,10 @@ def wire_prompt(phase,view,output_schema,correction=None):
         # The actual request carries the schema once at the API boundary.
         body['required_result_slots']=[t['task'] for t in view.get('tasks',[])]
     if correction: body['correction'] = _stable_objects(correction)
-    return {'system':COMMON+'\n'+RULES[phase],
+    system=COMMON+'\n'+RULES[phase]
+    if phase=='resource-reduce' and 'hold_resolution' in view:
+        system+=' For this authorized partial source reduction, distinguish candidate support from request integrity. An explicitly omitted cN is an unverified coverage loss, never verified evidence. After inspecting its supplied originals, omit an unsupported or unreadable candidate with a concrete reason and preserve the verifiable candidates; this does not require a pre-existing QA flag. Do not omit merely for wording, grouping difficulty or budget. A genuinely absent required material object, changed evidence, permission or binding problem must still block; do not hide a program feeding defect as a source limitation.'
+    return {'system':system,
         'user':'Semantic input v1\n'+json.dumps(body,ensure_ascii=False,separators=(',',':'))}
 
 
@@ -310,6 +313,12 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
         if recovered:
             prepared['closed'] = True
             return recovered
+        if phase=='resource-reduce' and 'hold_resolution' not in view:
+            from source_hold_recovery import resolved_view
+            clarified=resolved_view(adapter,binding,view)
+            if clarified is not view:
+                prepared['closed']=True
+                return model_call(adapter,binding,phase,clarified,caller,limit,policy=policy,attempt_limit=attempt_limit)
     started=time.monotonic()
     input_sha256=fingerprint(wire)
     with span('model_call',phase=phase,input_sha256=input_sha256) as model_trace:
@@ -817,9 +826,7 @@ def run_reduce(adapter,binding,caller):
         drafts=[];calls=[]
         for packet in packets:
             adapter.worker_check(binding)
-            from source_hold_recovery import resolved_view
-            view=resolved_view(adapter,binding,packet['view'])
-            draft,call_ref=model_call(adapter,binding,kind,view,caller,30000,attempt_limit=1)
+            draft,call_ref=model_call(adapter,binding,kind,packet['view'],caller,30000,attempt_limit=1)
             calls.append(call_ref)
             try: validate_packet(packet,draft)
             except ContractError as exc:

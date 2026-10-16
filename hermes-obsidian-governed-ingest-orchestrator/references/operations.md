@@ -474,6 +474,19 @@ loss. Any source input change rejects recovery/replay. Previously successful pac
 remain byte-identical; only the authenticated refused packet gains clarification.
 Refused responses are never reused. No durable pause is released by this operation.
 
+New corrections use `source-hold/v2` with the same identity-bound entry shape and
+one explicit recovery per source under this disposition contract. It distinguishes
+an unsupported candidate from a request-integrity failure: an omission is an
+unverified coverage loss, not verification, and does not need an earlier QA flag.
+Missing required material objects, stale evidence, permissions and feeding defects
+still block. The native model must inspect the originals, retain verifiable claims,
+and give concrete loss reasons; grouping difficulty or budget is not a loss reason.
+Exact successful base packets are replayed first. Only an unfinished packet without
+a matching success receives measured presence/disposition framing, with one actual
+model call and unchanged size limits. Legacy refusal framing is authenticated against
+its prior authorized packet and exact material index; every candidate/evidence field,
+original user bytes, source snapshot, schema, images and native response remain checked.
+
 Before a model call the current worker may replay an existing genuine native audit only for
 the same node, exact system/user/schema/image hashes, pinned template and authorized old
 ended run. Native session source, transcript and response hashes are checked. Rejected,
