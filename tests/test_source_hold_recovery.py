@@ -92,3 +92,17 @@ def test_source_identity_ignores_only_batch_counter_and_report_list():
         assert recovery.source_identity(bad)!=recovery.source_identity(original)
     changed['view']['coverage_limitations']['note']='covered'
     assert recovery.source_identity(changed)!=recovery.source_identity(original)
+
+
+@pytest.mark.parametrize('answer',[
+    'Your request was not processed. Send it again if you still want me to carry it out.',
+    'Connection error.', '{"proposals":[]}', 'Unexpected failure'])
+def test_transport_terminal_message_is_not_a_successful_domain_response(answer):
+    rows=[('user','original request',None),('assistant',answer,None)]
+    entry={'transport_user_sha256':hashlib.sha256(rows[0][1].encode()).hexdigest(),
+           'transport_response_sha256':hashlib.sha256(answer.encode()).hexdigest()}
+    if answer in ('Unexpected failure','{"proposals":[]}'):
+        with pytest.raises(ContractError):recovery.transport_messages(rows,entry)
+    else:
+        assert recovery.transport_messages(rows,entry)=='original request'
+        with pytest.raises(ContractError):recovery.transport_messages(rows,{**entry,'transport_response_sha256':'0'*64})

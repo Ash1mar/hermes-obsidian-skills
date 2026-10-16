@@ -105,6 +105,18 @@ def clarify(view):
                 'A genuinely missing required asset or invalid binding must still block.'}}
 
 
+def transport_messages(rows, entry):
+    """Connection logs must independently prove transport, never infer it from prose."""
+    users=[c for r,c,_ in rows if r=='user'];answers=[c for r,c,_ in rows if r=='assistant']
+    unprocessed='Your request was not processed. Send it again if you still want me to carry it out.'
+    if (len(users)!=1 or len(answers)!=1 or any(t and t!='[]' for _,_,t in rows)
+            or hashlib.sha256(users[0].encode()).hexdigest()!=entry['transport_user_sha256']
+            or hashlib.sha256(answers[0].encode()).hexdigest()!=entry['transport_response_sha256']
+            or not ('Connection error' in answers[0] or answers[0].strip()==unprocessed)):
+        fail('transport failure transcript differs')
+    return users[0]
+
+
 def verify(adapter, workflow, node, binding, entry, failure, runs, *, home=None):
     from fixed_reduce import _snapshot
     from fixed_reduce_packets import plan
@@ -177,13 +189,8 @@ def verify(adapter, workflow, node, binding, entry, failure, runs, *, home=None)
             if db.execute('SELECT source FROM sessions WHERE id=?',(session,)).fetchone() != ('kanban',):
                 fail('transport session is not native')
             rows = list(db.execute('SELECT role,content,tool_calls FROM messages WHERE session_id=?',(session,)))
-            users = [c for r,c,_ in rows if r == 'user']; answers = [c for r,c,_ in rows if r == 'assistant']
-            if (len(users) != 1 or len(answers) != 1 or any(t and t != '[]' for _,_,t in rows)
-                    or hashlib.sha256(users[0].encode()).hexdigest() != entry['transport_user_sha256']
-                    or hashlib.sha256(answers[0].encode()).hexdigest() != entry['transport_response_sha256']
-                    or 'Connection error' not in answers[0]):
-                fail('transport failure transcript differs')
-            body,_=json.JSONDecoder().raw_decode(_request_text(users[0]))
+            user=transport_messages(rows,entry)
+            body,_=json.JSONDecoder().raw_decode(_request_text(user))
             if body.get('phase')!='resource-reduce' or not any(
                     p['view']==body.get('input') for p in plan(adapter,old,prepare_request_projection)):
                 fail('failed transport request belongs to different source evidence')
