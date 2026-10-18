@@ -28,7 +28,9 @@ def fixture(vault,monkeypatch):
     k._resource_reduction_path(batch['batch_id'],rid).write_text(json.dumps(record))
     from fixed_semantic import prepare_request_projection
     from fixed_semantic_schema import schema
-    wire=prepare_request_projection('resource-reduce',old['view'],schema('resource-reduce'),[])['wire'];raw=json.dumps(draft)
+    from fixed_reduce_packets import plan
+    packet=plan(a,old,prepare_request_projection)[0]
+    wire=prepare_request_projection('resource-reduce',packet['view'],schema('resource-reduce'),[])['wire'];raw=json.dumps(draft)
     home=vault/'fixture-home';home.mkdir();monkeypatch.setattr(review,'native_home',lambda:home)
     with sqlite3.connect(home/'state.db') as db:
         db.executescript('CREATE TABLE sessions(id TEXT,source TEXT);CREATE TABLE messages(session_id TEXT,role TEXT,content TEXT,tool_calls TEXT);')

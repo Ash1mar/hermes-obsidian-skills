@@ -143,7 +143,7 @@ def test_exact_success_replay_precedes_any_disposition_clarification(tmp_path,mo
     adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,knowledge=SimpleNamespace(source=None),status=lambda _:{}),
                             worker_check=lambda _: {'ok':True})
     view={'candidates':[],'original_evidence':{'tasks':[],'texts':{}}}
-    assert fixed.model_call(adapter,{'node':'resource-reduce:fixture'},'resource-reduce',view,Native(),30000,attempt_limit=1)==(draft,'isolated-audit')
+    assert fixed.model_call(adapter,{'workflow_id':'fixture','node':'resource-reduce:fixture'},'resource-reduce',view,Native(),30000,attempt_limit=1)==(draft,'isolated-audit')
 
 
 def test_audit_role_framing_keeps_qa_and_typed_support_spans():
