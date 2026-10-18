@@ -49,6 +49,7 @@ OUTPUT_RESERVE = 1024
 WIRE_CONTRACT = 'semantic-input/v1'
 RULES['global-plan']='Coordinate whole supplied source proposals into provisional page identities and paths. Return proposal_refs, never candidate membership. Preserve source groups by default; use exact versions/source paths, scope distinctions and substantive QA risk notes. Identity and source catalogs use the supplied columns. The program expands and checks every candidate. Request detail_unit_refs only for a named, concrete split/conflict/identity ambiguity that the proposal cannot resolve; no routine fact review or demand for raw evidence. Each proposal must be assigned or belong to a requested detail unit, never both. Append only to exact offered planned identities and paths. Keep uncertain identities separate or block, never force equivalence or drop coverage. Reason names only changed proposal groups and concrete rationale, without restating every summary. Final per-page writing reads full conditions, exceptions, original evidence and prior content; routing is not fact approval.'
 RULES['global-detail']='Resolve only the explicitly requested proposal unit using its supplied candidate details. Assign every candidate exactly once, preserve conditions, exceptions, version/scope and QA distinctions. Keep proposal groups unless the specified split or conflict requires a concrete adjustment; state why. No omissions, citation re-review, source search or new detail requests. Choose exact offered existing/planned identity and path when appending; otherwise keep separate or block. Full original evidence is verified during page writing; do not assert factual approval from routing.'
+RULES['global-detail']+=' This phase explicitly authorizes proposing a NEW knowledge-page semantic identity and a safe Vault-relative Markdown destination such as 30_Cards/topic.md; path_hints may be empty. Only UPDATE/APPEND must use exact offered existing/planned identities and paths. Source PDF paths are provenance, not destination offers. The prohibition on identity construction concerns program execution/task identities, not these proposed knowledge-page identities. Program checks decide path validity; this grants no file or workflow-control permissions.'
 
 
 
@@ -253,6 +254,8 @@ def wire_prompt(phase,view,output_schema,correction=None):
         body['required_result_slots']=[t['task'] for t in view.get('tasks',[])]
     if correction: body['correction'] = _stable_objects(correction)
     system=COMMON+'\n'+RULES[phase]
+    if phase=='resource-reduce' and 'packet_review' in view:
+        system+=' Explicit source-result review: verify EVERY complete candidate against its OWN supplied original evidence/support_refs, never another candidate or prior inspection narrative. If any required number, unit, condition or exception is unsupported or cut off, OMIT THE WHOLE candidate with a concrete unverified coverage-loss reason. A caveat in summary or QA does not validate the unchanged candidate. Preserve all independently supported candidates, using separate groups when needed; unrelated themes, inability to merge, budget or wording are NEVER omission reasons. Keep QA limits; do not repair text or infer missing values. Missing required material objects or invalid source/permission identities still block.'
     if phase=='resource-reduce' and view.get('hold_resolution',{}).get('audit_role')=='prior-review-not-source':
         system+=' Prior candidate.evidence_qa findings are earlier review narratives, not source material or extra claims to prove. Never require an original matching that narrative. Retain QA status/notes and real source limits. Ground each candidate in its supplied original_evidence and existing support_refs; several support refs are valid and need not identify a unique material per subclaim. An omitted cN is unverified coverage loss, not verification. Omit unsupported claims with concrete reasons and retain supported claims. An omitted-context count alone does not mean assigned core is absent. Missing assigned material objects, changed evidence, permission or feeding faults still block; identify the actual absent reading/material. Do not infer or repair text, omit for grouping/budget, or change citations.'
     elif phase=='resource-reduce' and 'hold_resolution' in view:
@@ -322,11 +325,16 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
     if isinstance(caller,HermesCaller): caller.input_limit=limit
     if isinstance(caller,HermesCaller) and not correction:
         from fixed_semantic_recovery import recover_reduce
-        recovered = recover_reduce(adapter, binding, phase, wire, output_schema, images, decode_semantic_response)
+        options={}
+        if phase=='resource-reduce':
+            from source_result_review import replay_paths
+            candidates=replay_paths(adapter,binding,view)
+            if candidates is not None:options['candidate_paths']=candidates
+        recovered = recover_reduce(adapter, binding, phase, wire, output_schema, images, decode_semantic_response,**options)
         if recovered:
             prepared['closed'] = True
             return recovered
-        if phase=='resource-reduce' and 'hold_resolution' not in view:
+        if phase=='resource-reduce' and 'hold_resolution' not in view and 'packet_review' not in view:
             from source_hold_recovery import resolved_view
             clarified=resolved_view(adapter,binding,view)
             if clarified is not view:
@@ -852,7 +860,8 @@ def run_reduce(adapter,binding,caller):
             adapter.worker_check(binding)
             call_ref=None
             try:
-                draft,call_ref=model_call(adapter,binding,kind,packet['view'],caller,30000,attempt_limit=1)
+                from source_result_review import review_view
+                draft,call_ref=model_call(adapter,binding,kind,review_view(input_value,packet['view']),caller,30000,attempt_limit=1)
                 validate_packet(packet,draft)
             except ContractError as exc:
                 call_ref=call_ref or getattr(exc,'semantic_audit_ref',None)

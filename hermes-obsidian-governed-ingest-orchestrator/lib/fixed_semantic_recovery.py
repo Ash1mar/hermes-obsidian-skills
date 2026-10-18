@@ -38,7 +38,7 @@ def task_content(view, task):
     return fingerprint({'task':task,'qa_rule':view.get('qa_rule')})
 
 
-def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode, *, home=None):
+def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode, *, home=None, candidate_paths=None):
     """Replay an exact genuine reducer call under a fresh authorized native identity.
 
     This uses existing native audit/transcript evidence, not a semantic cache.
@@ -52,7 +52,7 @@ def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode,
     permitted = {binding['task_id']: None}
     for recovery in workflow.get('execution_recovery_history', []):
         report = _load_json(_vault_path(adapter.workflow.vault, recovery['report_ref']))
-        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1'):
+        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1'):
             continue
         for entry in report['entries']:
             if entry['node'] == binding['node']:
@@ -64,7 +64,9 @@ def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode,
     root = vault/'_system/ledgers/ingest-workflows'/binding['workflow_id']/'semantic-calls'
     image_inputs = [{k:v for k,v in image.items() if k != 'url'} for image in images]
     with sqlite3.connect('file:'+str(home/'state.db')+'?mode=ro', uri=True) as db:
-        for path in sorted(root.glob('*.json'), key=lambda p:p.stat().st_mtime, reverse=True):
+        paths=sorted(root.glob('*.json'),key=lambda p:p.stat().st_mtime,reverse=True) if candidate_paths is None else candidate_paths
+        for path in paths:
+            if path.parent!=root:raise ContractError('ACCESS_DENIED','$','replay audit is outside this workflow')
             try:
                 audit = _load_json(path)
                 if (audit.get('phase') != phase or audit.get('workflow_id') != binding['workflow_id']

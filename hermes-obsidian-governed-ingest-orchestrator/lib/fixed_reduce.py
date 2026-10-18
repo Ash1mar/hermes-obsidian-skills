@@ -109,6 +109,9 @@ def _snapshot(adapter,binding,checked):
     if kind=='resource-reduce':
         from source_hold_recovery import rebind_view
         result=rebind_view(adapter,workflow,binding,result)
+        from hermes_source_units.resource_amendment import pending
+        review=pending(adapter.workflow,workflow,binding['node'])
+        if review:result['backend']['source_review']=review
     result['input_id']=fingerprint(result)
     return result
 
@@ -229,6 +232,7 @@ def expand(value, draft):
             for i,p in enumerate(draft['proposals'],1)]
         request={'batch_id':backend['batch_id'],'actor':backend['actor'],'resource_id':backend['resource_id'],
             'tasks':backend['tasks'],'proposals':proposals,'reason':draft['reason']}
+        if backend.get('source_review'):request['replaces_reduction_id']=backend['source_review']['replaces_reduction_id']
     else:
         decisions=[]
         for page in draft['pages']:

@@ -140,7 +140,7 @@ def test_exact_success_replay_precedes_any_disposition_clarification(tmp_path,mo
     monkeypatch.setattr(recovery,'resolved_view',unnecessary)
     draft={'proposals':[],'omitted_candidate_refs':[],'reason':'Genuine isolated replay fixture'}
     monkeypatch.setattr('fixed_semantic_recovery.recover_reduce',lambda *args:(draft,'isolated-audit'))
-    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,knowledge=SimpleNamespace(source=None)),
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,knowledge=SimpleNamespace(source=None),status=lambda _:{}),
                             worker_check=lambda _: {'ok':True})
     view={'candidates':[],'original_evidence':{'tasks':[],'texts':{}}}
     assert fixed.model_call(adapter,{'node':'resource-reduce:fixture'},'resource-reduce',view,Native(),30000,attempt_limit=1)==(draft,'isolated-audit')

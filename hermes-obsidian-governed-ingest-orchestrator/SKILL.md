@@ -5,6 +5,13 @@ description: Start, resume and inspect a persistent Vault-authoritative governed
 
 # Governed ingest orchestration
 
+For explicitly reviewed semantic defects in a completed but globally unconsumed
+source result, use `source-result-review/v1` in `references/operations.md`.
+It authenticates the complete original native packet provenance, grants one
+review of selected packets, preserves all other outcomes, and appends a linked
+replacement without changing Passes, old records or pause boundaries. This is
+the narrow exception to the completed-result recovery rejection below.
+
 Use this Skill for one-request, recoverable ingest. For request fields and revisions read `references/workflow-contract.md`; for operator actions read `references/operations.md`; for node/worker boundaries read `references/worker-contracts.md`. When a user brings an old three- or six-stage prompt, read `references/compatibility-profiles.md`. Do not copy a six-part prompt into one conversation or use an interactive session as a background worker.
 
 Call `python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" start --request "<json-file>"` once. The script creates the Vault workflow, pins all twelve versioned templates by SHA-256 and attempts Kanban projection. On retry, use the same request and workflow ID. `dispatcher_unavailable` means the workflow exists but background dispatch is false; report that honestly and resume when Hermes Gateway is available.
