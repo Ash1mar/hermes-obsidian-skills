@@ -72,14 +72,22 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
     adapter.worker_begin(binding); value=snapshot(adapter,binding)
     ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-inputs/review-{value['input_id']}.json"
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(value))
-    reviews={}; call_refs=[]
+    reviews={}; call_refs=[]; held=[]
     for view in value['views']:
         from semantic_output import execute as checked_output,check
-        result,call_ref,_=checked_output(adapter,binding,'page-review',view,caller,model_call,
-            lambda d:check('page-review',None,None,None,d))
-        if result['decision']!='approved':
-            fail('SEMANTIC_REVIEW_REQUIRED',result['review_note'])
+        try:
+            result,call_ref,_=checked_output(adapter,binding,'page-review',view,caller,model_call,
+                lambda d:check('page-review',None,None,None,d))
+            if result['decision']!='approved':fail('SEMANTIC_REVIEW_REQUIRED',result['review_note'])
+        except ContractError as exc:
+            from fixed_page_work import LOCAL
+            if exc.code not in LOCAL:raise
+            held.append({'page':view['page'],'code':exc.code,'reason':str(exc)});continue
         reviews[view['page']]=result['review_note']; call_refs.append(call_ref)
+    if held:
+        report=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/reports/page-review-held-{value['input_id']}.json"
+        _write_atomic(_vault_path(adapter.workflow.vault,report),_json_bytes({'held':held,'accepted_review_calls':call_refs,'finalized':False}))
+        fail('SEMANTIC_REVIEW_REQUIRED','Independent valid reviews preserved; inspect '+report)
     backend=value['backend']; finalizations=[]
     for run in backend['runs']:
         finalizations.append({'run_id':run['run_id'],'actor':backend['actor'],'expected_revision':run['revision'],

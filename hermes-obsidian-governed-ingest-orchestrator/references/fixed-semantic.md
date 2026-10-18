@@ -33,7 +33,22 @@ membership and identity/path hints are retained exactly; full readings stay unch
 Each planned page is then written using its full selected original evidence and exact
 checked parent, including when there are no existing pages. Writing verifies the
 proposed grouping and preserves source/version differences; incompatible identities
-remain blocked. All complete page requests are budget-checked before any body call.
+remain blocked. Each complete page request is budget-checked before its body call.
+An oversized provisional page uses the existing global-detail task and finite
+output journal to select narrower semantic identities with exact candidate
+coverage and measured complete body inputs. Originals, conditions and QA are
+never truncated. Only affected pages are reconsidered; successful planning is
+replayed unchanged. This adds no worker node, phase or recovery scope.
+
+Page-local budget, material or finite-output holds are recorded while other
+ready pages continue. Even a held later planning packet allows native bodies for
+the already valid provisional prefix, without claiming whole-batch coverage.
+Native Markdown is persisted under the workflow's page-drafts directory with
+exact input/audit references; valid unchanged bodies reuse their normal journal.
+Final global submission still requires complete plan coverage and every page's
+valid body. Source/hash/authority changes remain fatal. Build Finalize follows
+the same local-hold rule, preserving independent valid reviews before holding
+finalization; its separate authorization and checkpoints are unchanged.
 No fuzzy partition silently separates
 conflicting candidate semantics; an oversized indivisible plan still blocks.
 

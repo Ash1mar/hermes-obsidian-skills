@@ -67,11 +67,12 @@ def test_new_pages_always_write_full_evidence_and_preflight_all_bodies(tmp_path,
         return {'content':'Reviewed full evidence'},'fixture-write'
     monkeypatch.setattr(fixed,'model_call',call)
     if mode=='oversize':
-        with pytest.raises(ContractError,match='READING_WINDOW_OVERSIZE'):fixed.execute(adapter,'fixture',lambda:None)
-        assert phases==['global-plan']
+        with pytest.raises(ContractError,match='Independent page work preserved'):fixed.execute(adapter,'fixture',lambda:None)
+        assert phases==['global-plan','page-write']
+        assert len(list(tmp_path.rglob('page-drafts/*.md')))==1
     elif mode=='blocked':
         with pytest.raises(ContractError,match='SEMANTIC_REVIEW_REQUIRED'):fixed.execute(adapter,'fixture',lambda:None)
-        assert phases==['global-plan','page-write']
+        assert phases==['global-plan','page-write','page-write']
     else:
         assert fixed.execute(adapter,'fixture',lambda:None)['ok']
         assert phases==['global-plan','page-write','page-write']
