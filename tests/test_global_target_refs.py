@@ -101,8 +101,8 @@ def test_short_diagnostic_excerpts_only_actual_conflicts_without_changing_answer
 def packing_fixture(tmp_path):
     v=fixture_value();s=g.initial();b={'workflow_id':'fixture','node':'global-reduce','task_id':'ended'}
     a=NS(workflow=NS(vault=tmp_path,status=lambda _:{'execution_recovery_history':[]}))
-    def project(phase,view,sc,images):
-        actual=prepare_request_projection(phase,view,sc,images)
+    def project(phase,view,sc,images,correction=None):
+        actual=prepare_request_projection(phase,view,sc,images,correction)
         if phase!='global-plan':return actual
         short=view.get('output_contract')==targets.CONTRACT
         count=len(view['coordination']['proposal_refs'])
