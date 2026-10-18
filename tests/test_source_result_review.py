@@ -101,7 +101,7 @@ def test_interrupted_review_reuses_only_its_exact_corrected_native_response(tmp_
     with sqlite3.connect(c.home/'state.db') as db:
         db.execute("UPDATE messages SET content=? WHERE role='user'",(c.wire['user'],))
     base=review.original_view(view)
-    monkeypatch.setattr(review,'pending',lambda *args:{'packet_audits':{fingerprint(base):{}}})
+    monkeypatch.setattr(review,'pending',lambda *args:{'packet_audits':{fingerprint(base):{'selected':True}}})
     candidates=review.replay_paths(c.adapter,c.binding,view)
     assert candidates is None  # Use the exact native verifier, not a forced call.
     before=c.audit_path.read_bytes()
