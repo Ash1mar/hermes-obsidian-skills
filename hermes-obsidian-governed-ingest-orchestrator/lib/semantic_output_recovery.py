@@ -106,7 +106,7 @@ def verify(adapter,w,node,binding,entry,failure,runs):
         last=journal['attempts'][-1];bad=_vault_path(adapter.workflow.vault,entry['native_audit_ref'])
         if (entry['native_audit_ref']!=last['audit_ref'] or hashlib.sha256(bad.read_bytes()).hexdigest()!=entry['native_audit_sha256']
             or last['task_id']!=binding['task_id'] or last_error.code!=failure['error_code']):fail('last failure identity or native audit changed')
-        diagnostic=diagnosis(phase,packet,last_draft,last_error)
+        diagnostic=diagnosis(phase,packet,last_draft,last_error,state=state)
         if (not diagnostic.get('page_findings') or diagnostic==last['diagnostic']
             or entry.get('reviewed_diagnostic_sha256')!=fingerprint(diagnostic)):fail('explicit continuation requires reviewed, newly precise mechanical findings')
         if prepare_request_projection(phase,packet['view'],schema(phase),[],diagnostic)['input_size']>30000:fail('complete authorized continuation exceeds bound')
@@ -139,7 +139,7 @@ def verify(adapter,w,node,binding,entry,failure,runs):
         check(phase,value,packet,state,draft)
     except ContractError as exc:
         if exc.code not in ELIGIBLE or (not uncalled and not unused and exc.code!=failure['error_code']):fail('failure is not reproduced at the pure output validator')
-        diagnostic=diagnosis(phase,packet,draft,exc)
+        diagnostic=diagnosis(phase,packet,draft,exc,state=state)
     else:fail('legacy response no longer reproduces a contract rejection')
     if path.exists() and len(_load_json(path)['attempts'])>=2 and not uncalled:fail('the shared correction allowance is already consumed')
     if prepare_request_projection(phase,packet['view'],schema(phase),[],diagnostic)['input_size']>30000:fail('complete correction request exceeds bound')

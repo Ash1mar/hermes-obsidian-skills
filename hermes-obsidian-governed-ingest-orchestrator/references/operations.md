@@ -551,6 +551,15 @@ Diagnostics include the failed answer as data, all independently computable
 coverage/overlap findings, concrete conflicting paths and exact offered append
 identities (including aliases). The model returns a complete replacement; the
 program never patches domain choices. Full validation remains authoritative.
+Global diagnostics inspect the same complete accumulated planning state as
+acceptance, even when an earlier coverage error was reported first. Only actual
+identity/path collisions appear as `reserved_targets`, with output indices and
+field differences. These metadata are explicitly not offered append targets:
+the model must choose a distinct valid identity/path or a permitted detail
+request. No body, unrelated directory or membership is added, and no semantic
+equivalence or merge authority is inferred. Normal execution and recovery use
+the same state-aware diagnostic; saved native requests and attempt counts remain
+unchanged.
 Persisted diagnostics are part of their original native wire and remain frozen
 when diagnostic code changes; successful old corrections still replay exactly.
 Repeated targets are shared once, findings address failed-response page indices,

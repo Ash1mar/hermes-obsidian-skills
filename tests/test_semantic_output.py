@@ -188,7 +188,7 @@ def test_changed_prior_attempts_cannot_use_explicit_continuation(tmp_path,monkey
 
 def test_diagnostic_size_failure_preserves_first_call_and_uses_only_unused_second_slot(tmp_path,monkeypatch):
     c=fixture(tmp_path,monkeypatch,[answer(True),answer()]);normal=output.diagnosis
-    monkeypatch.setattr(output,'diagnosis',lambda *args:{**normal(*args),'isolated_repeated_diagnostic':'x'*40000})
+    monkeypatch.setattr(output,'diagnosis',lambda *args,**kwargs:{**normal(*args,**kwargs),'isolated_repeated_diagnostic':'x'*40000})
     with pytest.raises(ContractError,match='READING_WINDOW_OVERSIZE'):c.run()
     path=output.path_for(c.adapter,c.binding,'global-plan',c.packet['view']);old=json.loads(path.read_text())['attempts'][0]
     assert len(c.calls)==1
@@ -206,3 +206,42 @@ def test_path_diagnostics_share_targets_and_group_collisions_once():
     assert len(d['offered_targets'])==1 and d['failed_response']==draft
     groups=[f for f in d['page_findings'] if f['rule']=='distinct_identities_share_path']
     assert len(groups)==1 and groups[0]['output_indices']==list(range(12))
+
+
+@pytest.mark.parametrize('phase',['global-plan','global-detail'])
+@pytest.mark.parametrize('collision',['identity','path'])
+def test_diagnosis_checks_accumulated_reservations_without_offering_them(phase,collision):
+    draft=answer(True);page=draft['pages'][0]
+    target=copy.deepcopy(page);target['identity']['canonical_name']='Previously planned name'
+    if collision=='identity':target['path']='30_Cards/previously-planned.md'
+    else:target['identity']['identity_key']='different-reserved-key'
+    target['candidate_refs']=['never-disclose-membership'];target['content']='never-disclose-body'
+    state={'pages':[target,*[{'identity':{'kind':'fact','identity_key':'unrelated-'+str(i)},'path':'unrelated/'+str(i)+'.md'} for i in range(100)]]}
+    packet={'proposal_refs':['p1','p2'],'candidate_refs':['c1','c2'],'units':[], 'view':{'coordination':{'planned_pages':[]}}}
+    before=copy.deepcopy((draft,packet,state))
+    d=output.diagnosis(phase,packet,draft,ContractError('DUPLICATE','$','earlier coverage error'),state=state)
+    f=next(f for f in d['page_findings'] if f['rule']=='occupied_planned_target_outside_offered_directory')
+    assert f['colliding_fields']==[collision] and f['output_index']==0 and f['different_fields']
+    assert len(d['reserved_targets'])==1 and not d['offered_targets']
+    reserved=d['reserved_targets'][f['reserved_target_ref']]
+    assert reserved['identity']==target['identity'] and reserved['append_allowed'] is False
+    assert 'never-disclose' not in json.dumps(d) and 'unrelated-' not in json.dumps(d)
+    assert (draft,packet,state)==before
+
+
+def test_diagnosis_does_not_reclassify_offered_target_as_reserved():
+    target=answer()['pages'][0];draft=answer();draft['pages'][0]['identity']['aliases']=['not the offered aliases']
+    packet={'proposal_refs':['p1','p2'],'units':[], 'view':{'coordination':{'planned_pages':[target]}}}
+    d=output.diagnosis('global-plan',packet,draft,ContractError('IDENTITY_CONFLICT','$','append mismatch'),state={'pages':[target]})
+    assert d['reserved_targets']=={} and d['offered_targets']
+    assert {f['rule'] for f in d['page_findings']}=={'append_requires_exact_offered_identity_and_path'}
+
+
+def test_reserved_diagnostic_metadata_never_grants_append_authority():
+    value=fixture_value();target=answer()['pages'][0]
+    state=g.initial();state['pages']=[{'identity':target['identity'],'path':target['path'],'candidate_refs':['already-routed'] }]
+    packet=g.next_packet(value,g.units(value),state,fixed.prepare_request_projection)
+    assert not packet['view']['coordination']['planned_pages']
+    draft=answer();diagnostic=output.diagnosis('global-plan',packet,draft,ContractError('DUPLICATE','$','another finding'),state=state)
+    assert diagnostic['reserved_targets']
+    with pytest.raises(ContractError,match='exact offered'):g.accept_proposals(value,state,packet,draft)
