@@ -55,6 +55,8 @@ actual review note. The program binds all page/run hashes and rechecks the entir
 observed input before serial finalization. Rejected or stale reviews cannot count
 as approval. Checkpoints and release gates still apply.
 
+第四步仅收紧这一次独立页面审阅的拒绝标准：事实、精确数值及单位、AND/OR、范围、条件、例外、冲突、必要覆盖和既有内容保留。拒绝说明具体受影响的主张或遗漏要求；措辞偏好、排版和可选润色不构成拒绝、重写或再审理由。模型仍只返回decision/review_note，不写正文。合法的实质拒绝继续持有，不由通用输出纠正机制强迫通过；只有JSON/schema等机械输出合同错误才适用共同的一次纠正额度。保留原有先逐页审阅、再统一提交及哈希复核边界，不增加专门页面审阅缓存。共用原生调用账本的严格重验复用不等于事实批准，也不提前发布页面。
+
 Each model invocation is a one-turn native Hermes session with no tools, Skill
 lookup, context files, memory or fallback agent. Its instructions, JSON schema,
 evidence and correction all count toward the input bound. No material is silently

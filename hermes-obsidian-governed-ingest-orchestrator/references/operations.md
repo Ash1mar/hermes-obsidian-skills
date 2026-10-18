@@ -558,3 +558,16 @@ the same pure validator. Apply imports that call as attempt one, without resumin
 Normal execution and this admission use the same validator, diagnosis and journal.
 This is a provenance migration for old records, not an extra allowance or an
 error-specific repair endpoint; legacy formats without provable state remain held.
+
+A reservation with no SDK session and no response audit can be resumed only after
+the same entry authenticates its ended run, exact journal/diagnostic and valid
+prefix. Preserve the old not-called receipt and continue the same second ordinal;
+do not mint a third attempt. Admission and canonical replay share
+`execution_recovery_key`; both use the exact ended native identity for this scope.
+Uncertain SDK completion, permission or stale-input failures never use this proof.
+
+Page review retains one substantive check. Only concrete factual, numeric/unit,
+logic, scope, condition/exception, conflict, necessary-coverage or required-parent
+content defects justify revision; style/layout/polish does not. A legal revision
+decision stays held, not automatically corrected into approval. No dedicated
+review cache or new finalization boundary is introduced.
