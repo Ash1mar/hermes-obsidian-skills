@@ -303,6 +303,16 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
     prepared=prepare_request_projection(phase,view,output_schema,images,correction)
     wire=prepared['wire'];schema_size=prepared['schema_size'];size=prepared['input_size']
     if size>limit:
+        # A legacy replay-only framing can exceed the bound even though the
+        # authorized v3 framing fits. Never send or replay that oversized wire;
+        # use the same compact view checked by recovery admission, then recheck
+        # its complete request and live authority through the ordinary path.
+        if isinstance(caller,HermesCaller) and not correction and phase=='resource-reduce' and 'hold_resolution' in view:
+            from source_hold_recovery import resolved_audit_view
+            clarified=resolved_audit_view(adapter,binding,view)
+            if clarified is not view:
+                prepared['closed']=True
+                return model_call(adapter,binding,phase,clarified,caller,limit,policy=policy,attempt_limit=attempt_limit)
         raise ContractError('READING_WINDOW_OVERSIZE','$','fixed task instructions/schema/materials exceed the bound; no truncation or model call')
     with ACTION_LOCK:
         if binding['node'].startswith('pass-slice:'):

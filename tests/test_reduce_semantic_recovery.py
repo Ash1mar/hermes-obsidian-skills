@@ -68,6 +68,13 @@ def test_exact_native_reduce_response_reused_under_fresh_checked_authority(tmp_p
     assert c.audit_path.read_bytes() == before and not recovered['receipt_refs']
 
 
+def test_budget_recovery_retains_exact_valid_native_work(tmp_path):
+    c=call_fixture(tmp_path)
+    ref=c.workflow['execution_recovery_history'][0]['report_ref'];path=tmp_path/ref
+    report=json.loads(path.read_text());report['request']['recovery_scope']='source-packets/v1';path.write_text(json.dumps(report))
+    assert replay(c)[0]==c.draft
+
+
 @pytest.mark.parametrize('change', ['wire','schema','image','task','node','template','run','response','origin',
                                    'session','tools','rejected','refusal','reused','scope'])
 def test_reduce_replay_rejects_stale_untrusted_or_rejected_inputs(tmp_path, change):
