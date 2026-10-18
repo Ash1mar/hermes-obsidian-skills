@@ -154,7 +154,7 @@ def transport_messages(rows, entry):
     return users[0]
 
 
-def verify(adapter, workflow, node, binding, entry, failure, runs, *, home=None):
+def verify(adapter, workflow, node, binding, entry, failure, runs, *, home=None, syntax_only=False):
     from fixed_reduce import _snapshot
     from fixed_reduce_packets import plan
     from fixed_semantic import prepare_request_projection, decode_semantic_response
@@ -197,9 +197,19 @@ def verify(adapter, workflow, node, binding, entry, failure, runs, *, home=None)
                     or len(users) != 1 or len(responses) != 1 or any(t and t != '[]' for _,_,t in rows)
                     or audit['model'].get('response_sha256') != audit['response_sha256']):
                 fail('native refusal transcript differs')
-            draft,_ = decode_semantic_response(responses[0])
-            if not draft.get('blocked_reason') or draft['blocked_reason'] not in failure['reason']:
-                fail('selected audit does not explain the source hold')
+            if syntax_only:
+                try:decode_semantic_response(responses[0])
+                except json.JSONDecodeError:pass
+                else:fail('format recovery requires an actually undecodable original response')
+                if not any(_load_json(_vault_path(adapter.workflow.vault,r)).get('code')=='INVALID_SCHEMA'
+                           for r in audit.get('receipt_refs',[])):
+                    fail('format failure lacks its native schema rejection')
+                if 'semantic response is not one JSON object' not in failure['reason']:
+                    fail('format rejection does not explain current source hold')
+            else:
+                draft,_ = decode_semantic_response(responses[0])
+                if not draft.get('blocked_reason') or draft['blocked_reason'] not in failure['reason']:
+                    fail('selected audit does not explain the source hold')
             body,_ = json.JSONDecoder().raw_decode(_request_text(users[0]))
             prior=next(entries(workflow,adapter.workflow.vault,node.name),None)
             planned=plan(adapter,old,prepare_request_projection)

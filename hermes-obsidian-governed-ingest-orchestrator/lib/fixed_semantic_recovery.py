@@ -52,7 +52,7 @@ def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode,
     permitted = {binding['task_id']: None}
     for recovery in workflow.get('execution_recovery_history', []):
         report = _load_json(_vault_path(adapter.workflow.vault, recovery['report_ref']))
-        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-hold/v1','source-hold/v2','source-hold/v3'):
+        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1'):
             continue
         for entry in report['entries']:
             if entry['node'] == binding['node']:

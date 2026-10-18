@@ -111,3 +111,11 @@ lock is released after each individual Pass and its preflight, with the current
 lease/cancellation/source checks repeated before the next commit. A later lock
 or authority failure retains previous successful receipts in the audit. The
 atomic domain unit is unchanged; there is no new group transaction or retry layer.
+
+## 定向恢复与增量全局规划
+
+- `recover-reduce-execution` 的 `source-format/v1` 只用于已认证原生响应确实不可解码、且当前失败含该 schema 拒绝的来源。钉住快照/失败/审计 SHA 和运行绑定，原响应不修改；仅给缺失格式包一次新的原生机会，精确成功包继续复用。语义拒绝、合法 JSON 的领域问题不能借用此范围。
+- `dependency-resolved/v1` 只解除 `DEPENDENCY_EXECUTION_BLOCKED` 派生持有。必须核对其记录父节点属于当前依赖、全部父依赖均有有效完成证据、当前最新 citation 的完整必读材料与 inspection、接受修订和明确排除的覆盖；接受标签本身不放行。恢复报告保存旧失败、当前父证据和排除/修订摘要。既有父任务、有效 citation、明确排除及正式来源成果不重跑。
+- `global-plan` 以完整来源提案为单位顺序累加，共享同一候选的提案保持同一不可分单元。每次完整请求低于现有30000 codepoint上限；不可分超限持有。程序按身份键/名称/别名筛选相关身份，只提供比较范围，不决定语义合并。模型只决定本包候选；追加既有规划页必须使用本包提供的精确身份和路径，保留版本及适用条件差异。
+- 每包成功原生审计绑定精确输入、前序累计状态 SHA，成功状态可在后续失败/停止后严格复用。汇总只做完整覆盖、重复候选、身份和路径冲突检查；不追加携带全部材料的模型调用。机械空状态装包检查不代表未来相关页面加入后仍可容纳；运行时逐包重新计量。
+- 页面正文仍逐页读取完整必要证据及哈希有效旧页；所有正文请求先计量后调用，不以摘要替代证据。通过后提交到原有 checkpoint_1，Build Finalize、页面审阅、发布及 Provider 同步保持其独立暂停授权。
