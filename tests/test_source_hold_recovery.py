@@ -153,7 +153,23 @@ def test_audit_role_framing_keeps_qa_and_typed_support_spans():
     base['candidates'][0]['source_evidence'][0]['support_refs']=[ref]
     base['candidates'][0]['evidence_qa']=[{'qa':'needs-qa','qa_note':'Retain original limit','finding':'Earlier review narrative'}]
     view=recovery.clarify_audit(base)
-    assert view['candidates']==base['candidates'] and view['hold_resolution']['materials_present']['t1']==['m1']
+    assert view['candidates']==base['candidates'] and 'materials_present' not in view['hold_resolution']
+    assert recovery.presence(view)['t1']==['m1']
     assert recovery.unclarified_view(view,{fingerprint(base)})==base
     view['hold_resolution']['audit_role']='untrusted-source'
     with pytest.raises(ContractError):recovery.unclarified_view(view,{fingerprint(base)})
+
+
+def test_compact_clarification_fits_reserved_budget_without_changing_evidence():
+    from test_reduce_packets import value
+    from fixed_semantic import prepare_request_projection
+    from fixed_semantic_schema import schema
+    base=value(10)['view'];before=copy.deepcopy(base)
+    compact=recovery.clarify_audit(base)
+    measure=lambda v:prepare_request_projection('resource-reduce',v,schema('resource-reduce'),[])['input_size']
+    assert measure(compact)-measure(base)<=1024
+    assert base==before and {k:v for k,v in compact.items() if k!='hold_resolution'}==base
+    legacy={**base,'hold_resolution':{'materials_present':recovery.presence(base),'audit_role':'prior-review-not-source','rule':'Historical unchanged rule'}}
+    assert recovery.unclarified_view(legacy,fingerprint(base))==base
+    bad=copy.deepcopy(base);bad['candidates'][0]['source_evidence'][0]['support_refs']=['missing']
+    with pytest.raises(ContractError):recovery.clarify_audit(bad)

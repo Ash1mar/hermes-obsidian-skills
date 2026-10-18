@@ -121,9 +121,12 @@ def resolved_audit_view(adapter,binding,view):
 
 
 def clarify_audit(view):
-    return {**view,'hold_resolution':{'materials_present':presence(view),
+    # Validate local evidence links, without repeating the material index already
+    # present in original_evidence. The complete disposition rule is in system.
+    presence(view)
+    return {**view,'hold_resolution':{
         'audit_role':'prior-review-not-source',
-        'rule':'Prior inspection findings are audit metadata, not required originals. Ground claims in their supplied materials, retain QA limits, and record unsupported candidates as unverified coverage losses.'}}
+        'rule':'Prior review is metadata; retain QA.'}}
 
 
 def unclarified_view(view, authorized_view_sha256):
@@ -135,10 +138,11 @@ def unclarified_view(view, authorized_view_sha256):
     authorized=({authorized_view_sha256} if isinstance(authorized_view_sha256,str)
                 else set(authorized_view_sha256 or []))
     if (fingerprint(base) not in authorized or not isinstance(marker,dict)
-            or set(marker) not in ({'materials_present','rule'},{'materials_present','rule','audit_role'})
+            or set(marker) not in ({'materials_present','rule'},{'materials_present','rule','audit_role'},{'rule','audit_role'})
             or ('audit_role' in marker and marker['audit_role']!='prior-review-not-source') or not isinstance(marker['rule'],str)
-            or not marker['rule'].strip() or marker['materials_present']!=presence(base)):
+            or not marker['rule'].strip() or ('materials_present' in marker and marker['materials_present']!=presence(base))):
         fail('old clarification lacks its authenticated packet and exact material index')
+    presence(base)
     return base
 
 
