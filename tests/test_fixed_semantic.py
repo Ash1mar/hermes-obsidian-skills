@@ -509,7 +509,7 @@ def test_lean_inputs_keep_permissions_and_select_only_exact_parent(tmp_path,monk
                 'sha256':hashlib.sha256(parent.read_bytes()).hexdigest(),
                 'page':{'qa_status':'usable','business_status':'active','visibility':'released'}}}},'input_id':'a'*64}
     binding={'workflow_id':'ingest-fixture','node':'global-reduce','task_id':'fixture'}
-    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path),worker_check=lambda b:{'ok':True},worker_complete=lambda b:{'ok':True})
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,status=lambda _:{'execution_recovery_history':[]}),worker_check=lambda b:{'ok':True},worker_complete=lambda b:{'ok':True})
     monkeypatch.setattr(fixed,'canonical_binding',lambda *a,**k:(binding,{}))
     monkeypatch.setattr(fixed_reduce,'prepare',lambda *a:('fixture',value))
     submissions=[]

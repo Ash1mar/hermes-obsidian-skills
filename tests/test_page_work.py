@@ -80,3 +80,20 @@ def test_changed_evidence_authority_stops_instead_of_becoming_local_deferral(tmp
  monkeypatch.setattr(fixed,'model_call',call)
  with pytest.raises(ContractError,match='SOURCE_CHANGED'):fixed.execute(a,'fixture',lambda:None)
  assert not submitted
+
+
+def test_later_independent_page_review_still_runs_after_a_local_rejection(tmp_path,monkeypatch):
+ import fixed_review,semantic_output
+ b={'workflow_id':'fixture','node':'build-finalize','task_id':'review'}
+ a=NS(worker_begin=lambda *_:None,workflow=NS(vault=tmp_path))
+ value={'input_id':'b'*64,'views':[{'page':'e1'},{'page':'e2'}]}
+ monkeypatch.setattr(fixed_review,'snapshot',lambda *_:value);calls=[]
+ def checked(_a,_b,phase,view,*args,**kwargs):
+  calls.append(view['page'])
+  return {'decision':'revision_required' if view['page']=='e1' else 'approved','review_note':'Concrete scope issue' if view['page']=='e1' else 'Substantive checks passed'},'audit-'+view['page'],None
+ monkeypatch.setattr(semantic_output,'execute',checked)
+ with pytest.raises(ContractError,match='Independent valid reviews preserved'):
+  fixed_review.execute(a,b,object(),None,lambda *_:None)
+ assert calls==['e1','e2']
+ report=json.loads(next(tmp_path.rglob('page-review-held-*.json')).read_text())
+ assert report['accepted_review_calls']==['audit-e2'] and report['held'][0]['page']=='e1' and report['finalized'] is False
