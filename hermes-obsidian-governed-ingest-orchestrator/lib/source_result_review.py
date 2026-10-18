@@ -42,7 +42,10 @@ def replay_paths(adapter,binding,view):
     if not grant:return None
     key=fingerprint(original_view(view));item=grant['packet_audits'].get(key)
     if not item:fail('source packet differs from its reviewed complete input')
-    if 'packet_review' in view:return []
+    # The review marker changes the exact wire, so the old rejected disposition
+    # cannot match. A corrected native response from an interrupted review may
+    # still pass the ordinary verifier under fresh cancellation recovery.
+    if 'packet_review' in view:return None
     path=_vault_path(adapter.workflow.vault,item['original_audit_ref'])
     if hashlib.sha256(path.read_bytes()).hexdigest()!=item['original_audit_sha256']:fail('original packet audit changed')
     return [path]
