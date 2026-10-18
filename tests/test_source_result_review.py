@@ -88,3 +88,28 @@ def test_replacement_without_bound_review_authority_is_rejected(vault,monkeypatc
     a,w,card,req,record,draft,_=fixture(vault,monkeypatch)
     from hermes_source_units.resource_amendment import authorize
     with pytest.raises(ContractError,match='ACCESS_DENIED'):authorize(a.workflow.knowledge,record['resource_id'],record['reduction_id'])
+
+
+def test_interrupted_review_reuses_only_its_exact_corrected_native_response(tmp_path,monkeypatch):
+    from test_reduce_semantic_recovery import call_fixture
+    from fixed_semantic_recovery import recover_reduce
+    c=call_fixture(tmp_path,'resource-reduce')
+    view={'evidence':'unchanged source','packet_review':{'authorization_sha256':'a'*64}}
+    c.wire['user']='Semantic input v1\n'+json.dumps({'phase':'resource-reduce','input':view})
+    c.audit.update(input_sha256=fingerprint(c.wire),user_sha256=fingerprint(c.wire['user']))
+    c.audit_path.write_text(json.dumps(c.audit))
+    with sqlite3.connect(c.home/'state.db') as db:
+        db.execute("UPDATE messages SET content=? WHERE role='user'",(c.wire['user'],))
+    base=review.original_view(view)
+    monkeypatch.setattr(review,'pending',lambda *args:{'packet_audits':{fingerprint(base):{}}})
+    candidates=review.replay_paths(c.adapter,c.binding,view)
+    assert candidates is None  # Use the exact native verifier, not a forced call.
+    before=c.audit_path.read_bytes()
+    kwargs={'home':c.home,'candidate_paths':candidates}
+    args=(c.adapter,c.binding,'resource-reduce',c.wire,c.output_schema,[],lambda raw:(json.loads(raw),None))
+    assert recover_reduce(*args,**kwargs)[0]==c.draft
+    # A legacy response lacks the corrected wire and must never be re-adopted.
+    changed={**c.wire,'user':'Semantic input v1\n'+json.dumps({'phase':'resource-reduce','input':base})}
+    assert recover_reduce(c.adapter,c.binding,'resource-reduce',changed,c.output_schema,[],
+                          lambda raw:(json.loads(raw),None),**kwargs) is None
+    assert c.audit_path.read_bytes()==before
