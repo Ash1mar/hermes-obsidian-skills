@@ -29,6 +29,13 @@ packet without granting extra calls. All successful native prefix products and
 consumed boundaries/allowances remain unchanged; uncertain SDK completion is
 never an uncalled packet. See references/operations.md.
 
+Page work uses the same existing calls and journals: oversized provisional pages
+receive bounded global-detail regrouping with exact coverage; every body reads
+its complete selected originals. Page-local holds preserve native Markdown and
+allow other ready pages to finish. No new recovery entry is created. Ordinary
+cancel/resume reuses exact valid results; full global submission and later
+finalization still require complete evidence/coverage and remain at their pauses.
+
 For explicitly reviewed semantic defects in a completed but globally unconsumed
 source result, use `source-result-review/v1` in `references/operations.md`.
 It authenticates the complete original native packet provenance, grants one

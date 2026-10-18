@@ -258,6 +258,8 @@ def wire_prompt(phase,view,output_schema,correction=None):
     system=COMMON+'\n'+RULES[phase]
     if view.get('output_contract')=='global-target-refs/v1':
         system+=' For a supplied existing/planned target, output target_ref instead of copying identity/aliases/path. For a new page propose identity and path. Target references are local choices, never source evidence or page links. All original coverage, scope/version distinctions and correction limits still apply.'
+    if phase=='global-detail' and 'page_budget' in view:
+        system+=' This is bounded refinement of one provisional page, not new source review. Preserve EVERY supplied candidate exactly once. Choose the fewest meaningful pages whose full evidence requests satisfy page_budget. Do not return the original oversized grouping unchanged, omit claims, or infer new facts. Suggested fit groups are measured packing examples only; choose semantic identities yourself. The program checks complete member-set budgets and exact global identity/path reservations.'
     if phase=='resource-reduce' and 'packet_review' in view:
         system+=' Explicit source-result review: verify EVERY complete candidate against its OWN supplied original evidence/support_refs, never another candidate or prior inspection narrative. If any required number, unit, condition or exception is unsupported or cut off, OMIT THE WHOLE candidate with a concrete unverified coverage-loss reason. A caveat in summary or QA does not validate the unchanged candidate. Preserve all independently supported candidates, using separate groups when needed; unrelated themes, inability to merge, budget or wording are NEVER omission reasons. Keep QA limits; do not repair text or infer missing values. Missing required material objects or invalid source/permission identities still block.'
     if phase=='resource-reduce' and view.get('hold_resolution',{}).get('audit_role')=='prior-review-not-source':
@@ -926,30 +928,23 @@ def run_reduce(adapter,binding,caller):
         return pending
     from fixed_global_packets import planning_scope
     from fixed_global_targets import planning_packet,select
-    with planning_scope(input_value):
-        while remaining:
-            packet=planning_packet(adapter,binding,input_value,remaining,state,prepare_request_projection)
-            pending=plan_call('global-plan',packet)
-            for unit in pending:
-                detail=detail_packet(input_value,unit,state,prepare_request_projection)
-                plan_call('global-detail',select(adapter,binding,'global-detail',detail,prepare_request_projection))
-            remaining=remaining[packet['unit_count']:]
-    draft=complete(input_value,state)
-    views=[fixed_reduce.page_view(adapter,input_value,page) for page in draft['pages']]
-    catalog=image_catalog(adapter,input_value['view']['original_evidence']) if isinstance(caller,HermesCaller) else {}
-    for view in views:
-        images=select_images(view.get('original_evidence',{}).get('tasks',[]),catalog);require_images_fit(images)
-        if prepare_request_projection('page-write',view,schema('page-write'),images)['input_size']>30000:
-            raise ContractError('READING_WINDOW_OVERSIZE','$','planned page complete evidence exceeds the bound; no body calls or truncation')
-    for page,view in zip(draft['pages'],views,strict=True):
-        from semantic_output import execute as checked_output,check
-        written,write_ref,_=checked_output(adapter,binding,'page-write',view,caller,model_call,
-            lambda d:check('page-write',input_value,None,None,d))
-        if 'blocked_reason' in written:raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',written['blocked_reason'])
-        page['content']=written['content'];call_refs.append(write_ref)
-        attach_receipt(adapter,write_ref,{'ok':True,'validated':True,'state':'page_body_only','input_ref':ref})
-        from semantic_output import stop_at_output_boundary
-        stop_at_output_boundary(adapter,binding,'page-write',view)
+    from fixed_page_work import execute as page_work,LOCAL
+    planning_failure=None
+    try:
+        with planning_scope(input_value):
+            while remaining:
+                packet=planning_packet(adapter,binding,input_value,remaining,state,prepare_request_projection)
+                pending=plan_call('global-plan',packet)
+                for unit in pending:
+                    detail=detail_packet(input_value,unit,state,prepare_request_projection)
+                    plan_call('global-detail',select(adapter,binding,'global-detail',detail,prepare_request_projection))
+                remaining=remaining[packet['unit_count']:]
+    except ContractError as exc:
+        if exc.code not in LOCAL:raise
+        planning_failure={'code':exc.code,'reason':str(exc),'audit_ref':getattr(exc,'semantic_audit_ref',None)}
+    draft,page_calls=page_work(adapter,binding,input_value,state,caller,model_call,attach_receipt,prepare_request_projection,
+        planning_failure=planning_failure)
+    call_refs.extend(page_calls)
     result=fixed_reduce.submit(adapter,binding,ref,draft)
     for call_ref in call_refs:attach_receipt(adapter,call_ref,result)
     return adapter.worker_complete(binding)
