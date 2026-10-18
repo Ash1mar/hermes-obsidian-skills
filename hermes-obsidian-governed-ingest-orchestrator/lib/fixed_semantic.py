@@ -94,6 +94,11 @@ class HermesCaller:
                         expected_format={'type':'json_schema','json_schema':{k:v for k,v in output.items() if k!='type'}}
                     if actual_format!=expected_format:
                         raise RuntimeError('fixed semantic output schema changed')
+                else:
+                    actual_format=(api_kwargs.get('text',{}).get('format') if 'instructions' in api_kwargs
+                                   else api_kwargs.get('response_format'))
+                    if actual_format!={'type':'json_object'}:
+                        raise RuntimeError('fixed semantic JSON output mode changed')
                 # Exact current messages/schema have been checked above. Reuse
                 # only this call's construction size, never an admission result.
                 if self.fixed_input_size>self.fixed_limit:
@@ -115,13 +120,14 @@ class HermesCaller:
                 return super()._interruptible_streaming_api_call(api_kwargs, *args, **kwargs)
 
             def _apply_fixed_format(self, api_kwargs):
-                if self.fixed_transport_schema is None: return
-                output={'type':'json_schema','name':'semantic_task_slots','strict':True,
+                output=({'type':'json_schema','name':'semantic_task_slots','strict':True,
                         'schema':copy.deepcopy(self.fixed_transport_schema)}
+                        if self.fixed_transport_schema is not None else {'type':'json_object'})
                 if 'instructions' in api_kwargs:
                     api_kwargs['text']={**api_kwargs.get('text',{}),'format':output}
                 else:
-                    api_kwargs['response_format']={'type':'json_schema','json_schema':{k:v for k,v in output.items() if k!='type'}}
+                    api_kwargs['response_format']=({'type':'json_schema','json_schema':{k:v for k,v in output.items() if k!='type'}}
+                        if self.fixed_transport_schema is not None else output)
                 self.fixed_structured_requests+=1
                 self.fixed_construction_counts['transport_schema_reuses']+=1
         self.db = SessionDB()
@@ -154,6 +160,14 @@ class HermesCaller:
             del self._prepared_request
             prepared['closed']=True
             self.images=[]
+
+    def fork(self):
+        """Independent synchronous request/SessionDB owner, same pinned runtime."""
+        caller=copy.copy(self)
+        caller.images=[]
+        for name in ('_prepared_request','db'):
+            caller.__dict__.pop(name,None)
+        return caller
 
     def __call__(self, phase, view, output_schema, correction=None):
         # SDK-supported context-local isolation: no process-wide environment

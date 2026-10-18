@@ -21,7 +21,7 @@ def fixture(tmp_path,monkeypatch,answers):
         ref='audit-'+str(len(calls));saved[ref]=copy.deepcopy(answer);output.note_audit(ref)
         return copy.deepcopy(answer),ref
     monkeypatch.setattr(fixed,'attach_receipt',lambda *args:None)
-    monkeypatch.setattr(recovery,'native_reply',lambda a,b,path,*args: (json.dumps(saved[path.name]),{}) if path.name in saved else None)
+    monkeypatch.setattr(recovery,'native_reply',lambda a,b,path,*args,**kwargs: (json.dumps(saved[path.name]),{}) if path.name in saved else None)
     def run():return output.execute(adapter,binding,'global-plan',packet['view'],object(),call,
         lambda d:output.check('global-plan',value,packet,state,d),packet=packet)
     return SimpleNamespace(run=run,calls=calls,saved=saved,binding=binding,packet=packet,adapter=adapter)
@@ -154,6 +154,17 @@ def test_raw_native_verification_does_not_accept_changed_authority(tmp_path):
     assert recovery.native_reply(c.adapter,c.binding,c.audit_path,c.wire,c.output_schema,[],home=c.home)[0]
     c.audit['native_task_id']='unrelated';c.audit_path.write_text(json.dumps(c.audit))
     assert recovery.native_reply(c.adapter,c.binding,c.audit_path,c.wire,c.output_schema,[],home=c.home) is None
+
+
+def test_entry_checked_replay_keeps_the_fresh_exit_check(tmp_path):
+    from test_reduce_semantic_recovery import call_fixture
+    c=call_fixture(tmp_path,'global-plan')
+    c.adapter.worker_check(c.binding)
+    assert recovery.native_reply(c.adapter,c.binding,c.audit_path,c.wire,c.output_schema,[],home=c.home,entry_checked=True)
+    assert len(c.checks)==2
+    c.adapter.worker_check=lambda _:(_ for _ in ()).throw(ContractError('SOURCE_CHANGED','$','changed during proof'))
+    with pytest.raises(ContractError,match='SOURCE_CHANGED'):
+        recovery.native_reply(c.adapter,c.binding,c.audit_path,c.wire,c.output_schema,[],home=c.home,entry_checked=True)
 
 
 def test_real_model_call_admits_only_the_reserved_correction(tmp_path,monkeypatch):

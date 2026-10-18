@@ -406,3 +406,29 @@ def test_future_planning_identity_invalidates_changed_wire_contract_without_meas
     assert rules_before == fingerprint({'common': budget.COMMON, 'rules': budget.RULES,
         'schema': {phase: budget.strict_schema(budget.slot_schema(phase, [{'task': 't1'}]))
                    for phase in ('candidate', 'citation')}})
+
+
+@pytest.mark.parametrize('form', ['chat','responses','separate-system'])
+def test_non_slot_outputs_require_native_json_mode_without_changing_canonical_contract(sdk,form):
+    agent=guarded_agent(sdk)
+    agent.fixed_transport_schema=None
+    before=copy.deepcopy(agent.fixed_expected_request)
+    agent._interruptible_api_call(api_request(agent,form=form))
+    sent=sdk.requests[-1]
+    assert (sent['text']['format'] if form=='responses' else sent['response_format'])=={'type':'json_object'}
+    assert agent.fixed_expected_request==before
+    bad=api_request(agent,form=form)
+    if form=='responses':bad['text']={'format':{'type':'text'}}
+    else:bad['response_format']={'type':'text'}
+    with pytest.raises(RuntimeError,match='JSON output mode changed'):agent._check_fixed_request(bad)
+
+
+def test_page_caller_forks_have_independent_request_images_and_db_owners(sdk):
+    sdk.caller.images=[{'fixture':'parent-only'}]
+    sdk.caller._prepared_request={'fixture':'parent-scope'}
+    one=sdk.caller.fork();two=sdk.caller.fork()
+    assert one is not two and one.images==two.images==[]
+    assert one.images is not two.images and not hasattr(one,'_prepared_request')
+    assert one.runtime is sdk.caller.runtime and one.model==two.model==sdk.caller.model
+    one.images.append({'fixture':'one-only'})
+    assert two.images==[] and sdk.caller.images==[{'fixture':'parent-only'}]

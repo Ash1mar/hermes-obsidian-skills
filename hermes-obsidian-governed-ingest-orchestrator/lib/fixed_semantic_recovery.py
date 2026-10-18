@@ -38,9 +38,12 @@ def task_content(view, task):
     return fingerprint({'task':task,'qa_rule':view.get('qa_rule')})
 
 
-def native_reply(adapter,binding,path,wire,output_schema,images,*,home=None,seen=None):
+def native_reply(adapter,binding,path,wire,output_schema,images,*,home=None,seen=None,entry_checked=False):
     """Authenticate raw native output, including invalid JSON, without approval."""
-    adapter.worker_check(binding);w=adapter.workflow.status(binding['workflow_id'])
+    # semantic_output has just checked this invocation before its pure request
+    # construction. Other callers retain the ordinary two-sided check.
+    if not entry_checked:adapter.worker_check(binding)
+    w=adapter.workflow.status(binding['workflow_id'])
     permitted={binding['task_id']:None}
     for pointer in w.get('execution_recovery_history',[]):
         rp=_vault_path(adapter.workflow.vault,pointer['report_ref'])

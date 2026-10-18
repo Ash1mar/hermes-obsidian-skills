@@ -51,7 +51,7 @@ def test_one_local_refusal_preserves_the_other_real_markdown_without_formal_subm
   return ({'blocked_reason':'Original required table is unreadable'} if handle=='c1' else {'content':'# Valid native body\nAll supplied conditions retained'}),'body-'+handle
  monkeypatch.setattr(fixed,'model_call',call)
  with pytest.raises(ContractError,match='1 native bodies, 1 held pages'):fixed.execute(a,'fixture',lambda:None)
- assert written==['c1','c2'] and not submitted
+ assert set(written)=={'c1','c2'} and not submitted
  saved=list(tmp_path.rglob('page-drafts/*.md'));assert len(saved)==1 and 'Valid native body' in saved[0].read_text()
  progress=json.loads(next(tmp_path.rglob('page-work-*.json')).read_text())
  assert len(progress['held'])==1 and len(progress['written'])==1 and 'content' not in progress['written'][0]
@@ -97,3 +97,28 @@ def test_later_independent_page_review_still_runs_after_a_local_rejection(tmp_pa
  assert calls==['e1','e2']
  report=json.loads(next(tmp_path.rglob('page-review-held-*.json')).read_text())
  assert report['accepted_review_calls']==['audit-e2'] and report['held'][0]['page']=='e1' and report['finalized'] is False
+
+
+def test_two_body_calls_overlap_with_independent_attempts_and_inherited_context(tmp_path,monkeypatch):
+ import threading
+ from contextvars import ContextVar
+ import semantic_output
+ v=fixture_value();a,b,submitted=setup(tmp_path,monkeypatch,v)
+ rendezvous=threading.Barrier(2);marker=ContextVar('fixture_marker');token=marker.set('bound-owner')
+ lock=threading.Lock();active=0;peak=0;attempts=[]
+ def call(_a,_b,phase,view,*args,**kwargs):
+  nonlocal active,peak
+  if phase=='global-plan':return proposal_response([proposal_page(['p1'],'one'),proposal_page(['p2'],'two')]),'plan'
+  assert marker.get()=='bound-owner'
+  with lock:
+   active+=1;peak=max(peak,active);attempts.append(semantic_output.ACTIVE.get()[0].name)
+  try:rendezvous.wait(timeout=5)
+  finally:
+   with lock:active-=1
+  return {'content':'# Native fixture '+view['candidates'][0]['candidate']},'body-'+view['candidates'][0]['candidate']
+ monkeypatch.setattr(fixed,'model_call',call)
+ try:assert fixed.execute(a,'fixture',lambda:None)['ok']
+ finally:marker.reset(token)
+ assert peak==2 and len(set(attempts))==2 and len(submitted)==1
+ progress=json.loads(next(tmp_path.rglob('page-work-*.json')).read_text())
+ assert len(progress['written'])==2 and not progress['held']

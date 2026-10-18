@@ -296,7 +296,7 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
         if attempt:
             from hermes_source_units.runtime_telemetry import span
             with span('native_output_authentication',vault=adapter.workflow.vault,binding=binding,phase=phase):
-                proof=native_reply(adapter,binding,_vault_path(adapter.workflow.vault,ref),prepared['wire'],output_schema,images)
+                proof=native_reply(adapter,binding,_vault_path(adapter.workflow.vault,ref),prepared['wire'],output_schema,images,entry_checked=True)
             if proof is None:held('saved call lacks matching current native authority or exact request')
             raw=proof[0];call_ref=ref
             try:draft,_=decode_semantic_response(raw)
