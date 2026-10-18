@@ -86,9 +86,11 @@ def _snapshot(adapter,binding,checked):
     backend['coverage_gap_reports']=workflow.get('pass_skip_history',[])
     if kind=='global-reduce':
         view['proposals'] = [{'proposal':'p'+str(index), 'summary':p['summary'],
+            'source_resource_id':reduction['resource_id'],
+            'source_path':next((o['path'] for o in workflow['source_outcomes'] if o.get('resource_id')==reduction['resource_id']),None),
             'candidate_refs':list(dict.fromkeys(aliases[(r['pass_id'],r['candidate_id'])] for r in p['candidate_refs'])),
             'identity_hints':p['identity_hints'],'path_hints':p['path_hints']}
-            for index,p in enumerate((p for reduction in reductions for p in reduction['proposals']),1)]
+            for index,(reduction,p) in enumerate(((reduction,p) for reduction in reductions for p in reduction['proposals']),1)]
         registry = service.list_identities(); backend['identities']=registry
         view['existing_pages']=[]
         for subject in registry['subjects']:
@@ -125,6 +127,8 @@ def global_plan_view(value):
     view={k:copy.deepcopy(original[k]) for k in ('phase','existing_pages','coverage_limitations') if k in original}
     columns={'proposals':['proposal','summary','candidate_refs','identity_hints','path_hints'],
              'candidates':['candidate','kind','name','applicability','conditions','exceptions','evidence_qa']}
+    if any('source_resource_id' in p for p in original.get('proposals',[])):
+        columns['proposals']+=['source_resource_id','source_path']
     view.update(columns=columns,proposals=[[copy.deepcopy(p.get(k)) for k in columns['proposals']]
         for p in original.get('proposals',[])],candidates=[],qa={})
     qa_keys={}

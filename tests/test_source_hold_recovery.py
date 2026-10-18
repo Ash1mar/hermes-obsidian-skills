@@ -17,7 +17,7 @@ from fixed_semantic_schema import schema
 import source_hold_recovery as recovery
 
 
-@pytest.mark.parametrize('change',['valid','narrowed','audit','message','evidence','binding','live'])
+@pytest.mark.parametrize('change',['valid','narrowed','audit','message','evidence','binding','live','format','format_valid_json'])
 def test_reviewed_source_hold_requires_exact_current_native_evidence(vault,monkeypatch,tmp_path,change):
     a,w,card,request,failure_ref=stopped_reducer(vault,monkeypatch)
     body=a.kanban.by_id[card['task_id']]['body']
@@ -29,6 +29,7 @@ def test_reviewed_source_hold_requires_exact_current_native_evidence(vault,monke
     packet=fixed_reduce_packets.plan(a,value,fixed_semantic.prepare_request_projection)[0]
     prepared=fixed_semantic.prepare_request_projection('resource-reduce',packet['view'],schema('resource-reduce'))
     raw=json.dumps({'blocked_reason':'Recorded source QA prevents one claim being verified.'})
+    if change=='format':raw+='}'
     home=tmp_path/'home';home.mkdir();monkeypatch.setattr(recovery.Path,'home',lambda:home.parent)
     # Runtime defaults to ~/.hermes.
     (home.parent/'.hermes').mkdir(exist_ok=True);db_path=home.parent/'.hermes/state.db'
@@ -44,6 +45,11 @@ def test_reviewed_source_hold_requires_exact_current_native_evidence(vault,monke
         'model':{'origin':'hermes_native_model','session_id':'fixture','response_sha256':fingerprint(raw)}}
     ref=root+'/semantic-calls/refusal.json';(vault/ref).parent.mkdir(exist_ok=True);(vault/ref).write_text(json.dumps(audit))
     failure=json.loads((vault/failure_ref).read_text());failure.update(error_code='SEMANTIC_REVIEW_REQUIRED',reason=raw)
+    if change.startswith('format'):
+        failure['reason']='semantic response is not one JSON object: Extra data'
+        receipt_ref=root+'/worker-receipts/format.json';(vault/receipt_ref).parent.mkdir(exist_ok=True)
+        (vault/receipt_ref).write_text(json.dumps({'code':'INVALID_SCHEMA','validated':False}))
+        audit['receipt_refs']=[receipt_ref];(vault/ref).write_text(json.dumps(audit))
     (vault/failure_ref).write_text(json.dumps(failure))
     original_snapshot=a.kanban.task_snapshot
     def native_snapshot(*args):
@@ -52,6 +58,9 @@ def test_reviewed_source_hold_requires_exact_current_native_evidence(vault,monke
         return snap
     monkeypatch.setattr(a.kanban,'task_snapshot',native_snapshot)
     request.update(recovery_scope=recovery.SCOPE,target_contract_sha256=recovery.contract_hash())
+    if change.startswith('format'):
+        from reduce_target_recovery import contract_hash
+        request.update(recovery_scope='source-format/v1',target_contract_sha256=contract_hash())
     entry=request['entries'][0]
     entry.update(failure_sha256=hashlib.sha256((vault/failure_ref).read_bytes()).hexdigest(),
         snapshot_ref=snapshot_ref,snapshot_sha256=hashlib.sha256((vault/snapshot_ref).read_bytes()).hexdigest(),
@@ -68,7 +77,7 @@ def test_reviewed_source_hold_requires_exact_current_native_evidence(vault,monke
     if change=='live':a.kanban.ended.clear()
     request['input_digest']=mutation_digest(request)
     before={p:p.read_bytes() for p in vault.rglob('*.json')}
-    if change not in ('valid','narrowed'):
+    if change not in ('valid','narrowed','format'):
         with pytest.raises(ContractError):a.recover_reduce_execution(request)
         assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
         return
@@ -76,7 +85,7 @@ def test_reviewed_source_hold_requires_exact_current_native_evidence(vault,monke
     assert before=={p:p.read_bytes() for p in vault.rglob('*.json')}
     result=a.recover_reduce_execution(request);current=a.workflow.status(w['workflow_id'])
     assert result['applied'] and current['state']=='cancelled'
-    revised=recovery.resolved_view(a,binding,packet['view'])
+    revised=recovery.clarify(packet['view']) if change=='format' else recovery.resolved_view(a,binding,packet['view'])
     assert revised['hold_resolution']['materials_present'] and packet['view']=={k:v for k,v in revised.items() if k!='hold_resolution'}
     assert all(p.read_bytes()==data for p,data in before.items() if '/knowledge-builds/' in p.as_posix())
 

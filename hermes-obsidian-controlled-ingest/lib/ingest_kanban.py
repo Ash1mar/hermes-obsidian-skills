@@ -746,7 +746,8 @@ class IngestKanbanAdapter:
     def _execution_blocked(self, workflow_id: str, node: Node) -> bool:
         path = _vault_path(self.workflow.vault,
             f"_system/ledgers/ingest-workflows/{workflow_id}/reports/failed-{fingerprint(node.name)[:16]}.json")
-        return (self._failed_card(workflow_id, node)
+        return ((node.kind!='pass-slice' or not domain_completed(self.workflow,self.workflow.status(workflow_id),node))
+                and self._failed_card(workflow_id, node)
                 and bool(_load_json(path).get('error_code')))
 
     def execution_failure(self, request: Mapping[str, Any], code: str, message: str) -> str:

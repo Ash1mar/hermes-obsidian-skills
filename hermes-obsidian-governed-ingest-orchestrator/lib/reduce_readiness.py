@@ -28,10 +28,18 @@ def global_budget(adapter,w):
         value=preview_snapshot(adapter,binding);view=global_plan_view(value)
         phase='global-plan'
         size=prepare_request_projection(phase,view,schema(phase))['input_size']
-        return {'status':'oversize' if size>30000 else 'current_prefix_fits','phase':phase,
-            'input_codepoints':size,'limit':30000,'available_completed_sources':len(batch['resource_reduction_ids']),
-            'candidates':len(view['candidates']),'proposals':len(view['proposals']),'complete_input':False,
-            'note':'Only currently completed source proposals; a fitting prefix is not global readiness, an oversized prefix is already a budget blocker.'}
+        from fixed_global_packets import units,next_packet,initial
+        remaining=units(value);packets=[];covered=[]
+        while remaining:
+            packet=next_packet(value,remaining,initial(),prepare_request_projection)
+            packets.append({'proposal_refs':packet['proposal_refs'],'candidate_refs':packet['candidate_refs'],'input_codepoints':packet['input_codepoints']})
+            covered.extend(packet['candidate_refs']);remaining=remaining[packet['unit_count']:]
+        return {'status':'incremental_atoms_fit','phase':phase,'legacy_single_input_codepoints':size,'limit':30000,
+            'available_completed_sources':len(batch['resource_reduction_ids']),'candidates':len(view['candidates']),
+            'proposals':len(view['proposals']),'complete_input':False,'packets':packets,
+            'covered_once':len(covered)==len(set(covered)) and set(covered)==set(value['backend']['mapping']),
+            'note':'Mechanical empty-state capacity only; every live packet is remeasured with exact related prior planning state. No semantic plan or global readiness is inferred.'}
+
     except (ContractError,OSError,ValueError,KeyError) as exc:
         return {'status':'held','complete_input':False,'reason':str(exc)}
 
