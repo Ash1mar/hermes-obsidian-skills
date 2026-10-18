@@ -44,13 +44,21 @@ def _schema(phase):
         proposal['properties']['candidate_refs'] = {**REFS,'minItems':1}
         result = closed({'proposals':{'type':'array','items':proposal},
             'omitted_candidate_refs':REFS,'reason':TEXT})
-    elif phase in ('global-reduce','global-plan'):
+    elif phase in ('global-reduce','global-plan','global-detail'):
         page = closed({'candidate_refs':{**REFS,'minItems':1},
             'identity':definition('resource_identity_hint'),
             'path':{'type':'string','minLength':1,'format':'vault-relative-path'},'content':TEXT})
+        if phase in ('global-plan','global-detail'):
+            page['properties'].pop('content');page['required'].remove('content')
         if phase=='global-plan':
-            page['properties'].pop('content'); page['required'].remove('content')
-        result = closed({'pages':{'type':'array','items':page},'omitted_candidate_refs':REFS,'reason':TEXT})
+            page['properties'].pop('candidate_refs')
+            page['properties']['proposal_refs']={'type':'array','items':{'type':'string','pattern':'^p[1-9][0-9]*$'},'uniqueItems':True,'minItems':1}
+            page['required'].remove('candidate_refs');page['required'].append('proposal_refs')
+            result=closed({'pages':{'type':'array','items':page},'detail_unit_refs':{'type':'array',
+                'items':{'type':'string','pattern':'^u[1-9][0-9]*$'},'uniqueItems':True},'reason':TEXT})
+        else:
+            omitted={**REFS,'maxItems':0} if phase=='global-detail' else REFS
+            result=closed({'pages':{'type':'array','items':page},'omitted_candidate_refs':omitted,'reason':TEXT})
     elif phase=='page-write':
         result=closed({'content':TEXT})
     elif phase=='page-review':

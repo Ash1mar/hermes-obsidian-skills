@@ -9,8 +9,10 @@ from hermes_source_units.validation import fingerprint
 from fixed_semantic_schema import schema,validate
 import fixed_reduce
 
-CONTRACT='incremental-global-plan/v1'
+CONTRACT='proposal-global-plan/v1'
 LIMIT=30000
+# Existing 8192-token output cap minus 1024 reserve, at 256 estimated tokens/page.
+PROPOSAL_OUTPUT_SLOTS=28
 
 
 def fail(code,message):raise ContractError(code,'$',message)
@@ -29,6 +31,7 @@ def units(value):
     order={p['proposal']:i for i,p in enumerate(value['view']['proposals'])}
     for g in groups:g['proposals'].sort(key=lambda p:order[p['proposal']])
     groups.sort(key=lambda g:min(order[p['proposal']] for p in g['proposals']))
+    for i,g in enumerate(groups,1):g['unit']='u'+str(i)
     covered=[h for g in groups for h in g['handles']]
     if len(covered)!=len(set(covered)) or set(covered)!=set(value['backend']['mapping']):
         fail('INCOMPLETE_COVERAGE','proposal units do not own every global candidate exactly once')
@@ -50,35 +53,44 @@ def related(identity,hints):
 def state_digest(state):return fingerprint(state)
 
 
-def packet_view(value,chosen,state):
+def packet_view(value,chosen,state,*,detail=False):
     handles={h for g in chosen for h in g['handles']}
-    proposals=[p for g in chosen for p in g['proposals']]
+    proposals=[{**p,'_detail_unit':g['unit']} for g in chosen for p in g['proposals']]
     hints=[h for p in proposals for h in p['identity_hints']]
-    # Candidate names also select related pages, without deciding their identity.
-    hints += [{'canonical_name':c['name']} for c in value['view']['candidates'] if c['candidate'] in handles]
+    # Selection is program-side; candidate names are not default planning input.
+    hints += [{'canonical_name':c['name']} for c in value['view']['candidates'] if c['candidate'] in handles and c.get('name')]
     existing=[p for p in value['view'].get('existing_pages',[]) if related(p['identity'],hints)]
     planned=[]
     for page in state['pages']:
         if related(page['identity'],hints):
-            boundaries=[{k:copy.deepcopy(c[k]) for k in ('candidate','name','applicability','conditions','exceptions') if k in c}
-                        for c in value['view']['candidates'] if c['candidate'] in page['candidate_refs']]
-            planned.append({**copy.deepcopy(page),'candidate_boundaries':boundaries,
-                'source_paths':sorted({p['source_path'] for p in value['view']['proposals']
-                    if p.get('source_path') and set(p['candidate_refs'])&set(page['candidate_refs'])})})
+            topics=[p for p in value['view']['proposals'] if set(p['candidate_refs'])&set(page['candidate_refs'])]
+            planned.append({'identity':copy.deepcopy(page['identity']),'path':page['path'],
+                'topics':list(dict.fromkeys(p['summary'] for p in topics)),
+                'source_paths':sorted({p['source_path'] for p in topics if p.get('source_path')})})
     sliced={'view':{**value['view'],'candidates':[c for c in value['view']['candidates'] if c['candidate'] in handles],
                     'proposals':proposals,'existing_pages':existing}}
-    view=fixed_reduce.global_plan_view(sliced)
+    view=(fixed_reduce.global_detail_view if detail else fixed_reduce.global_plan_view)(sliced)
+    view['phase']='global-detail' if detail else 'global-plan'
     view['coordination']={'contract':CONTRACT,'previous_state_sha256':state_digest(state),
         'proposal_refs':[p['proposal'] for p in proposals],'planned_pages':planned,
-        'rule':'Route only this packet candidate_refs. To append to a related planned page return its exact identity and path with only NEW candidate_refs. '
-               'Preserve source groups and scope/version differences. If identity is uncertain, keep separate or block; never force a merge. '
-               'Previously assigned candidates and prior prose are not to be repeated. This is provisional routing; full evidence is read per page.'}
+        'rule':'Default to whole proposal_refs; the program owns and expands candidate membership. '
+               'Request detail_unit_refs only for a concrete unresolved split or conflict, naming the reason. '
+               'Do not request raw facts for re-review or repeat prior candidates. '
+               'Append only to an exact offered planned identity/path; preserve version/scope differences or keep separate. '
+               'Full conditions, QA and original evidence are checked by per-page writing, not approved by this routing.'}
+    if detail:
+        view['coordination']['rule']='Route every candidate in this requested detail unit once, without omission. Resolve only the stated local grouping ambiguity, preserve scope/version/QA limits, and append only to exact offered identities and paths. Full original evidence is read during page writing.'
+        view['coordination']['detail_reason']=chosen[0]['detail_reason']
     return view
 
 
 def next_packet(value,remaining,state,project):
     chosen=[];prepared=None
     for group in remaining:
+        count=sum(len(g['proposals']) for g in [*chosen,group])
+        if count>PROPOSAL_OUTPUT_SLOTS:
+            if not chosen:fail('READING_WINDOW_OVERSIZE','one indivisible proposal unit exceeds the fixed output slots')
+            break
         view=packet_view(value,[*chosen,group],state)
         projected=project('global-plan',view,schema('global-plan'),[])
         if projected['input_size']>LIMIT:
@@ -89,12 +101,12 @@ def next_packet(value,remaining,state,project):
     view,size=prepared
     return {'view':view,'input_codepoints':size,'unit_count':len(chosen),
             'candidate_refs':sorted({h for g in chosen for h in g['handles']}),
-            'proposal_refs':view['coordination']['proposal_refs'],'previous_state_sha256':state_digest(state)}
+            'proposal_refs':view['coordination']['proposal_refs'],'previous_state_sha256':state_digest(state),'units':chosen}
 
 
 def accept(value,state,packet,draft):
     """Validate packet decisions and all accumulated identity/path/coverage invariants."""
-    validate('global-plan',draft)
+    validate('global-detail',draft)
     if 'blocked_reason' in draft:fail('SEMANTIC_REVIEW_REQUIRED',draft['blocked_reason'])
     if state_digest(state)!=packet['previous_state_sha256']:fail('STALE_INPUT','preceding global plan state changed')
     used=[c for p in draft['pages'] for c in p['candidate_refs']]+draft['omitted_candidate_refs']
@@ -129,6 +141,39 @@ def accept(value,state,packet,draft):
     result['proposal_refs'].extend(packet['proposal_refs'])
     result['reasons'].append(draft['reason'])
     return result
+
+
+def accept_proposals(value,state,packet,draft):
+    """Native routing names pN; only the program expands pN to full member sets."""
+    validate('global-plan',draft)
+    if 'blocked_reason' in draft:fail('SEMANTIC_REVIEW_REQUIRED',draft['blocked_reason'])
+    queries=draft['detail_unit_refs'];by_unit={g['unit']:g for g in packet['units']}
+    if not set(queries)<=set(by_unit):fail('UNRESOLVED_REFERENCE','detail request is outside this packet')
+    pending=[{**g,'detail_reason':draft['reason']} for g in packet['units'] if g['unit'] in queries]
+    deferred={p['proposal'] for g in pending for p in g['proposals']}
+    assigned=[r for p in draft['pages'] for r in p['proposal_refs']]
+    if len(assigned)!=len(set(assigned)) or set(assigned)&deferred:
+        fail('DUPLICATE','a proposal was assigned twice or also requested as detail')
+    if set(assigned)|deferred!=set(packet['proposal_refs']):
+        fail('INCOMPLETE_COVERAGE','route each offered proposal or request its complete detail unit')
+    lookup={p['proposal']:p for g in packet['units'] for p in g['proposals']}
+    pages=[]
+    for page in draft['pages']:
+        refs=list(dict.fromkeys(c for r in page['proposal_refs'] for c in lookup[r]['candidate_refs']))
+        pages.append({'identity':page['identity'],'path':page['path'],'candidate_refs':refs})
+    normal_handles={c for r in assigned for c in lookup[r]['candidate_refs']}
+    part={**packet,'proposal_refs':assigned,'candidate_refs':sorted(normal_handles)}
+    result=accept(value,state,part,{'pages':pages,'omitted_candidate_refs':[],'reason':draft['reason']})
+    return result,pending
+
+
+def detail_packet(value,unit,state,project):
+    view=packet_view(value,[unit],state,detail=True)
+    size=project('global-detail',view,schema('global-detail'),[])['input_size']
+    if size>LIMIT:fail('READING_WINDOW_OVERSIZE','one requested complete detail unit exceeds the bound; no truncation')
+    return {'view':view,'input_codepoints':size,'unit_count':1,'units':[unit],
+            'candidate_refs':sorted(unit['handles']),'proposal_refs':[p['proposal'] for p in unit['proposals']],
+            'previous_state_sha256':state_digest(state)}
 
 
 def initial():return {'pages':[],'omitted_candidate_refs':[],'proposal_refs':[],'reasons':[]}

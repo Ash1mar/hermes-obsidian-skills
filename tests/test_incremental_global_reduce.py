@@ -19,6 +19,58 @@ def response(pages):return {'pages':pages,'omitted_candidate_refs':[],'reason':'
 def project(*args):return {'input_size':len(json.dumps(args[1],ensure_ascii=False))+100}
 
 
+def proposal_response(pages,queries=None):
+ return {'pages':pages,'detail_unit_refs':queries or [],'reason':'u2 needs a version-specific split; retain p1'}
+
+
+def proposal_page(refs,key='shared'):
+ p=page('unused',key);p.pop('candidate_refs');p['proposal_refs']=refs;return p
+
+
+def test_proposal_members_are_expanded_by_program_with_exact_coverage():
+ v=fixture_value();v['view']['proposals'][0]['candidate_refs'].append('c2');v['view']['proposals'].pop()
+ before=copy.deepcopy(v);s=g.initial();packet=g.next_packet(v,g.units(v),s,project)
+ assert 'candidates' not in packet['view']
+ result,pending=g.accept_proposals(v,s,packet,proposal_response([proposal_page(['p1'])]))
+ assert not pending and g.complete(v,result)['pages'][0]['candidate_refs']==['c1','c2']
+ assert v==before
+
+
+def test_detail_is_requested_only_for_one_unit_and_receives_its_reason():
+ v=fixture_value();s=g.initial();packet=g.next_packet(v,g.units(v),s,project)
+ s,pending=g.accept_proposals(v,s,packet,proposal_response([proposal_page(['p1'],'v1')],['u2']))
+ assert len(pending)==1 and pending[0]['unit']=='u2'
+ local=g.detail_packet(v,pending[0],s,project)
+ assert [r[0] for r in local['view']['candidates']]==['c2']
+ assert 'version-specific split' in local['view']['coordination']['detail_reason']
+ assert local['previous_state_sha256']==g.state_digest(s)
+ s=g.accept(v,s,local,response([page('c2','v2')]))
+ assert {r for p in g.complete(v,s)['pages'] for r in p['candidate_refs']}=={'c1','c2'}
+
+
+@pytest.mark.parametrize('bad',['foreign_query','double_query','assigned_and_query','missing','foreign_proposal','candidate_handle'])
+def test_proposal_routing_cannot_lose_or_invent_members(bad):
+ v=fixture_value();s=g.initial();packet=g.next_packet(v,g.units(v),s,project)
+ d=proposal_response([proposal_page(['p1','p2'])])
+ if bad=='foreign_query':d['detail_unit_refs']=['u99']
+ if bad=='double_query':d['detail_unit_refs']=['u2','u2']
+ if bad=='assigned_and_query':d['detail_unit_refs']=['u2']
+ if bad=='missing':d['pages'][0]['proposal_refs']=['p1']
+ if bad=='foreign_proposal':d['pages'][0]['proposal_refs']=['p1','p99']
+ if bad=='candidate_handle':d['pages'][0]['proposal_refs']=['c1','c2']
+ with pytest.raises(ContractError):g.accept_proposals(v,s,packet,d)
+ assert s==g.initial()
+
+
+def test_output_slots_bound_light_input_without_splitting_connected_unit(monkeypatch):
+ v=fixture_value();monkeypatch.setattr(g,'PROPOSAL_OUTPUT_SLOTS',1)
+ packet=g.next_packet(v,g.units(v),g.initial(),lambda *_:{'input_size':1})
+ assert packet['proposal_refs']==['p1']
+ v['view']['proposals'][1]['candidate_refs'].append('c1')
+ with pytest.raises(ContractError,match='READING_WINDOW_OVERSIZE'):
+  g.next_packet(v,g.units(v),g.initial(),lambda *_:{'input_size':1})
+
+
 def test_full_coverage_stable_budget_and_indivisible_oversize(monkeypatch):
  v=fixture_value();
  for proposal in v['view']['proposals']:proposal['identity_hints']=[page('c1')['identity']]
@@ -30,7 +82,8 @@ def test_full_coverage_stable_budget_and_indivisible_oversize(monkeypatch):
  s=g.accept(v,s,packet,response([page('c1')]))
  # Append is offered by name, with previous scope and version preserved exactly.
  packet2=g.next_packet(v,us[1:],s,lambda *_:{'input_size':100})
- assert packet2['view']['coordination']['planned_pages'][0]['candidate_boundaries'][0]['conditions']==['A OR B']
+ assert packet2['view']['coordination']['planned_pages'][0]['topics']==['Source group 1']
+ assert 'candidate_boundaries' not in packet2['view']['coordination']['planned_pages'][0]
  s=g.accept(v,s,packet2,response([page('c2')]))
  assert g.complete(v,s)['pages'][0]['candidate_refs']==['c1','c2']
  monkeypatch.setattr(g,'LIMIT',1)
@@ -113,10 +166,11 @@ def test_incremental_routing_retains_source_version_paths_without_truncation():
   p.update(source_resource_id='r'+str(n),source_path='10_Raw/Standard-Version-'+str(n)+'.pdf')
  us=g.units(v);s=g.initial();packet=g.next_packet(v,us[:1],s,project)
  columns=packet['view']['columns']['proposals'];row=dict(zip(columns,packet['view']['proposals'][0]))
- assert row['source_path']=='10_Raw/Standard-Version-1.pdf' and row['source_resource_id']=='r1'
+ assert packet['view']['sources'][row['source']]==['r1','10_Raw/Standard-Version-1.pdf']
  s=g.accept(v,s,packet,response([page('c1','v1')]))
  # A matching related name must still expose which source version was routed before.
  v['view']['proposals'][1]['identity_hints']=[page('c1','v1')['identity']]
  next_view=g.next_packet(v,us[1:],s,project)['view']
  assert next_view['coordination']['planned_pages'][0]['source_paths']==['10_Raw/Standard-Version-1.pdf']
- assert dict(zip(next_view['columns']['proposals'],next_view['proposals'][0]))['source_path']=='10_Raw/Standard-Version-2.pdf'
+ source=dict(zip(next_view['columns']['proposals'],next_view['proposals'][0]))['source']
+ assert next_view['sources'][source]==['r2','10_Raw/Standard-Version-2.pdf']

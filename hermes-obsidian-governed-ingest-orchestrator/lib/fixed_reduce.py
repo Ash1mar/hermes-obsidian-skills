@@ -122,18 +122,48 @@ def prepare(adapter, binding):
 
 
 def global_plan_view(value):
+    """Coordinate source proposals; membership and full evidence stay in the backend."""
+    original=value['view'];by_id={c['candidate']:c for c in original['candidates']}
+    columns={'proposals':['proposal','summary','identity_hints','path_hints','source','risks','member_count','detail_unit'],
+             'identity_hints':['kind','identity_key','canonical_name','aliases'],
+             'sources':['resource_id','path'],'risks':['qa','qa_note']}
+    view={'phase':'global-plan','columns':columns,'proposals':[],'identity_hints':{},'sources':{},'risks':{},
+          'existing_pages':copy.deepcopy(original.get('existing_pages',[]))}
+    if 'coverage_limitations' in original:view['coverage_limitations']=copy.deepcopy(original['coverage_limitations'])
+    catalogs={key:{} for key in ('identity_hints','sources','risks')}
+    def intern(kind,data):
+        digest=fingerprint(data);catalog=catalogs[kind]
+        if digest not in catalog:
+            handle={'identity_hints':'h','sources':'s','risks':'q'}[kind]+str(len(catalog)+1)
+            catalog[digest]=handle;view[kind][handle]=copy.deepcopy(data)
+        return catalog[digest]
+    for proposal in original.get('proposals',[]):
+        hints=[intern('identity_hints',[h.get(k) for k in columns['identity_hints']]) for h in proposal['identity_hints']]
+        source=intern('sources',[proposal.get('source_resource_id'),proposal.get('source_path')])
+        risks=[]
+        for ref in proposal['candidate_refs']:
+            for qa in by_id[ref].get('evidence_qa',[]):
+                if qa.get('qa')=='usable':continue
+                risk=intern('risks',[qa.get('qa'),qa.get('qa_note')])
+                if risk not in risks:risks.append(risk)
+        view['proposals'].append([proposal['proposal'],proposal['summary'],hints,copy.deepcopy(proposal['path_hints']),
+            source,risks,len(proposal['candidate_refs']),proposal.get('_detail_unit',proposal['proposal'])])
+    return view
+
+
+def global_detail_view(value):
     """Provisional routing only; full evidence remains in the bound snapshot."""
     original=value['view']
     view={k:copy.deepcopy(original[k]) for k in ('phase','existing_pages','coverage_limitations') if k in original}
     columns={'proposals':['proposal','summary','candidate_refs','identity_hints','path_hints'],
-             'candidates':['candidate','kind','name','applicability','conditions','exceptions','evidence_qa']}
+             'candidates':['candidate','kind','name','finding','applicability','conditions','exceptions','evidence_qa']}
     if any('source_resource_id' in p for p in original.get('proposals',[])):
         columns['proposals']+=['source_resource_id','source_path']
     view.update(columns=columns,proposals=[[copy.deepcopy(p.get(k)) for k in columns['proposals']]
         for p in original.get('proposals',[])],candidates=[],qa={})
     qa_keys={}
     for candidate in original['candidates']:
-        row={k:copy.deepcopy(candidate[k]) for k in ('candidate','kind','name','applicability','conditions','exceptions') if k in candidate}
+        row={k:copy.deepcopy(candidate[k]) for k in ('candidate','kind','name','finding','applicability','conditions','exceptions') if k in candidate}
         qa=[]
         for item in candidate.get('evidence_qa',[]):
             boundary={k:v for k,v in item.items() if k!='finding' or item.get('qa')!='usable'}
