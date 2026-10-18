@@ -83,3 +83,25 @@ def test_derived_hold_recovery_checks_parent_evidence_not_accepted_label(vault,m
   saved=json.loads((vault/result['report_ref']).read_text())
   assert saved['entries'][0]['derived_failure_only'] and not saved['entries'][0]['parent_work_rerun']
 
+
+@pytest.mark.parametrize('mode',['empty','missing','tampered'])
+def test_empty_result_is_audited_but_not_promoted_to_evidence(monkeypatch,mode):
+ from types import SimpleNamespace as NS
+ import ingest_kanban,reduce_target_recovery as recovery,fixed_evidence
+ record={'pass_kind':'citation','candidates':[] if mode=='empty' else [{'candidate_id':'c'}]}
+ record['pass_id']=fingerprint(record)
+ if mode=='tampered':record['candidates']=[]
+ parent=NS(name='pass-slice:parent',kind='pass-slice');child=NS(parents=('pass-slice:parent',))
+ k=NS(_slice=lambda *_:{'task_ids':['task'],'state':'cancelled'},_pass_index=lambda *_:({}, {'task':[record]}),_document_registry_revision=lambda:1)
+ svc=NS(knowledge=k,verify_pass_skips=lambda *_:None,skipped_pass_tasks=lambda *_:set())
+ monkeypatch.setattr(ingest_kanban,'desired_graph',lambda *_:[parent])
+ monkeypatch.setattr(ingest_kanban,'domain_completed',lambda *_:True)
+ def check(_k,records,*_):
+  if records:raise ContractError('INCOMPLETE_COVERAGE','$','required dependency inspection missing')
+ monkeypatch.setattr(fixed_evidence,'original_evidence',check)
+ value={'batch_id':'b','actor':'a','pass_revision':{'state':'accepted'}}
+ if mode=='empty':
+  result=recovery.verify(NS(workflow=svc),value,child,{}, {},{'reason':parent.name},[],'dependency-resolved/v1')
+  assert result['parents_evidence'][0]['empty_citations']==[record['pass_id']]
+ else:
+  with pytest.raises(ContractError):recovery.verify(NS(workflow=svc),value,child,{}, {},{'reason':parent.name},[],'dependency-resolved/v1')

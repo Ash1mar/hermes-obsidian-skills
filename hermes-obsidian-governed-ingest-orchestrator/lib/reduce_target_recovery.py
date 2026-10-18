@@ -34,10 +34,14 @@ def verify(adapter,value,node,binding,entry,failure,runs,scope):
             citations=[r for rs in records.values() for r in rs if r['pass_kind']=='citation'
                        and not any(n.get('supersedes_pass_id')==r['pass_id'] for n in rs)]
             from fixed_evidence import original_evidence
-            original_evidence(service.knowledge,citations,value['actor'],service.knowledge._document_registry_revision())
-            evidence.append({'node':name,'slice_sha256':fingerprint(item),'latest_citations':[r['pass_id'] for r in citations]})
+            for record in citations:
+                if fingerprint({k:v for k,v in record.items() if k!='pass_id'})!=record['pass_id']:
+                    raise ContractError('SOURCE_CHANGED','$','current citation fingerprint changed')
+            original_evidence(service.knowledge,[r for r in citations if r['candidates']],value['actor'],service.knowledge._document_registry_revision())
+            evidence.append({'node':name,'slice_sha256':fingerprint(item),'latest_citations':[r['pass_id'] for r in citations],'empty_citations':[r['pass_id'] for r in citations if not r['candidates']]})
         else:evidence.append({'node':name,'input_fingerprint':p.input_fingerprint,'domain_completed':True})
     return {'resolved_dependency':parent.name,'parents_evidence':evidence,
             'accepted_revision_sha256':fingerprint(value.get('pass_revision')),
             'exclusion_history_sha256':fingerprint(value.get('pass_skip_history',[])),
             'parent_work_rerun':False,'derived_failure_only':True}
+
