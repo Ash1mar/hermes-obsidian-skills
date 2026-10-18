@@ -906,8 +906,6 @@ def run_reduce(adapter,binding,caller):
         # checked_output checks entry authority; native replay checks both sides
         # of transcript proof. Pure packet selection needs no duplicate graph.
         call_ref=None
-        from fixed_global_targets import select
-        packet=select(adapter,binding,phase,packet,prepare_request_projection)
         try:
             from semantic_output import execute as checked_output,check
             routed,call_ref,(updated,pending)=checked_output(adapter,binding,phase,packet['view'],caller,model_call,
@@ -927,12 +925,14 @@ def run_reduce(adapter,binding,caller):
         stop_at_output_boundary(adapter,binding,phase,packet['view'])
         return pending
     from fixed_global_packets import planning_scope
+    from fixed_global_targets import planning_packet,select
     with planning_scope(input_value):
         while remaining:
-            packet=next_packet(input_value,remaining,state,prepare_request_projection)
+            packet=planning_packet(adapter,binding,input_value,remaining,state,prepare_request_projection)
             pending=plan_call('global-plan',packet)
             for unit in pending:
-                plan_call('global-detail',detail_packet(input_value,unit,state,prepare_request_projection))
+                detail=detail_packet(input_value,unit,state,prepare_request_projection)
+                plan_call('global-detail',select(adapter,binding,'global-detail',detail,prepare_request_projection))
             remaining=remaining[packet['unit_count']:]
     draft=complete(input_value,state)
     views=[fixed_reduce.page_view(adapter,input_value,page) for page in draft['pages']]

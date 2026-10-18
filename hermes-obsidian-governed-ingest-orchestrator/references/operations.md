@@ -538,6 +538,28 @@ review grant per source is allowed; failure is held rather than automatically re
 
 ## Shared finite output correction
 
+New global planning packets measure the complete short-target wire (instructions,
+local target directory and actual schema) during each sequential accumulation
+trial. Consumed legacy or short-target boundaries keep their exact original
+view/schema/journal; packing improvements cannot repartition a rejected request
+to reset its allowance. An indivisible full request that cannot fit stays held.
+
+For an explicitly authorized global planning failure **before any reservation or
+SDK entry**, the same `semantic-output/v1` recovery can receive
+`uncalled_packet: true` and `uncalled_packet_sha256` in its entry, alongside the
+current snapshot/progress/failure hashes. The hash names the complete old
+short-target view. Do not supply `native_audit_ref`, `attempt_ref` or an exhausted
+continuation grant for this case. Admission authenticates all prior successful
+native calls, current source/identity/evidence and ended binding, reproduces the
+exact pre-journal packing defect, rejects unaccounted reservations/calls, then
+proves a complete contiguous new packet fits. Its report records both boundaries
+and measured sizes, with zero additional calls granted and no changed attempts.
+It neither accepts semantic output nor resumes. Use the same reviewed request
+for apply, then resume only within user authorization. Uncertain completion,
+consumed target packets, indivisible evidence oversize and material refusals do
+not qualify. Smaller new packets are also authenticated by their exact wire
+when reconstructing later successful prefixes.
+
 `finite-semantic-output/v1` applies the existing pure schema/packet validators to
 resource/global packets, detail, page writing and page-review JSON. A persistent
 `output-attempts` record permits the initial call and one diagnostic correction.

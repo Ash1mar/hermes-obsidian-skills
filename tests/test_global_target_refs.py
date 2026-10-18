@@ -96,3 +96,66 @@ def test_short_diagnostic_excerpts_only_actual_conflicts_without_changing_answer
     assert diagnostic['duplicate_assignments']==['p2']
     assert [r['output_index'] for r in diagnostic['failed_response_excerpt']['pages']]==[0,1]
     assert all(r['page']['target_ref']=='t1' for r in diagnostic['failed_response_excerpt']['pages'])
+
+
+def packing_fixture(tmp_path):
+    v=fixture_value();s=g.initial();b={'workflow_id':'fixture','node':'global-reduce','task_id':'ended'}
+    a=NS(workflow=NS(vault=tmp_path,status=lambda _:{'execution_recovery_history':[]}))
+    def project(phase,view,sc,images,correction=None):
+        actual=prepare_request_projection(phase,view,sc,images,correction)
+        if phase!='global-plan':return actual
+        short=view.get('output_contract')==targets.CONTRACT
+        count=len(view['coordination']['proposal_refs'])
+        return {**actual,'input_size':31000 if short and count==2 else 20000 if short else 29000}
+    return v,s,b,a,project
+
+
+def test_new_packets_pack_the_complete_target_wire_and_preserve_the_remainder(tmp_path):
+    v,s,b,a,project=packing_fixture(tmp_path);us=g.units(v)
+    legacy=g.next_packet(v,us,s,project);assert legacy['unit_count']==2
+    packet=targets.planning_packet(a,b,v,us,s,project)
+    assert packet['view']['output_contract']==targets.CONTRACT and packet['unit_count']==1
+    assert packet['input_codepoints']==20000 and packet['proposal_refs']==['p1']
+    result,pending=g.accept_proposals(v,s,packet,proposal_response([{
+        **{k:x for k,x in page('c1','v1').items() if k!='candidate_refs'},'proposal_refs':['p1']}]))
+    rest=targets.planning_packet(a,b,v,us[packet['unit_count']:],result,project)
+    assert not pending and rest['proposal_refs']==['p2'] and rest['candidate_refs']==['c2']
+
+
+@pytest.mark.parametrize('state',['valid','rejected','reserved'])
+def test_consumed_legacy_boundary_cannot_be_repacked_to_reset_calls(tmp_path,state):
+    v,s,b,a,project=packing_fixture(tmp_path);packet=g.next_packet(v,g.units(v),s,project)
+    path=output.path_for(a,b,'global-plan',packet['view']);path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'attempts':[{'attempt':1,'state':state}]}));before=path.read_bytes()
+    selected=targets.planning_packet(a,b,v,g.units(v),s,project)
+    assert selected==packet and path.read_bytes()==before
+
+
+def test_consumed_oversized_short_boundary_is_held_not_repartitioned(tmp_path):
+    v,s,b,a,project=packing_fixture(tmp_path);packet=g.next_packet(v,g.units(v),s,project)
+    path=output.path_for(a,b,'global-plan',targets.target_view(packet['view']));path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({'attempts':[{'attempt':1,'state':'rejected'}]}));before=path.read_bytes()
+    with pytest.raises(ContractError,match='READING_WINDOW_OVERSIZE'):
+        targets.planning_packet(a,b,v,g.units(v),s,project)
+    assert path.read_bytes()==before
+
+
+def test_executor_advances_by_the_measured_packet_without_losing_the_remaining_unit(tmp_path,monkeypatch):
+    import fixed_semantic as fixed
+    import fixed_reduce
+    v,s,b,a,project=packing_fixture(tmp_path);a.worker_check=lambda *_:None;a.worker_complete=lambda *_:{'ok':True}
+    monkeypatch.setattr(fixed,'canonical_binding',lambda *_a,**_k:(b,{}))
+    monkeypatch.setattr(fixed_reduce,'prepare',lambda *_:('fixture-input',v))
+    monkeypatch.setattr(fixed,'prepare_request_projection',project)
+    monkeypatch.setattr(fixed,'attach_receipt',lambda *_:None)
+    submitted=[];monkeypatch.setattr(fixed_reduce,'submit',lambda *args:submitted.append(copy.deepcopy(args[-1])) or {'ok':True})
+    planned=[]
+    def call(_a,_b,phase,view,*args,**kwargs):
+        if phase=='global-plan':
+            refs=view['coordination']['proposal_refs'];planned.append(refs)
+            return proposal_response([{**{k:x for k,x in page('unused',ref).items() if k!='candidate_refs'},'proposal_refs':[ref]} for ref in refs]),'fixture-routing-'+refs[0]
+        assert phase=='page-write'
+        return {'content':'Isolated test body'},'fixture-body'
+    monkeypatch.setattr(fixed,'model_call',call)
+    assert fixed.execute(a,'fixture-binding',lambda:None)['ok']
+    assert planned==[['p1'],['p2']] and {r for p in submitted[0]['pages'] for r in p['candidate_refs']}=={'c1','c2'}

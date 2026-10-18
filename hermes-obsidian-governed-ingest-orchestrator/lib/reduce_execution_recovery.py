@@ -220,7 +220,8 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 return {**result, 'revision': value['revision'], 'entries': audited}
             ref = f'_system/ledgers/ingest-workflows/{wid}/execution-recoveries/{rid}.json'
             report = {'request': dict(request), 'entries': audited, 'batch_id': value['batch_id'],
-                      'domain_inputs_changed': False, 'semantic_retry_authorized': scope in ('source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','source-result-review/v1','semantic-output/v1')}
+                      'domain_inputs_changed': False, 'semantic_retry_authorized': scope in ('source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','source-result-review/v1') or
+                          (scope=='semantic-output/v1' and any(not e.get('uncalled_packet') for e in audited))}
             path = _vault_path(service.vault, ref)
             data = _json_bytes(report)
             if path.exists() and path.read_bytes() != data:
