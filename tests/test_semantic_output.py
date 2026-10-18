@@ -128,3 +128,59 @@ def test_admission_and_canonical_replay_share_exact_recovery_identity():
     assert key('semantic-output/v1',a)!=key('semantic-output/v1',b)
     assert key('semantic-output/v1',a)==key('semantic-output/v1',dict(a))
     assert key('source-format/v1',a)==key('source-format/v1',b)
+
+
+def test_diagnosis_collects_path_identity_and_coverage_findings_without_patching():
+    target=answer()['pages'][0];draft=answer();draft['pages'][1]['path']=target['path']
+    draft['pages'][0]['identity']['aliases']=['changed alias'];draft['pages'][1]['proposal_refs']=[]
+    original=copy.deepcopy(draft)
+    packet={'proposal_refs':['p1','p2'],'units':[],
+        'view':{'coordination':{'planned_pages':[target]}}}
+    d=output.diagnosis('global-plan',packet,draft,ContractError('INCOMPLETE_COVERAGE','$','coverage'))
+    assert d['missing']==['p2'] and d['failed_response']==original and draft==original
+    assert {f['rule'] for f in d['page_findings']}=={'distinct_identities_share_path','append_requires_exact_offered_identity_and_path'}
+    assert all(f['offered_target']['identity']==target['identity'] for f in d['page_findings'] if 'offered_target' in f)
+
+
+def test_diagnostic_upgrade_keeps_old_successful_correction_wire(tmp_path,monkeypatch):
+    c=fixture(tmp_path,monkeypatch,[answer(True),answer()]);c.run()
+    old=json.loads(output.path_for(c.adapter,c.binding,'global-plan',c.packet['view']).read_text())
+    monkeypatch.setattr(output,'diagnosis',lambda *args: {'different':'new diagnostic rules'})
+    assert c.run()[0]==answer() and len(c.calls)==2
+    assert json.loads(output.path_for(c.adapter,c.binding,'global-plan',c.packet['view']).read_text())==old
+
+
+def grant_continuation(c):
+    import hashlib
+    from hermes_source_units.validation import fingerprint
+    path=output.path_for(c.adapter,c.binding,'global-plan',c.packet['view']);record=json.loads(path.read_text())
+    permit={'journal_name':path.name,'prior_attempts_sha256':fingerprint(record['attempts']),
+        'input_sha256':record['input_sha256'],'schema_sha256':record['schema_sha256'],'attempt_ordinal':3,
+        'diagnostic':{'reviewed':'precise mechanical findings','failed_response':answer(True)}}
+    report=path.parent.parent/'explicit-grant.json';report.write_text(json.dumps({'request':{'recovery_scope':output.SCOPE},
+        'entries':[{'node':c.binding['node'],'exhausted_continuation':permit}]}))
+    ref=report.relative_to(c.adapter.workflow.vault).as_posix()
+    c.adapter.workflow.status=lambda _: {'execution_recovery_history':[{'report_ref':ref,'report_sha256':hashlib.sha256(report.read_bytes()).hexdigest()}]}
+    return path
+
+
+@pytest.mark.parametrize('success',[True,False])
+def test_explicit_continuation_retains_three_total_calls_and_never_gets_fourth(tmp_path,monkeypatch,success):
+    c=fixture(tmp_path,monkeypatch,[answer(True),answer(True),answer(not success)])
+    with pytest.raises(ContractError):c.run()
+    path=grant_continuation(c);c.binding['task_id']='explicitly-authorized-ended-successor'
+    for _ in range(2):
+        if success:assert c.run()[0]==answer()
+        else:
+            with pytest.raises(ContractError):c.run()
+    r=json.loads(path.read_text());assert len(c.calls)==3 and [a['attempt'] for a in r['attempts']]==[1,2,3]
+    assert r['attempts'][2]['authorization_ref'] and r['attempts'][2]['state']==('valid' if success else 'rejected')
+
+
+def test_changed_prior_attempts_cannot_use_explicit_continuation(tmp_path,monkeypatch):
+    c=fixture(tmp_path,monkeypatch,[answer(True),answer(True)])
+    with pytest.raises(ContractError):c.run()
+    path=grant_continuation(c);record=json.loads(path.read_text());record['attempts'][0]['wire_sha256']='changed'
+    path.write_text(json.dumps(record))
+    with pytest.raises(ContractError,match='exact prior attempts'):c.run()
+    assert len(c.calls)==2

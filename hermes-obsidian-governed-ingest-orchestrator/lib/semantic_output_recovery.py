@@ -35,7 +35,7 @@ def verify(adapter,w,node,binding,entry,failure,runs):
         if prior['request'].get('recovery_scope') not in ('semantic-output/v1','reduce-cancel/v1'):continue
         for old in prior['entries']:
             if old['node']==node.name:permitted[old['previous_task_id']]=set(old['ended_run_ids'])
-    def read(ref,phase,packet,seen=None):
+    def read(ref,phase,packet,seen=None,correction=None):
         path=_vault_path(adapter.workflow.vault,ref);a=_load_json(path)
         seen=set() if seen is None else seen
         if ref in seen:fail('cyclic audit provenance')
@@ -45,10 +45,16 @@ def verify(adapter,w,node,binding,entry,failure,runs):
             or a.get('workflow_id')!=w['workflow_id'] or a.get('phase')!=phase
             or str(a.get('native_run_id')) not in permitted[a['native_task_id']]
             or a.get('template_hash')!=binding['template_hash']):fail('legacy call does not belong to the exact ended native attempt')
-        wire=prepare_request_projection(phase,packet['view'],schema(phase),[])['wire']
+        if correction is None:
+            jp=path_for(adapter,binding,phase,packet['view'])
+            if jp.exists():
+                matching=[attempt for attempt in _load_json(jp)['attempts'] if attempt.get('audit_ref')==ref]
+                if len(matching)>1:fail('native audit belongs to multiple attempt ordinals')
+                if matching:correction=matching[0].get('correction')
+        wire=prepare_request_projection(phase,packet['view'],schema(phase),[],correction)['wire']
         if a['input_sha256']!=fingerprint(wire) or a['user_sha256']!=fingerprint(wire['user']) or a['schema_sha256']!=fingerprint(schema(phase)) or a.get('image_inputs'):fail('legacy full wire/schema/media differs')
         if a.get('reused_from_audit'):
-            original,draft,_=read(a['reused_from_audit'],phase,packet,seen)
+            original,draft,_=read(a['reused_from_audit'],phase,packet,seen,correction)
             if a['response_sha256']!=original['response_sha256']:fail('replay response differs from native original')
             return a,draft,wire
         raw=transcript_reply(a,wire)
@@ -74,6 +80,39 @@ def verify(adapter,w,node,binding,entry,failure,runs):
     phase='global-detail' if pending else 'global-plan'
     packet=g.detail_packet(value,pending[0],state,prepare_request_projection) if pending else g.next_packet(value,remaining,state,prepare_request_projection)
     path=path_for(adapter,binding,phase,packet['view'])
+    if entry.get('continue_exhausted') is True:
+        for pointer in w.get('execution_recovery_history',[]):
+            prior=_load_json(_vault_path(adapter.workflow.vault,pointer['report_ref']))
+            if any(e.get('exhausted_continuation',{}).get('journal_name')==path.name for e in prior['entries']):fail('this logical packet already has its explicit continuation authority; resume it without another grant')
+        jp=_vault_path(adapter.workflow.vault,entry['attempt_ref'])
+        if jp!=path or hashlib.sha256(jp.read_bytes()).hexdigest()!=entry['attempt_sha256']:fail('exhausted attempt record changed')
+        journal=_load_json(jp)
+        if (journal['contract']!=CONTRACT or journal['input_sha256']!=fingerprint(packet['view'])
+            or journal['schema_sha256']!=fingerprint(schema(phase)) or len(journal['attempts'])!=2):fail('continuation requires the exact exhausted two-attempt journal')
+        prior_correction=None;last_draft=None;last_error=None
+        for i,attempt in enumerate(journal['attempts']):
+            if (attempt['attempt']!=i+1 or attempt['state']!='rejected' or not attempt.get('correctable')
+                or not attempt.get('audit_ref') or attempt.get('correction')!=prior_correction):fail('prior attempts are not two complete, rejected output calls')
+            audit,last_draft,wire=read(attempt['audit_ref'],phase,packet,correction=attempt['correction'])
+            if audit.get('validated') is not False or attempt['wire_sha256']!=fingerprint(wire):fail('rejected native wire differs')
+            try:
+                if last_draft is None:raise ContractError('INVALID_SCHEMA','$','native response is not one JSON object')
+                check(phase,value,packet,state,last_draft)
+            except ContractError as exc:
+                if exc.code not in ELIGIBLE or attempt['diagnostic']['code']!=exc.code:fail('prior rejection is not reproduced by the pure validator')
+                last_error=exc
+            else:fail('a prior response is now valid; reuse it without another call')
+            prior_correction=attempt['diagnostic']
+        last=journal['attempts'][-1];bad=_vault_path(adapter.workflow.vault,entry['native_audit_ref'])
+        if (entry['native_audit_ref']!=last['audit_ref'] or hashlib.sha256(bad.read_bytes()).hexdigest()!=entry['native_audit_sha256']
+            or last['task_id']!=binding['task_id'] or last_error.code!=failure['error_code']):fail('last failure identity or native audit changed')
+        diagnostic=diagnosis(phase,packet,last_draft,last_error)
+        if (not diagnostic.get('page_findings') or diagnostic==last['diagnostic']
+            or entry.get('reviewed_diagnostic_sha256')!=fingerprint(diagnostic)):fail('explicit continuation requires reviewed, newly precise mechanical findings')
+        if prepare_request_projection(phase,packet['view'],schema(phase),[],diagnostic)['input_size']>30000:fail('complete authorized continuation exceeds bound')
+        return {'exhausted_continuation':{'journal_name':path.name,'prior_attempts_sha256':fingerprint(journal['attempts']),
+            'input_sha256':journal['input_sha256'],'schema_sha256':journal['schema_sha256'],'attempt_ordinal':3,'diagnostic':diagnostic},
+            'input_ref':entry['snapshot_ref'],'progress_ref':entry['progress_ref'],'authenticated_prefix_count':len(saved['successful_call_refs'])}
     uncalled=None
     if entry.get('attempt_ref'):
         jp=_vault_path(adapter.workflow.vault,entry['attempt_ref'])
@@ -99,6 +138,7 @@ def verify(adapter,w,node,binding,entry,failure,runs):
     if path.exists() and len(_load_json(path)['attempts'])>=2 and not uncalled:fail('the shared correction allowance is already consumed')
     if prepare_request_projection(phase,packet['view'],schema(phase),[],diagnostic)['input_size']>30000:fail('complete correction request exceeds bound')
     if uncalled:
+        diagnostic=last['correction']  # Preserve the already reserved exact wire.
         if journal['attempts'][0]['audit_ref']!=entry['native_audit_ref'] or last['wire_sha256']!=fingerprint(prepare_request_projection(phase,packet['view'],schema(phase),[],diagnostic)['wire']):fail('reserved correction no longer matches its original failure and diagnostic')
         return {'uncalled_reservation':uncalled,'input_ref':entry['snapshot_ref'],'progress_ref':entry['progress_ref'],'authenticated_prefix_count':len(saved['successful_call_refs'])}
     return {'output_seed':{'journal_name':path.name,'record':{'contract':CONTRACT,'phase':phase,'input_sha256':fingerprint(packet['view']),

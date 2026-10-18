@@ -148,8 +148,13 @@ class ExecutionPlanMixin:
                     if (not isinstance(cause,str) or not cause or entry.get('failure',{}).get('error_code')
                             not in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED')):
                         fail('STALE_INPUT','Reduce cancellation recovery lacks its exact ended native identity')
-                if scope=='semantic-output/v1' and (not entry.get('previous_task_id') or not (entry.get('output_seed') or entry.get('uncalled_reservation'))):
+                if scope=='semantic-output/v1' and (not entry.get('previous_task_id') or not (entry.get('output_seed') or entry.get('uncalled_reservation') or entry.get('exhausted_continuation'))):
                     fail('STALE_INPUT','shared output recovery lacks its authenticated attempt evidence')
+                if scope=='semantic-output/v1' and entry.get('exhausted_continuation'):
+                    permit=entry['exhausted_continuation']
+                    if (permit.get('attempt_ordinal')!=3 or not permit.get('prior_attempts_sha256')
+                        or not any(e.get('node')==entry['node'] and e.get('continue_exhausted') is True for e in request['entries'])):
+                        fail('STALE_INPUT','exhausted output continuation lacks explicit bounded authorization')
                 keys.append(execution_recovery_key(scope,entry))
             if (request['workflow_id'] != workflow['workflow_id']
                     or request['actor'] != workflow['actor']

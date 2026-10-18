@@ -16,6 +16,12 @@ single `semantic-output/v1` migration described in references/operations.md;
 it authenticates native prefix/state and imports the failed call as attempt one.
 Never edit an answer or use cancellation to reset its allowance.
 
+An exhausted two-call global packet stays held by default. Only after explicit
+operator authorization for a proven diagnostic defect, the same semantic-output/v1
+entry may authenticate both rejected calls and grant one additional call recorded
+as ordinal 3. This is not another automatic correction cycle; see operations.md.
+Old diagnostics/wires and all prior counts remain immutable on replay.
+
 For explicitly reviewed semantic defects in a completed but globally unconsumed
 source result, use `source-result-review/v1` in `references/operations.md`.
 It authenticates the complete original native packet provenance, grants one

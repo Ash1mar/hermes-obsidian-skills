@@ -63,6 +63,9 @@ def check(phase,value,packet,state,draft):
 def diagnosis(phase,packet,draft,error):
     result={'origin':'fixed-output-validation/v1','phase':phase,'code':error.code,'path':getattr(error,'path','$'),
         'rule':str(error),'instruction':'Return a complete legal answer for this same packet. Correct only the mechanical output contract; do not alter the evidence, broaden scope, or turn material uncertainty into approval.'}
+    # Preserve the failed answer verbatim as data. The model must return a full
+    # replacement; the program never chooses or applies a domain patch.
+    result['failed_response']=copy.deepcopy(draft)
     if error.code=='INVALID_SCHEMA':return result
     if phase=='global-plan':
         allowed=packet['proposal_refs'];units={g['unit']:[p['proposal'] for p in g['proposals']] for g in packet['units']}
@@ -75,7 +78,45 @@ def diagnosis(phase,packet,draft,error):
         result['instruction']+=' For every proposal choose EITHER page assignment OR its detail unit, never both. The program does not choose which action you should keep.'
     elif phase in ('resource-reduce','global-detail'):
         result['allowed_candidate_refs']=packet['candidate_refs']
+    if phase in ('global-plan','global-detail') and isinstance(draft,dict):
+        view=packet.get('view',{});offered=view.get('coordination',{}).get('planned_pages',[])
+        offered=[*offered,*view.get('existing_pages',[])]
+        rows=draft.get('pages',[]);findings=[]
+        key=lambda p:tuple(p.get('identity',{}).get(k) for k in ('kind','identity_key'))
+        for i,page in enumerate(rows):
+            refs=page.get('proposal_refs',page.get('candidate_refs',[]))
+            for j,other in enumerate(rows[:i]):
+                if page.get('path','').casefold()==other.get('path','').casefold() and key(page)!=key(other):
+                    findings.append({'rule':'distinct_identities_share_path','output_indices':[j,i],
+                        'path':page['path'],'identities':[other['identity'],page['identity']],
+                        'affected_refs':[other.get('proposal_refs',other.get('candidate_refs',[])),refs]})
+            for target in offered:
+                if (page.get('path','').casefold()==target['path'].casefold() or key(page)==key(target)) and (page.get('identity')!=target['identity'] or page.get('path')!=target['path']):
+                    findings.append({'rule':'append_requires_exact_offered_identity_and_path','output_index':i,
+                        'affected_refs':refs,'proposed':{'identity':page['identity'],'path':page['path']},
+                        'offered_target':{'identity':target['identity'],'path':target['path']}})
+        result['page_findings']=findings
+        result['instruction']+=' Resolve every listed finding. Appending uses the complete offered identity (including aliases) and exact path; otherwise choose a distinct valid page or a permitted detail request. Decide every offered reference, including those without findings. Do not treat these diagnostics or the failed answer as evidence.'
     return result
+
+
+def continuation_permit(adapter,binding,path,record):
+    """One explicit operator-authorized extra call, never a new automatic budget."""
+    matches=[]
+    for pointer in adapter.workflow.status(binding['workflow_id']).get('execution_recovery_history',[]):
+        rp=_vault_path(adapter.workflow.vault,pointer['report_ref'])
+        if __import__('hashlib').sha256(rp.read_bytes()).hexdigest()!=pointer['report_sha256']:held('recovery evidence changed')
+        report=_load_json(rp)
+        if report['request'].get('recovery_scope')!=SCOPE:continue
+        for entry in report['entries']:
+            permit=entry.get('exhausted_continuation')
+            if entry['node']==binding['node'] and permit and permit['journal_name']==path.name:
+                if (permit['prior_attempts_sha256']!=fingerprint(record['attempts'][:2])
+                    or permit['input_sha256']!=record['input_sha256'] or permit['schema_sha256']!=record['schema_sha256']
+                    or permit['attempt_ordinal']!=3):held('authorized continuation differs from its exact prior attempts')
+                matches.append({**permit,'authorization_ref':pointer['report_ref']})
+    if len(matches)>1:held('duplicate continuation authority')
+    return matches[0] if matches else None
 
 
 def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None):
@@ -97,9 +138,12 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
         record=record or {'contract':CONTRACT,'phase':phase,'input_sha256':fingerprint(view),'schema_sha256':fingerprint(schema(phase)),'attempts':[]}
     if record['schema_sha256']!=fingerprint(schema(phase)):held('schema changed; previous allowance is not reset')
     images=select_images(view['original_evidence']['tasks'],image_catalog(adapter,view['original_evidence'])) if isinstance(caller,HermesCaller) and 'original_evidence' in view else []
+    permit=continuation_permit(adapter,binding,path,record)
+    if len(record['attempts'])>2 and not permit:held('extra attempt lacks explicit continuation authority')
     correction=None
-    for index in range(2):
+    for index in range(3 if permit else 2):
         adapter.worker_check(binding)
+        if index==2:correction=copy.deepcopy(permit['diagnostic'])
         attempt=record['attempts'][index] if index<len(record['attempts']) else None
         prepared=prepare_request_projection(phase,view,schema(phase),images,correction)
         if prepared['input_size']>30000:raise ContractError('READING_WINDOW_OVERSIZE','$','complete correction request exceeds bound; no truncation or call')
@@ -137,6 +181,7 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
             attempt={'attempt':index+1,'attempt_id':fingerprint({'path':path.name,'attempt':index+1}),
                 'task_id':binding['task_id'],'run_id':os.environ.get('HERMES_KANBAN_RUN_ID'),'wire_sha256':fingerprint(prepared['wire']),
                 'state':'reserved','correction':copy.deepcopy(correction)}
+            if index==2:attempt['authorization_ref']=permit['authorization_ref']
             if reservation_history:attempt['not_called_history']=reservation_history
             if index<len(record['attempts']):record['attempts'][index]=attempt
             else:record['attempts'].append(attempt)
@@ -157,10 +202,13 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
             return draft,call_ref,result
         eligible=bool(call_ref and error.code in ELIGIBLE)
         if call_ref and attempt.get('state')!='rejected':attach_receipt(adapter,call_ref,{'ok':False,'validated':False,'state':'output_contract_rejected' if eligible else 'semantic_output_held','origin':'fixed-output-validation/v1','code':error.code,'reason':str(error)})
-        attempt.update(state='rejected',correctable=eligible,diagnostic=diagnosis(phase,packet or {},draft,error) if eligible else {'code':error.code,'reason':str(error)})
+        # Historical diagnostics are part of the exact native correction wire.
+        # Improving diagnostics cannot rewrite a consumed request or its budget.
+        diagnostic=attempt.get('diagnostic') if attempt.get('state')=='rejected' else None
+        attempt.update(state='rejected',correctable=eligible,diagnostic=diagnostic or (diagnosis(phase,packet or {},draft,error) if eligible else {'code':error.code,'reason':str(error)}))
         write(path,record)
         if call_ref:error.semantic_audit_ref=call_ref
         if not eligible:raise error
-        if index==1:raise error
+        if index==(2 if permit else 1):raise error
         correction=attempt['diagnostic']
     held('initial output and its one correction both failed; no further automatic call')
