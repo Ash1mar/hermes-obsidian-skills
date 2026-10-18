@@ -547,6 +547,13 @@ are measured again; nothing is truncated. Unknown native completion remains held
 Valid native results are revalidated and reused before any new call. Prompt,
 worker and process changes do not reset consumed allowance.
 
+Diagnostics include the failed answer as data, all independently computable
+coverage/overlap findings, concrete conflicting paths and exact offered append
+identities (including aliases). The model returns a complete replacement; the
+program never patches domain choices. Full validation remains authoritative.
+Persisted diagnostics are part of their original native wire and remain frozen
+when diagnostic code changes; successful old corrections still replay exactly.
+
 For an explicitly authorized legacy incremental global failure, use the existing
 `recover-reduce-execution` with `recovery_scope: semantic-output/v1`, the current
 `target_contract_sha256` from `semantic_output_recovery.contract_hash()`, and each
@@ -565,6 +572,21 @@ prefix. Preserve the old not-called receipt and continue the same second ordinal
 do not mint a third attempt. Admission and canonical replay share
 `execution_recovery_key`; both use the exact ended native identity for this scope.
 Uncertain SDK completion, permission or stale-input failures never use this proof.
+
+For an explicitly authorized continuation after a confirmed diagnostic defect,
+use this same `semantic-output/v1` entry, not a new recovery scope. Supply
+`continue_exhausted: true`, the exact `attempt_ref/attempt_sha256` and
+`reviewed_diagnostic_sha256`, alongside the existing source/progress/failure and
+last-native-audit hashes. Admission reconstructs the valid prefix and authenticates
+both rejected native wires, including the original correction. It requires newly
+precise mechanical page findings, unchanged evidence/schema and a measured full
+request within budget. Material refusals, uncertain completion and changed input
+remain ineligible. Apply records an `exhausted_continuation` in the existing
+recovery report; resume is still separate. The same journal retains attempts 1
+and 2, then records exactly one explicitly authorized call as ordinal 3, with no
+automatic correction of that call. A prior continuation or three consumed calls
+cannot obtain another grant. Prompt changes and process recovery do not authorize
+this exception. The default automatic limit remains two calls.
 
 Page review retains one substantive check. Only concrete factual, numeric/unit,
 logic, scope, condition/exception, conflict, necessary-coverage or required-parent
