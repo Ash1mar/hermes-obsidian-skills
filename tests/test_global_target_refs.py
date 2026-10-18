@@ -64,3 +64,22 @@ def test_operation_lookup_preserves_old_wire_and_does_not_survive_scope(tmp_path
         assert actual==expected
     v['view']['proposals'][0]['summary']='Changed current source grouping'
     assert g.next_packet(v,units[1:],s,prepare_request_projection)['view']!=expected['view']
+
+
+def test_actual_model_decoder_accepts_the_short_schema_it_sent(tmp_path):
+    import fixed_semantic as fixed
+    v,s,p,a,b=fixture(tmp_path);a.worker_check=lambda *_:None
+    p=targets.select(a,b,'global-plan',p,prepare_request_projection)
+    answer=proposal_response([{'target_ref':'t1','proposal_refs':['p2']}])
+    seen=[]
+    def caller(phase,view,output_schema,correction):
+        seen.append(output_schema)
+        return json.dumps(answer),{'origin':'isolated_fixture_not_native_acceptance'}
+    result,ref=fixed.model_call(a,b,'global-plan',p['view'],caller,30000,attempt_limit=1)
+    assert result==answer and seen==[schema_for('global-plan',p['view'])]
+    audit=json.loads((tmp_path/ref).read_text())
+    assert audit['schema_sha256']==fingerprint(seen[0])
+    fixed.attach_receipt(a,ref,{'ok':True,'validated':True,'state':'fixture'})
+    first=(tmp_path/ref).read_bytes()
+    fixed.attach_receipt(a,ref,{'ok':True,'validated':True,'state':'fixture'})
+    assert (tmp_path/ref).read_bytes()==first

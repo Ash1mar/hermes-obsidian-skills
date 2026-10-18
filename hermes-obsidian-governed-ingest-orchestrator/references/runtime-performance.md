@@ -294,3 +294,13 @@ separately. Compare the same successful native prefix without extra model calls;
 read-only projection time alone does not explain resume-to-first-request latency.
 Do not add a persistent cache or progress-based authorization to remove a smaller
 cost when repeated schema auditing is the evidenced hotspot.
+
+Live prefix replay also exposed adjacent full authority checks. Global routing
+selects its pure packet without another graph check immediately before the
+output executor's entry check. The attempt loop delegates saved-response checks
+to native_reply, which checks live authority before and after transcript proof;
+a new request checks again immediately before reserving its original ordinal,
+and the existing native call boundary still checks authority. No allowance,
+native proof, source validation or domain submission guard is cached or removed.
+Count these remaining authority checks in the runtime timeline rather than
+claiming the standalone schema profile as end-to-end recovery savings.
