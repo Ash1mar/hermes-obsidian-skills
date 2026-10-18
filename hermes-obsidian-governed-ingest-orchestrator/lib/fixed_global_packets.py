@@ -62,7 +62,9 @@ def packet_view(value,chosen,state):
         if related(page['identity'],hints):
             boundaries=[{k:copy.deepcopy(c[k]) for k in ('candidate','name','applicability','conditions','exceptions') if k in c}
                         for c in value['view']['candidates'] if c['candidate'] in page['candidate_refs']]
-            planned.append({**copy.deepcopy(page),'candidate_boundaries':boundaries})
+            planned.append({**copy.deepcopy(page),'candidate_boundaries':boundaries,
+                'source_paths':sorted({p['source_path'] for p in value['view']['proposals']
+                    if p.get('source_path') and set(p['candidate_refs'])&set(page['candidate_refs'])})})
     sliced={'view':{**value['view'],'candidates':[c for c in value['view']['candidates'] if c['candidate'] in handles],
                     'proposals':proposals,'existing_pages':existing}}
     view=fixed_reduce.global_plan_view(sliced)

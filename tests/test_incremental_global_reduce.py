@@ -105,3 +105,18 @@ def test_empty_result_is_audited_but_not_promoted_to_evidence(monkeypatch,mode):
   assert result['parents_evidence'][0]['empty_citations']==[record['pass_id']]
  else:
   with pytest.raises(ContractError):recovery.verify(NS(workflow=svc),value,child,{}, {},{'reason':parent.name},[],'dependency-resolved/v1')
+
+
+def test_incremental_routing_retains_source_version_paths_without_truncation():
+ v=fixture_value()
+ for n,p in enumerate(v['view']['proposals'],1):
+  p.update(source_resource_id='r'+str(n),source_path='10_Raw/Standard-Version-'+str(n)+'.pdf')
+ us=g.units(v);s=g.initial();packet=g.next_packet(v,us[:1],s,project)
+ columns=packet['view']['columns']['proposals'];row=dict(zip(columns,packet['view']['proposals'][0]))
+ assert row['source_path']=='10_Raw/Standard-Version-1.pdf' and row['source_resource_id']=='r1'
+ s=g.accept(v,s,packet,response([page('c1','v1')]))
+ # A matching related name must still expose which source version was routed before.
+ v['view']['proposals'][1]['identity_hints']=[page('c1','v1')['identity']]
+ next_view=g.next_packet(v,us[1:],s,project)['view']
+ assert next_view['coordination']['planned_pages'][0]['source_paths']==['10_Raw/Standard-Version-1.pdf']
+ assert dict(zip(next_view['columns']['proposals'],next_view['proposals'][0]))['source_path']=='10_Raw/Standard-Version-2.pdf'
