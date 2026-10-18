@@ -20,6 +20,13 @@ def fail(code, message):
     raise ContractError(code, '$', message)
 
 
+def execution_recovery_key(scope,entry):
+    """Shared admission/replay identity; journals separately enforce call budget."""
+    cause=(entry.get('previous_task_id') if scope in ('reduce-cancel/v1','semantic-output/v1')
+           else packet_recovery_cause(entry.get('failure',{})) if scope=='revision-citation-packet/v1' else None)
+    return entry['node'],scope,cause
+
+
 PACKET_CAUSES={
     'ACCESS_DENIED':'ACCESS_DENIED at $: ACCESS_DENIED at $: typed submission requires a bounded model slice',
     'STALE_INPUT':'STALE_INPUT at $: STALE_INPUT at $: reviewed candidate identity changed'}
@@ -141,7 +148,9 @@ class ExecutionPlanMixin:
                     if (not isinstance(cause,str) or not cause or entry.get('failure',{}).get('error_code')
                             not in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED')):
                         fail('STALE_INPUT','Reduce cancellation recovery lacks its exact ended native identity')
-                keys.append((entry['node'],scope,cause))
+                if scope=='semantic-output/v1' and (not entry.get('previous_task_id') or not (entry.get('output_seed') or entry.get('uncalled_reservation'))):
+                    fail('STALE_INPUT','shared output recovery lacks its authenticated attempt evidence')
+                keys.append(execution_recovery_key(scope,entry))
             if (request['workflow_id'] != workflow['workflow_id']
                     or request['actor'] != workflow['actor']
                     or request['recovery_id'] != recovery['recovery_id']
