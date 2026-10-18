@@ -70,6 +70,18 @@ def _schema(phase):
 def schema(phase):
     return copy.deepcopy(_schema(phase))
 
+
+def schema_for(phase,view):
+    """Old packets keep their exact schema; only new routing uses short targets."""
+    result=schema(phase)
+    if view.get('output_contract')!='global-target-refs/v1':return result
+    if phase not in ('global-plan','global-detail'):raise ValueError('target refs require a routing phase')
+    page=result['oneOf'][0]['properties']['pages']['items']
+    refs='proposal_refs' if phase=='global-plan' else 'candidate_refs'
+    page_ref=closed({refs:copy.deepcopy(page['properties'][refs]),'target_ref':TEXT})
+    result['oneOf'][0]['properties']['pages']['items']={'oneOf':[page_ref,page]}
+    return result
+
 def validate(phase, value):
     _check_shape(schema(phase),value,{},'$')
 

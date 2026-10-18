@@ -129,6 +129,8 @@ def next_packet(value,remaining,state,project):
 
 def accept(value,state,packet,draft):
     """Validate packet decisions and all accumulated identity/path/coverage invariants."""
+    from fixed_global_targets import expand
+    draft=expand('global-detail',packet['view'],draft)
     validate('global-detail',draft)
     if 'blocked_reason' in draft:fail('SEMANTIC_REVIEW_REQUIRED',draft['blocked_reason'])
     if state_digest(state)!=packet['previous_state_sha256']:fail('STALE_INPUT','preceding global plan state changed')
@@ -168,6 +170,8 @@ def accept(value,state,packet,draft):
 
 def accept_proposals(value,state,packet,draft):
     """Native routing names pN; only the program expands pN to full member sets."""
+    from fixed_global_targets import expand
+    draft=expand('global-plan',packet['view'],draft)
     validate('global-plan',draft)
     if 'blocked_reason' in draft:fail('SEMANTIC_REVIEW_REQUIRED',draft['blocked_reason'])
     queries=draft['detail_unit_refs'];by_unit={g['unit']:g for g in packet['units']}
@@ -185,7 +189,9 @@ def accept_proposals(value,state,packet,draft):
         refs=list(dict.fromkeys(c for r in page['proposal_refs'] for c in lookup[r]['candidate_refs']))
         pages.append({'identity':page['identity'],'path':page['path'],'candidate_refs':refs})
     normal_handles={c for r in assigned for c in lookup[r]['candidate_refs']}
-    part={**packet,'proposal_refs':assigned,'candidate_refs':sorted(normal_handles)}
+    # This internal candidate expansion already has canonical identities.
+    part={**packet,'view':{k:v for k,v in packet['view'].items() if k!='output_contract'},
+          'proposal_refs':assigned,'candidate_refs':sorted(normal_handles)}
     result=accept(value,state,part,{'pages':pages,'omitted_candidate_refs':[],'reason':draft['reason']})
     return result,pending
 

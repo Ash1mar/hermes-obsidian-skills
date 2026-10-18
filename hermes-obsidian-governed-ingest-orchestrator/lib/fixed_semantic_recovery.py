@@ -145,7 +145,8 @@ def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode,
                 if len(users) != 1 or len(raw) != 1:
                     continue
                 draft, _ = decode(raw[0])
-                validate(phase, draft)
+                from hermes_source_units.validation import _check_shape
+                _check_shape(output_schema,draft,{},'$')
                 if 'blocked_reason' in draft:
                     continue
             except (ContractError, ValueError, TypeError, KeyError):
