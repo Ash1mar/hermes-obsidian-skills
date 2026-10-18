@@ -1,5 +1,21 @@
 # Fixed semantic execution
 
+Independent body execution uses two slots at most (or the lower configured
+capacity), under the same native task. A body owns a separate caller/SessionDB,
+adapter and context-local attempt; only progress publication shares a lock.
+Planning/refinement drains pending bodies before changing identities or issuing
+another model request. Local holds remain isolated; shared authority/transport
+failures stop admission and drain. Existing output-boundary recoveries, if any,
+retain their single-request behavior; this never creates a new pause or retry.
+
+Native JSON-object output mode prevents free Markdown and invalid JSON escapes
+for non-slot phases; task slots retain their strict transport schema. Canonical
+schemas, prompts, evidence and view identities remain unchanged, so old answers
+and consumed attempts keep their original validation and allowance. API JSON
+syntax enforcement is not a semantic approval or evidence repair. During saved
+response authentication, the immediately preceding execute-entry check supplies
+the first authority check; fresh exit checking remains mandatory.
+
 Pinned `hermes-fixed-semantic/v1` templates select the native semantic executor.
 The trusted reconciler grants the same native claim/run/PID lifecycle used by
 program nodes. Installation does not change old workflow pins or release pauses.

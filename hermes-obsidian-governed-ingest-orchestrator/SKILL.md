@@ -5,6 +5,15 @@ description: Start, resume and inspect a persistent Vault-authoritative governed
 
 # Governed ingest orchestration
 
+Independent Reduce page bodies may use at most two concurrent native requests,
+within the configured worker capacity. Each request owns its SDK session, database,
+images and existing finite attempt journal; progress publication and identity
+changes remain serialized. Drain bodies before a page-refinement call. A shared
+authority failure prevents new requests; cancellation still uses the original
+native owner and supported stop operation. This does not release a pause.
+Non-slot semantic outputs request native JSON-object mode and retain the full
+canonical output validation, original evidence and existing correction allowance.
+
 Fixed Reduce and page-review output contracts share `finite-semantic-output/v1`:
 normal outputs incur one call; a mechanically located schema, membership,
 exclusive-action or output-target error permits at most one measured correction

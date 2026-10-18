@@ -4,6 +4,9 @@ No new recovery scope: cancelled execution replays exact native results normally
 Only Hermes chooses semantic identities, regrouping and prose.
 """
 import copy
+import threading
+from concurrent.futures import ThreadPoolExecutor,wait,FIRST_COMPLETED
+from contextvars import copy_context
 from hermes_source_units import ContractError
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.source_units import _vault_path,_write_atomic,_json_bytes
@@ -71,6 +74,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     from semantic_output import execute as checked_output,check,stop_at_output_boundary
     from fixed_global_targets import select
     original_plan_sha=fingerprint(state);working=copy.deepcopy(state);written=[];calls=[];held=[]
+    progress_lock=threading.RLock();halt=threading.Event()
     prefix=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}"
     progress_ref=f"{prefix}/semantic-inputs/page-work-{value['input_id']}.json"
     def save():
@@ -80,26 +84,57 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             'planning_failure':planning_failure,'successful_call_refs':calls,'formal_global_submitted':False}))
     def defer(page,phase,exc):
         if exc.code not in LOCAL:raise exc
-        held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':phase,
-            'code':exc.code,'reason':str(exc),'audit_ref':getattr(exc,'semantic_audit_ref',None)})
-        save()
-    def write(page,view):
-        answer,audit,_=checked_output(adapter,binding,'page-write',view,caller,model_call,
+        with progress_lock:
+            held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':phase,
+                'code':exc.code,'reason':str(exc),'audit_ref':getattr(exc,'semantic_audit_ref',None)})
+            save()
+    def write(page,view,owner,local_caller):
+        if halt.is_set():return
+        answer,audit,_=checked_output(owner,binding,'page-write',view,local_caller,model_call,
             lambda d:check('page-write',value,None,None,d))
         content=answer['content'];ref=f"{prefix}/page-drafts/{fingerprint(view)}.md"
-        adapter.worker_check(binding)
+        owner.worker_check(binding)
+        if halt.is_set():return
         path=_vault_path(adapter.workflow.vault,ref);raw=content.encode('utf-8')
         if path.exists() and path.read_bytes()!=raw:raise ContractError('SOURCE_CHANGED','$','saved native body differs for identical page input')
         if not path.exists():_write_atomic(path,raw)
-        written.append({'identity':page['identity'],'path':page['path'],'candidate_refs':page['candidate_refs'],
-            'content':content,'draft_ref':ref,'audit_ref':audit,'input_sha256':fingerprint(view)})
-        calls.append(audit);attach_receipt(adapter,audit,{'ok':True,'validated':True,'state':'page_body_only','draft_ref':ref})
-        save();stop_at_output_boundary(adapter,binding,'page-write',view)
-    for original in list(state['pages']):
+        with progress_lock:
+            written.append({'identity':page['identity'],'path':page['path'],'candidate_refs':page['candidate_refs'],
+                'content':content,'draft_ref':ref,'audit_ref':audit,'input_sha256':fingerprint(view)})
+            calls.append(audit);attach_receipt(owner,audit,{'ok':True,'validated':True,'state':'page_body_only','draft_ref':ref})
+            save()
+        stop_at_output_boundary(owner,binding,'page-write',view)
+    def body(page,view):
+        from fixed_semantic import HermesCaller
+        from ingest_kanban import IngestKanbanAdapter
+        # No shared SDK/DB/image/request scope between the two model calls.
+        local_caller=caller.fork() if isinstance(caller,HermesCaller) else caller
+        owner=(IngestKanbanAdapter(adapter.workflow.vault,enable_workers=adapter.enable_workers)
+               if isinstance(adapter,IngestKanbanAdapter) else adapter)
+        try:write(page,view,owner,local_caller)
+        except ContractError as exc:
+            if exc.code not in LOCAL:halt.set();raise
+            defer(page,'page-write',exc)
+        except BaseException:halt.set();raise
+    # One native owner, at most two independent bodies; plan mutations and
+    # progress publication remain serialized. No nested scheduling or new task IDs.
+    from semantic_output import output_boundary
+    boundary,_=output_boundary(adapter,binding)
+    capacity=1 if boundary else min(2,getattr(adapter,'program_worker_concurrency',2))
+    pending=set()
+    def drain(all_pending=False):
+        if not pending:return
+        done,_=wait(pending,return_when=('ALL_COMPLETED' if all_pending else FIRST_COMPLETED))
+        pending.difference_update(done)
+        for future in done:future.result()
+    pool=ThreadPoolExecutor(max_workers=capacity)
+    try:
+      for original in list(state['pages']):
         page=next(p for p in working['pages'] if p['path']==original['path'])
         try:
             view,size=measure(adapter,value,page,caller,project)
             if size>LIMIT:
+                drain(True)  # A planning call must not become a third model call.
                 base,packet=refinement(adapter,value,working,page,caller,project)
                 packet=select(adapter,binding,'global-detail',packet,project)
                 def validate(draft):
@@ -118,7 +153,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                 children=expand('global-detail',packet['view'],routed)['pages']
                 working=updated;calls.append(audit)
                 attach_receipt(adapter,audit,{'ok':True,'validated':True,'state':'budget_refined_page_plan','original_plan_sha256':original_plan_sha})
-                save()
+                with progress_lock:save()
             else:children=[page]
         except ContractError as exc:
             defer(page,'page-plan',exc);continue
@@ -126,8 +161,15 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             try:
                 child_view,n=measure(adapter,value,child,caller,project)
                 if n>LIMIT:raise ContractError('READING_WINDOW_OVERSIZE','$','complete page input exceeds bound')
-                write(child,child_view)
+                if len(pending)>=capacity:drain()
+                if halt.is_set():drain(True);raise RuntimeError('independent page work stopped by a shared failure')
+                pending.add(pool.submit(copy_context().run,body,child,child_view))
             except ContractError as exc:defer(child,'page-write',exc)
+      drain(True)
+    finally:
+        halt.set()
+        for future in pending:future.cancel()
+        pool.shutdown(wait=True,cancel_futures=True)
     save()
     if held or planning_failure:
         raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',
