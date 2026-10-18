@@ -897,7 +897,7 @@ def run_reduce(adapter,binding,caller):
         try:
             from semantic_output import execute as checked_output,check
             routed,call_ref,(updated,pending)=checked_output(adapter,binding,phase,packet['view'],caller,model_call,
-                lambda d:check(phase,input_value,packet,state,d),packet=packet)
+                lambda d:check(phase,input_value,packet,state,d),packet=packet,state=state)
         except ContractError as exc:
             call_ref=call_ref or getattr(exc,'semantic_audit_ref',None)
             if call_ref:attach_receipt(adapter,call_ref,{'ok':False,'validated':False,'state':'planning_packet_held','code':exc.code,'reason':str(exc)})

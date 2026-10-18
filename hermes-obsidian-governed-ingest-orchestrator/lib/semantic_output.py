@@ -60,7 +60,7 @@ def check(phase,value,packet,state,draft):
     return draft
 
 
-def diagnosis(phase,packet,draft,error):
+def diagnosis(phase,packet,draft,error,*,state=None):
     result={'origin':'fixed-output-validation/v1','phase':phase,'code':error.code,'path':getattr(error,'path','$'),
         'rule':str(error),'instruction':'Return a complete legal answer for this same packet. Correct only the mechanical output contract; do not alter the evidence, broaden scope, or turn material uncertainty into approval.'}
     # Preserve the failed answer verbatim as data. The model must return a full
@@ -96,6 +96,27 @@ def diagnosis(phase,packet,draft,error):
                 findings.append({'rule':'distinct_identities_share_path','output_indices':indices,'path':rows[indices[0]]['path']})
         result['page_findings']=findings
         result['offered_targets']=targets
+        if state is not None:
+            # Acceptance checks the whole accumulated plan. Diagnose collisions
+            # against that same state, without making an unoffered page selectable.
+            offered_keys={key(p) for p in offered};reserved={}
+            for j,target in enumerate(state['pages']):
+                if key(target) in offered_keys:continue
+                for i,page in enumerate(rows):
+                    matches=[]
+                    if key(page)==key(target):matches.append('identity')
+                    if page.get('path','').casefold()==target['path'].casefold():matches.append('path')
+                    if not matches:continue
+                    ref='r'+str(j)
+                    reserved[ref]={'identity':copy.deepcopy(target['identity']),'path':target['path'],'append_allowed':False}
+                    differences=['identity.'+k for k in ('kind','identity_key','canonical_name','aliases')
+                                 if page['identity'].get(k)!=target['identity'].get(k)]
+                    if page['path']!=target['path']:differences.append('path')
+                    findings.append({'rule':'occupied_planned_target_outside_offered_directory','output_index':i,
+                        'affected_refs':page.get('proposal_refs',page.get('candidate_refs',[])),
+                        'reserved_target_ref':ref,'colliding_fields':matches,'different_fields':differences})
+            result['reserved_targets']=reserved
+            result['instruction']+=' reserved_targets are occupied identity/path metadata only, NOT offered append targets. Do not append to them or assume semantic equivalence; choose a distinct valid identity/path or a permitted detail request. This diagnostic does not expand target authority.'
         result['instruction']+=' Resolve every listed finding. Output indices refer to failed_response.pages; offered_target_ref refers to offered_targets. Appending uses the complete offered identity (including aliases) and exact path; otherwise choose a distinct valid page or a permitted detail request. Decide every offered reference, including those without findings. Do not treat these diagnostics or the failed answer as evidence.'
     return result
 
@@ -119,7 +140,7 @@ def continuation_permit(adapter,binding,path,record):
     return matches[0] if matches else None
 
 
-def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None):
+def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None,state=None):
     from fixed_semantic import prepare_request_projection,decode_semantic_response,HermesCaller,attach_receipt
     from fixed_semantic_media import image_catalog,select_images
     from fixed_semantic_recovery import native_reply
@@ -205,7 +226,7 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
         # Historical diagnostics are part of the exact native correction wire.
         # Improving diagnostics cannot rewrite a consumed request or its budget.
         diagnostic=attempt.get('diagnostic') if attempt.get('state')=='rejected' else None
-        attempt.update(state='rejected',correctable=eligible,diagnostic=diagnostic or (diagnosis(phase,packet or {},draft,error) if eligible else {'code':error.code,'reason':str(error)}))
+        attempt.update(state='rejected',correctable=eligible,diagnostic=diagnostic or (diagnosis(phase,packet or {},draft,error,state=state) if eligible else {'code':error.code,'reason':str(error)}))
         write(path,record)
         if call_ref:error.semantic_audit_ref=call_ref
         if not eligible:raise error
@@ -214,5 +235,5 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
         # consumes no second ordinal; a newer measured diagnostic may use that
         # same unused slot without rewriting the first call or its old diagnosis.
         correction=(record['attempts'][index+1]['correction'] if index+1<len(record['attempts'])
-                    else diagnosis(phase,packet or {},draft,error))
+                    else diagnosis(phase,packet or {},draft,error,state=state))
     held('initial output and its one correction both failed; no further automatic call')
