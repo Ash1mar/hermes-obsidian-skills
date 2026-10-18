@@ -419,7 +419,7 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
     calls=[]
     def caller(phase,view,output_schema,correction):
         calls.append(phase); assert correction is None
-        refs=[c[0] for c in view['candidates']] if phase=='global-plan' else [c['candidate'] for c in view['candidates']]
+        refs=[p[0] for p in view['proposals']] if phase=='global-plan' else [c['candidate'] for c in view['candidates']]
         if phase!='global-plan':
             assert view['original_evidence']['texts']
             assert all(c['source_evidence'] for c in view['candidates'])
@@ -430,10 +430,10 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
             return fixture_response({'proposals':[{'candidate_refs':refs,'summary':'Pump X evidence',
                 'identity_hints':[{'kind':'entity','identity_key':'project-a:pump-x','canonical_name':'Pump X','aliases':[]}],
                 'path_hints':['30_Cards/fixed-pump.md']}], 'omitted_candidate_refs':[],'reason':'Fixture grouping'})
-        return fixture_response({'pages':[{'candidate_refs':refs,
+        return fixture_response({'pages':[{'proposal_refs':refs,
             'identity':{'kind':'entity','identity_key':'project-a:pump-x','canonical_name':'Pump X','aliases':[]},
             'path':'30_Cards/fixed-pump.md'}],
-            'omitted_candidate_refs':[],'reason':'Fixture coordination'})
+            'detail_unit_refs':[],'reason':'Fixture coordination'})
     current=adapter.workflow.status(value['workflow_id'])
     resources=[c for c in current['kanban']['task_map'] if c['node'].startswith('resource-reduce:')]
     for index,card in enumerate(resources):
@@ -499,6 +499,8 @@ def test_lean_inputs_keep_permissions_and_select_only_exact_parent(tmp_path,monk
     identity={'kind':'entity','identity_key':'pump','canonical_name':'Pump','aliases':[]}
     key=fingerprint({'kind':'entity','identity_key':'pump'})
     value={'view':{'candidates':[{'candidate':'c1','finding':'Pump fact'},{'candidate':'c2','finding':'Other fact'}],
+        'proposals':[{'proposal':'p'+str(n),'candidate_refs':['c'+str(n)],'summary':summary,
+            'identity_hints':[],'path_hints':[]} for n,summary in ((1,'Pump'),(2,'Other'))],
         'existing_pages':[{'identity':identity,'path':'30_Cards/prior.md'}]},
         'backend':{'kind':'global-reduce','batch_id':'fixture','actor':'fixture','tasks':[],
             'mapping':{'c1':[{'pass_id':'a'*64,'candidate_id':'a'}],'c2':[{'pass_id':'b'*64,'candidate_id':'b'}]},
@@ -519,13 +521,19 @@ def test_lean_inputs_keep_permissions_and_select_only_exact_parent(tmp_path,monk
         phases.append(phase); assert correction is None
         if phase=='global-plan':
             assert all('content' not in p for p in view['existing_pages'])
-            return fixture_response({'pages':[{'candidate_refs':['c1'],'identity':identity,'path':'30_Cards/prior.md'}],
-                'omitted_candidate_refs':['c2'],'reason':'Isolated explicit unrelated omission'})
+            # Supply a real matching hint: related-target filtering must not be bypassed.
+            return fixture_response({'pages':[{'proposal_refs':['p1'],'identity':identity,'path':'30_Cards/prior.md'},
+                {'proposal_refs':['p2'],'identity':{**identity,'identity_key':'other','canonical_name':'Other'},'path':'30_Cards/other.md'}],
+                'detail_unit_refs':[],'reason':'Preserve the unrelated proposal separately'})
         assert phase=='page-write' and len(view['candidates'])==1
+        if view['candidates'][0]['candidate']=='c2':
+            assert view['existing_page'] is None
+            return fixture_response({'content':'Other fact.'})
         assert view['existing_page']['content']==parent.read_text() and view['candidates'][0]['candidate']=='c1'
         return fixture_response({'content':'Existing pump: keep AND conditions. Pump fact.'})
+    value['view']['proposals'][0]['identity_hints']=[identity]
     assert fixed.execute(adapter,'fixture',caller)['ok']
-    assert phases==['global-plan','page-write']
+    assert phases==['global-plan','page-write','page-write']
     assert submissions[0]['runs'][0]['decisions'][0]['action']=='update'
     parent.write_text('changed after observation')
     with pytest.raises(ContractError,match='STALE_INPUT'):

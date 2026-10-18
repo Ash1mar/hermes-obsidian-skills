@@ -44,7 +44,7 @@ def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode,
     This uses existing native audit/transcript evidence, not a semantic cache.
     Submission still performs all current domain/hash/coverage checks.
     """
-    if phase not in ('resource-reduce', 'global-reduce', 'global-plan', 'page-write'):
+    if phase not in ('resource-reduce', 'global-reduce', 'global-plan', 'global-detail', 'page-write'):
         return None
     adapter.worker_check(binding)
     workflow = adapter.workflow.status(binding['workflow_id'])

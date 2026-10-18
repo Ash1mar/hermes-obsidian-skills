@@ -21,6 +21,7 @@ def call_fixture(tmp_path, phase='page-write'):
                                  'parent':'Exact unchanged old page.', 'identity':'same-identity'}})}
     output_schema = schema(phase)
     draft = ({'content':'# Isolated fixture\nCondition retained.'} if phase == 'page-write' else
+             {'pages':[], 'detail_unit_refs':[], 'reason':'Isolated proposal plan fixture'} if phase == 'global-plan' else
              {'pages':[], 'omitted_candidate_refs':[], 'reason':'Isolated plan fixture'} if phase.startswith('global') else
              {'proposals':[], 'omitted_candidate_refs':[], 'reason':'Isolated grouping fixture'})
     raw = json.dumps(draft)
@@ -55,7 +56,7 @@ def replay(c, **changes):
         lambda raw:(json.loads(raw), None), home=c.home)
 
 
-@pytest.mark.parametrize('phase', ['resource-reduce','global-reduce','global-plan','page-write'])
+@pytest.mark.parametrize('phase', ['resource-reduce','global-reduce','global-plan','global-detail','page-write'])
 def test_exact_native_reduce_response_reused_under_fresh_checked_authority(tmp_path, phase):
     c = call_fixture(tmp_path, phase)
     before = c.audit_path.read_bytes()
