@@ -2160,10 +2160,28 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 _fail("INCOMPLETE_COVERAGE",
                       "resource reduction must propose or explicitly omit every citation candidate")
 
+            replacement = None
+            if request.get('replaces_reduction_id'):
+                from .resource_amendment import authorize
+                replacement = authorize(self,resource_id,str(request['replaces_reduction_id']))
+                prior=self._resource_reduction(batch_id,replacement['reduction_id'])
+                selected={self._candidate_ref_key(r) for r in replacement['selected_candidate_refs']}
+                def untouched(items):
+                    result=[]
+                    for p in items:
+                        members={self._candidate_ref_key(r) for r in p['candidate_refs']}
+                        if members&selected:
+                            if members-selected:_fail('INVALID_SCOPE','review cannot mix selected and untouched packets')
+                        else:result.append({k:v for k,v in p.items() if k!='proposal_id'})
+                    return sorted(result,key=fingerprint)
+                if (untouched(prior['proposals'])!=untouched(proposals) or
+                        {self._candidate_ref_key(r) for r in prior['omitted_candidate_refs']}-selected!=omitted-selected):
+                    _fail('INVALID_SCOPE','source review changed an unselected packet outcome')
             input_fingerprint = "sha256:" + fingerprint({
                 "batch_id": batch_id, "resource_id": resource_id,
                 "tasks": snapshots, "passes": pass_refs,
                 "template_id": template_id, "template_hash": template_hash,
+                **({'replacement':replacement} if replacement else {}),
             })
             reduction_id = fingerprint({"batch_id": batch_id, "resource_id": resource_id,
                                         "input_fingerprint": input_fingerprint,
@@ -2184,11 +2202,12 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 "state": "completed", "revision": 1,
                 "reason": str(request.get("reason", "")),
             }
+            if replacement:record['supersedes_reduction_id']=replacement['reduction_id']
             validate_record("resource_reduction", record)
             for existing_id in batch.get("resource_reduction_ids", []):
                 existing_record = self._resource_reduction(batch_id, existing_id)
                 if (existing_record["resource_id"] == resource_id
-                        and existing_id != reduction_id):
+                        and existing_id != reduction_id and (not replacement or existing_id!=replacement['reduction_id'])):
                     _fail("STALE_INPUT",
                           "resource already has a reduction pinned to different Pass inputs")
             path = self._resource_reduction_path(batch_id, reduction_id)
@@ -2212,7 +2231,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             updated_batch.update({
                 "state": "analyzing", "last_operation": "resource_reduce",
                 "resource_reduction_ids": sorted(set(
-                    [*batch.get("resource_reduction_ids", []), reduction_id])),
+                    [r for r in batch.get("resource_reduction_ids", []) if not replacement or r!=replacement['reduction_id']]+[reduction_id])),
                 "reduction_config": dict(batch.get("reduction_config") or DEFAULT_REDUCTION_CONFIG),
                 "revision": int(batch["revision"]) + 1,
             })

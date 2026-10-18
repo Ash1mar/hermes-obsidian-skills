@@ -510,3 +510,28 @@ global plans and page bodies not yet submitted when interrupted; no inferred mis
 is created. Every recovered draft still passes fresh normal source/ACL/coverage and commit
 checks. A call stopped before its response was durably audited has no reusable result.
 Completed domain results use trusted reconciliation instead of another semantic call.
+
+## Reviewed packet correction before global consumption
+
+`recover-reduce-execution` scope `source-result-review/v1` is the explicit exception
+for a completed source result with reviewed semantic/omission defects. It requires
+a cancelled Reduce workflow, no live consumers, unchanged source/Pass authority,
+an active reduction not consumed by any global/build run, its `reduction_id` and
+`reduction_sha256`, original `snapshot_ref`/`snapshot_sha256`, and selected completed
+packet `selected_audits` (`ref`, `sha256`). Pin `target_contract_sha256` from
+`source_result_review.contract_hash()` and a substantive operator review reason.
+
+Admission authenticates every packet's original ended native session, exact wire,
+schema, images and response, and reconstructs the current formal source result.
+Only selected complete packets gain one new native review; all others use the
+existing exact replay verifier, indexed by authenticated audit references. Review
+requires whole-candidate omission for unsupported required facts/values; a summary
+caveat is not validation, and inability to group is not an omission reason.
+
+The old record remains immutable. Only the current authorized native worker can
+append a replacement with `supersedes_reduction_id`, preserve every unselected
+packet, and atomically update the active source pointer under the existing locks.
+This does not revise Passes or reset sources. Global input identity changes through
+the ordinary graph; old global results are reused only if their inputs still match.
+No semantic refusal is relabeled as cancellation and no pause is released. One
+review grant per source is allowed; failure is held rather than automatically retried.

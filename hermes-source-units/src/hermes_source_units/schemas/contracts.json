@@ -1638,6 +1638,7 @@
       "properties": {
         "contract": {"const": "hermes-resource-reduction/v1"},
         "reduction_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "supersedes_reduction_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "idempotency_key": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
         "batch_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
         "resource_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},

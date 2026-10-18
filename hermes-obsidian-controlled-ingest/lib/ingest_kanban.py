@@ -466,6 +466,8 @@ def domain_completed(service: FileIngestWorkflowService,
             and slice_id in r['slice_ids'] and revision_slice_covered(service,workflow,r,slice_id)
             for r in [*workflow.get('pass_revision_history',[]),*([workflow['pass_revision']] if workflow.get('pass_revision') else [])])
     if node.kind == "resource-reduce":
+        from hermes_source_units.resource_amendment import pending
+        if pending(service,workflow,node.name):return False
         resource_id = node.name.partition(":")[2]
         batch = service.knowledge._batch(workflow["batch_id"])
         if (not batch.get("resource_reduction_ids") and batch["run_ids"]
