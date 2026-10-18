@@ -103,6 +103,7 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
         attempt=record['attempts'][index] if index<len(record['attempts']) else None
         prepared=prepare_request_projection(phase,view,schema(phase),images,correction)
         if prepared['input_size']>30000:raise ContractError('READING_WINDOW_OVERSIZE','$','complete correction request exceeds bound; no truncation or call')
+        reservation_history=[]
         if attempt:
             if attempt['wire_sha256']!=fingerprint(prepared['wire']):held('instructions or correction changed; attempt allowance is not reset')
             ref=attempt.get('audit_ref')
@@ -111,7 +112,19 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
                 root=path.parent.parent/'semantic-calls'
                 matches=[p for p in root.glob('*.json') if _load_json(p).get('output_attempt_id')==attempt['attempt_id']]
                 if len(matches)==1:ref=matches[0].relative_to(adapter.workflow.vault).as_posix();attempt['audit_ref']=ref;write(path,record)
-            if not ref:held('call completion is uncertain; inspect native session '+str(attempt.get('session_id'))+' before any new request')
+            if not ref and not attempt.get('session_id'):
+                for pointer in adapter.workflow.status(binding['workflow_id']).get('execution_recovery_history',[]):
+                    rp=_vault_path(adapter.workflow.vault,pointer['report_ref'])
+                    if __import__('hashlib').sha256(rp.read_bytes()).hexdigest()!=pointer['report_sha256']:held('recovery evidence changed')
+                    report=_load_json(rp)
+                    for entry in report['entries']:
+                        permit=entry.get('uncalled_reservation',{})
+                        if (report['request'].get('recovery_scope')==SCOPE and permit.get('journal_name')==path.name
+                            and permit.get('attempt_id')==attempt['attempt_id'] and permit.get('task_id')==attempt['task_id']):
+                            reservation_history=[*attempt.get('not_called_history',[]),{k:v for k,v in attempt.items() if k!='not_called_history'}]
+                if reservation_history:attempt=None
+            if attempt and not ref:held('call completion is uncertain; inspect native session '+str(attempt.get('session_id'))+' before any new request')
+        if attempt:
             proof=native_reply(adapter,binding,_vault_path(adapter.workflow.vault,ref),prepared['wire'],schema(phase),images)
             if proof is None:held('saved call lacks matching current native authority or exact request')
             raw=proof[0];call_ref=ref
@@ -124,10 +137,13 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
             attempt={'attempt':index+1,'attempt_id':fingerprint({'path':path.name,'attempt':index+1}),
                 'task_id':binding['task_id'],'run_id':os.environ.get('HERMES_KANBAN_RUN_ID'),'wire_sha256':fingerprint(prepared['wire']),
                 'state':'reserved','correction':copy.deepcopy(correction)}
-            record['attempts'].append(attempt);write(path,record)
+            if reservation_history:attempt['not_called_history']=reservation_history
+            if index<len(record['attempts']):record['attempts'][index]=attempt
+            else:record['attempts'].append(attempt)
+            write(path,record)
             token=ACTIVE.set((path,record,index));call_ref=None;draft=None;error=None
             try:
-                draft,call_ref=model_call(adapter,binding,phase,view,caller,30000,correction,attempt_limit=1)
+                draft,call_ref=model_call(adapter,binding,phase,view,caller,30000,correction,attempt_limit=2 if correction else 1)
                 note_audit(call_ref)
             except ContractError as exc:
                 error=exc;call_ref=attempt.get('audit_ref') or getattr(exc,'semantic_audit_ref',None)

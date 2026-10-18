@@ -27,15 +27,30 @@ def verify(adapter,w,node,binding,entry,failure,runs):
     source=_vault_path(adapter.workflow.vault,entry['snapshot_ref']);value=_load_json(source)
     if hashlib.sha256(source.read_bytes()).hexdigest()!=entry['snapshot_sha256'] or value['binding']!=binding:fail('source snapshot or native binding changed')
     if fixed_reduce._snapshot(adapter,binding,{'batch_id':w['batch_id']})!=value:fail('current source/evidence/identity input differs')
-    def read(ref,phase,packet):
+    permitted={binding['task_id']:{str(r['id']) for r in runs}}
+    for pointer in w.get('execution_recovery_history',[]):
+        rp=_vault_path(adapter.workflow.vault,pointer['report_ref'])
+        if hashlib.sha256(rp.read_bytes()).hexdigest()!=pointer['report_sha256']:fail('recovery history changed')
+        prior=_load_json(rp)
+        if prior['request'].get('recovery_scope') not in ('semantic-output/v1','reduce-cancel/v1'):continue
+        for old in prior['entries']:
+            if old['node']==node.name:permitted[old['previous_task_id']]=set(old['ended_run_ids'])
+    def read(ref,phase,packet,seen=None):
         path=_vault_path(adapter.workflow.vault,ref);a=_load_json(path)
+        seen=set() if seen is None else seen
+        if ref in seen:fail('cyclic audit provenance')
+        seen.add(ref)
         root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{w['workflow_id']}/semantic-calls"
-        if (path.parent!=root or a.get('native_task_id')!=binding['task_id'] or a.get('node')!=node.name
-            or a.get('workflow_id')!=w['workflow_id'] or a.get('phase')!=phase or a.get('reused_from_audit')
-            or str(a.get('native_run_id')) not in {str(r['id']) for r in runs}
+        if (path.parent!=root or a.get('native_task_id') not in permitted or a.get('node')!=node.name
+            or a.get('workflow_id')!=w['workflow_id'] or a.get('phase')!=phase
+            or str(a.get('native_run_id')) not in permitted[a['native_task_id']]
             or a.get('template_hash')!=binding['template_hash']):fail('legacy call does not belong to the exact ended native attempt')
         wire=prepare_request_projection(phase,packet['view'],schema(phase),[])['wire']
         if a['input_sha256']!=fingerprint(wire) or a['user_sha256']!=fingerprint(wire['user']) or a['schema_sha256']!=fingerprint(schema(phase)) or a.get('image_inputs'):fail('legacy full wire/schema/media differs')
+        if a.get('reused_from_audit'):
+            original,draft,_=read(a['reused_from_audit'],phase,packet,seen)
+            if a['response_sha256']!=original['response_sha256']:fail('replay response differs from native original')
+            return a,draft,wire
         raw=transcript_reply(a,wire)
         if raw is None:fail('legacy native transcript does not authenticate')
         try:draft,_=decode_semantic_response(raw)
@@ -58,6 +73,18 @@ def verify(adapter,w,node,binding,entry,failure,runs):
     if state!=saved['state'] or [u['unit'] for u in pending]!=saved['pending_detail_units']:fail('authenticated prior state differs')
     phase='global-detail' if pending else 'global-plan'
     packet=g.detail_packet(value,pending[0],state,prepare_request_projection) if pending else g.next_packet(value,remaining,state,prepare_request_projection)
+    path=path_for(adapter,binding,phase,packet['view'])
+    uncalled=None
+    if entry.get('attempt_ref'):
+        jp=_vault_path(adapter.workflow.vault,entry['attempt_ref'])
+        if jp!=path or hashlib.sha256(jp.read_bytes()).hexdigest()!=entry['attempt_sha256']:fail('attempt record changed')
+        journal=_load_json(jp);last=journal['attempts'][-1]
+        if (failure['error_code']!='INVALID_TRANSITION' or len(journal['attempts'])!=2
+            or last.get('session_id') or last.get('audit_ref') or last['task_id']!=binding['task_id']
+            or str(last['run_id']) not in permitted[binding['task_id']]
+            or last.get('diagnostic',{}).get('code')!='INVALID_TRANSITION'
+            or journal['schema_sha256']!=fingerprint(schema(phase))):fail('reserved correction is not provably before SDK entry')
+        uncalled={'journal_name':path.name,'attempt_id':last['attempt_id'],'task_id':last['task_id']}
     bad_path=_vault_path(adapter.workflow.vault,entry['native_audit_ref'])
     if hashlib.sha256(bad_path.read_bytes()).hexdigest()!=entry['native_audit_sha256']:fail('failed native audit changed')
     a,draft,wire=read(entry['native_audit_ref'],phase,packet)
@@ -66,12 +93,14 @@ def verify(adapter,w,node,binding,entry,failure,runs):
         if draft is None:raise ContractError('INVALID_SCHEMA','$','native response is not one JSON object')
         check(phase,value,packet,state,draft)
     except ContractError as exc:
-        if exc.code not in ELIGIBLE or exc.code!=failure['error_code']:fail('failure is not reproduced at the pure output validator')
+        if exc.code not in ELIGIBLE or (not uncalled and exc.code!=failure['error_code']):fail('failure is not reproduced at the pure output validator')
         diagnostic=diagnosis(phase,packet,draft,exc)
     else:fail('legacy response no longer reproduces a contract rejection')
-    path=path_for(adapter,binding,phase,packet['view'])
-    if path.exists() and len(_load_json(path)['attempts'])>=2:fail('the shared correction allowance is already consumed')
+    if path.exists() and len(_load_json(path)['attempts'])>=2 and not uncalled:fail('the shared correction allowance is already consumed')
     if prepare_request_projection(phase,packet['view'],schema(phase),[],diagnostic)['input_size']>30000:fail('complete correction request exceeds bound')
+    if uncalled:
+        if journal['attempts'][0]['audit_ref']!=entry['native_audit_ref'] or last['wire_sha256']!=fingerprint(prepare_request_projection(phase,packet['view'],schema(phase),[],diagnostic)['wire']):fail('reserved correction no longer matches its original failure and diagnostic')
+        return {'uncalled_reservation':uncalled,'input_ref':entry['snapshot_ref'],'progress_ref':entry['progress_ref'],'authenticated_prefix_count':len(saved['successful_call_refs'])}
     return {'output_seed':{'journal_name':path.name,'record':{'contract':CONTRACT,'phase':phase,'input_sha256':fingerprint(packet['view']),
         'schema_sha256':fingerprint(schema(phase)),'attempts':[{'attempt':1,'attempt_id':fingerprint({'path':path.name,'attempt':1}),
         'task_id':binding['task_id'],'run_id':a['native_run_id'],'wire_sha256':fingerprint(wire),'audit_ref':entry['native_audit_ref'],
