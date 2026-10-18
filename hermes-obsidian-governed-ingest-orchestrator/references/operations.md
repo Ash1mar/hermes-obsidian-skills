@@ -611,3 +611,35 @@ logic, scope, condition/exception, conflict, necessary-coverage or required-pare
 content defects justify revision; style/layout/polish does not. A legal revision
 decision stays held, not automatically corrected into approval. No dedicated
 review cache or new finalization boundary is introduced.
+
+### Interrupt and resume without resetting output attempts
+
+Use the existing `cancel` operation for an immediate stop. A response that
+finishes during cancellation is saved and checked; cancellation never permits
+starting its correction. This is an interrupted continuation, not an additional
+semantic failure or a new allowance. After drain, `interruption-status` (request:
+`workflow_id`, `actor`) reports saved fixed-output journals and distinguishes
+reusable results, an unused standard correction, exhausted/held output and
+uncertain native completion. This read-only inventory grants no execution rights.
+Preparation/Pass and other stages retain their existing stage-specific evidence
+and supported recovery checks; this inventory does not migrate their contracts.
+
+For a cancelled fixed Reduce worker, use `recover-reduce-execution` with the
+existing `reduce-cancel/v1` scope, exact ended native identity/failure hash and a
+separate authorized `resume`. Optionally add `stop_after_output` to that node's
+entry, containing `attempt_ref` and `attempt_sha256`. It binds the existing journal
+and preserves its original attempts. Only saved responses may replay before the
+selected output; only that output may make a remaining native call. The original
+two-call limit, full native/input/schema validation and evidence refusals remain
+unchanged. An uncertain reservation or exhausted rejection cannot obtain another
+call by using this limit. No correction is sent after a hard cancellation.
+
+After the selected output passes, the caller saves its packet progress (including
+pending detail units), writes an `output-boundary-<recovery_id>.json` receipt and
+ends the worker with `WORKFLOW_STOPPED`. The trusted operator/supervisor then uses
+the existing stable `cancel` and drain verification, leaving subsequent packets,
+detail units and downstream stages stopped. A later explicitly authorized cancel
+recovery of that node replaces this execution limit; restarting or plain resume
+does not erase it. This shared limit covers source grouping, global plan/detail
+and page-writing outputs; it is not a promise to resume an unknown native call or
+to cross a durable stage pause.

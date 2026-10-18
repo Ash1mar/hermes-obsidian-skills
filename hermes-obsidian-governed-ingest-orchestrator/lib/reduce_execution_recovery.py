@@ -186,6 +186,10 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 if scope=='semantic-output/v1':
                     from semantic_output_recovery import verify
                     audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))
+                if entry.get('stop_after_output') is not None:
+                    if scope!='reduce-cancel/v1':fail('INVALID_SCHEMA','output stop limit belongs to existing cancellation recovery')
+                    from semantic_output import verify_stop_boundary
+                    audited[-1].update(verify_stop_boundary(adapter,wid,name,entry))
                 if review:
                     from source_result_review import verify
                     audited[-1].update(verify(adapter,value,node,binding,entry))

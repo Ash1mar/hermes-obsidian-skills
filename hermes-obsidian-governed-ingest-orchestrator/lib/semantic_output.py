@@ -29,6 +29,90 @@ def path_for(adapter,binding,phase,view):
 def write(path,record):_write_atomic(path,_json_bytes(record))
 
 
+def interruption_status(adapter,workflow_id):
+    """Read-only continuation inventory, never authority to replay or retry."""
+    root=adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{workflow_id}/output-attempts'
+    rows=[]
+    for path in sorted(root.glob('*.json')):
+        record=_load_json(path);attempts=record['attempts'];last=attempts[-1] if attempts else {}
+        state=last.get('state','not_started')
+        rows.append({'attempt_ref':path.relative_to(adapter.workflow.vault).as_posix(),
+            'phase':record['phase'],'consumed_ordinals':[a['attempt'] for a in attempts],
+            'state':state,'next_action':('revalidate_saved_response' if state=='valid' else
+                'inspect_native_completion' if state=='reserved' else
+                'use_remaining_correction' if state=='rejected' and last.get('correctable') and len(attempts)==1 else
+                'held' if attempts else 'not_started'),
+            'remaining_standard_calls':int(state=='rejected' and bool(last.get('correctable')) and len(attempts)==1)})
+    return {'outputs':rows,'read_only':True,'retry_authorized':False}
+
+
+def verify_stop_boundary(adapter,workflow_id,node,entry):
+    """Bind an optional single-output limit to the existing cancel recovery."""
+    import hashlib
+    selected=entry.get('stop_after_output')
+    if selected is None:return {}
+    if not isinstance(selected,dict) or set(selected)!={'attempt_ref','attempt_sha256'}:
+        held('stop_after_output requires the exact journal reference and SHA256')
+    path=_vault_path(adapter.workflow.vault,selected['attempt_ref'])
+    root=adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{workflow_id}/output-attempts'
+    if path.parent!=root or hashlib.sha256(path.read_bytes()).hexdigest()!=selected['attempt_sha256']:
+        held('interrupted output journal changed or belongs to another workflow')
+    record=_load_json(path);attempts=record['attempts']
+    if record['contract']!=CONTRACT or not attempts or len(attempts)>2:
+        held('single-output continuation does not grant an exhausted allowance')
+    for i,attempt in enumerate(attempts,1):
+        if (attempt['attempt']!=i or attempt['attempt_id']!=fingerprint({'path':path.name,'attempt':i})
+                or attempt['state'] not in ('valid','rejected') or not attempt.get('audit_ref')):
+            held('uncertain native completion must be resolved before a bounded resume')
+        audit_path=_vault_path(adapter.workflow.vault,attempt['audit_ref']);audit=_load_json(audit_path)
+        if (audit_path.parent!=root.parent/'semantic-calls' or audit.get('workflow_id')!=workflow_id
+                or audit.get('node')!=node or audit.get('phase')!=record['phase']
+                or audit.get('native_task_id')!=attempt['task_id'] or audit.get('input_sha256')!=attempt['wire_sha256']
+                or audit.get('schema_sha256')!=record['schema_sha256']):
+            held('output boundary differs from its native audit identity')
+    last=attempts[-1]
+    if last['state']!='valid' and not (len(attempts)==1 and last.get('correctable')):
+        held('no remaining standard correction; interruption cannot add an attempt')
+    return {'output_boundary':{'journal_name':path.name,'phase':record['phase'],
+        'input_sha256':record['input_sha256'],'schema_sha256':record['schema_sha256'],
+        'preserved_attempt_count':len(attempts),'prior_attempts_sha256':fingerprint(attempts)}}
+
+
+def output_boundary(adapter,binding):
+    """The latest recovery of this node owns its execution limit."""
+    import hashlib
+    selected=None;pointer=None
+    for p in adapter.workflow.status(binding['workflow_id']).get('execution_recovery_history',[]):
+        rp=_vault_path(adapter.workflow.vault,p['report_ref'])
+        if hashlib.sha256(rp.read_bytes()).hexdigest()!=p['report_sha256']:held('recovery evidence changed')
+        report=_load_json(rp)
+        for entry in report['entries']:
+            if entry['node']==binding['node']:selected=entry.get('output_boundary');pointer=p
+    return selected,pointer
+
+
+def stop_at_output_boundary(adapter,binding,phase,view):
+    """Stop after persisting the selected output and its caller's progress.
+
+    A later explicit cancel recovery replaces this limit, without changing any
+    attempt allowance, pause approval or semantic result.
+    """
+    selected,pointer=output_boundary(adapter,binding)
+    if not selected:return
+    path=path_for(adapter,binding,phase,view)
+    if path.name!=selected['journal_name']:return
+    record=_load_json(path);count=selected['preserved_attempt_count']
+    if (record['input_sha256']!=selected['input_sha256'] or record['schema_sha256']!=selected['schema_sha256']
+            or fingerprint(record['attempts'][:count])!=selected['prior_attempts_sha256']):
+        held('bounded continuation changed the preserved attempts or input')
+    if record['attempts'][-1]['state']!='valid':held('requested output boundary is not validated')
+    ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/reports/output-boundary-{pointer['recovery_id']}.json"
+    write(_vault_path(adapter.workflow.vault,ref),{'state':'reached','node':binding['node'],
+        'task_id':binding['task_id'],'attempt_ref':path.relative_to(adapter.workflow.vault).as_posix(),
+        'attempt_count':len(record['attempts']),'domain_submitted':False,'further_calls_authorized':False})
+    raise ContractError('WORKFLOW_STOPPED','$','requested output boundary reached; progress saved; cancel and drain: '+ref)
+
+
 def note_session(session):
     active=ACTIVE.get()
     if active:
@@ -198,6 +282,9 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
                 draft=None;error=ContractError('INVALID_SCHEMA','$',str(exc))
             else:error=None
         else:
+            boundary,_=output_boundary(adapter,binding)
+            if boundary and path.name!=boundary['journal_name']:
+                raise ContractError('WORKFLOW_STOPPED','$','bounded resume permits saved replay and only its selected output call')
             if index and (not record['attempts'][0].get('correctable')):held('prior failure is not an output-contract error')
             attempt={'attempt':index+1,'attempt_id':fingerprint({'path':path.name,'attempt':index+1}),
                 'task_id':binding['task_id'],'run_id':os.environ.get('HERMES_KANBAN_RUN_ID'),'wire_sha256':fingerprint(prepared['wire']),

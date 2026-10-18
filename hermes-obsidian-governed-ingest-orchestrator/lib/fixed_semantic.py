@@ -877,6 +877,8 @@ def run_reduce(adapter,binding,caller):
                 deferred.append({'candidate_refs':packet['candidate_refs'],'audit_ref':call_ref,'code':exc.code,'reason':str(exc)})
                 continue
             drafts.append(draft);calls.append(call_ref)
+            from semantic_output import stop_at_output_boundary
+            stop_at_output_boundary(adapter,binding,kind,review_view(input_value,packet['view']))
         if deferred:
             report_ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/reports/source-packets-deferred-{input_value['input_id']}.json"
             _write_atomic(_vault_path(adapter.workflow.vault,report_ref),_json_bytes({
@@ -909,6 +911,8 @@ def run_reduce(adapter,binding,caller):
         _write_atomic(_vault_path(adapter.workflow.vault,progress_ref),_json_bytes({'contract':GLOBAL_CONTRACT,'binding':binding,
             'input_ref':ref,'completed_packet_count':sequence,'state':state,'successful_call_refs':call_refs,
             'pending_detail_units':[g['unit'] for g in pending],'source_submitted':False}))
+        from semantic_output import stop_at_output_boundary
+        stop_at_output_boundary(adapter,binding,phase,packet['view'])
         return pending
     while remaining:
         packet=next_packet(input_value,remaining,state,prepare_request_projection)
@@ -930,6 +934,8 @@ def run_reduce(adapter,binding,caller):
         if 'blocked_reason' in written:raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',written['blocked_reason'])
         page['content']=written['content'];call_refs.append(write_ref)
         attach_receipt(adapter,write_ref,{'ok':True,'validated':True,'state':'page_body_only','input_ref':ref})
+        from semantic_output import stop_at_output_boundary
+        stop_at_output_boundary(adapter,binding,'page-write',view)
     result=fixed_reduce.submit(adapter,binding,ref,draft)
     for call_ref in call_refs:attach_receipt(adapter,call_ref,result)
     return adapter.worker_complete(binding)

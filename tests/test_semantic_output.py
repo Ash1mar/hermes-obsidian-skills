@@ -37,6 +37,73 @@ def test_valid_output_adds_no_call_and_is_reused(tmp_path,monkeypatch):
     c=fixture(tmp_path,monkeypatch,[answer()]);assert c.run()[0]==answer();assert c.run()[0]==answer();assert c.calls==[None]
 
 
+def stopped_output(c):
+    import hashlib
+    path=output.path_for(c.adapter,c.binding,'global-plan',c.packet['view']);record=json.loads(path.read_text())
+    for attempt in record['attempts']:
+        ref=attempt['audit_ref'];audit_path=c.adapter.workflow.vault/ref
+        actual=path.parent.parent/'semantic-calls'/audit_path.name;actual.parent.mkdir(exist_ok=True)
+        actual.write_text(json.dumps({'workflow_id':'fixture','node':'global-reduce','phase':'global-plan',
+            'native_task_id':attempt['task_id'],'input_sha256':attempt['wire_sha256'],
+            'schema_sha256':record['schema_sha256']}))
+        c.saved[actual.name]=c.saved[ref];attempt['audit_ref']=actual.relative_to(c.adapter.workflow.vault).as_posix()
+    path.write_text(json.dumps(record))
+    selected={'attempt_ref':path.relative_to(c.adapter.workflow.vault).as_posix(),
+        'attempt_sha256':hashlib.sha256(path.read_bytes()).hexdigest()}
+    return path,selected
+
+
+def test_interrupted_first_rejection_keeps_unused_second_then_stops(tmp_path,monkeypatch):
+    import hashlib
+    c=fixture(tmp_path,monkeypatch,[answer(True),answer()]);normal=c.adapter.worker_check;checks=0
+    def interrupted(_):
+        nonlocal checks
+        checks+=1
+        if checks==3:raise ContractError('WORKFLOW_STOPPED','$','isolated stop before correction')
+    c.adapter.worker_check=interrupted
+    with pytest.raises(ContractError,match='WORKFLOW_STOPPED'):c.run()
+    path,selected=stopped_output(c);original=json.loads(path.read_text())['attempts'][0]
+    status=output.interruption_status(c.adapter,'fixture')['outputs'][0]
+    assert status['next_action']=='use_remaining_correction' and status['remaining_standard_calls']==1
+    boundary=output.verify_stop_boundary(c.adapter,'fixture','global-reduce',{'stop_after_output':selected})
+    report=tmp_path/'cancel-recovery.json';report.write_text(json.dumps({'request':{'recovery_scope':'reduce-cancel/v1'},'entries':[{'node':'global-reduce',**boundary}]}))
+    pointer={'report_ref':report.name,'report_sha256':hashlib.sha256(report.read_bytes()).hexdigest(),'recovery_id':'bounded-resume'}
+    c.adapter.workflow.status=lambda _:{'execution_recovery_history':[pointer]};c.adapter.worker_check=normal
+    assert c.run()[0]==answer() and len(c.calls)==2
+    assert json.loads(path.read_text())['attempts'][0]==original
+    with pytest.raises(ContractError,match='requested output boundary reached'):
+        output.stop_at_output_boundary(c.adapter,c.binding,'global-plan',c.packet['view'])
+    other=copy.deepcopy(c.packet['view']);other['isolated_other_packet']=True
+    with pytest.raises(ContractError,match='only its selected output call'):
+        output.execute(c.adapter,c.binding,'global-plan',other,object(),lambda *a,**kw:pytest.fail('out-of-scope model call'),lambda d:d)
+    assert len(c.calls)==2
+    marker=tmp_path/'_system/ledgers/ingest-workflows/fixture/reports/output-boundary-bounded-resume.json'
+    assert json.loads(marker.read_text())['further_calls_authorized'] is False
+    # Resuming the same limit cannot dispatch a third call, even after a crash.
+    assert c.run()[0]==answer() and len(c.calls)==2
+    with pytest.raises(ContractError,match='requested output boundary reached'):
+        output.stop_at_output_boundary(c.adapter,c.binding,'global-plan',c.packet['view'])
+    c.adapter.workflow.status=lambda _:{'execution_recovery_history':[pointer,{
+        'report_ref':'next.json','report_sha256':hashlib.sha256(b'{"entries":[{"node":"global-reduce"}]}').hexdigest()}]}
+    (tmp_path/'next.json').write_bytes(b'{"entries":[{"node":"global-reduce"}]}')
+    output.stop_at_output_boundary(c.adapter,c.binding,'global-plan',c.packet['view'])
+
+
+@pytest.mark.parametrize('change',['hash','node','exhausted','uncertain'])
+def test_interruption_limit_never_supplies_retry_or_acceptance_authority(tmp_path,monkeypatch,change):
+    import hashlib
+    c=fixture(tmp_path,monkeypatch,[answer(True),answer(True)])
+    with pytest.raises(ContractError):c.run()
+    path,selected=stopped_output(c);record=json.loads(path.read_text())
+    if change=='node':node='unrelated'
+    else:node='global-reduce'
+    if change=='uncertain':record['attempts'][-1]['state']='reserved';path.write_text(json.dumps(record))
+    if change!='hash':selected['attempt_sha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+    else:selected['attempt_sha256']='0'*64
+    with pytest.raises(ContractError):output.verify_stop_boundary(c.adapter,'fixture',node,{'stop_after_output':selected})
+    assert len(c.calls)==2
+
+
 def test_one_precise_correction_then_restart_reuses_success(tmp_path,monkeypatch):
     c=fixture(tmp_path,monkeypatch,[answer(True),answer()]);c.run()
     assert len(c.calls)==2 and c.calls[1]['assigned_and_requested']==['p1']
