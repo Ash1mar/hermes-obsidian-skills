@@ -83,3 +83,16 @@ def test_actual_model_decoder_accepts_the_short_schema_it_sent(tmp_path):
     first=(tmp_path/ref).read_bytes()
     fixed.attach_receipt(a,ref,{'ok':True,'validated':True,'state':'fixture'})
     assert (tmp_path/ref).read_bytes()==first
+
+
+def test_short_diagnostic_excerpts_only_actual_conflicts_without_changing_answer(tmp_path):
+    v,s,p,a,b=fixture(tmp_path);p=targets.select(a,b,'global-plan',p,prepare_request_projection)
+    bad=proposal_response([{'target_ref':'t1','proposal_refs':['p2']},{'target_ref':'t1','proposal_refs':['p2']}])
+    original=copy.deepcopy(bad)
+    try:g.accept_proposals(v,s,p,bad)
+    except ContractError as exc:diagnostic=output.diagnosis('global-plan',p,bad,exc,state=s)
+    assert bad==original and 'failed_response' not in diagnostic
+    assert diagnostic['failed_response_sha256']==fingerprint(original)
+    assert diagnostic['duplicate_assignments']==['p2']
+    assert [r['output_index'] for r in diagnostic['failed_response_excerpt']['pages']]==[0,1]
+    assert all(r['page']['target_ref']=='t1' for r in diagnostic['failed_response_excerpt']['pages'])
