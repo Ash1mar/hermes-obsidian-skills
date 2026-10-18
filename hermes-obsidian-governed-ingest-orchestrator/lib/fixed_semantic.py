@@ -398,7 +398,11 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
             _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(audit))
         if phase in ('candidate','citation'):
             return slot_results(phase,value,view['tasks']),ref
-        validate(phase,value)
+        if view.get('output_contract')=='global-target-refs/v1':
+            from hermes_source_units.validation import _check_shape
+            _check_shape(output_schema,value,{},'$')
+        else:
+            validate(phase,value)
         if 'blocked_reason' in value: raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',value['blocked_reason'])
         return value,ref
     except ContractError as exc:
@@ -439,15 +443,16 @@ def attach_receipt(adapter,ref,receipt):
 
 def attach_receipt_to_vault(vault,ref,receipt):
     record=_load_json(_vault_path(vault,ref))
+    before=copy.deepcopy(record)
     receipt_ref=receipt.get('receipt_ref')
     if not receipt_ref:
         # Aggregate schema rejection also needs its actual returned cause in
         # audit; success-only references concealed the rejected half of a group.
         receipt_ref=f"_system/ledgers/ingest-workflows/{record['workflow_id']}/worker-receipts/rejected-{fingerprint(receipt)}.json"
         _write_atomic(_vault_path(vault,receipt_ref),_json_bytes(receipt))
-    record['receipt_refs'].append(receipt_ref)
+    if receipt_ref not in record['receipt_refs']:record['receipt_refs'].append(receipt_ref)
     record['validated']=record.get('validated',True) and receipt.get('validated',False)
-    _write_atomic(_vault_path(vault,ref),_json_bytes(record))
+    if record!=before:_write_atomic(_vault_path(vault,ref),_json_bytes(record))
 
 
 def pass_action(vault,action,payload=None,*,audit_ref=None):
