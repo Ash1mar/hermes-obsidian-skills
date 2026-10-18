@@ -114,16 +114,22 @@ def verify(adapter,w,node,binding,entry,failure,runs):
             'input_sha256':journal['input_sha256'],'schema_sha256':journal['schema_sha256'],'attempt_ordinal':3,'diagnostic':diagnostic},
             'input_ref':entry['snapshot_ref'],'progress_ref':entry['progress_ref'],'authenticated_prefix_count':len(saved['successful_call_refs'])}
     uncalled=None
+    unused=False
     if entry.get('attempt_ref'):
         jp=_vault_path(adapter.workflow.vault,entry['attempt_ref'])
         if jp!=path or hashlib.sha256(jp.read_bytes()).hexdigest()!=entry['attempt_sha256']:fail('attempt record changed')
         journal=_load_json(jp);last=journal['attempts'][-1]
-        if (failure['error_code']!='INVALID_TRANSITION' or len(journal['attempts'])!=2
+        unused=(failure['error_code']=='READING_WINDOW_OVERSIZE' and len(journal['attempts'])==1
+            and last['state']=='rejected' and last.get('correctable') and last.get('audit_ref')==entry['native_audit_ref']
+            and last['task_id']==binding['task_id'] and journal['input_sha256']==fingerprint(packet['view'])
+            and journal['schema_sha256']==fingerprint(schema(phase))
+            and prepare_request_projection(phase,packet['view'],schema(phase),[],last['diagnostic'])['input_size']>30000)
+        if not unused and (failure['error_code']!='INVALID_TRANSITION' or len(journal['attempts'])!=2
             or last.get('session_id') or last.get('audit_ref') or last['task_id']!=binding['task_id']
             or str(last['run_id']) not in permitted[binding['task_id']]
             or last.get('diagnostic',{}).get('code')!='INVALID_TRANSITION'
             or journal['schema_sha256']!=fingerprint(schema(phase))):fail('reserved correction is not provably before SDK entry')
-        uncalled={'journal_name':path.name,'attempt_id':last['attempt_id'],'task_id':last['task_id']}
+        if not unused:uncalled={'journal_name':path.name,'attempt_id':last['attempt_id'],'task_id':last['task_id']}
     bad_path=_vault_path(adapter.workflow.vault,entry['native_audit_ref'])
     if hashlib.sha256(bad_path.read_bytes()).hexdigest()!=entry['native_audit_sha256']:fail('failed native audit changed')
     a,draft,wire=read(entry['native_audit_ref'],phase,packet)
@@ -132,7 +138,7 @@ def verify(adapter,w,node,binding,entry,failure,runs):
         if draft is None:raise ContractError('INVALID_SCHEMA','$','native response is not one JSON object')
         check(phase,value,packet,state,draft)
     except ContractError as exc:
-        if exc.code not in ELIGIBLE or (not uncalled and exc.code!=failure['error_code']):fail('failure is not reproduced at the pure output validator')
+        if exc.code not in ELIGIBLE or (not uncalled and not unused and exc.code!=failure['error_code']):fail('failure is not reproduced at the pure output validator')
         diagnostic=diagnosis(phase,packet,draft,exc)
     else:fail('legacy response no longer reproduces a contract rejection')
     if path.exists() and len(_load_json(path)['attempts'])>=2 and not uncalled:fail('the shared correction allowance is already consumed')
@@ -141,6 +147,10 @@ def verify(adapter,w,node,binding,entry,failure,runs):
         diagnostic=last['correction']  # Preserve the already reserved exact wire.
         if journal['attempts'][0]['audit_ref']!=entry['native_audit_ref'] or last['wire_sha256']!=fingerprint(prepare_request_projection(phase,packet['view'],schema(phase),[],diagnostic)['wire']):fail('reserved correction no longer matches its original failure and diagnostic')
         return {'uncalled_reservation':uncalled,'input_ref':entry['snapshot_ref'],'progress_ref':entry['progress_ref'],'authenticated_prefix_count':len(saved['successful_call_refs'])}
+    if unused:
+        return {'output_seed':{'journal_name':path.name,'record':journal},'input_ref':entry['snapshot_ref'],
+            'progress_ref':entry['progress_ref'],'authenticated_prefix_count':len(saved['successful_call_refs']),
+            'unused_correction':{'next_ordinal':2,'measured_codepoints':prepare_request_projection(phase,packet['view'],schema(phase),[],diagnostic)['input_size']}}
     return {'output_seed':{'journal_name':path.name,'record':{'contract':CONTRACT,'phase':phase,'input_sha256':fingerprint(packet['view']),
         'schema_sha256':fingerprint(schema(phase)),'attempts':[{'attempt':1,'attempt_id':fingerprint({'path':path.name,'attempt':1}),
         'task_id':binding['task_id'],'run_id':a['native_run_id'],'wire_sha256':fingerprint(wire),'audit_ref':entry['native_audit_ref'],
