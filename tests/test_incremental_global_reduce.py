@@ -20,7 +20,9 @@ def project(*args):return {'input_size':len(json.dumps(args[1],ensure_ascii=Fals
 
 
 def test_full_coverage_stable_budget_and_indivisible_oversize(monkeypatch):
- v=fixture_value();us=g.units(v);s=g.initial();one=g.packet_view(v,us[:1],s);two=g.packet_view(v,us,s)
+ v=fixture_value();
+ for proposal in v['view']['proposals']:proposal['identity_hints']=[page('c1')['identity']]
+ us=g.units(v);s=g.initial();one=g.packet_view(v,us[:1],s);two=g.packet_view(v,us,s)
  monkeypatch.setattr(g,'LIMIT',project('x',one)['input_size'])
  packet=g.next_packet(v,us,s,project)
  assert packet['unit_count']==1 and packet['candidate_refs']==['c1']
@@ -58,7 +60,7 @@ def test_shared_candidates_keep_proposals_in_same_unit_and_versions_may_stay_sep
 
 @pytest.mark.parametrize('bad',['valid','unresolved','own_semantic'])
 def test_derived_hold_recovery_checks_parent_evidence_not_accepted_label(vault,monkeypatch,bad):
- a,w,card,req,ref=stopped_reducer(vault,monkeypatch)
+ a,w,card,req,ref=stopped_reducer(vault,monkeypatch,kind='global-reduce')
  from ingest_kanban import desired_graph
  nodes={n.name:n for n in desired_graph(a.workflow,w)};parent=nodes[card['node']].parents[0]
  failure=json.loads((vault/ref).read_text());failure.update(error_code='DEPENDENCY_EXECUTION_BLOCKED',reason=parent)
@@ -80,3 +82,4 @@ def test_derived_hold_recovery_checks_parent_evidence_not_accepted_label(vault,m
   result=a.recover_reduce_execution(req)
   saved=json.loads((vault/result['report_ref']).read_text())
   assert saved['entries'][0]['derived_failure_only'] and not saved['entries'][0]['parent_work_rerun']
+
