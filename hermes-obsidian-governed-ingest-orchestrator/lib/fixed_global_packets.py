@@ -4,8 +4,11 @@ Native audits bind each packet to the preceding complete planning-state hash.
 This module never authors page prose, facts, identities or omission decisions.
 """
 import copy,re,unicodedata
+from contextlib import contextmanager
+from contextvars import ContextVar
 from hermes_source_units import ContractError
 from hermes_source_units.validation import fingerprint
+from hermes_source_units.runtime_telemetry import measured
 from fixed_semantic_schema import schema,validate
 import fixed_reduce
 
@@ -13,6 +16,19 @@ CONTRACT='proposal-global-plan/v1'
 LIMIT=30000
 # Existing 8192-token output cap minus 1024 reserve, at 256 estimated tokens/page.
 PROPOSAL_OUTPUT_SLOTS=28
+_INDEX=ContextVar('global_packet_lookup',default=None)
+
+
+@contextmanager
+def planning_scope(value):
+    """Pure lookups for one immutable input; never cache permission or state."""
+    proposals=value['view']['proposals'];by_candidate={}
+    for i,p in enumerate(proposals):
+        for handle in p['candidate_refs']:by_candidate.setdefault(handle,set()).add(i)
+    index={'value':value,'proposals':proposals,'by_candidate':by_candidate}
+    token=_INDEX.set(index)
+    try:yield
+    finally:_INDEX.reset(token)
 
 
 def fail(code,message):raise ContractError(code,'$',message)
@@ -61,9 +77,15 @@ def packet_view(value,chosen,state,*,detail=False):
     hints += [{'canonical_name':c['name']} for c in value['view']['candidates'] if c['candidate'] in handles and c.get('name')]
     existing=[p for p in value['view'].get('existing_pages',[]) if related(p['identity'],hints)]
     planned=[]
+    index=_INDEX.get()
     for page in state['pages']:
         if related(page['identity'],hints):
-            topics=[p for p in value['view']['proposals'] if set(p['candidate_refs'])&set(page['candidate_refs'])]
+            if index is not None and index['value'] is value:
+                hits=set().union(*(index['by_candidate'].get(h,set()) for h in page['candidate_refs']))
+                topics=[index['proposals'][i] for i in sorted(hits)]
+            else:
+                handles_for_page=set(page['candidate_refs'])
+                topics=[p for p in value['view']['proposals'] if handles_for_page.intersection(p['candidate_refs'])]
             planned.append({'identity':copy.deepcopy(page['identity']),'path':page['path'],
                 'topics':list(dict.fromkeys(p['summary'] for p in topics)),
                 'source_paths':sorted({p['source_path'] for p in topics if p.get('source_path')})})
@@ -84,6 +106,7 @@ def packet_view(value,chosen,state,*,detail=False):
     return view
 
 
+@measured('global_packet_pack')
 def next_packet(value,remaining,state,project):
     chosen=[];prepared=None
     for group in remaining:

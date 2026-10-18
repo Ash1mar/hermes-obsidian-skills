@@ -839,6 +839,7 @@ def run_pass(adapter,binding,caller):
     return pass_action(adapter.workflow.vault,'complete')
 
 
+@record_validation_scope()
 def execute(adapter,binding_path,caller=None):
     binding,_=canonical_binding(adapter,binding_path,executor='semantic-v1')
     caller=caller or HermesCaller()
@@ -914,12 +915,14 @@ def run_reduce(adapter,binding,caller):
         from semantic_output import stop_at_output_boundary
         stop_at_output_boundary(adapter,binding,phase,packet['view'])
         return pending
-    while remaining:
-        packet=next_packet(input_value,remaining,state,prepare_request_projection)
-        pending=plan_call('global-plan',packet)
-        for unit in pending:
-            plan_call('global-detail',detail_packet(input_value,unit,state,prepare_request_projection))
-        remaining=remaining[packet['unit_count']:]
+    from fixed_global_packets import planning_scope
+    with planning_scope(input_value):
+        while remaining:
+            packet=next_packet(input_value,remaining,state,prepare_request_projection)
+            pending=plan_call('global-plan',packet)
+            for unit in pending:
+                plan_call('global-detail',detail_packet(input_value,unit,state,prepare_request_projection))
+            remaining=remaining[packet['unit_count']:]
     draft=complete(input_value,state)
     views=[fixed_reduce.page_view(adapter,input_value,page) for page in draft['pages']]
     catalog=image_catalog(adapter,input_value['view']['original_evidence']) if isinstance(caller,HermesCaller) else {}
