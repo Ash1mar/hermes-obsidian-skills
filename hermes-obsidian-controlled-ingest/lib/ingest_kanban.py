@@ -2227,6 +2227,8 @@ class IngestKanbanAdapter:
                     'tasks': [t for t in workflow['pass_revision']['tasks'] if t['task_id'] in value['task_ids']]}}
                     if self.workflow.revision_allows(workflow, node_name) else {})}
 
+    @record_validation_scope()
+    @measured('worker_authority_check', lambda self, request, **kwargs: {'vault':self.workflow.vault,'binding':request})
     def worker_check(self, request: Mapping[str, Any], *, verify_inputs: bool = True) -> dict[str, Any]:
         self.validate_worker_request(request)
         if str(request["node"]).startswith("source-prepare:") or request["node"] == "exact-plan":

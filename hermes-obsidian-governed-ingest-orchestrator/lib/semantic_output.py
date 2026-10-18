@@ -9,7 +9,7 @@ from contextvars import ContextVar
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json,_vault_path,_write_atomic,_json_bytes
 from hermes_source_units.validation import fingerprint
-from fixed_semantic_schema import schema
+from fixed_semantic_schema import schema, schema_for
 
 SCOPE='semantic-output/v1'
 CONTRACT='finite-semantic-output/v1'
@@ -151,6 +151,11 @@ def diagnosis(phase,packet,draft,error,*,state=None):
     # replacement; the program never chooses or applies a domain patch.
     result['failed_response']=copy.deepcopy(draft)
     if error.code=='INVALID_SCHEMA':return result
+    if packet.get('view',{}).get('output_contract')=='global-target-refs/v1':
+        from fixed_global_targets import expand,offered
+        result['allowed_target_refs']=[t['target_ref'] for t in offered(packet['view'])]
+        try:draft=expand(phase,packet['view'],draft)
+        except ContractError:return result
     if phase=='global-plan':
         allowed=packet['proposal_refs'];units={g['unit']:[p['proposal'] for p in g['proposals']] for g in packet['units']}
         assigned=[r for p in draft.get('pages',[]) for r in p.get('proposal_refs',[])] if isinstance(draft,dict) else []
@@ -230,6 +235,7 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
     from fixed_semantic_recovery import native_reply
     adapter.worker_check(binding)
     path=path_for(adapter,binding,phase,view)
+    output_schema=schema_for(phase,view)
     record=_load_json(path) if path.exists() else None
     if record is None:
         for pointer in adapter.workflow.status(binding['workflow_id']).get('execution_recovery_history',[]):
@@ -240,8 +246,8 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
             for entry in report['entries']:
                 seed=entry.get('output_seed',{})
                 if entry['node']==binding['node'] and seed.get('journal_name')==path.name:record=copy.deepcopy(seed['record'])
-        record=record or {'contract':CONTRACT,'phase':phase,'input_sha256':fingerprint(view),'schema_sha256':fingerprint(schema(phase)),'attempts':[]}
-    if record['schema_sha256']!=fingerprint(schema(phase)):held('schema changed; previous allowance is not reset')
+        record=record or {'contract':CONTRACT,'phase':phase,'input_sha256':fingerprint(view),'schema_sha256':fingerprint(output_schema),'attempts':[]}
+    if record['schema_sha256']!=fingerprint(output_schema):held('schema changed; previous allowance is not reset')
     images=select_images(view['original_evidence']['tasks'],image_catalog(adapter,view['original_evidence'])) if isinstance(caller,HermesCaller) and 'original_evidence' in view else []
     permit=continuation_permit(adapter,binding,path,record)
     if len(record['attempts'])>2 and not permit:held('extra attempt lacks explicit continuation authority')
@@ -250,7 +256,7 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
         adapter.worker_check(binding)
         if index==2:correction=copy.deepcopy(permit['diagnostic'])
         attempt=record['attempts'][index] if index<len(record['attempts']) else None
-        prepared=prepare_request_projection(phase,view,schema(phase),images,correction)
+        prepared=prepare_request_projection(phase,view,output_schema,images,correction)
         if prepared['input_size']>30000:raise ContractError('READING_WINDOW_OVERSIZE','$','complete correction request exceeds bound; no truncation or call')
         reservation_history=[]
         if attempt:
@@ -274,7 +280,9 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
                 if reservation_history:attempt=None
             if attempt and not ref:held('call completion is uncertain; inspect native session '+str(attempt.get('session_id'))+' before any new request')
         if attempt:
-            proof=native_reply(adapter,binding,_vault_path(adapter.workflow.vault,ref),prepared['wire'],schema(phase),images)
+            from hermes_source_units.runtime_telemetry import span
+            with span('native_output_authentication',vault=adapter.workflow.vault,binding=binding,phase=phase):
+                proof=native_reply(adapter,binding,_vault_path(adapter.workflow.vault,ref),prepared['wire'],output_schema,images)
             if proof is None:held('saved call lacks matching current native authority or exact request')
             raw=proof[0];call_ref=ref
             try:draft,_=decode_semantic_response(raw)

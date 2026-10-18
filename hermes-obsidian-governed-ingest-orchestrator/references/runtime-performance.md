@@ -278,3 +278,19 @@ are separate counts, not completed performance samples. Report repeated show
 calls per card alongside CLI totals and local phase costs. Runtime counts and
 material differ across windows; do not infer costs from the presence of errors
 or extend this repair to other efficiency rounds.
+
+## Reduce recovery construction scope (2026-10-18)
+
+Reuse the bundled schema audit within one fixed semantic executor invocation and
+each standalone authority check. Validate every current record and keep fresh
+workflow, pause, binding, source, parent outcome and permission checks. The scope
+stores schema parsing only, never an admission decision or graph result. A pure
+proposal-to-candidate lookup lasts for the immutable global input invocation and
+avoids repeatedly scanning all proposals when constructing related page topics.
+Packet order, exact old wires, coverage, budgets and output allowances are unchanged.
+
+Measure packet construction, authority checks and native transcript authentication
+separately. Compare the same successful native prefix without extra model calls;
+read-only projection time alone does not explain resume-to-first-request latency.
+Do not add a persistent cache or progress-based authorization to remove a smaller
+cost when repeated schema auditing is the evidenced hotspot.

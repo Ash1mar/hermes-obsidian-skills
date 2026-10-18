@@ -4,8 +4,11 @@ Native audits bind each packet to the preceding complete planning-state hash.
 This module never authors page prose, facts, identities or omission decisions.
 """
 import copy,re,unicodedata
+from contextlib import contextmanager
+from contextvars import ContextVar
 from hermes_source_units import ContractError
 from hermes_source_units.validation import fingerprint
+from hermes_source_units.runtime_telemetry import measured
 from fixed_semantic_schema import schema,validate
 import fixed_reduce
 
@@ -13,6 +16,19 @@ CONTRACT='proposal-global-plan/v1'
 LIMIT=30000
 # Existing 8192-token output cap minus 1024 reserve, at 256 estimated tokens/page.
 PROPOSAL_OUTPUT_SLOTS=28
+_INDEX=ContextVar('global_packet_lookup',default=None)
+
+
+@contextmanager
+def planning_scope(value):
+    """Pure lookups for one immutable input; never cache permission or state."""
+    proposals=value['view']['proposals'];by_candidate={}
+    for i,p in enumerate(proposals):
+        for handle in p['candidate_refs']:by_candidate.setdefault(handle,set()).add(i)
+    index={'value':value,'proposals':proposals,'by_candidate':by_candidate}
+    token=_INDEX.set(index)
+    try:yield
+    finally:_INDEX.reset(token)
 
 
 def fail(code,message):raise ContractError(code,'$',message)
@@ -61,9 +77,15 @@ def packet_view(value,chosen,state,*,detail=False):
     hints += [{'canonical_name':c['name']} for c in value['view']['candidates'] if c['candidate'] in handles and c.get('name')]
     existing=[p for p in value['view'].get('existing_pages',[]) if related(p['identity'],hints)]
     planned=[]
+    index=_INDEX.get()
     for page in state['pages']:
         if related(page['identity'],hints):
-            topics=[p for p in value['view']['proposals'] if set(p['candidate_refs'])&set(page['candidate_refs'])]
+            if index is not None and index['value'] is value:
+                hits=set().union(*(index['by_candidate'].get(h,set()) for h in page['candidate_refs']))
+                topics=[index['proposals'][i] for i in sorted(hits)]
+            else:
+                handles_for_page=set(page['candidate_refs'])
+                topics=[p for p in value['view']['proposals'] if handles_for_page.intersection(p['candidate_refs'])]
             planned.append({'identity':copy.deepcopy(page['identity']),'path':page['path'],
                 'topics':list(dict.fromkeys(p['summary'] for p in topics)),
                 'source_paths':sorted({p['source_path'] for p in topics if p.get('source_path')})})
@@ -84,6 +106,7 @@ def packet_view(value,chosen,state,*,detail=False):
     return view
 
 
+@measured('global_packet_pack')
 def next_packet(value,remaining,state,project):
     chosen=[];prepared=None
     for group in remaining:
@@ -106,6 +129,8 @@ def next_packet(value,remaining,state,project):
 
 def accept(value,state,packet,draft):
     """Validate packet decisions and all accumulated identity/path/coverage invariants."""
+    from fixed_global_targets import expand
+    draft=expand('global-detail',packet['view'],draft)
     validate('global-detail',draft)
     if 'blocked_reason' in draft:fail('SEMANTIC_REVIEW_REQUIRED',draft['blocked_reason'])
     if state_digest(state)!=packet['previous_state_sha256']:fail('STALE_INPUT','preceding global plan state changed')
@@ -145,6 +170,8 @@ def accept(value,state,packet,draft):
 
 def accept_proposals(value,state,packet,draft):
     """Native routing names pN; only the program expands pN to full member sets."""
+    from fixed_global_targets import expand
+    draft=expand('global-plan',packet['view'],draft)
     validate('global-plan',draft)
     if 'blocked_reason' in draft:fail('SEMANTIC_REVIEW_REQUIRED',draft['blocked_reason'])
     queries=draft['detail_unit_refs'];by_unit={g['unit']:g for g in packet['units']}
@@ -162,7 +189,9 @@ def accept_proposals(value,state,packet,draft):
         refs=list(dict.fromkeys(c for r in page['proposal_refs'] for c in lookup[r]['candidate_refs']))
         pages.append({'identity':page['identity'],'path':page['path'],'candidate_refs':refs})
     normal_handles={c for r in assigned for c in lookup[r]['candidate_refs']}
-    part={**packet,'proposal_refs':assigned,'candidate_refs':sorted(normal_handles)}
+    # This internal candidate expansion already has canonical identities.
+    part={**packet,'view':{k:v for k,v in packet['view'].items() if k!='output_contract'},
+          'proposal_refs':assigned,'candidate_refs':sorted(normal_handles)}
     result=accept(value,state,part,{'pages':pages,'omitted_candidate_refs':[],'reason':draft['reason']})
     return result,pending
 

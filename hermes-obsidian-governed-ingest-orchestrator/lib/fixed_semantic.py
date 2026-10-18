@@ -17,7 +17,7 @@ from hermes_source_units.runtime_telemetry import measured, span
 from native_ingest import worker_action, read_pass_input
 from native_pass_identity import visible_packet, load_context
 from program_worker import canonical_binding
-from fixed_semantic_schema import schema, validate, slot_schema, slot_results, strict_schema
+from fixed_semantic_schema import schema, schema_for, validate, slot_schema, slot_results, strict_schema
 from hermes_source_units.semantic_budget import PHASE_BALANCED_POLICY, budget_policy_pin
 import fixed_reduce
 import fixed_review
@@ -256,6 +256,8 @@ def wire_prompt(phase,view,output_schema,correction=None):
         body['required_result_slots']=[t['task'] for t in view.get('tasks',[])]
     if correction: body['correction'] = _stable_objects(correction)
     system=COMMON+'\n'+RULES[phase]
+    if view.get('output_contract')=='global-target-refs/v1':
+        system+=' For a supplied existing/planned target, output target_ref instead of copying identity/aliases/path. For a new page propose identity and path. Target references are local choices, never source evidence or page links. All original coverage, scope/version distinctions and correction limits still apply.'
     if phase=='resource-reduce' and 'packet_review' in view:
         system+=' Explicit source-result review: verify EVERY complete candidate against its OWN supplied original evidence/support_refs, never another candidate or prior inspection narrative. If any required number, unit, condition or exception is unsupported or cut off, OMIT THE WHOLE candidate with a concrete unverified coverage-loss reason. A caveat in summary or QA does not validate the unchanged candidate. Preserve all independently supported candidates, using separate groups when needed; unrelated themes, inability to merge, budget or wording are NEVER omission reasons. Keep QA limits; do not repair text or infer missing values. Missing required material objects or invalid source/permission identities still block.'
     if phase=='resource-reduce' and view.get('hold_resolution',{}).get('audit_role')=='prior-review-not-source':
@@ -295,7 +297,7 @@ def prepare_request_projection(phase,view,output_schema,images=(),correction=Non
 def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2):
     if attempt_limit==1 and correction:
         raise ContractError('INVALID_TRANSITION','$','single-attempt admission does not permit a correction call')
-    output_schema=slot_schema(phase,view.get('tasks',[])) if phase in ('candidate','citation') else schema(phase)
+    output_schema=slot_schema(phase,view.get('tasks',[])) if phase in ('candidate','citation') else schema_for(phase,view)
     images=[]
     if isinstance(caller,HermesCaller):
         original=view.get('original_evidence')
@@ -839,6 +841,7 @@ def run_pass(adapter,binding,caller):
     return pass_action(adapter.workflow.vault,'complete')
 
 
+@record_validation_scope()
 def execute(adapter,binding_path,caller=None):
     binding,_=canonical_binding(adapter,binding_path,executor='semantic-v1')
     caller=caller or HermesCaller()
@@ -896,6 +899,8 @@ def run_reduce(adapter,binding,caller):
     def plan_call(phase,packet):
         nonlocal state,sequence
         adapter.worker_check(binding);call_ref=None
+        from fixed_global_targets import select
+        packet=select(adapter,binding,phase,packet,prepare_request_projection)
         try:
             from semantic_output import execute as checked_output,check
             routed,call_ref,(updated,pending)=checked_output(adapter,binding,phase,packet['view'],caller,model_call,
@@ -914,12 +919,14 @@ def run_reduce(adapter,binding,caller):
         from semantic_output import stop_at_output_boundary
         stop_at_output_boundary(adapter,binding,phase,packet['view'])
         return pending
-    while remaining:
-        packet=next_packet(input_value,remaining,state,prepare_request_projection)
-        pending=plan_call('global-plan',packet)
-        for unit in pending:
-            plan_call('global-detail',detail_packet(input_value,unit,state,prepare_request_projection))
-        remaining=remaining[packet['unit_count']:]
+    from fixed_global_packets import planning_scope
+    with planning_scope(input_value):
+        while remaining:
+            packet=next_packet(input_value,remaining,state,prepare_request_projection)
+            pending=plan_call('global-plan',packet)
+            for unit in pending:
+                plan_call('global-detail',detail_packet(input_value,unit,state,prepare_request_projection))
+            remaining=remaining[packet['unit_count']:]
     draft=complete(input_value,state)
     views=[fixed_reduce.page_view(adapter,input_value,page) for page in draft['pages']]
     catalog=image_catalog(adapter,input_value['view']['original_evidence']) if isinstance(caller,HermesCaller) else {}
