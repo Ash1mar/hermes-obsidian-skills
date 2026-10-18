@@ -87,3 +87,36 @@ def test_raw_native_verification_does_not_accept_changed_authority(tmp_path):
     assert recovery.native_reply(c.adapter,c.binding,c.audit_path,c.wire,c.output_schema,[],home=c.home)[0]
     c.audit['native_task_id']='unrelated';c.audit_path.write_text(json.dumps(c.audit))
     assert recovery.native_reply(c.adapter,c.binding,c.audit_path,c.wire,c.output_schema,[],home=c.home) is None
+
+
+def test_real_model_call_admits_only_the_reserved_correction(tmp_path,monkeypatch):
+    c=fixture(tmp_path,monkeypatch,[]);calls=[];value=fixture_value()
+    def caller(phase,view,output_schema,correction=None):
+        calls.append(correction)
+        return json.dumps(answer(not bool(correction))),{'origin':'isolated_fixture'}
+    draft,_,_=output.execute(c.adapter,c.binding,'global-plan',c.packet['view'],caller,fixed.model_call,
+        lambda d:output.check('global-plan',value,c.packet,g.initial(),d),packet=c.packet)
+    assert draft==answer() and len(calls)==2 and calls[1]['assigned_and_requested']==['p1']
+
+
+def test_proven_uncalled_reservation_continues_same_second_ordinal(tmp_path,monkeypatch):
+    import hashlib
+    c=fixture(tmp_path,monkeypatch,[]);value=fixture_value();calls=[];old_guard=True
+    def caller(phase,view,output_schema,correction=None):
+        calls.append(correction);return json.dumps(answer(not bool(correction))),{'origin':'isolated_fixture'}
+    def invoke(*args,**kwargs):
+        if old_guard:kwargs['attempt_limit']=1  # reproduce the pre-SDK admission defect
+        return fixed.model_call(*args,**kwargs)
+    def run():return output.execute(c.adapter,c.binding,'global-plan',c.packet['view'],caller,invoke,
+        lambda d:output.check('global-plan',value,c.packet,g.initial(),d),packet=c.packet)
+    with pytest.raises(ContractError,match='INVALID_TRANSITION'):run()
+    path=output.path_for(c.adapter,c.binding,'global-plan',c.packet['view']);record=json.loads(path.read_text());last=record['attempts'][1]
+    assert len(calls)==1 and not last.get('audit_ref') and not last.get('session_id')
+    original=record['attempts'][0]['audit_ref']
+    monkeypatch.setattr(recovery,'native_reply',lambda *args,**kwargs:(json.dumps(answer(True)),{}))
+    report=tmp_path/'grant.json';report.write_text(json.dumps({'request':{'recovery_scope':output.SCOPE},'entries':[{'node':'global-reduce',
+        'uncalled_reservation':{'journal_name':path.name,'attempt_id':last['attempt_id'],'task_id':last['task_id']}}]}))
+    pointer={'report_ref':'grant.json','report_sha256':hashlib.sha256(report.read_bytes()).hexdigest()}
+    c.adapter.workflow.status=lambda _: {'execution_recovery_history':[pointer]};c.binding['task_id']='new-after-ended-attempt';old_guard=False
+    assert run()[0]==answer() and len(calls)==2
+    record=json.loads(path.read_text());assert len(record['attempts'])==2 and len(record['attempts'][1]['not_called_history'])==1

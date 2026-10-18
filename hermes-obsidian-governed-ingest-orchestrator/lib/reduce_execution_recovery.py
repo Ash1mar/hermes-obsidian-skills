@@ -122,7 +122,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 previous_reports=[_load_json(_vault_path(service.vault,r['report_ref']))
                     for r in value.get('execution_recovery_history',[]) if name in r['nodes']]
                 if any(r['request'].get('recovery_scope')==scope and
-                       (scope!='reduce-cancel/v1' or any(e['node']==name and
+                       (scope not in ('reduce-cancel/v1','semantic-output/v1') or any(e['node']==name and
                          e['previous_task_id']==entry.get('task_id') for e in r['entries'])) for r in previous_reports):
                     fail('RECOVERY_EXHAUSTED', 'one cancellation recovery per exact native attempt; diagnose further failure')
                 card = next((c for c in value['kanban']['task_map'] if c['node'] == name), None)
@@ -144,7 +144,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                         or report.get('idempotency_key') != key):
                     fail('STALE_INPUT', 'failure evidence or binding changed')
                 projection=scope=='reduce-cancel/v1' and report.get('error_code')=='DISPATCH_ARTIFACT_CHANGED'
-                allowed=(('INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT') if scope=='semantic-output/v1' else ('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
+                allowed=(('INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','INVALID_TRANSITION') if scope=='semantic-output/v1' else ('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
                     ('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED'))
                 if not review and (report.get('error_code') not in allowed or (scope in ('source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3') and node.kind!='resource-reduce')):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
