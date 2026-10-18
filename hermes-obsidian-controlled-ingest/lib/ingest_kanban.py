@@ -1061,6 +1061,13 @@ class IngestKanbanAdapter:
         return {"workflow_id": value["workflow_id"], "state": "cancelled",
                 "background_dispatch": False, "revision": value["revision"]}
 
+    def interruption_status(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        value=self.workflow.status(str(request['workflow_id']))
+        if request.get('actor')!=value['actor']:_fail('ACTOR_MISMATCH','workflow actor differs')
+        from semantic_output import interruption_status
+        return {'workflow_id':value['workflow_id'],'state':value['state'],'stage':value['current_stage'],
+                **interruption_status(self,value['workflow_id'])}
+
     def resume(self, request: Mapping[str, Any]) -> dict[str, Any]:
         value = self.workflow.resume(request)
         if value["batch_id"]:
