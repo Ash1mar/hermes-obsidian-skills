@@ -121,9 +121,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     fail('INVALID_TRANSITION','source result review requires a completed resource reduction')
                 previous_reports=[_load_json(_vault_path(service.vault,r['report_ref']))
                     for r in value.get('execution_recovery_history',[]) if name in r['nodes']]
-                if any(r['request'].get('recovery_scope')==scope and
-                       (scope not in ('reduce-cancel/v1','semantic-output/v1') or any(e['node']==name and
-                         e['previous_task_id']==entry.get('task_id') for e in r['entries'])) for r in previous_reports):
+                from hermes_source_units.execution_plan import execution_recovery_key
+                requested_key=execution_recovery_key(scope,{'node':name,'previous_task_id':entry.get('task_id')})
+                if any(r['request'].get('recovery_scope')==scope and any(execution_recovery_key(scope,e)==requested_key for e in r['entries']) for r in previous_reports):
                     fail('RECOVERY_EXHAUSTED', 'one cancellation recovery per exact native attempt; diagnose further failure')
                 card = next((c for c in value['kanban']['task_map'] if c['node'] == name), None)
                 key = f'ingest:{wid}:{node.kind}:{node.input_fingerprint}'

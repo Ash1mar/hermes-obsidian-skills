@@ -120,3 +120,11 @@ def test_proven_uncalled_reservation_continues_same_second_ordinal(tmp_path,monk
     c.adapter.workflow.status=lambda _: {'execution_recovery_history':[pointer]};c.binding['task_id']='new-after-ended-attempt';old_guard=False
     assert run()[0]==answer() and len(calls)==2
     record=json.loads(path.read_text());assert len(record['attempts'])==2 and len(record['attempts'][1]['not_called_history'])==1
+
+
+def test_admission_and_canonical_replay_share_exact_recovery_identity():
+    from hermes_source_units.execution_plan import execution_recovery_key as key
+    a={'node':'global-reduce','previous_task_id':'ended-one'};b={**a,'previous_task_id':'ended-two'}
+    assert key('semantic-output/v1',a)!=key('semantic-output/v1',b)
+    assert key('semantic-output/v1',a)==key('semantic-output/v1',dict(a))
+    assert key('source-format/v1',a)==key('source-format/v1',b)
