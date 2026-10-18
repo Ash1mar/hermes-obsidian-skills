@@ -74,7 +74,9 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(value))
     reviews={}; call_refs=[]
     for view in value['views']:
-        result,call_ref=model_call(adapter,binding,'page-review',view,caller,30000)
+        from semantic_output import execute as checked_output,check
+        result,call_ref,_=checked_output(adapter,binding,'page-review',view,caller,model_call,
+            lambda d:check('page-review',None,None,None,d))
         if result['decision']!='approved':
             fail('SEMANTIC_REVIEW_REQUIRED',result['review_note'])
         reviews[view['page']]=result['review_note']; call_refs.append(call_ref)

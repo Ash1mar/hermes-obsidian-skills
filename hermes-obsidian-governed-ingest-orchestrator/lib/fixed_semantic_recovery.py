@@ -38,6 +38,52 @@ def task_content(view, task):
     return fingerprint({'task':task,'qa_rule':view.get('qa_rule')})
 
 
+def native_reply(adapter,binding,path,wire,output_schema,images,*,home=None,seen=None):
+    """Authenticate raw native output, including invalid JSON, without approval."""
+    adapter.worker_check(binding);w=adapter.workflow.status(binding['workflow_id'])
+    permitted={binding['task_id']:None}
+    for pointer in w.get('execution_recovery_history',[]):
+        rp=_vault_path(adapter.workflow.vault,pointer['report_ref'])
+        if pointer.get('report_sha256') and __import__('hashlib').sha256(rp.read_bytes()).hexdigest()!=pointer['report_sha256']:return None
+        report=_load_json(rp)
+        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1'):continue
+        for e in report['entries']:
+            if e['node']==binding['node']:permitted[e['previous_task_id']]=e
+    root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls"
+    seen=set() if seen is None else seen
+    if path.parent!=root or str(path) in seen:return None
+    seen.add(str(path));a=_load_json(path)
+    if (a.get('workflow_id')!=binding['workflow_id'] or a.get('node')!=binding['node']
+        or a.get('native_task_id') not in permitted or a.get('template_hash')!=binding['template_hash']
+        or a.get('input_sha256')!=fingerprint(wire) or a.get('user_sha256')!=fingerprint(wire['user'])
+        or a.get('schema_sha256')!=fingerprint(output_schema)
+        or a.get('image_inputs',[])!=[{k:v for k,v in i.items() if k!='url'} for i in images]):return None
+    previous=permitted[a['native_task_id']]
+    if previous and str(a.get('native_run_id')) not in previous['ended_run_ids']:return None
+    if a.get('reused_from_audit'):
+        found=native_reply(adapter,binding,_vault_path(adapter.workflow.vault,a['reused_from_audit']),wire,output_schema,images,home=home,seen=seen)
+        return found if found and found[1]['response_sha256']==a['response_sha256'] else None
+    raw=transcript_reply(a,wire,home=home)
+    adapter.worker_check(binding)
+    return (raw,a) if raw is not None else None
+
+
+def transcript_reply(a,wire,*,home=None):
+    """Read-only transcript proof; the caller separately checks task authority."""
+    model=a.get('model',{});home=Path(home) if home else Path.home()/'.hermes'
+    if model.get('origin')!='hermes_native_model' or model.get('response_sha256')!=a['response_sha256'] or not (home/'state.db').exists():return None
+    from revision_disposition import native_user
+    with sqlite3.connect('file:'+str(home/'state.db')+'?mode=ro',uri=True) as db:
+        sid=model['session_id']
+        if db.execute('SELECT source FROM sessions WHERE id=?',(sid,)).fetchone()!=('kanban',):return None
+        rows=list(db.execute('SELECT role,content,tool_calls FROM messages WHERE session_id=?',(sid,)))
+        if any(t and t!='[]' for _,_,t in rows):return None
+        users=[u for r,c,_ in rows if r=='user' and (u:=native_user(c,a))==wire['user']]
+        answers=[c for r,c,_ in rows if r=='assistant' and fingerprint(c)==a['response_sha256']]
+        if len(users)!=1 or len(answers)!=1:return None
+    return answers[0]
+
+
 def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode, *, home=None, candidate_paths=None):
     """Replay an exact genuine reducer call under a fresh authorized native identity.
 
@@ -52,7 +98,7 @@ def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode,
     permitted = {binding['task_id']: None}
     for recovery in workflow.get('execution_recovery_history', []):
         report = _load_json(_vault_path(adapter.workflow.vault, recovery['report_ref']))
-        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1'):
+        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1'):
             continue
         for entry in report['entries']:
             if entry['node'] == binding['node']:

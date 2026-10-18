@@ -180,6 +180,8 @@ class HermesCaller:
         prepared['consumed']=True
         with span('request_construct', phase=phase):
             agent = self.make_agent()
+        from semantic_output import note_session
+        note_session(agent.session_id)
         try:
             prompt=prepared['prompt'];content=prepared['content']
             agent.fixed_request={**prompt,'user':content}
@@ -382,7 +384,10 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
                 estimated_correction_reserve_codepoints=correction_reserve(len(view['tasks']),policy) if attempt_limit>1 else 0,
                 semantic_attempt_limit=attempt_limit)
     ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls/{fingerprint(audit)}.json"
+    from semantic_output import attempt_id,note_audit
+    if attempt_id():audit['output_attempt_id']=attempt_id()
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(audit))
+    note_audit(ref)
     try:
         value,normalization=decode_semantic_response(raw)
         if normalization:
@@ -861,8 +866,9 @@ def run_reduce(adapter,binding,caller):
             call_ref=None
             try:
                 from source_result_review import review_view
-                draft,call_ref=model_call(adapter,binding,kind,review_view(input_value,packet['view']),caller,30000,attempt_limit=1)
-                validate_packet(packet,draft)
+                from semantic_output import execute as checked_output,check
+                draft,call_ref,_=checked_output(adapter,binding,kind,review_view(input_value,packet['view']),caller,model_call,
+                    lambda d:check(kind,input_value,packet,None,d),packet=packet)
             except ContractError as exc:
                 call_ref=call_ref or getattr(exc,'semantic_audit_ref',None)
                 if not call_ref or exc.code not in ('SEMANTIC_REVIEW_REQUIRED','INVALID_SCHEMA','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','DUPLICATE'):
@@ -889,9 +895,9 @@ def run_reduce(adapter,binding,caller):
         nonlocal state,sequence
         adapter.worker_check(binding);call_ref=None
         try:
-            routed,call_ref=model_call(adapter,binding,phase,packet['view'],caller,30000,attempt_limit=1)
-            if phase=='global-plan':updated,pending=accept_proposals(input_value,state,packet,routed)
-            else:updated=accept(input_value,state,packet,routed);pending=[]
+            from semantic_output import execute as checked_output,check
+            routed,call_ref,(updated,pending)=checked_output(adapter,binding,phase,packet['view'],caller,model_call,
+                lambda d:check(phase,input_value,packet,state,d),packet=packet)
         except ContractError as exc:
             call_ref=call_ref or getattr(exc,'semantic_audit_ref',None)
             if call_ref:attach_receipt(adapter,call_ref,{'ok':False,'validated':False,'state':'planning_packet_held','code':exc.code,'reason':str(exc)})
@@ -918,7 +924,9 @@ def run_reduce(adapter,binding,caller):
         if prepare_request_projection('page-write',view,schema('page-write'),images)['input_size']>30000:
             raise ContractError('READING_WINDOW_OVERSIZE','$','planned page complete evidence exceeds the bound; no body calls or truncation')
     for page,view in zip(draft['pages'],views,strict=True):
-        written,write_ref=model_call(adapter,binding,'page-write',view,caller,30000,attempt_limit=1)
+        from semantic_output import execute as checked_output,check
+        written,write_ref,_=checked_output(adapter,binding,'page-write',view,caller,model_call,
+            lambda d:check('page-write',input_value,None,None,d))
         if 'blocked_reason' in written:raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',written['blocked_reason'])
         page['content']=written['content'];call_refs.append(write_ref)
         attach_receipt(adapter,write_ref,{'ok':True,'validated':True,'state':'page_body_only','input_ref':ref})
