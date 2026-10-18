@@ -45,7 +45,7 @@ def test_provisional_routing_uses_proposals_while_full_boundaries_stay_in_backen
 @pytest.mark.parametrize('mode',['valid','oversize','blocked'])
 def test_new_pages_always_write_full_evidence_and_preflight_all_bodies(tmp_path,monkeypatch,mode):
     value=fixture_value(mode=='oversize');binding={'node':'global-reduce','workflow_id':'fixture','task_id':'fixture'}
-    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path),worker_check=lambda *_:None,worker_complete=lambda *_:{'ok':True})
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,status=lambda _: {'execution_recovery_history':[]}),worker_check=lambda *_:None,worker_complete=lambda *_:{'ok':True})
     monkeypatch.setattr(fixed,'canonical_binding',lambda *_a,**_k:(binding,{}))
     monkeypatch.setattr(fixed_reduce,'prepare',lambda *_:('fixture',value))
     monkeypatch.setattr(fixed,'attach_receipt',lambda *_:None)
@@ -79,7 +79,7 @@ def test_new_pages_always_write_full_evidence_and_preflight_all_bodies(tmp_path,
 
 def test_only_explicit_detail_request_adds_a_local_call(tmp_path,monkeypatch):
     value=fixture_value();binding={'node':'global-reduce','workflow_id':'fixture','task_id':'fixture'}
-    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path),worker_check=lambda *_:None,worker_complete=lambda *_:{'ok':True})
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,status=lambda _: {'execution_recovery_history':[]}),worker_check=lambda *_:None,worker_complete=lambda *_:{'ok':True})
     monkeypatch.setattr(fixed,'canonical_binding',lambda *_a,**_k:(binding,{}))
     monkeypatch.setattr(fixed_reduce,'prepare',lambda *_:('fixture',value))
     monkeypatch.setattr(fixed,'attach_receipt',lambda *_:None)

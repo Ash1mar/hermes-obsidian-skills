@@ -50,8 +50,11 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
     if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', rid):
         fail('INVALID_SCHEMA', 'invalid recovery ID')
     scope=request.get('recovery_scope')
-    if scope not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1'):
+    if scope not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1'):
         fail('INVALID_SCHEMA', 'Reduce recovery requires a supported explicit correction scope')
+    if scope=='semantic-output/v1':
+        from semantic_output_recovery import contract_hash
+        if request.get('target_contract_sha256')!=contract_hash():fail('STALE_INPUT','shared output-correction contract changed')
     review=scope=='source-result-review/v1'
     if review:
         from source_result_review import contract_hash
@@ -141,7 +144,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                         or report.get('idempotency_key') != key):
                     fail('STALE_INPUT', 'failure evidence or binding changed')
                 projection=scope=='reduce-cancel/v1' and report.get('error_code')=='DISPATCH_ARTIFACT_CHANGED'
-                allowed=(('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
+                allowed=(('INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT') if scope=='semantic-output/v1' else ('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
                     ('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED'))
                 if not review and (report.get('error_code') not in allowed or (scope in ('source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3') and node.kind!='resource-reduce')):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
@@ -180,6 +183,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     'previous_input_fingerprint': node.input_fingerprint, 'failure_ref': ref,
                     'failure_sha256': hashlib.sha256(data).hexdigest(), 'failure': report,
                     'ended_run_ids': [str(r['id']) for r in runs], 'template_hash': template_hash})
+                if scope=='semantic-output/v1':
+                    from semantic_output_recovery import verify
+                    audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))
                 if review:
                     from source_result_review import verify
                     audited[-1].update(verify(adapter,value,node,binding,entry))
@@ -210,7 +216,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 return {**result, 'revision': value['revision'], 'entries': audited}
             ref = f'_system/ledgers/ingest-workflows/{wid}/execution-recoveries/{rid}.json'
             report = {'request': dict(request), 'entries': audited, 'batch_id': value['batch_id'],
-                      'domain_inputs_changed': False, 'semantic_retry_authorized': scope in ('source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','source-result-review/v1')}
+                      'domain_inputs_changed': False, 'semantic_retry_authorized': scope in ('source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','source-result-review/v1','semantic-output/v1')}
             path = _vault_path(service.vault, ref)
             data = _json_bytes(report)
             if path.exists() and path.read_bytes() != data:

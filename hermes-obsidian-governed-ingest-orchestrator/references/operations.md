@@ -535,3 +535,26 @@ This does not revise Passes or reset sources. Global input identity changes thro
 the ordinary graph; old global results are reused only if their inputs still match.
 No semantic refusal is relabeled as cancellation and no pause is released. One
 review grant per source is allowed; failure is held rather than automatically retried.
+
+## Shared finite output correction
+
+`finite-semantic-output/v1` applies the existing pure schema/packet validators to
+resource/global packets, detail, page writing and page-review JSON. A persistent
+`output-attempts` record permits the initial call and one diagnostic correction.
+It never turns a semantic refusal, QA failure, changed authority or transport error
+into correction. The full original packet, preceding state, schema and correction
+are measured again; nothing is truncated. Unknown native completion remains held.
+Valid native results are revalidated and reused before any new call. Prompt,
+worker and process changes do not reset consumed allowance.
+
+For an explicitly authorized legacy incremental global failure, use the existing
+`recover-reduce-execution` with `recovery_scope: semantic-output/v1`, the current
+`target_contract_sha256` from `semantic_output_recovery.contract_hash()`, and each
+entry's usual node/task/failure SHA plus `snapshot_ref/snapshot_sha256`,
+`progress_ref/progress_sha256`, and `native_audit_ref/native_audit_sha256`.
+Dry-run authenticates the ended native transcript and reconstructs the complete
+prior planning state from successful native calls, then reproduces the failure at
+the same pure validator. Apply imports that call as attempt one, without resuming.
+Normal execution and this admission use the same validator, diagnosis and journal.
+This is a provenance migration for old records, not an extra allowance or an
+error-specific repair endpoint; legacy formats without provable state remain held.

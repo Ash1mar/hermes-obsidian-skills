@@ -5,6 +5,17 @@ description: Start, resume and inspect a persistent Vault-authoritative governed
 
 # Governed ingest orchestration
 
+Fixed Reduce and page-review output contracts share `finite-semantic-output/v1`:
+normal outputs incur one call; a mechanically located schema, membership,
+exclusive-action or output-target error permits at most one measured correction
+for that same input. The persistent output-attempt journal survives worker,
+prompt and process changes; uncertain native completion stays held. Evidence,
+QA, semantic refusals, authority and transport failures do not enter correction.
+For an authorized old incremental planning failure without a journal, use the
+single `semantic-output/v1` migration described in references/operations.md;
+it authenticates native prefix/state and imports the failed call as attempt one.
+Never edit an answer or use cancellation to reset its allowance.
+
 For explicitly reviewed semantic defects in a completed but globally unconsumed
 source result, use `source-result-review/v1` in `references/operations.md`.
 It authenticates the complete original native packet provenance, grants one
