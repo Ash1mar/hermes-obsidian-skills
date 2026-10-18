@@ -9,7 +9,7 @@ from contextvars import ContextVar
 from hermes_source_units import ContractError
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.runtime_telemetry import measured
-from fixed_semantic_schema import schema,validate
+from fixed_semantic_schema import schema,schema_for,validate
 import fixed_reduce
 
 CONTRACT='proposal-global-plan/v1'
@@ -107,7 +107,7 @@ def packet_view(value,chosen,state,*,detail=False):
 
 
 @measured('global_packet_pack')
-def next_packet(value,remaining,state,project):
+def next_packet(value,remaining,state,project,*,view_transform=None):
     chosen=[];prepared=None
     for group in remaining:
         count=sum(len(g['proposals']) for g in [*chosen,group])
@@ -115,7 +115,8 @@ def next_packet(value,remaining,state,project):
             if not chosen:fail('READING_WINDOW_OVERSIZE','one indivisible proposal unit exceeds the fixed output slots')
             break
         view=packet_view(value,[*chosen,group],state)
-        projected=project('global-plan',view,schema('global-plan'),[])
+        if view_transform is not None:view=view_transform(view)
+        projected=project('global-plan',view,schema_for('global-plan',view),[])
         if projected['input_size']>LIMIT:
             if not chosen:fail('READING_WINDOW_OVERSIZE','one complete proposal unit plus related page boundaries exceeds global planning budget')
             break

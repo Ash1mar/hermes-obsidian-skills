@@ -148,8 +148,15 @@ class ExecutionPlanMixin:
                     if (not isinstance(cause,str) or not cause or entry.get('failure',{}).get('error_code')
                             not in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED')):
                         fail('STALE_INPUT','Reduce cancellation recovery lacks its exact ended native identity')
-                if scope=='semantic-output/v1' and (not entry.get('previous_task_id') or not (entry.get('output_seed') or entry.get('uncalled_reservation') or entry.get('exhausted_continuation'))):
+                if scope=='semantic-output/v1' and (not entry.get('previous_task_id') or not (entry.get('output_seed') or entry.get('uncalled_reservation') or entry.get('exhausted_continuation') or entry.get('uncalled_packet'))):
                     fail('STALE_INPUT','shared output recovery lacks its authenticated attempt evidence')
+                if scope=='semantic-output/v1' and entry.get('uncalled_packet'):
+                    proof=entry['uncalled_packet']
+                    if (proof.get('additional_calls_granted')!=0 or proof.get('existing_attempts_changed') is not False
+                            or not proof.get('corrected_view_sha256') or proof.get('corrected_codepoints',30001)>30000
+                            or not any(e.get('node')==entry['node'] and e.get('uncalled_packet') is True
+                                and e.get('uncalled_packet_sha256')==proof.get('previous_view_sha256') for e in request['entries'])):
+                        fail('STALE_INPUT','uncalled packing recovery lacks its exact no-call proof')
                 if scope=='semantic-output/v1' and entry.get('exhausted_continuation'):
                     permit=entry['exhausted_continuation']
                     if (permit.get('attempt_ordinal')!=3 or not permit.get('prior_attempts_sha256')

@@ -22,6 +22,13 @@ entry may authenticate both rejected calls and grant one additional call recorde
 as ordinal 3. This is not another automatic correction cycle; see operations.md.
 Old diagnostics/wires and all prior counts remain immutable on replay.
 
+New global packets accumulate against their complete actual short-target wire.
+For a proven pre-journal packing failure, `semantic-output/v1` may authenticate
+an explicitly requested `uncalled_packet` proof and a smaller complete new
+packet without granting extra calls. All successful native prefix products and
+consumed boundaries/allowances remain unchanged; uncertain SDK completion is
+never an uncalled packet. See references/operations.md.
+
 For explicitly reviewed semantic defects in a completed but globally unconsumed
 source result, use `source-result-review/v1` in `references/operations.md`.
 It authenticates the complete original native packet provenance, grants one

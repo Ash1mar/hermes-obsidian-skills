@@ -18,6 +18,45 @@ def contract_hash():
 def fail(message):raise ContractError('RECOVERY_NOT_ALLOWED','$',message)
 
 
+def uncalled_packet(adapter,binding,value,state,remaining,packet,entry,failure,prefix_journals,prefix_refs):
+    """Prove a pre-journal packing rejection; never grant a consumed-call retry."""
+    import fixed_global_packets as g
+    from fixed_global_targets import target_view,planning_packet
+    from fixed_semantic import prepare_request_projection
+    from fixed_semantic_schema import schema_for
+    if (failure.get('error_code')!='READING_WINDOW_OVERSIZE'
+            or failure.get('reason')!='READING_WINDOW_OVERSIZE at $: complete short-target routing exceeds bound; no truncation or call'
+            or any(entry.get(k) for k in ('native_audit_ref','attempt_ref','continue_exhausted'))):
+        fail('uncalled packet recovery requires the exact pre-journal packing failure')
+    short=target_view(packet['view'])
+    if entry.get('uncalled_packet_sha256')!=fingerprint(short):fail('uncalled packet identity changed')
+    legacy_size=prepare_request_projection('global-plan',packet['view'],schema_for('global-plan',packet['view']),[])['input_size']
+    short_size=prepare_request_projection('global-plan',short,schema_for('global-plan',short),[])['input_size']
+    if not legacy_size<=g.LIMIT<short_size:fail('the previous full-wire packing defect is not reproduced')
+    root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}"
+    if any(path_for(adapter,binding,'global-plan',v).exists() for v in (packet['view'],short)):
+        fail('a rejected packing boundary already has an output reservation')
+    accounted=set(prefix_refs)
+    for jp in prefix_journals:
+        if jp.exists():accounted.update(a['audit_ref'] for a in _load_json(jp)['attempts'] if a.get('audit_ref'))
+    for jp in (root/'output-attempts').glob('*.json'):
+        if jp not in prefix_journals and any(a.get('task_id')==binding['task_id'] for a in _load_json(jp)['attempts']):
+            fail('native attempt has an unaccounted reservation or uncertain completion')
+    for ap in (root/'semantic-calls').glob('*.json'):
+        audit=_load_json(ap)
+        if audit.get('native_task_id')==binding['task_id'] and ap.relative_to(adapter.workflow.vault).as_posix() not in accounted:
+            fail('native attempt has an unaccounted model call')
+    corrected=planning_packet(adapter,binding,value,remaining,state,prepare_request_projection)
+    if (path_for(adapter,binding,'global-plan',corrected['view']).exists()
+            or not corrected['units'] or corrected['units']!=remaining[:corrected['unit_count']]
+            or corrected['input_codepoints']>g.LIMIT):
+        fail('corrected packet is consumed, noncontiguous or still oversized')
+    return {'previous_view_sha256':fingerprint(short),'previous_proposal_refs':packet['proposal_refs'],
+        'previous_codepoints':short_size,'corrected_view_sha256':fingerprint(corrected['view']),
+        'corrected_proposal_refs':corrected['proposal_refs'],'corrected_codepoints':corrected['input_codepoints'],
+        'preceding_state_sha256':g.state_digest(state),'additional_calls_granted':0,'existing_attempts_changed':False}
+
+
 def verify(adapter,w,node,binding,entry,failure,runs):
     import fixed_reduce
     import fixed_global_packets as g
@@ -30,10 +69,22 @@ def verify(adapter,w,node,binding,entry,failure,runs):
         # Schema selection follows the saved native audit, then read() proves
         # the complete wire. This never migrates an unjournalled legacy call.
         audit=_load_json(_vault_path(adapter.workflow.vault,ref))
-        if audit.get('schema_sha256')==fingerprint(schema(phase)):return packet
-        view=target_view(packet['view'])
-        if audit.get('schema_sha256')!=fingerprint(schema_for(phase,view)):fail('unknown recorded output contract')
-        return {**packet,'view':view}
+        def matches(candidate):
+            jp=path_for(adapter,binding,phase,candidate['view']);correction=None
+            if jp.exists():
+                matches=[a for a in _load_json(jp)['attempts'] if a.get('audit_ref')==ref]
+                if len(matches)>1:fail('native audit belongs to multiple attempt ordinals')
+                if matches:correction=matches[0].get('correction')
+            sc=output_schema(phase,candidate)
+            return (audit.get('schema_sha256')==fingerprint(sc) and audit.get('input_sha256')==fingerprint(
+                prepare_request_projection(phase,candidate['view'],sc,[],correction)['wire']))
+        if matches(packet):return packet
+        short={**packet,'view':target_view(packet['view'])}
+        if matches(short):return short
+        if phase=='global-plan':
+            measured=g.next_packet(value,remaining,state,prepare_request_projection,view_transform=target_view)
+            if matches(measured):return measured
+        fail('recorded packet boundary or full output contract changed')
     def legacy_decoder_rejection(phase,packet,draft,diagnostic):
         """Reproduce the old decoder bug, not a relaxed intended output contract."""
         if packet['view'].get('output_contract')!='global-target-refs/v1' or diagnostic.get('code')!='INVALID_SCHEMA':return False
@@ -86,11 +137,12 @@ def verify(adapter,w,node,binding,entry,failure,runs):
     if node.kind!='global-reduce':fail('legacy journal import currently requires incremental global native provenance')
     progress=_vault_path(adapter.workflow.vault,entry['progress_ref']);saved=_load_json(progress)
     if hashlib.sha256(progress.read_bytes()).hexdigest()!=entry['progress_sha256'] or saved['binding']!=binding or saved['input_ref']!=entry['snapshot_ref']:fail('progress binding changed')
-    remaining=g.units(value);state=g.initial();pending=[]
+    remaining=g.units(value);state=g.initial();pending=[];prefix_journals=set()
     for ref in saved['successful_call_refs']:
         phase='global-detail' if pending else 'global-plan'
         packet=g.detail_packet(value,pending[0],state,prepare_request_projection) if pending else g.next_packet(value,remaining,state,prepare_request_projection)
         packet=recorded_packet(phase,packet,ref)
+        prefix_journals.add(path_for(adapter,binding,phase,packet['view']))
         a,draft,wire=read(ref,phase,packet)
         if a.get('validated') is not True:fail('prior native packet is not accepted')
         state,new_pending=check(phase,value,packet,state,draft)
@@ -99,6 +151,11 @@ def verify(adapter,w,node,binding,entry,failure,runs):
     if state!=saved['state'] or [u['unit'] for u in pending]!=saved['pending_detail_units']:fail('authenticated prior state differs')
     phase='global-detail' if pending else 'global-plan'
     packet=g.detail_packet(value,pending[0],state,prepare_request_projection) if pending else g.next_packet(value,remaining,state,prepare_request_projection)
+    if entry.get('uncalled_packet') is True:
+        if pending:fail('uncalled packing recovery cannot retry an indivisible detail unit')
+        proof=uncalled_packet(adapter,binding,value,state,remaining,packet,entry,failure,prefix_journals,saved['successful_call_refs'])
+        return {'uncalled_packet':proof,'input_ref':entry['snapshot_ref'],'progress_ref':entry['progress_ref'],
+            'authenticated_prefix_count':len(saved['successful_call_refs'])}
     packet=recorded_packet(phase,packet,entry['native_audit_ref'])
     path=path_for(adapter,binding,phase,packet['view'])
     if entry.get('continue_exhausted') is True:
