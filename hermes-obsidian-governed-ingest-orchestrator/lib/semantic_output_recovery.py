@@ -45,6 +45,12 @@ def verify(adapter,w,node,binding,entry,failure,runs):
             or a.get('workflow_id')!=w['workflow_id'] or a.get('phase')!=phase
             or str(a.get('native_run_id')) not in permitted[a['native_task_id']]
             or a.get('template_hash')!=binding['template_hash']):fail('legacy call does not belong to the exact ended native attempt')
+        if correction is None:
+            jp=path_for(adapter,binding,phase,packet['view'])
+            if jp.exists():
+                matching=[attempt for attempt in _load_json(jp)['attempts'] if attempt.get('audit_ref')==ref]
+                if len(matching)>1:fail('native audit belongs to multiple attempt ordinals')
+                if matching:correction=matching[0].get('correction')
         wire=prepare_request_projection(phase,packet['view'],schema(phase),[],correction)['wire']
         if a['input_sha256']!=fingerprint(wire) or a['user_sha256']!=fingerprint(wire['user']) or a['schema_sha256']!=fingerprint(schema(phase)) or a.get('image_inputs'):fail('legacy full wire/schema/media differs')
         if a.get('reused_from_audit'):
