@@ -898,7 +898,9 @@ def run_reduce(adapter,binding,caller):
     remaining=units(input_value);state=initial();call_refs=[];sequence=0
     def plan_call(phase,packet):
         nonlocal state,sequence
-        adapter.worker_check(binding);call_ref=None
+        # checked_output checks entry authority; native replay checks both sides
+        # of transcript proof. Pure packet selection needs no duplicate graph.
+        call_ref=None
         from fixed_global_targets import select
         packet=select(adapter,binding,phase,packet,prepare_request_projection)
         try:

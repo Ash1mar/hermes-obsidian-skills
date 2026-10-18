@@ -253,7 +253,6 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
     if len(record['attempts'])>2 and not permit:held('extra attempt lacks explicit continuation authority')
     correction=None
     for index in range(3 if permit else 2):
-        adapter.worker_check(binding)
         if index==2:correction=copy.deepcopy(permit['diagnostic'])
         attempt=record['attempts'][index] if index<len(record['attempts']) else None
         prepared=prepare_request_projection(phase,view,output_schema,images,correction)
@@ -290,6 +289,9 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
                 draft=None;error=ContractError('INVALID_SCHEMA','$',str(exc))
             else:error=None
         else:
+            # Replay has fresh checks before/after native transcript proof.
+            # New calls require fresh authority immediately before reservation.
+            adapter.worker_check(binding)
             boundary,_=output_boundary(adapter,binding)
             if boundary and path.name!=boundary['journal_name']:
                 raise ContractError('WORKFLOW_STOPPED','$','bounded resume permits saved replay and only its selected output call')
