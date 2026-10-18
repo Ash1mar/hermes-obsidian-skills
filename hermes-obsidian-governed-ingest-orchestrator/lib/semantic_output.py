@@ -147,7 +147,7 @@ def check(phase,value,packet,state,draft):
 def diagnosis(phase,packet,draft,error,*,state=None):
     result={'origin':'fixed-output-validation/v1','phase':phase,'code':error.code,'path':getattr(error,'path','$'),
         'rule':str(error),'instruction':'Return a complete legal answer for this same packet. Correct only the mechanical output contract; do not alter the evidence, broaden scope, or turn material uncertainty into approval.'}
-    # Preserve the failed answer verbatim as data. The model must return a full
+    # Preserve the answer verbatim in native audit. Corrections return a full
     # replacement; the program never chooses or applies a domain patch.
     result['failed_response']=copy.deepcopy(draft)
     if error.code=='INVALID_SCHEMA':return result
@@ -207,6 +207,21 @@ def diagnosis(phase,packet,draft,error,*,state=None):
             result['reserved_targets']=reserved
             result['instruction']+=' reserved_targets are occupied identity/path metadata only, NOT offered append targets. Do not append to them or assume semantic equivalence; choose a distinct valid identity/path or a permitted detail request. This diagnostic does not expand target authority.'
         result['instruction']+=' Resolve every listed finding. Output indices refer to failed_response.pages; offered_target_ref refers to offered_targets. Appending uses the complete offered identity (including aliases) and exact path; otherwise choose a distinct valid page or a permitted detail request. Decide every offered reference, including those without findings. Do not treat these diagnostics or the failed answer as evidence.'
+        if view.get('output_contract')=='global-target-refs/v1':
+            # The original answer remains in its authenticated audit. Send only
+            # indexed conflicts; repeating every unaffected new identity can
+            # overflow a correction although the actual conflict is tiny.
+            affected=set(result.get('duplicate_assignments',[]))|set(result.get('assigned_and_requested',[]))|set(result.get('unknown',[]))
+            indices={i for i,p in enumerate(result['failed_response'].get('pages',[]))
+                     if affected.intersection(p.get('proposal_refs',p.get('candidate_refs',[])))}
+            for finding in findings:
+                indices.update(finding.get('output_indices',[]))
+                if 'output_index' in finding:indices.add(finding['output_index'])
+            original=result.pop('failed_response')
+            result['failed_response_sha256']=fingerprint(original)
+            result['failed_response_excerpt']={'pages':[{'output_index':i,'page':copy.deepcopy(original['pages'][i])} for i in sorted(indices)],
+                'detail_unit_refs':copy.deepcopy(original.get('detail_unit_refs',[]))}
+            result['instruction']+=' failed_response_excerpt contains indexed mechanical conflicts only; the complete unchanged response is retained in native audit. It is not the complete prior plan. Return a complete replacement deciding EVERY offered reference from the unchanged input, including unlisted rows; do not apply a partial patch or assume omitted rows were accepted.'
     return result
 
 
