@@ -139,7 +139,7 @@ def test_diagnosis_collects_path_identity_and_coverage_findings_without_patching
     d=output.diagnosis('global-plan',packet,draft,ContractError('INCOMPLETE_COVERAGE','$','coverage'))
     assert d['missing']==['p2'] and d['failed_response']==original and draft==original
     assert {f['rule'] for f in d['page_findings']}=={'distinct_identities_share_path','append_requires_exact_offered_identity_and_path'}
-    assert all(f['offered_target']['identity']==target['identity'] for f in d['page_findings'] if 'offered_target' in f)
+    assert all(d['offered_targets'][f['offered_target_ref']]['identity']==target['identity'] for f in d['page_findings'] if 'offered_target_ref' in f)
 
 
 def test_diagnostic_upgrade_keeps_old_successful_correction_wire(tmp_path,monkeypatch):
@@ -184,3 +184,25 @@ def test_changed_prior_attempts_cannot_use_explicit_continuation(tmp_path,monkey
     path.write_text(json.dumps(record))
     with pytest.raises(ContractError,match='exact prior attempts'):c.run()
     assert len(c.calls)==2
+
+
+def test_diagnostic_size_failure_preserves_first_call_and_uses_only_unused_second_slot(tmp_path,monkeypatch):
+    c=fixture(tmp_path,monkeypatch,[answer(True),answer()]);normal=output.diagnosis
+    monkeypatch.setattr(output,'diagnosis',lambda *args:{**normal(*args),'isolated_repeated_diagnostic':'x'*40000})
+    with pytest.raises(ContractError,match='READING_WINDOW_OVERSIZE'):c.run()
+    path=output.path_for(c.adapter,c.binding,'global-plan',c.packet['view']);old=json.loads(path.read_text())['attempts'][0]
+    assert len(c.calls)==1
+    monkeypatch.setattr(output,'diagnosis',normal)
+    assert c.run()[0]==answer() and len(c.calls)==2
+    record=json.loads(path.read_text());assert record['attempts'][0]==old and len(record['attempts'])==2
+
+
+def test_path_diagnostics_share_targets_and_group_collisions_once():
+    target=answer()['pages'][0];pages=[]
+    for n in range(12):
+        page=copy.deepcopy(target);page['identity']['identity_key']='distinct-'+str(n);pages.append(page)
+    draft={'pages':pages,'detail_unit_refs':[],'reason':'Isolated many-way collision'}
+    d=output.diagnosis('global-plan',{'proposal_refs':['p1'],'units':[], 'view':{'coordination':{'planned_pages':[target]}}},draft,ContractError('IDENTITY_CONFLICT','$','collision'))
+    assert len(d['offered_targets'])==1 and d['failed_response']==draft
+    groups=[f for f in d['page_findings'] if f['rule']=='distinct_identities_share_path']
+    assert len(groups)==1 and groups[0]['output_indices']==list(range(12))

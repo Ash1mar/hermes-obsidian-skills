@@ -553,6 +553,15 @@ identities (including aliases). The model returns a complete replacement; the
 program never patches domain choices. Full validation remains authoritative.
 Persisted diagnostics are part of their original native wire and remain frozen
 when diagnostic code changes; successful old corrections still replay exactly.
+Repeated targets are shared once, findings address failed-response page indices,
+and a many-way path collision is one group; complete evidence and the failed
+answer are never truncated. A diagnostic blocked by request-size preflight before
+reservation has not consumed the second call. The same recovery entry can prove
+its exact one-call journal, original rejected transcript and previously oversized
+diagnostic, then measure the corrected diagnostic and recover that unused second
+ordinal. This cannot recover source-budget failures, a sent/uncertain correction,
+or a two-call exhausted record. Previously sent diagnostics remain frozen; an
+unused slot may use newly measured diagnostics without changing the first record.
 
 For an explicitly authorized legacy incremental global failure, use the existing
 `recover-reduce-execution` with `recovery_scope: semantic-output/v1`, the current

@@ -81,22 +81,22 @@ def diagnosis(phase,packet,draft,error):
     if phase in ('global-plan','global-detail') and isinstance(draft,dict):
         view=packet.get('view',{});offered=view.get('coordination',{}).get('planned_pages',[])
         offered=[*offered,*view.get('existing_pages',[])]
-        rows=draft.get('pages',[]);findings=[]
+        rows=draft.get('pages',[]);findings=[];targets={};path_groups={}
         key=lambda p:tuple(p.get('identity',{}).get(k) for k in ('kind','identity_key'))
         for i,page in enumerate(rows):
             refs=page.get('proposal_refs',page.get('candidate_refs',[]))
-            for j,other in enumerate(rows[:i]):
-                if page.get('path','').casefold()==other.get('path','').casefold() and key(page)!=key(other):
-                    findings.append({'rule':'distinct_identities_share_path','output_indices':[j,i],
-                        'path':page['path'],'identities':[other['identity'],page['identity']],
-                        'affected_refs':[other.get('proposal_refs',other.get('candidate_refs',[])),refs]})
-            for target in offered:
+            path_groups.setdefault(page.get('path','').casefold(),[]).append(i)
+            for j,target in enumerate(offered):
                 if (page.get('path','').casefold()==target['path'].casefold() or key(page)==key(target)) and (page.get('identity')!=target['identity'] or page.get('path')!=target['path']):
+                    ref='t'+str(j);targets[ref]={'identity':target['identity'],'path':target['path']}
                     findings.append({'rule':'append_requires_exact_offered_identity_and_path','output_index':i,
-                        'affected_refs':refs,'proposed':{'identity':page['identity'],'path':page['path']},
-                        'offered_target':{'identity':target['identity'],'path':target['path']}})
+                        'affected_refs':refs,'offered_target_ref':ref})
+        for indices in path_groups.values():
+            if len({key(rows[i]) for i in indices})>1:
+                findings.append({'rule':'distinct_identities_share_path','output_indices':indices,'path':rows[indices[0]]['path']})
         result['page_findings']=findings
-        result['instruction']+=' Resolve every listed finding. Appending uses the complete offered identity (including aliases) and exact path; otherwise choose a distinct valid page or a permitted detail request. Decide every offered reference, including those without findings. Do not treat these diagnostics or the failed answer as evidence.'
+        result['offered_targets']=targets
+        result['instruction']+=' Resolve every listed finding. Output indices refer to failed_response.pages; offered_target_ref refers to offered_targets. Appending uses the complete offered identity (including aliases) and exact path; otherwise choose a distinct valid page or a permitted detail request. Decide every offered reference, including those without findings. Do not treat these diagnostics or the failed answer as evidence.'
     return result
 
 
@@ -210,5 +210,9 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
         if call_ref:error.semantic_audit_ref=call_ref
         if not eligible:raise error
         if index==(2 if permit else 1):raise error
-        correction=attempt['diagnostic']
+        # Freeze a correction only once reserved/sent. A pre-call size failure
+        # consumes no second ordinal; a newer measured diagnostic may use that
+        # same unused slot without rewriting the first call or its old diagnosis.
+        correction=(record['attempts'][index+1]['correction'] if index+1<len(record['attempts'])
+                    else diagnosis(phase,packet or {},draft,error))
     held('initial output and its one correction both failed; no further automatic call')
