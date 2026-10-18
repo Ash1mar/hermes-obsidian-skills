@@ -173,3 +173,34 @@ def test_compact_clarification_fits_reserved_budget_without_changing_evidence():
     assert recovery.unclarified_view(legacy,fingerprint(base))==base
     bad=copy.deepcopy(base);bad['candidates'][0]['source_evidence'][0]['support_refs']=['missing']
     with pytest.raises(ContractError):recovery.clarify_audit(bad)
+
+
+@pytest.mark.parametrize('fits',[True,False])
+def test_oversized_legacy_branch_uses_only_authorized_bounded_framing(tmp_path,monkeypatch,fits):
+    from types import SimpleNamespace as NS
+    from test_reduce_packets import value
+    import fixed_semantic as fixed
+    from fixed_semantic_schema import schema
+    class Native:
+        def __call__(self,*args):raise AssertionError('this fixture must not call a model')
+    monkeypatch.setattr(fixed,'HermesCaller',Native)
+    monkeypatch.setattr(recovery,'entries',lambda *_:iter([{'_recovery_scope':recovery.SCOPE}]))
+    base=value(10)['view'];compact=recovery.clarify_audit(base);legacy=recovery.clarify(base)
+    measure=lambda v:fixed.prepare_request_projection('resource-reduce',v,schema('resource-reduce'),[])['input_size']
+    limit=measure(compact)-(0 if fits else 1)
+    assert measure(base)<limit<measure(legacy)
+    seen=[];draft={'proposals':[],'omitted_candidate_refs':[],'reason':'Isolated replay fixture'}
+    def replay(_a,_b,_p,wire,*args):
+        seen.append(wire)
+        return (draft,'fixture-audit') if 'prior-review-not-source' in wire['user'] else None
+    monkeypatch.setattr('fixed_semantic_recovery.recover_reduce',replay)
+    adapter=NS(worker_check=lambda _:None,workflow=NS(status=lambda _: {},knowledge=NS(source=None),vault=tmp_path))
+    binding={'workflow_id':'fixture','node':'resource-reduce:fixture'}
+    if fits:
+        assert fixed.model_call(adapter,binding,'resource-reduce',base,Native(),limit)==(draft,'fixture-audit')
+        assert len(seen)==2
+    else:
+        with pytest.raises(ContractError,match='READING_WINDOW_OVERSIZE'):
+            fixed.model_call(adapter,binding,'resource-reduce',base,Native(),limit)
+        assert len(seen)==1
+    assert all('This index proves presence' not in w['user'] for w in seen)
