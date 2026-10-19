@@ -1,5 +1,24 @@
 # Fixed semantic execution
 
+Recovery reuses authenticated native packet boundaries instead of rerunning the
+greedy boundary search for each successful prefix packet. It reconstructs the
+complete current input/directory and previous state, then uses the same native
+transcript proof, exact schema/wire, coverage and cumulative validator. Original
+failure records, attempt ordinals and correction wires remain unchanged. This is
+a pure reconstruction optimization shared by execution and recovery preview,
+not a new recovery authorization, stored-state acceptance or permission cache.
+
+Only uncalled global planning adopts reader-topic/v1. A page should form an
+independently readable and retrievable topic; source groups, schedule intervals,
+directory pieces and figure fragments are not mandatory page boundaries. Same
+resource/version plus an exact full supported heading path can expose a related
+planned page for comparison. Headings are navigation only, not proof that claims
+are equivalent, that required evidence exists or that merging is safe. Model
+decisions still preserve all conditions, exceptions, conflicts, scope and QA.
+Every expanded directory and rule is measured in the complete request budget.
+Consumed legacy/short packets are selected first; neither topic guidance nor
+boundary reconstruction can mint a new allowance or rewrite their input.
+
 Independent body execution uses two slots at most (or the lower configured
 capacity), under the same native task. A body owns a separate caller/SessionDB,
 adapter and context-local attempt; only progress publication shares a lock.

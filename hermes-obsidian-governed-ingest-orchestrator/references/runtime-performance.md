@@ -281,6 +281,15 @@ or extend this repair to other efficiency rounds.
 
 ## Reduce recovery construction scope (2026-10-18)
 
+The 2026-10-19 same-prefix comparison separates pure packet reconstruction,
+native transcript/request proof and accumulated-plan validation from live
+authority/admission, dispatch and resume-to-first-request wall time. Keep the
+workflow stopped for this read-only comparison; never fake an active binding or
+report pure replay time as total resume latency. Successful packet boundaries
+may be read from exact native requests and rebuilt once against the current
+input and previous state; no greedy trial search is needed for consumed work.
+The normal native proof, current authority and full cumulative validation remain.
+
 Reuse the bundled schema audit within one fixed semantic executor invocation and
 each standalone authority check. Validate every current record and keep fresh
 workflow, pause, binding, source, parent outcome and permission checks. The scope

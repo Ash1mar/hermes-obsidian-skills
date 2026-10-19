@@ -61,7 +61,11 @@ def planning_packet(adapter,binding,value,remaining,state,project):
         return select(adapter,binding,'global-plan',legacy,project)
     # No consumed legacy boundary can be replaced by this smaller new packet.
     # The transform runs before every trial measurement, including schema/rules.
-    return next_packet(value,remaining,state,project,view_transform=target_view)
+    short=next_packet(value,remaining,state,project,view_transform=target_view)
+    if has_legacy_history(adapter,binding,'global-plan',short['view']):return short
+    # Consumed legacy/short wires above remain exact. Only untouched work gets
+    # section navigation and reader-topic guidance, with full trial measurement.
+    return next_packet(value,remaining,state,project,view_transform=target_view,reader_topics=True)
 
 
 def expand(phase,view,draft):
