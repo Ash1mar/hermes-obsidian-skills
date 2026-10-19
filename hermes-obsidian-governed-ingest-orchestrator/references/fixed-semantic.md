@@ -1,5 +1,18 @@
 # Fixed semantic execution
 
+Page evidence may use a lossless structural presentation for uncalled writing
+and review inputs. Full materials are encoded as columns and ordered rows;
+explicit missing cells preserve absent versus null keys, and identical candidate
+QA lists can share a local pool. Original text/images, all core/context and
+dependency material, limits, support refs, spans, conditions and QA remain intact.
+The complete wire comparison includes its decoding instructions and schema;
+small inputs retain the original format when encoding has no measured benefit.
+Canonical observed evidence stays unchanged. Consumed original/encoded journals
+are selected before representation choice, preserving success and rejection
+counts. Both formats having consumed history is held rather than reset.
+This is duplicate structure reduction, not proof that unselected support or
+context is dispensable; it does not advance review before checkpoint_1.
+
 Recovery reuses authenticated native packet boundaries instead of rerunning the
 greedy boundary search for each successful prefix packet. It reconstructs the
 complete current input/directory and previous state, then uses the same native
@@ -27,8 +40,12 @@ another model request. Local holds remain isolated; shared authority/transport
 failures stop admission and drain. Existing output-boundary recoveries, if any,
 retain their single-request behavior; this never creates a new pause or retry.
 
-Native JSON-object output mode prevents free Markdown and invalid JSON escapes
-for non-slot phases; task slots retain their strict transport schema. Canonical
+Non-slot calls request an open-object JSON schema without strict canonical-schema
+enforcement at transport; the ordinary validator still enforces the full phase
+schema. This avoids json_object's provider requirement for a literal JSON hint
+in input messages when system instructions are separate. Its small object schema
+is included in the complete input budget. Task slots retain their strict
+transport schema. Canonical
 schemas, prompts, evidence and view identities remain unchanged, so old answers
 and consumed attempts keep their original validation and allowance. API JSON
 syntax enforcement is not a semantic approval or evidence repair. During saved

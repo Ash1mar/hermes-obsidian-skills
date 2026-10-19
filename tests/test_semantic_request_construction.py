@@ -415,7 +415,9 @@ def test_non_slot_outputs_require_native_json_mode_without_changing_canonical_co
     before=copy.deepcopy(agent.fixed_expected_request)
     agent._interruptible_api_call(api_request(agent,form=form))
     sent=sdk.requests[-1]
-    assert (sent['text']['format'] if form=='responses' else sent['response_format'])=={'type':'json_object'}
+    output={'type':'json_schema','name':'semantic_json_object','strict':False,'schema':{'type':'object'}}
+    expected=(output if form=='responses' else {'type':'json_schema','json_schema':{k:v for k,v in output.items() if k!='type'}})
+    assert (sent['text']['format'] if form=='responses' else sent['response_format'])==expected
     assert agent.fixed_expected_request==before
     bad=api_request(agent,form=form)
     if form=='responses':bad['text']={'format':{'type':'text'}}

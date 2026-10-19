@@ -1,5 +1,16 @@
 # Runtime timing and incremental projection
 
+Page input maintenance may reduce duplicate structure with
+lossless-page-evidence/v1 for untouched page-write/page-review requests. Compare
+the complete outgoing wire, including the decoder instruction and schema; retain
+the original for inputs without a net reduction. Never remove original core or
+context based on support-ref counts. Preserve canonical input, full text/image
+evidence, spans, dependencies, limits and QA; consumed original/encoded journals
+retain their exact wire and correction ordinals. Measure actual body input and
+correction tokens separately from character-size trials. Review cost/quality
+requires genuine Build Finalize work after its durable checkpoint authorization;
+partial page drafts do not authorize an early model review lane.
+
 Runtime diagnostics live on the execution host under
 `~/.cache/hermes-skill-runtime/timelines/<vault-and-workflow-key>/`.
 They are observations and wake hints, never permission or workflow state.
