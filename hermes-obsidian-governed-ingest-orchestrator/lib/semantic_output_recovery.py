@@ -12,7 +12,7 @@ from semantic_output import SCOPE,CONTRACT,ELIGIBLE,check,diagnosis,path_for
 
 def contract_hash():
     root=Path(__file__).resolve().parent
-    return hashlib.sha256(b''.join((root/n).read_bytes() for n in ('semantic_output.py','semantic_output_recovery.py','fixed_semantic.py','fixed_semantic_recovery.py','fixed_global_packets.py','fixed_global_targets.py','fixed_semantic_schema.py'))).hexdigest()
+    return hashlib.sha256(b''.join((root/n).read_bytes() for n in ('semantic_output.py','semantic_output_recovery.py','fixed_semantic.py','fixed_semantic_recovery.py','fixed_global_packets.py','fixed_global_targets.py','fixed_global_replay.py','fixed_semantic_schema.py'))).hexdigest()
 
 
 def fail(message):raise ContractError('RECOVERY_NOT_ALLOWED','$',message)
@@ -138,16 +138,17 @@ def verify(adapter,w,node,binding,entry,failure,runs):
     progress=_vault_path(adapter.workflow.vault,entry['progress_ref']);saved=_load_json(progress)
     if hashlib.sha256(progress.read_bytes()).hexdigest()!=entry['progress_sha256'] or saved['binding']!=binding or saved['input_ref']!=entry['snapshot_ref']:fail('progress binding changed')
     remaining=g.units(value);state=g.initial();pending=[];prefix_journals=set()
-    for ref in saved['successful_call_refs']:
-        phase='global-detail' if pending else 'global-plan'
-        packet=g.detail_packet(value,pending[0],state,prepare_request_projection) if pending else g.next_packet(value,remaining,state,prepare_request_projection)
-        packet=recorded_packet(phase,packet,ref)
-        prefix_journals.add(path_for(adapter,binding,phase,packet['view']))
-        a,draft,wire=read(ref,phase,packet)
-        if a.get('validated') is not True:fail('prior native packet is not accepted')
-        state,new_pending=check(phase,value,packet,state,draft)
-        if phase=='global-plan':remaining=remaining[packet['unit_count']:];pending=new_pending
-        else:pending=pending[1:]
+    from fixed_global_replay import recorded_packet as replay_packet
+    with g.planning_scope(value):
+        for ref in saved['successful_call_refs']:
+            phase='global-detail' if pending else 'global-plan'
+            packet=replay_packet(adapter,binding,value,remaining,state,ref,prepare_request_projection,pending=pending)
+            prefix_journals.add(path_for(adapter,binding,phase,packet['view']))
+            a,draft,wire=read(ref,phase,packet)
+            if a.get('validated') is not True:fail('prior native packet is not accepted')
+            state,new_pending=check(phase,value,packet,state,draft)
+            if phase=='global-plan':remaining=remaining[packet['unit_count']:];pending=new_pending
+            else:pending=pending[1:]
     if state!=saved['state'] or [u['unit'] for u in pending]!=saved['pending_detail_units']:fail('authenticated prior state differs')
     phase='global-detail' if pending else 'global-plan'
     packet=g.detail_packet(value,pending[0],state,prepare_request_projection) if pending else g.next_packet(value,remaining,state,prepare_request_projection)

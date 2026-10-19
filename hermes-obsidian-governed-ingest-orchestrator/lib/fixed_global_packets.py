@@ -14,6 +14,7 @@ import fixed_reduce
 
 CONTRACT='proposal-global-plan/v1'
 LIMIT=30000
+READER_TOPICS='reader-topic/v1'
 # Existing 8192-token output cap minus 1024 reserve, at 256 estimated tokens/page.
 PROPOSAL_OUTPUT_SLOTS=28
 _INDEX=ContextVar('global_packet_lookup',default=None)
@@ -69,17 +70,43 @@ def related(identity,hints):
 def state_digest(state):return fingerprint(state)
 
 
-def packet_view(value,chosen,state,*,detail=False):
+def heading_anchors(value):
+    """Exact same-source section navigation only, never semantic equivalence."""
+    index=_INDEX.get()
+    if index is not None and index['value'] is value and 'heading_anchors' in index:return index['heading_anchors']
+    evidence=value['view'].get('original_evidence',{});tasks={t['task']:t for t in evidence.get('tasks',[])}
+    headings=evidence.get('headings',{});sources={}
+    for p in value['view'].get('proposals',[]):
+        if p.get('source_resource_id'):
+            for c in p['candidate_refs']:sources.setdefault(c,set()).add(p['source_resource_id'])
+    anchors={}
+    for c in value['view']['candidates']:
+        found=set()
+        for link in c.get('source_evidence',[]):
+            for material in tasks.get(link['reading'],{}).get('materials',[]):
+                if material['ref'] not in link['support_refs']:continue
+                key=material.get('heading');heading=(headings[key] if isinstance(headings,list) and isinstance(key,int) and 0<=key<len(headings)
+                    else headings.get(str(key)) if isinstance(headings,dict) else None)
+                if isinstance(heading,list) and len(heading)>=2 and all(isinstance(h,str) and h.strip() for h in heading):
+                    found.update((source,tuple(heading)) for source in sources.get(c['candidate'],()))
+        anchors[c['candidate']]=found
+    if index is not None and index['value'] is value:index['heading_anchors']=anchors
+    return anchors
+
+
+def packet_view(value,chosen,state,*,detail=False,reader_topics=False):
     handles={h for g in chosen for h in g['handles']}
     proposals=[{**p,'_detail_unit':g['unit']} for g in chosen for p in g['proposals']]
     hints=[h for p in proposals for h in p['identity_hints']]
     # Selection is program-side; candidate names are not default planning input.
     hints += [{'canonical_name':c['name']} for c in value['view']['candidates'] if c['candidate'] in handles and c.get('name')]
+    anchors=heading_anchors(value) if reader_topics else {}
+    selected_anchors=set().union(*(anchors.get(h,set()) for h in handles)) if reader_topics else set()
     existing=[p for p in value['view'].get('existing_pages',[]) if related(p['identity'],hints)]
     planned=[]
     index=_INDEX.get()
     for page in state['pages']:
-        if related(page['identity'],hints):
+        if related(page['identity'],hints) or (reader_topics and any(selected_anchors&anchors.get(h,set()) for h in page['candidate_refs'])):
             if index is not None and index['value'] is value:
                 hits=set().union(*(index['by_candidate'].get(h,set()) for h in page['candidate_refs']))
                 topics=[index['proposals'][i] for i in sorted(hits)]
@@ -103,18 +130,21 @@ def packet_view(value,chosen,state,*,detail=False):
     if detail:
         view['coordination']['rule']='Route every candidate in this requested detail unit once, without omission. Resolve only the stated local grouping ambiguity, preserve scope/version/QA limits, and append only to exact offered identities and paths. Full original evidence is read during page writing.'
         view['coordination']['detail_reason']=chosen[0]['detail_reason']
+    if reader_topics:
+        view['page_organization']=READER_TOPICS
+        view['coordination']['rule']+=' Same-source section matches add comparison candidates only; shared headings do not prove equivalence, applicability, facts or completeness. Choose independently readable topics, not one page per proposal, time interval or diagram fragment. Keep compatible conditions as explicit sections; preserve distinct versions, scope, exceptions, conflicts and QA. Never force a merge to reduce page count.'
     return view
 
 
 @measured('global_packet_pack')
-def next_packet(value,remaining,state,project,*,view_transform=None):
+def next_packet(value,remaining,state,project,*,view_transform=None,reader_topics=False):
     chosen=[];prepared=None
     for group in remaining:
         count=sum(len(g['proposals']) for g in [*chosen,group])
         if count>PROPOSAL_OUTPUT_SLOTS:
             if not chosen:fail('READING_WINDOW_OVERSIZE','one indivisible proposal unit exceeds the fixed output slots')
             break
-        view=packet_view(value,[*chosen,group],state)
+        view=packet_view(value,[*chosen,group],state,reader_topics=reader_topics)
         if view_transform is not None:view=view_transform(view)
         projected=project('global-plan',view,schema_for('global-plan',view),[])
         if projected['input_size']>LIMIT:
@@ -178,6 +208,8 @@ def accept_proposals(value,state,packet,draft):
     queries=draft['detail_unit_refs'];by_unit={g['unit']:g for g in packet['units']}
     if not set(queries)<=set(by_unit):fail('UNRESOLVED_REFERENCE','detail request is outside this packet')
     pending=[{**g,'detail_reason':draft['reason']} for g in packet['units'] if g['unit'] in queries]
+    if packet['view'].get('page_organization')==READER_TOPICS:
+        for unit in pending:unit['reader_topics']=True
     deferred={p['proposal'] for g in pending for p in g['proposals']}
     assigned=[r for p in draft['pages'] for r in p['proposal_refs']]
     if len(assigned)!=len(set(assigned)) or set(assigned)&deferred:
@@ -198,7 +230,7 @@ def accept_proposals(value,state,packet,draft):
 
 
 def detail_packet(value,unit,state,project):
-    view=packet_view(value,[unit],state,detail=True)
+    view=packet_view(value,[unit],state,detail=True,reader_topics=unit.get('reader_topics',False))
     size=project('global-detail',view,schema('global-detail'),[])['input_size']
     if size>LIMIT:fail('READING_WINDOW_OVERSIZE','one requested complete detail unit exceeds the bound; no truncation')
     return {'view':view,'input_codepoints':size,'unit_count':1,'units':[unit],

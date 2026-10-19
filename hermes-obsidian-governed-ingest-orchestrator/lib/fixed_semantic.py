@@ -272,6 +272,8 @@ def wire_prompt(phase,view,output_schema,correction=None):
     system=COMMON+'\n'+RULES[phase]
     if view.get('output_contract')=='global-target-refs/v1':
         system+=' For a supplied existing/planned target, output target_ref instead of copying identity/aliases/path. For a new page propose identity and path. Target references are local choices, never source evidence or page links. All original coverage, scope/version distinctions and correction limits still apply.'
+    if phase in ('global-plan','global-detail') and view.get('page_organization')=='reader-topic/v1':
+        system+=' Preserve whole proposal contributions, not one-page-per-proposal granularity. Prefer independently readable and retrievable topics; compatible check intervals, conditions, directory fragments or figure variants may be explicit sections when their relationship is supported. Same-source headings are comparison navigation only, never evidence of equivalence or permission to merge incompatible scope/version/QA. Do not force merges or omit evidence to reach a page-count target.'
     if phase=='global-detail' and 'page_budget' in view:
         system+=' This is bounded refinement of one provisional page, not new source review. Preserve EVERY supplied candidate exactly once. Choose the fewest meaningful pages whose full evidence requests satisfy page_budget. Do not return the original oversized grouping unchanged, omit claims, or infer new facts. Suggested fit groups are measured packing examples only; choose semantic identities yourself. The program checks complete member-set budgets and exact global identity/path reservations.'
     if phase=='resource-reduce' and 'packet_review' in view:
@@ -943,15 +945,19 @@ def run_reduce(adapter,binding,caller):
     from fixed_global_packets import planning_scope
     from fixed_global_targets import planning_packet,select
     from fixed_page_work import execute as page_work,LOCAL
+    from fixed_global_replay import successful_prefix,recorded_packet
+    prefix=successful_prefix(adapter,binding,input_value) if isinstance(caller,HermesCaller) else []
     planning_failure=None
     try:
         with planning_scope(input_value):
             while remaining:
-                packet=planning_packet(adapter,binding,input_value,remaining,state,prepare_request_projection)
+                packet=(recorded_packet(adapter,binding,input_value,remaining,state,prefix[sequence],prepare_request_projection)
+                    if sequence<len(prefix) else planning_packet(adapter,binding,input_value,remaining,state,prepare_request_projection))
                 pending=plan_call('global-plan',packet)
                 for unit in pending:
-                    detail=detail_packet(input_value,unit,state,prepare_request_projection)
-                    plan_call('global-detail',select(adapter,binding,'global-detail',detail,prepare_request_projection))
+                    detail=(recorded_packet(adapter,binding,input_value,remaining,state,prefix[sequence],prepare_request_projection,pending=[unit])
+                        if sequence<len(prefix) else select(adapter,binding,'global-detail',detail_packet(input_value,unit,state,prepare_request_projection),prepare_request_projection))
+                    plan_call('global-detail',detail)
                 remaining=remaining[packet['unit_count']:]
     except ContractError as exc:
         if exc.code not in LOCAL:raise

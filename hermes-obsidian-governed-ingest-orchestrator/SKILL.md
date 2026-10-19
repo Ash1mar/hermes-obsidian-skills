@@ -5,6 +5,17 @@ description: Start, resume and inspect a persistent Vault-authoritative governed
 
 # Governed ingest orchestration
 
+Successful global packets may reconstruct their consumed unit boundary directly
+from the exact native request. Rebuild its current input, directory and preceding
+state once; the ordinary executor still proves the native answer and validates
+the cumulative plan and original attempt allowance. Progress supplies lookup
+hints only and never restores an accepted state or bypasses current authority.
+Untouched planning packets use reader-topic/v1: fine evidence groups are coverage
+contributions, not mandatory separate pages. Exact same-source support headings
+add related-page navigation only; compatible conditions may be sections, while
+version/scope/conflict/QA differences remain explicit. Consumed requests retain
+their original wire and schema. No all-batch regrouping or draft rewriting.
+
 Independent Reduce page bodies may use at most two concurrent native requests,
 within the configured worker capacity. Each request owns its SDK session, database,
 images and existing finite attempt journal; progress publication and identity
