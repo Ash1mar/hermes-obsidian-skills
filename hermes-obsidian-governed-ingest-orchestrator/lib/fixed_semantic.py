@@ -264,12 +264,18 @@ def wire_prompt(phase,view,output_schema,correction=None):
     body={'phase':phase}
     if phase not in ('candidate','citation'):
         body['output_schema']=_stable_objects(output_schema)
-    body['input']=_ordered_view(view)
+    if phase in ('page-write','page-review') and view.get('evidence_encoding')=='lossless-page-evidence/v1':
+        from fixed_page_evidence import present
+        body['input']=_ordered_view(present(view))
+    else:body['input']=_ordered_view(view)
     if phase in ('candidate','citation'):
         # The actual request carries the schema once at the API boundary.
         body['required_result_slots']=[t['task'] for t in view.get('tasks',[])]
     if correction: body['correction'] = _stable_objects(correction)
     system=COMMON+'\n'+RULES[phase]
+    if phase in ('page-write','page-review') and view.get('evidence_encoding')=='lossless-page-evidence/v1':
+        from fixed_page_evidence import INSTRUCTION
+        system+=INSTRUCTION
     if view.get('output_contract')=='global-target-refs/v1':
         system+=' For a supplied existing/planned target, output target_ref instead of copying identity/aliases/path. For a new page propose identity and path. Target references are local choices, never source evidence or page links. All original coverage, scope/version distinctions and correction limits still apply.'
     if phase in ('global-plan','global-detail') and view.get('page_organization')=='reader-topic/v1':

@@ -74,6 +74,10 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(value))
     reviews={}; call_refs=[]; held=[]
     for view in value['views']:
+        from fixed_semantic import HermesCaller,prepare_request_projection
+        if isinstance(caller,HermesCaller):
+            from fixed_page_evidence import select
+            view=select(adapter,binding,'page-review',view,prepare_request_projection)
         from semantic_output import execute as checked_output,check
         try:
             result,call_ref,_=checked_output(adapter,binding,'page-review',view,caller,model_call,

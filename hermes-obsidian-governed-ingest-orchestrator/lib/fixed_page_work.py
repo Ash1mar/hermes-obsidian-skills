@@ -24,6 +24,9 @@ def measure(adapter,value,page,caller,project):
     from fixed_semantic import HermesCaller
     from fixed_semantic_media import image_catalog,select_images,require_images_fit
     view=fixed_reduce.page_view(adapter,value,page)
+    if isinstance(caller,HermesCaller):
+        from fixed_page_evidence import select
+        view=select(adapter,value['binding'],'page-write',view,project)
     images=select_images(view.get('original_evidence',{}).get('tasks',[]),
         image_catalog(adapter,view.get('original_evidence',{}))) if isinstance(caller,HermesCaller) else []
     try:require_images_fit(images)
