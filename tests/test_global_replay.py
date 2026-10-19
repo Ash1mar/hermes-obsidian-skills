@@ -72,3 +72,26 @@ def test_consumed_short_packet_is_not_upgraded_or_given_new_allowance(tmp_path):
  path=path_for(a,b,'global-plan',short['view']);path.parent.mkdir(parents=True);path.write_text('{"attempts":[{"state":"rejected"}]}')
  before=path.read_bytes();chosen=targets.planning_packet(a,b,v,g.units(v),s,project)
  assert chosen==short and 'page_organization' not in chosen['view'] and path.read_bytes()==before
+
+
+def test_prefix_lookup_checks_current_content_and_returns_no_serialized_state(tmp_path,monkeypatch):
+ home=tmp_path/'home';(home/'.hermes').mkdir(parents=True);(home/'.hermes/state.db').touch()
+ monkeypatch.setattr(Path,'home',classmethod(lambda _:home))
+ v=fixture_value();v['contract']='fixed-reduce-input/v1';v['binding']={'task_id':'old'}
+ b={'workflow_id':'fixture','node':'global-reduce','task_id':'current'}
+ root=tmp_path/'_system/ledgers/ingest-workflows/fixture/semantic-inputs';root.mkdir(parents=True)
+ snap=root/'snapshot.json';snap.write_text(json.dumps(v));ref=snap.relative_to(tmp_path).as_posix()
+ row={'contract':g.CONTRACT,'binding':b,'input_ref':ref,'completed_packet_count':1,'successful_call_refs':['native-proof-still-required'],
+      'state':{'untrusted':'never installed'}}
+ (root/'global-progress-snapshot-1.json').write_text(json.dumps(row))
+ a=NS(workflow=NS(vault=tmp_path,status=lambda _:{'execution_recovery_history':[]}))
+ assert replay.successful_prefix(a,b,v)==['native-proof-still-required']
+ changed=copy.deepcopy(v);changed['backend']['document_registry_revision']+=1
+ assert replay.successful_prefix(a,b,changed)==[]
+
+
+def test_heading_navigation_never_uses_document_root_alone():
+ v=fixture_value()
+ for p in v['view']['proposals']:p['source_resource_id']='same-version'
+ v['view']['original_evidence']['headings']=[['Standard'],['Standard']]
+ assert not any(g.heading_anchors(v).values())
