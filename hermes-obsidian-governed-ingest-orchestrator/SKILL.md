@@ -22,7 +22,7 @@ images and existing finite attempt journal; progress publication and identity
 changes remain serialized. Drain bodies before a page-refinement call. A shared
 authority failure prevents new requests; cancellation still uses the original
 native owner and supported stop operation. This does not release a pause.
-Non-slot semantic outputs request native JSON-object mode and retain the full
+Non-slot semantic outputs request a native open-object JSON schema and retain the full
 canonical output validation, original evidence and existing correction allowance.
 
 Untouched page-write and page-review calls may use lossless-page-evidence/v1

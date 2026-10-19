@@ -46,6 +46,7 @@ ACTION_LOCK = threading.RLock()
 PASS_DONE = threading.Event()
 OUTPUT_TOKENS = 8192
 OUTPUT_RESERVE = 1024
+JSON_OBJECT_SCHEMA={'type':'object'}
 WIRE_CONTRACT = 'semantic-input/v1'
 RULES['global-plan']='Coordinate whole supplied source proposals into provisional page identities and paths. Return proposal_refs, never candidate membership. Preserve source groups by default; use exact versions/source paths, scope distinctions and substantive QA risk notes. Identity and source catalogs use the supplied columns. The program expands and checks every candidate. Request detail_unit_refs only for a named, concrete split/conflict/identity ambiguity that the proposal cannot resolve; no routine fact review or demand for raw evidence. Each proposal must be assigned or belong to a requested detail unit, never both. Append only to exact offered planned identities and paths. Keep uncertain identities separate or block, never force equivalence or drop coverage. Reason names only changed proposal groups and concrete rationale, without restating every summary. Final per-page writing reads full conditions, exceptions, original evidence and prior content; routing is not fact approval.'
 RULES['global-detail']='Resolve only the explicitly requested proposal unit using its supplied candidate details. Assign every candidate exactly once, preserve conditions, exceptions, version/scope and QA distinctions. Keep proposal groups unless the specified split or conflict requires a concrete adjustment; state why. No omissions, citation re-review, source search or new detail requests. Choose exact offered existing/planned identity and path when appending; otherwise keep separate or block. Full original evidence is verified during page writing; do not assert factual approval from routing.'
@@ -97,7 +98,10 @@ class HermesCaller:
                 else:
                     actual_format=(api_kwargs.get('text',{}).get('format') if 'instructions' in api_kwargs
                                    else api_kwargs.get('response_format'))
-                    if actual_format!={'type':'json_object'}:
+                    expected_format={'type':'json_schema','name':'semantic_json_object','strict':False,'schema':JSON_OBJECT_SCHEMA}
+                    if 'instructions' not in api_kwargs:
+                        expected_format={'type':'json_schema','json_schema':{k:v for k,v in expected_format.items() if k!='type'}}
+                    if actual_format!=expected_format:
                         raise RuntimeError('fixed semantic JSON output mode changed')
                 # Exact current messages/schema have been checked above. Reuse
                 # only this call's construction size, never an admission result.
@@ -122,12 +126,14 @@ class HermesCaller:
             def _apply_fixed_format(self, api_kwargs):
                 output=({'type':'json_schema','name':'semantic_task_slots','strict':True,
                         'schema':copy.deepcopy(self.fixed_transport_schema)}
-                        if self.fixed_transport_schema is not None else {'type':'json_object'})
+                        if self.fixed_transport_schema is not None else
+                        {'type':'json_schema','name':'semantic_json_object','strict':False,'schema':copy.deepcopy(JSON_OBJECT_SCHEMA)})
                 if 'instructions' in api_kwargs:
                     api_kwargs['text']={**api_kwargs.get('text',{}),'format':output}
                 else:
                     api_kwargs['response_format']=({'type':'json_schema','json_schema':{k:v for k,v in output.items() if k!='type'}}
-                        if self.fixed_transport_schema is not None else output)
+                        if self.fixed_transport_schema is not None else
+                        {'type':'json_schema','json_schema':{k:v for k,v in output.items() if k!='type'}})
                 self.fixed_structured_requests+=1
                 self.fixed_construction_counts['transport_schema_reuses']+=1
         self.db = SessionDB()
@@ -303,7 +309,7 @@ def prepare_request_projection(phase,view,output_schema,images=(),correction=Non
         transport_schema=(strict_schema(_stable_objects(output_schema))
                           if 'results' in output_schema.get('properties',{}) else None)
         schema_size=(len(json.dumps(transport_schema,ensure_ascii=False,separators=(',',':')))
-                     if transport_schema is not None else 0)
+                     if transport_schema is not None else len(json.dumps(JSON_OBJECT_SCHEMA,separators=(',',':'))))
         return {'prompt':prompt,'content':content,'wire':wire,
             'closed':False,'consumed':False,
             'expected':(('system',_normalized_request_content(prompt['system'])),('user',user)),

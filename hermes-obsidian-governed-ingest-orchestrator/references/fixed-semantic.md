@@ -40,8 +40,12 @@ another model request. Local holds remain isolated; shared authority/transport
 failures stop admission and drain. Existing output-boundary recoveries, if any,
 retain their single-request behavior; this never creates a new pause or retry.
 
-Native JSON-object output mode prevents free Markdown and invalid JSON escapes
-for non-slot phases; task slots retain their strict transport schema. Canonical
+Non-slot calls request an open-object JSON schema without strict canonical-schema
+enforcement at transport; the ordinary validator still enforces the full phase
+schema. This avoids json_object's provider requirement for a literal JSON hint
+in input messages when system instructions are separate. Its small object schema
+is included in the complete input budget. Task slots retain their strict
+transport schema. Canonical
 schemas, prompts, evidence and view identities remain unchanged, so old answers
 and consumed attempts keep their original validation and allowance. API JSON
 syntax enforcement is not a semantic approval or evidence repair. During saved
