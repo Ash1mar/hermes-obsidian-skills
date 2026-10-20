@@ -423,7 +423,9 @@ class KanbanCLI:
         return json.loads(self.command('kanban','--board',slug,'show',task_id,'--json'))
 
     def task_states(self, slug: str) -> dict[str, str]:
-        result = json.loads(self.command('kanban', '--board', slug, 'list', '--json'))
+        # Native default lists omit archived cards; status projection needs them
+        # too, otherwise every old held binding falls back to its own show call.
+        result = json.loads(self.command('kanban', '--board', slug, 'list', '--archived', '--json'))
         rows = result.get('tasks', []) if isinstance(result, dict) else result
         if self._projection_board == slug:
             self._projection_rows = {row['id']:row for row in rows}
