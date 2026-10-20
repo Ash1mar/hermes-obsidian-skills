@@ -1,5 +1,16 @@
 # Operations
 
+Shared fixed-call failures use the existing recover-reduce-execution command and
+reduce-cancel/v1 scope. NATIVE_REQUEST_REJECTED/NATIVE_COMPLETION_UNKNOWN, or an old
+PROGRAM_EXECUTION_FAILED, are not blanket eligibility: the operation authenticates
+ended native ownership, current source/input/template checks, exact request and
+schema hashes, native transcripts, finite journals and structured failure evidence.
+Historical guarded SDK dumps may prove an explicit provider rejection; message
+substrings or zero token usage do not. Original rejected/unknown reservations stay
+held with their ordinals and evidence unchanged. Admission grants a fresh owner
+for missing work, not extra semantic calls or permission to resend those inputs.
+Dry-run and apply are separate; neither resumes or crosses a durable pause.
+
 Candidates use existing compact rule/topic, applicability, condition/exception,
 support and inspection QA fields. Citation still checks original facts and
 omissions. Downstream Reduce, page writing and page review receive original
