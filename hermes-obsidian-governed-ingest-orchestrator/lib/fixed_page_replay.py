@@ -16,13 +16,19 @@ def read_outcome(adapter,binding,view,prove,images):
         journal.get('input_sha256')!=fingerprint(view) or journal.get('schema_sha256')!=fingerprint(schema) or not 1<=len(attempts)<=2):return None
     last=None;previous=None
     for index,attempt in enumerate(attempts):
-        if attempt.get('attempt')!=index+1 or index and (previous is None or previous.code not in ELIGIBLE):return None
+        if (attempt.get('attempt')!=index+1 or attempt.get('attempt_id')!=fingerprint({'path':path.name,'attempt':index+1})
+            or index and (previous is None or previous.code not in ELIGIBLE)):return None
         ref=attempt.get('audit_ref')
         if not ref:
             return {'kind':'pending','ref':last['ref'],'error':previous} if last and previous else None
         prepared=prepare_request_projection('page-write',view,schema,images,attempt.get('correction'))
         if prepared['input_size']>30000 or attempt.get('wire_sha256')!=fingerprint(prepared['wire']):return None
-        proof=prove(_vault_path(adapter.workflow.vault,ref),prepared['wire'],schema,images)
+        audit_path=_vault_path(adapter.workflow.vault,ref);audit=_load_json(audit_path)
+        if (audit.get('phase')!='page-write' or audit.get('native_task_id')!=attempt.get('task_id')
+            or str(audit.get('native_run_id'))!=str(attempt.get('run_id'))
+            or audit.get('output_attempt_id',attempt['attempt_id'])!=attempt['attempt_id']
+            or attempt.get('session_id') and audit.get('model',{}).get('session_id')!=attempt['session_id']):return None
+        proof=prove(audit_path,prepared['wire'],schema,images)
         if proof is None:return None
         error=None;draft=None
         try:
