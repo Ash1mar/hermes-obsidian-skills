@@ -1,5 +1,16 @@
 # Runtime timing and incremental projection
 
+Recovery measurements must separate read-only historical reauthentication from
+full online resume-to-first-request latency. Compare an identical successful
+prefix and held set; report excluded native admission, dispatch and publication
+work. Invocation-local graph reuse fingerprints current workflow content and
+every batch, slice, task and Pass file plus directory membership. It never caches
+an execution grant. Native transcript proofs share a read-only connection and
+invalidate on database replacement/change or audit/wire changes. At authenticated
+entry/exit boundaries, restore proven existing page bodies and sealed holds as a
+set instead of replaying per-page write/receipt cleanup. Unchanged finite attempt
+journals remain authoritative; neither reuse nor transport changes add calls.
+
 Page input maintenance may reduce duplicate structure with
 lossless-page-evidence/v1 for untouched page-write/page-review requests. Compare
 the complete outgoing wire, including the decoder instruction and schema; retain

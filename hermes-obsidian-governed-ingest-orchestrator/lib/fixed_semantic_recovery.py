@@ -3,11 +3,45 @@ import copy
 import json
 from pathlib import Path
 import sqlite3
+import hashlib,threading
+from contextlib import contextmanager
+from contextvars import ContextVar
 
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _vault_path, _write_atomic, _json_bytes
 from hermes_source_units.validation import fingerprint
 from fixed_semantic_schema import validate, slot_results
+
+_PROOFS=ContextVar('fixed_native_proofs',default=None)
+
+
+@contextmanager
+def proof_scope():
+    if _PROOFS.get() is not None:
+        yield;return
+    scope={'dbs':{},'proofs':{},'reports':{}};token=_PROOFS.set(scope)
+    try:yield
+    finally:
+        _PROOFS.reset(token)
+        for db in scope['dbs'].values():db.close()
+
+
+def permitted_tasks(adapter,binding):
+    """Fresh report bytes/index; no remembered permission decision."""
+    w=adapter.workflow.status(binding['workflow_id']);permitted={binding['task_id']:None};scope=_PROOFS.get()
+    for pointer in w.get('execution_recovery_history',[]):
+        rp=_vault_path(adapter.workflow.vault,pointer['report_ref']);data=rp.read_bytes();digest=hashlib.sha256(data).hexdigest()
+        if pointer.get('report_sha256') and digest!=pointer['report_sha256']:
+            raise ContractError('SOURCE_CHANGED','$','recovery report changed')
+        key=(str(rp),digest)
+        report=scope['reports'].get(key) if scope is not None else None
+        if report is None:
+            report=json.loads(data)
+            if scope is not None:scope['reports'][key]=report
+        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1'):continue
+        for entry in report['entries']:
+            if entry['node']==binding['node']:permitted[entry['previous_task_id']]=entry
+    return permitted
 
 
 def _request_text(user):
@@ -43,15 +77,22 @@ def native_reply(adapter,binding,path,wire,output_schema,images,*,home=None,seen
     # semantic_output has just checked this invocation before its pure request
     # construction. Other callers retain the ordinary two-sided check.
     if not entry_checked:adapter.worker_check(binding)
-    w=adapter.workflow.status(binding['workflow_id'])
-    permitted={binding['task_id']:None}
-    for pointer in w.get('execution_recovery_history',[]):
-        rp=_vault_path(adapter.workflow.vault,pointer['report_ref'])
-        if pointer.get('report_sha256') and __import__('hashlib').sha256(rp.read_bytes()).hexdigest()!=pointer['report_sha256']:return None
-        report=_load_json(rp)
-        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1'):continue
-        for e in report['entries']:
-            if e['node']==binding['node']:permitted[e['previous_task_id']]=e
+    try:return native_proof(adapter,binding,path,wire,output_schema,images,permitted_tasks(adapter,binding),home=home,seen=seen)
+    finally:adapter.worker_check(binding)
+
+
+@contextmanager
+def authenticated_replay(adapter,binding):
+    """Authenticate a bounded saved set before installing it; check both sides."""
+    adapter.worker_check(binding)
+    try:
+        permitted=permitted_tasks(adapter,binding)
+        yield lambda path,wire,schema,images:native_proof(adapter,binding,path,wire,schema,images,permitted)
+    finally:adapter.worker_check(binding)
+
+
+def native_proof(adapter,binding,path,wire,output_schema,images,permitted,*,home=None,seen=None):
+    """Pure native evidence proof. Does not grant current execution authority."""
     root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-calls"
     seen=set() if seen is None else seen
     if path.parent!=root or str(path) in seen:return None
@@ -64,10 +105,9 @@ def native_reply(adapter,binding,path,wire,output_schema,images,*,home=None,seen
     previous=permitted[a['native_task_id']]
     if previous and str(a.get('native_run_id')) not in previous['ended_run_ids']:return None
     if a.get('reused_from_audit'):
-        found=native_reply(adapter,binding,_vault_path(adapter.workflow.vault,a['reused_from_audit']),wire,output_schema,images,home=home,seen=seen)
+        found=native_proof(adapter,binding,_vault_path(adapter.workflow.vault,a['reused_from_audit']),wire,output_schema,images,permitted,home=home,seen=seen)
         return found if found and found[1]['response_sha256']==a['response_sha256'] else None
     raw=transcript_reply(a,wire,home=home)
-    adapter.worker_check(binding)
     return (raw,a) if raw is not None else None
 
 
@@ -76,7 +116,16 @@ def transcript_reply(a,wire,*,home=None):
     model=a.get('model',{});home=Path(home) if home else Path.home()/'.hermes'
     if model.get('origin')!='hermes_native_model' or model.get('response_sha256')!=a['response_sha256'] or not (home/'state.db').exists():return None
     from revision_disposition import native_user
-    with sqlite3.connect('file:'+str(home/'state.db')+'?mode=ro',uri=True) as db:
+    identity=(home/'state.db').stat()
+    scope=_PROOFS.get();key=(str(home),threading.get_ident(),identity.st_dev,identity.st_ino);owned=scope is None
+    db=(scope['dbs'].get(key) if scope is not None else None)
+    if db is None:
+        db=sqlite3.connect('file:'+str(home/'state.db')+'?mode=ro',uri=True,check_same_thread=False)
+        if scope is not None:scope['dbs'][key]=db
+    try:
+        version=db.execute('PRAGMA data_version').fetchone()[0]
+        cache_key=(key,version,fingerprint(a),fingerprint(wire))
+        if scope is not None and cache_key in scope['proofs']:return scope['proofs'][cache_key]
         sid=model['session_id']
         if db.execute('SELECT source FROM sessions WHERE id=?',(sid,)).fetchone()!=('kanban',):return None
         rows=list(db.execute('SELECT role,content,tool_calls FROM messages WHERE session_id=?',(sid,)))
@@ -84,7 +133,10 @@ def transcript_reply(a,wire,*,home=None):
         users=[u for r,c,_ in rows if r=='user' and (u:=native_user(c,a))==wire['user']]
         answers=[c for r,c,_ in rows if r=='assistant' and fingerprint(c)==a['response_sha256']]
         if len(users)!=1 or len(answers)!=1:return None
-    return answers[0]
+        if scope is not None:scope['proofs'][cache_key]=answers[0]
+        return answers[0]
+    finally:
+        if owned:db.close()
 
 
 def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode, *, home=None, candidate_paths=None):

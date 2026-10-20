@@ -1,5 +1,23 @@
 # Fixed semantic execution
 
+The fixed call boundary persists native-call-outcome/v1 evidence for structured
+request rejection or unknown completion, retaining the original ordinal and
+request. Deterministic local/backend request failures stop unchanged SDK retries;
+unknown completion is held rather than resent. A returned model output still
+uses the ordinary canonical schema, semantics and one finite correction.
+The final Codex Responses frame is checked after SDK conversion as well as at
+the ordinary API boundary. The current non-slot open-object schema is not strict
+business-schema enforcement and still awaits genuine backend compatibility proof.
+
+Execution/reconciliation scopes may reuse pure desired_graph computation after
+hashing all batch/slice/task/Pass dependencies and enumerating directory members.
+Workflow/control, template, binding and parent-outcome checks remain live. Native
+audit chains share one transcript connection per thread and invocation; database
+version/file-identity changes invalidate transcript proofs, and report/audit bytes
+are checked fresh. Current authority surrounds the proof batch; no execution
+decision is cached. Authenticated exact page outputs and sealed holds restore
+directly to completed/held sets; new work alone enters the normal write queue.
+
 Page evidence may use a lossless structural presentation for uncalled writing
 and review inputs. Full materials are encoded as columns and ordered rows;
 explicit missing cells preserve absent versus null keys, and identical candidate

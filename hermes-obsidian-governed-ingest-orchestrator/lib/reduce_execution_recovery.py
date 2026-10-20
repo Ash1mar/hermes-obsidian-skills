@@ -144,9 +144,10 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                         or report.get('idempotency_key') != key):
                     fail('STALE_INPUT', 'failure evidence or binding changed')
                 projection=scope=='reduce-cancel/v1' and report.get('error_code')=='DISPATCH_ARTIFACT_CHANGED'
+                call_failure=scope=='reduce-cancel/v1' and report.get('error_code') in ('NATIVE_REQUEST_REJECTED','NATIVE_COMPLETION_UNKNOWN','PROGRAM_EXECUTION_FAILED')
                 allowed=(('INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','INVALID_TRANSITION','READING_WINDOW_OVERSIZE') if scope=='semantic-output/v1' else ('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
                     ('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED'))
-                if not review and (report.get('error_code') not in allowed or (scope in ('source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3') and node.kind!='resource-reduce')):
+                if not review and ((report.get('error_code') not in allowed and not call_failure) or (scope in ('source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3') and node.kind!='resource-reduce')):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
                 snap = adapter.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
                 task, runs = snap.get('task', {}), snap.get('runs', [])
@@ -183,6 +184,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     'previous_input_fingerprint': node.input_fingerprint, 'failure_ref': ref,
                     'failure_sha256': hashlib.sha256(data).hexdigest(), 'failure': report,
                     'ended_run_ids': [str(r['id']) for r in runs], 'template_hash': template_hash})
+                if call_failure:
+                    from native_call_state import recovery_evidence
+                    audited[-1].update(recovery_evidence(adapter,value,binding,runs))
                 if scope=='semantic-output/v1':
                     from semantic_output_recovery import verify
                     audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))

@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / 'hermes-obsidian-controlled-ingest/lib'))
 sys.path.insert(0, str(ROOT / 'hermes-obsidian-governed-ingest-orchestrator/lib'))
 
 import fixed_semantic as fixed
+from native_call_state import StopNativeCall
 from fixed_semantic_media import message_content, normalize_content
 from fixed_semantic_schema import slot_schema
 from hermes_source_units import ContractError, runtime_telemetry
@@ -217,7 +218,7 @@ def test_sdk_guard_rejects_extra_tools_context_and_changed_request(sdk, changed)
         request['messages'][0]['content'] += ' changed instruction'
     else:
         request['messages'].append({'role': 'user', 'content': 'extra context'})
-    with pytest.raises(RuntimeError, match='extra tools, context or messages'):
+    with pytest.raises(StopNativeCall, match='extra tools, context or messages'):
         agent._interruptible_api_call(request)
     assert not sdk.requests and agent.fixed_request_checks == 0
 
@@ -228,7 +229,7 @@ def test_sdk_guard_rejects_changed_image_bytes(sdk):
     agent = guarded_agent(sdk, images=images)
     request = api_request(agent)
     request['messages'][1]['content'][1]['image_url']['url'] = 'data:image/png;base64,AQ=='
-    with pytest.raises(RuntimeError, match='extra tools, context or messages'):
+    with pytest.raises(StopNativeCall, match='extra tools, context or messages'):
         agent._interruptible_api_call(request)
     assert not sdk.requests
 
@@ -238,7 +239,7 @@ def test_sdk_guard_enforces_actual_text_and_schema_budget(sdk):
     # Text alone fits; the actually injected closed output schema does not.
     agent.fixed_limit = len(json.dumps(agent.fixed_text_request, ensure_ascii=False, separators=(',', ':')))
     assert agent.fixed_schema_size > 0 and agent.fixed_input_size > agent.fixed_limit
-    with pytest.raises(RuntimeError, match='actual fixed semantic request exceeds its input bound'):
+    with pytest.raises(StopNativeCall, match='actual fixed semantic request exceeds its input bound'):
         agent._interruptible_api_call(api_request(agent))
     assert not sdk.requests
 
@@ -247,7 +248,7 @@ def test_sdk_guard_enforces_whole_image_budget(sdk, monkeypatch):
     agent = guarded_agent(sdk, images=[{'url': 'data:image/png;base64,AA==', 'bytes': 1,
         'references': [{'task': 't1', 'material': 'm1'}]}])
     monkeypatch.setattr(fixed, 'images_fit', lambda images: False)
-    with pytest.raises(RuntimeError, match='actual fixed semantic image payload exceeds its bound'):
+    with pytest.raises(StopNativeCall, match='actual fixed semantic image payload exceeds its bound'):
         agent._interruptible_api_call(api_request(agent))
     assert not sdk.requests
 
@@ -282,7 +283,8 @@ def test_sdk_cannot_use_cached_budget_for_a_changed_actual_schema(sdk, form):
 def test_expected_request_is_immutable_even_if_sdk_staging_object_changes(sdk):
     agent = guarded_agent(sdk)
     agent.fixed_request['user'] += ' SDK staging mutation'
-    with pytest.raises(RuntimeError, match='extra tools, context or messages'):
+    from native_call_state import StopNativeCall
+    with pytest.raises(StopNativeCall, match='extra tools, context or messages'):
         agent._interruptible_api_call(api_request(agent))
     assert not sdk.requests
 

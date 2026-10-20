@@ -22,6 +22,8 @@ from hermes_source_units.semantic_budget import PHASE_BALANCED_POLICY, budget_po
 import fixed_reduce
 import fixed_review
 from fixed_semantic_media import image_catalog, select_images, images_fit, image_usage, message_content, normalize_content, require_images_fit
+from ingest_graph_reuse import graph_scope
+from fixed_semantic_recovery import proof_scope
 
 RULES = {
     'candidate':'Each task object defines an independent assignment through its materials and their core/context roles. Extract source-grounded facts, requirements and procedures from its core, grouping only statements with compatible conditions and scope. Inspect every core material; use context to interpret it, not to expand the assignment. Preserve exact facts, AND/OR, units, applicability, conditions and exceptions. Report uncertainty from QA and limits; omitted context is not evidence. Unread linked assets do not authorize invented facts. Shared text/QA handles are not citation targets. Use only assigned tN and authorized mN refs. Empty candidates need an actual empty_reason.',
@@ -114,14 +116,36 @@ class HermesCaller:
                 self.fixed_construction_counts['budget_size_reuses']+=1
 
             def _interruptible_api_call(self, api_kwargs):
-                self._apply_fixed_format(api_kwargs)
-                self._check_fixed_request(api_kwargs)
-                return super()._interruptible_api_call(api_kwargs)
+                self._fixed_preflight(api_kwargs)
+                return self._fixed_api(super()._interruptible_api_call,api_kwargs)
 
             def _interruptible_streaming_api_call(self, api_kwargs, *args, **kwargs):
-                self._apply_fixed_format(api_kwargs)
-                self._check_fixed_request(api_kwargs)
-                return super()._interruptible_streaming_api_call(api_kwargs, *args, **kwargs)
+                self._fixed_preflight(api_kwargs)
+                return self._fixed_api(super()._interruptible_streaming_api_call,api_kwargs,*args,**kwargs)
+
+            def _run_codex_stream(self,api_kwargs,*args,**kwargs):
+                # This hook receives the final Responses payload after SDK conversion.
+                self._fixed_preflight(api_kwargs,apply=False)
+                return self._fixed_api(super()._run_codex_stream,api_kwargs,*args,**kwargs)
+
+            def _fixed_preflight(self,api_kwargs,*,apply=True):
+                from native_call_state import StopNativeCall
+                try:
+                    if apply:self._apply_fixed_format(api_kwargs)
+                    self._check_fixed_request(api_kwargs)
+                except Exception as exc:
+                    raise StopNativeCall({'contract':'native-call-outcome/v1','state':'request_rejected','retryable':False,
+                        'source':'local_request_guard','error':{'class':type(exc).__name__,'message':str(exc)}}) from exc
+
+            def _fixed_api(self,call,api_kwargs,*args,**kwargs):
+                from native_call_state import classify,StopNativeCall,request_identity
+                self.fixed_final_request_sha256=request_identity(api_kwargs)
+                self.fixed_final_output_format=copy.deepcopy(api_kwargs.get('text',{}).get('format',api_kwargs.get('response_format')))
+                try:return call(api_kwargs,*args,**kwargs)
+                except Exception as exc:
+                    outcome=classify(exc)
+                    if outcome['retryable']:raise
+                    raise StopNativeCall(outcome) from exc
 
             def _apply_fixed_format(self, api_kwargs):
                 output=({'type':'json_schema','name':'semantic_task_slots','strict':True,
@@ -213,10 +237,17 @@ class HermesCaller:
             agent.fixed_schema_size=prepared['schema_size']
             agent.fixed_input_size=prepared['input_size']
             agent.fixed_construction_counts=prepared['construction_counts']
-            with span('sdk_model_request',phase=phase,session_id=agent.session_id):
-                result=agent.run_conversation(content,system_message=prompt['system'])
+            from native_call_state import StopNativeCall,record
+            try:
+                with span('sdk_model_request',phase=phase,session_id=agent.session_id):
+                    result=agent.run_conversation(content,system_message=prompt['system'])
+            except StopNativeCall as exc:
+                record(exc.outcome,prepared,agent.session_id,request_sha256=getattr(agent,'fixed_final_request_sha256',None),
+                    output_format=getattr(agent,'fixed_final_output_format',None))
             if result.get('error') or result.get('partial'):
-                raise RuntimeError('native model request did not complete; inspect its session')
+                record({'contract':'native-call-outcome/v1','state':'completion_unknown','retryable':False,
+                    'error':{'message':str(result.get('error') or 'native result incomplete')}},prepared,agent.session_id,
+                    request_sha256=getattr(agent,'fixed_final_request_sha256',None),output_format=getattr(agent,'fixed_final_output_format',None))
             raw=result.get('final_response','')
             if not agent.fixed_request_checks:
                 raise RuntimeError('native SDK bypassed the fixed request boundary')
@@ -338,6 +369,7 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
         require_images_fit(images)
         caller.images=images
     prepared=prepare_request_projection(phase,view,output_schema,images,correction)
+    prepared['audit_context']={'vault':str(adapter.workflow.vault),'binding':dict(binding),'phase':phase}
     wire=prepared['wire'];schema_size=prepared['schema_size'];size=prepared['input_size']
     if size>limit:
         # A legacy replay-only framing can exceed the bound even though the
@@ -877,6 +909,8 @@ def run_pass(adapter,binding,caller):
 
 
 @record_validation_scope()
+@graph_scope()
+@proof_scope()
 def execute(adapter,binding_path,caller=None):
     binding,_=canonical_binding(adapter,binding_path,executor='semantic-v1')
     caller=caller or HermesCaller()

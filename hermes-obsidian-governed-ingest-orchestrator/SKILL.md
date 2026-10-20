@@ -5,6 +5,24 @@ description: Start, resume and inspect a persistent Vault-authoritative governed
 
 # Governed ingest orchestration
 
+Fixed calls distinguish backend/local request rejection, returned model output,
+and unknown completion. Deterministic rejection and uncertain completion escape
+the SDK's unchanged-request retry loop; bounded rate-limit handling remains.
+Failures retain final request/format hashes, native session and structured error
+evidence. Business validation and finite semantic correction ordinals remain.
+Existing recover-reduce-execution/reduce-cancel/v1 may admit a fresh native owner
+only after authenticating ended runs, original request/transcript and durable
+call evidence; PROGRAM_EXECUTION_FAILED alone or zero token usage is insufficient.
+Rejected/unknown reservations remain held, with no automatic retry or new quota.
+
+During one execution/reconciliation cycle, pure graph calculation can be reused
+only after current dependency bytes and directory membership match. Cancellation,
+pause, bindings, templates and parent outcomes are checked live. Native proof
+reuse is bounded to that invocation and a live read-only database version.
+Previously valid page bodies/closed holds are authenticated as a set, then restored
+without normal per-body cleanup or receipt publication. No progress file alone
+can supply completion or permission.
+
 Successful global packets may reconstruct their consumed unit boundary directly
 from the exact native request. Rebuild its current input, directory and preceding
 state once; the ordinary executor still proves the native answer and validates

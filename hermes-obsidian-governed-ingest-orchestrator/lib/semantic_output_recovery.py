@@ -12,7 +12,7 @@ from semantic_output import SCOPE,CONTRACT,ELIGIBLE,check,diagnosis,path_for
 
 def contract_hash():
     root=Path(__file__).resolve().parent
-    return hashlib.sha256(b''.join((root/n).read_bytes() for n in ('semantic_output.py','semantic_output_recovery.py','fixed_semantic.py','fixed_semantic_recovery.py','fixed_global_packets.py','fixed_global_targets.py','fixed_global_replay.py','fixed_page_evidence.py','fixed_semantic_schema.py'))).hexdigest()
+    return hashlib.sha256(b''.join((root/n).read_bytes() for n in ('semantic_output.py','semantic_output_recovery.py','fixed_semantic.py','fixed_semantic_recovery.py','fixed_global_packets.py','fixed_global_targets.py','fixed_global_replay.py','fixed_page_evidence.py','fixed_page_replay.py','ingest_graph_reuse.py','native_call_state.py','fixed_semantic_schema.py'))).hexdigest()
 
 
 def fail(message):raise ContractError('RECOVERY_NOT_ALLOWED','$',message)
