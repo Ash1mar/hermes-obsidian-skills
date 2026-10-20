@@ -38,14 +38,15 @@ def main():
             for p, b in expected.items():
                 (target / p).parent.mkdir(parents=True, exist_ok=True)
                 (target / p).write_bytes(b)
-    adapter_source = ROOT / "hermes-obsidian-controlled-ingest/lib/ingest_kanban.py"
-    adapter_target = ROOT / "hermes-obsidian-governed-ingest-orchestrator/lib/ingest_kanban.py"
-    if args.check:
-        if not adapter_target.is_file() or adapter_target.read_bytes() != adapter_source.read_bytes():
-            raise SystemExit("Embedded ingest adapter drift: orchestrator")
-    else:
-        adapter_target.parent.mkdir(parents=True, exist_ok=True)
-        adapter_target.write_bytes(adapter_source.read_bytes())
+    for name in ('ingest_kanban.py','ingest_graph_reuse.py'):
+        adapter_source = ROOT / 'hermes-obsidian-controlled-ingest/lib' / name
+        adapter_target = ROOT / 'hermes-obsidian-governed-ingest-orchestrator/lib' / name
+        if args.check:
+            if not adapter_target.is_file() or adapter_target.read_bytes() != adapter_source.read_bytes():
+                raise SystemExit('Embedded ingest adapter drift: orchestrator/'+name)
+        else:
+            adapter_target.parent.mkdir(parents=True, exist_ok=True)
+            adapter_target.write_bytes(adapter_source.read_bytes())
     print("Embedded Skill runtimes verified" if args.check else "Embedded Skill runtimes generated")
 
 
