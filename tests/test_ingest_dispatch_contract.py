@@ -133,19 +133,22 @@ def test_reused_failed_cards_do_not_construct_body_or_resolve_executor(tmp_path,
     assert all(p.read_bytes()==data for p,data in before.items())
 
 
-@pytest.mark.parametrize('native_state',['archived','running'])
-def test_known_failed_archived_card_skips_ended_run_diagnosis_only(tmp_path,monkeypatch,native_state):
+@pytest.mark.parametrize('matching_failure',[True,False])
+def test_current_failure_skips_only_redundant_ended_run_diagnosis(tmp_path,monkeypatch,matching_failure):
     target,adapter,value,req=setup_worker(tmp_path)
     adapter.execution_failure(req,'PREPARATION_RUNTIME_FAILED','pending explicit repair')
     adapter._sync_current(value['workflow_id'])
-    monkeypatch.setattr(adapter.kanban,'task_status',lambda slug,tid:native_state,raising=False)
+    if not matching_failure:
+        path=target/f'_system/ledgers/ingest-workflows/{value["workflow_id"]}/reports/failed-{fingerprint(req["node"])[:16]}.json'
+        report=json.loads(path.read_text());report['input_fingerprint']='sha256:'+'0'*64
+        path.write_text(json.dumps(report))
     monkeypatch.setattr(adapter.kanban,'task_has_runs',lambda slug,tid:tid==req['task_id'],raising=False)
     class Observed(Exception):pass
     def snapshot(slug,tid):
         assert tid==req['task_id']
-        raise Observed('fresh diagnosis required for non-archived card')
+        raise Observed('fresh diagnosis required without current failure')
     monkeypatch.setattr(adapter.kanban,'task_snapshot',snapshot,raising=False)
-    if native_state=='running':
+    if not matching_failure:
         with pytest.raises(Observed):adapter._sync_current(value['workflow_id'])
     else:
         adapter._sync_current(value['workflow_id'])
