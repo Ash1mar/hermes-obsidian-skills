@@ -283,7 +283,8 @@ def test_sdk_cannot_use_cached_budget_for_a_changed_actual_schema(sdk, form):
 def test_expected_request_is_immutable_even_if_sdk_staging_object_changes(sdk):
     agent = guarded_agent(sdk)
     agent.fixed_request['user'] += ' SDK staging mutation'
-    with pytest.raises(RuntimeError, match='extra tools, context or messages'):
+    from native_call_state import StopNativeCall
+    with pytest.raises(StopNativeCall, match='extra tools, context or messages'):
         agent._interruptible_api_call(api_request(agent))
     assert not sdk.requests
 
