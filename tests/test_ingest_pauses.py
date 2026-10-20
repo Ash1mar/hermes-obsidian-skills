@@ -145,8 +145,8 @@ def test_exact_plan_commits_during_projection_and_watcher_waits_for_receipt(vaul
             committed.append(True)
         return result
     monkeypatch.setattr(fake, "ensure_board", commit_during_projection)
-    # Exercise the actual watcher: its first sync sees the new boundary but cannot
-    # snapshot it until the next sync initializes the adopted batch's slices.
+    # Exercise the actual watcher with a commit during projection. Wake hints may
+    # remove a sleep; the authoritative pause receipt and slice setup must remain.
     spec = importlib.util.spec_from_file_location("pause_watch", ROOT /
         "hermes-obsidian-governed-ingest-orchestrator/scripts/watch_ingest_workflow.py")
     watcher = importlib.util.module_from_spec(spec)
@@ -156,7 +156,7 @@ def test_exact_plan_commits_during_projection_and_watcher_waits_for_receipt(vaul
     monkeypatch.setattr(watcher.time, "sleep", lambda duration: sleeps.append(duration))
     watcher.watch(str(vault), value["workflow_id"])
     current = adapter.workflow.status(value["workflow_id"])
-    assert sleeps and current["pause_control"]["evidence_digest"]
+    assert committed and current["pause_control"]["evidence_digest"]
     assert current["pause_control"]["boundary"] == "exact_plan"
     assert adapter.workflow.knowledge._batch("race-batch")["slices_initialized"]
     assert not fake.unblocked

@@ -112,6 +112,9 @@ def test_reused_failed_cards_do_not_construct_body_or_resolve_executor(tmp_path,
     target,adapter,value,req=setup_worker(tmp_path)
     adapter.execution_failure(req,'PREPARATION_RUNTIME_FAILED','pending explicit repair')
     adapter._sync_current(value['workflow_id'])
+    monkeypatch.setattr(adapter.kanban,'task_states',lambda slug:{task['id']:
+        adapter.kanban.waited.get(task['id'],'done' if task['id'] in adapter.kanban.completed else 'blocked')
+        for task in adapter.kanban.tasks.values()},raising=False)
     original=module.executor_for;resolved=[]
     def resolve(kind,instructions):
         resolved.append(kind)
