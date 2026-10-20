@@ -5,6 +5,16 @@ description: Start, resume and inspect a persistent Vault-authoritative governed
 
 # Governed ingest orchestration
 
+Within one reconciliation, reuse pure completion proofs only against current
+slice/batch/reduction/recovery bytes and membership; changed dependencies force
+fresh proof. Terminal native projections survive refresh only when their full
+list row is unchanged; archive subtree reads and execution grants remain fresh.
+Historical planning is rebuilt from the original ordered requests and every
+finite attempt, including rejected corrections and explicit third-call grants.
+A checked entry/exit bounds this read-only prefix; retain cumulative validators,
+publish restored progress once, then dispatch only unfinished work. No progress
+file, memoized completion or old ordinal grants execution permission.
+
 Fixed calls distinguish backend/local request rejection, returned model output,
 and unknown completion. Deterministic rejection and uncertain completion escape
 the SDK's unchanged-request retry loop; bounded rate-limit handling remains.

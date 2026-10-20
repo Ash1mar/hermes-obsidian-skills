@@ -26,6 +26,7 @@ from hermes_source_units.ingest_workflow import SOURCE_FAILURE_CODES
 from hermes_source_units.workflow_guard import workflow_write_guard, worker_binding, WORKER_LOCK_TIMEOUT
 from hermes_source_units.runtime_telemetry import measured, span
 from ingest_graph_reuse import derive as derive_graph,graph_scope
+from ingest_completion import completed as completion_proof,completion_scope,resource_record,failure_record
 
 
 def _fail(code: str, message: str) -> None:
@@ -303,8 +304,17 @@ class KanbanCLI:
 
     def _refresh_projection(self, slug):
         if self._projection_board == slug:
-            self._projection_snapshots.clear()
+            previous=self._projection_rows
             self.task_states(slug)
+            # Retain only terminal read projections whose complete list row is
+            # unchanged. Claims and task_snapshot_fresh never use this cache.
+            self._projection_snapshots={tid:s for tid,s in self._projection_snapshots.items()
+                if s['task']['status'] in ('done','archived') and previous.get(tid)==self._projection_rows.get(tid)}
+
+    def projected_task_states(self,slug):
+        if self._projection_board==slug:
+            return {tid:str(row['status']) for tid,row in self._projection_rows.items()}
+        return self.task_states(slug)
 
     def task_has_runs(self, slug, task_id):
         row = self._projection_rows.get(task_id) if self._projection_board == slug else None
@@ -421,7 +431,7 @@ class KanbanCLI:
         if self.task_status(slug, task_id) != "archived":
             # Closing a parent can promote native/decomposed children. Close the
             # whole dependent subtree first, including cards absent from Vault.
-            for child in self.task_snapshot(slug, task_id).get('children', []):
+            for child in self.task_snapshot_fresh(slug, task_id).get('children', []):
                 child_id = child.get('id', child.get('task_id')) if isinstance(child, dict) else child
                 if child_id:
                     self.archive(slug, child_id)
@@ -454,6 +464,10 @@ class KanbanCLI:
 
 def domain_completed(service: FileIngestWorkflowService,
                      workflow: Mapping[str, Any], node: Node) -> bool:
+    return completion_proof(service,workflow,node,lambda:_domain_completed(service,workflow,node))
+
+
+def _domain_completed(service,workflow,node):
     if node.kind == "source-prepare":
         outcomes = {item["path"]: item for item in workflow.get("source_outcomes", [])}
         return any(node.name == "source-prepare:" + fingerprint({
@@ -478,7 +492,7 @@ def domain_completed(service: FileIngestWorkflowService,
         if (not batch.get("resource_reduction_ids") and batch["run_ids"]
                 and batch["state"] in ("checkpoint_1", "finalizing", "completed")):
             return True  # valid legacy direct Reduce adoption
-        return any(service.knowledge._resource_reduction(workflow["batch_id"], rid)["resource_id"]
+        return any(resource_record(service.knowledge,workflow["batch_id"], rid)["resource_id"]
                    == resource_id for rid in batch.get("resource_reduction_ids", []))
     if node.kind == "global-reduce":
         batch = service.knowledge._batch(workflow["batch_id"])
@@ -676,9 +690,8 @@ class IngestKanbanAdapter:
         path = _vault_path(self.workflow.vault,
             f"_system/ledgers/ingest-workflows/{workflow_id}/reports/"
             f"failed-{fingerprint(node.name)[:16]}.json")
-        if not path.is_file():
-            return False
-        report = _load_json(path)
+        report = failure_record(path)
+        if report is None:return False
         if report.get('input_fingerprint') != node.input_fingerprint:
             return False
         value = self.workflow.status(workflow_id)
@@ -691,8 +704,8 @@ class IngestKanbanAdapter:
         if node.kind!='resource-reduce' or not domain_completed(self.workflow,value,node):return None
         try:
             k=self.workflow.knowledge;batch=k._batch(value['batch_id'])
-            reduction=next(k._resource_reduction(batch['batch_id'],r) for r in batch['resource_reduction_ids']
-                if k._resource_reduction(batch['batch_id'],r)['resource_id']==node.name.partition(':')[2])
+            reduction=next(row for r in batch['resource_reduction_ids']
+                if (row:=resource_record(k,batch['batch_id'],r))['resource_id']==node.name.partition(':')[2])
             for item in reduction['tasks']:
                 task=k._task(item['task_id'])
                 if task['revision']!=item['revision'] or task['status']!='running':return None
@@ -1034,10 +1047,10 @@ class IngestKanbanAdapter:
                 and node.name.partition(":")[2] in policy.get("slice_ids", []))
 
     def _eligible(self, workflow: Mapping[str, Any], node: Node,
-                  nodes: list[Node]) -> bool:
+                  nodes: list[Node], *, by_name=None) -> bool:
         if workflow.get('pass_skip_history') and node.kind=='pass-slice' and node.name.partition(':')[2] in self.workflow.skipped_pass_slices(workflow):
             return False
-        by_name = {item.name: item for item in nodes}
+        if by_name is None:by_name = {item.name: item for item in nodes}
         return (self.enable_workers and self._canary_allows(workflow, node)
                 and all(domain_completed(self.workflow, workflow, by_name[parent])
                         for parent in node.parents))
@@ -1394,8 +1407,9 @@ class IngestKanbanAdapter:
                     f"_system/ledgers/ingest-workflows/.dispatch-locks/{workflow_id}.lock")
                 with _exclusive_lock(lock):
                     board = self.workflow.status(workflow_id)['kanban']['board_id']
-                    with self.workflow.execution_projection(), self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
+                    with self.workflow.execution_projection(), completion_scope() as proofs, self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
                         result=self._sync_locked(request,yield_requested=yield_requested)
+                        trace.update(completion_lookups=proofs['lookups'],completion_hits=proofs['hits'],completion_builds=proofs['builds'])
                         trace['completed']='task_count' in result
                         return result
             finally:
@@ -1529,7 +1543,8 @@ class IngestKanbanAdapter:
             ids: dict[str, str] = {}
             task_map: list[dict[str, str]] = []
             artifact_conflicts: list[dict[str, Any]] = []
-            native_states=self.kanban.task_states(slug) if hasattr(self.kanban,'task_states') else {}
+            native_states=(self.kanban.projected_task_states(slug) if hasattr(self.kanban,'projected_task_states')
+                else self.kanban.task_states(slug) if hasattr(self.kanban,'task_states') else {})
             for node in nodes:
                 checkpoint()
                 key = f"ingest:{workflow_id}:{node.kind}:{node.input_fingerprint}"
@@ -1671,14 +1686,15 @@ class IngestKanbanAdapter:
                     self._projection_failure(workflow_id, node, record['task_id'], 'DISPATCH_ARTIFACT_CHANGED',
                         'canonical dispatcher binding differs; trusted repair required')
         with span('reconciliation_card_projection'):
+            nodes_by_name={n.name:n for n in nodes};node_order={n.name:i for i,n in enumerate(nodes)}
             cooldown = (self.workflow.knowledge._batch(updated["batch_id"]).get("cooldown_until")
                         if updated["batch_id"] else None)
             cooldown_active = (cooldown is not None and datetime.fromisoformat(
                 cooldown.replace("Z", "+00:00")) > datetime.now(timezone.utc))
             for node in nodes:
                 checkpoint()
-                failed_parent = next((p for p in nodes if p.name in node.parents
-                                      and self._execution_blocked(workflow_id, p)), None)
+                failed_parent = next((nodes_by_name[p] for p in sorted(node.parents,key=lambda n:node_order.get(n,-1))
+                                      if p in nodes_by_name and self._execution_blocked(workflow_id,nodes_by_name[p])),None)
                 if failed_parent and not domain_completed(self.workflow, updated, node) and not self._failed_card(workflow_id, node):
                     self._projection_failure(workflow_id, node, ids[node.name],
                                              "DEPENDENCY_EXECUTION_BLOCKED", failed_parent.name)
@@ -1729,7 +1745,7 @@ class IngestKanbanAdapter:
                         if dependent.name in affected and dependent.name != node.name:
                             self.kanban.archive(slug, ids[dependent.name])
                     self.kanban.archive(slug, ids[node.name])
-                elif node.gate or not self._eligible(updated, node, nodes):
+                elif node.gate or not self._eligible(updated, node, nodes,by_name=nodes_by_name):
                     self.kanban.wait(slug, ids[node.name], "blocked",
                                      "Vault gate or outside active dispatch scope")
                 elif node.kind == "source-prepare" and node.name not in source_window:
@@ -1753,7 +1769,7 @@ class IngestKanbanAdapter:
             active_canary = self.enable_workers and any(
                 not domain_completed(self.workflow, updated, node)
                 and not self._failed_card(workflow_id, node)
-                and self._eligible(updated, node, nodes)
+                and self._eligible(updated, node, nodes,by_name=nodes_by_name)
                 and (node.kind != "pass-slice" or self.workflow.knowledge._slice(
                     updated["batch_id"], node.name.partition(":")[2])["state"]
                     in ("ready", "leased")) for node in nodes)
@@ -1779,7 +1795,7 @@ class IngestKanbanAdapter:
                         if n.kind == 'pass-slice' else None) or templates.get(n.kind)) != 'model'
                         and not domain_completed(self.workflow, updated, n)
                         and not self._failed_card(workflow_id, n)
-                        and self._eligible(updated, n, nodes)
+                        and self._eligible(updated, n, nodes,by_name=nodes_by_name)
                         and (n.kind!='pass-slice' or (n.name in pass_window
                              and self.workflow.knowledge._slice(updated['batch_id'],n.name.partition(':')[2])['state']=='ready'))
                         for n in nodes),
