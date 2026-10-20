@@ -92,4 +92,3 @@ def test_recovery_authenticates_legacy_backend_rejection_and_preserves_reserved_
     else:
         with pytest.raises(ContractError):calls.recovery_evidence(a,{},b,runs)
     assert p.read_bytes()==before
-
