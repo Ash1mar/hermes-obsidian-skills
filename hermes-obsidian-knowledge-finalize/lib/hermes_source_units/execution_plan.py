@@ -91,6 +91,12 @@ class ExecutionPlanMixin:
         return _vault_path(self.vault, f'_system/ledgers/ingest-workflows/{wid}/execution-plan.pending.json')
 
     def execution_plan(self, workflow):
+        """Public callers receive an isolated mutable value."""
+        plan = self._read_execution_plan(workflow)
+        return copy.deepcopy(plan) if getattr(self, '_execution_projection_cache', None) is not None else plan
+
+    def _read_execution_plan(self, workflow):
+        """Internal read-only access; current bytes and pointer identity stay live."""
         pointer = workflow.get('execution_plan')
         if not pointer:
             return None
@@ -116,7 +122,7 @@ class ExecutionPlanMixin:
         if (pointer['sha256'] != plan['plan_hash']
                 or plan['workflow_id'] != workflow['workflow_id'] or plan['batch_id'] != workflow['batch_id']):
             fail('STALE_INPUT', 'execution manifest identity or fingerprint changed')
-        return copy.deepcopy(plan) if cache is not None else plan
+        return plan
 
     def assert_execution_ready(self, workflow):
         self.verify_pass_skips(workflow)
@@ -194,7 +200,7 @@ class ExecutionPlanMixin:
             fail('EXECUTION_PLAN_PENDING', 'workflow and batch execution pointers disagree')
 
     def execution_template(self, workflow, slice_id):
-        plan = self.execution_plan(workflow)
+        plan = self._read_execution_plan(workflow)
         while plan:
             if slice_id in plan['new_slice_ids']:
                 path = _vault_path(self.vault, plan['template_ref'])
@@ -205,7 +211,7 @@ class ExecutionPlanMixin:
             prior = plan.get('previous')
             if not prior:
                 break
-            plan = self.execution_plan({**workflow, 'execution_plan': prior})
+            plan = self._read_execution_plan({**workflow, 'execution_plan': prior})
         return None
 
     def execution_slice(self, workflow, slice_id):

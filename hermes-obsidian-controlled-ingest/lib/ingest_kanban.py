@@ -330,8 +330,10 @@ class KanbanCLI:
                 or os.environ.get("HERMES_KANBAN_TASK")):
             _fail("ACCESS_DENIED", "Kanban reconciliation requires a trusted orchestrator process")
         from hermes_source_units.runtime_telemetry import span
-        with span('native_cli', operation=parts[3] if parts[0]=='kanban' and len(parts)>3 else parts[1] if len(parts)>1 else parts[0],
-                  target_task_id=parts[4] if parts[0]=='kanban' and len(parts)>4 else None):
+        board_command = len(parts)>3 and parts[:2]==('kanban','--board')
+        operation = parts[3] if board_command else ':'.join(parts[1:3]) if parts[:2]==('kanban','boards') else parts[1] if len(parts)>1 else parts[0]
+        with span('native_cli', operation=operation,
+                  target_task_id=parts[4] if board_command and len(parts)>4 and not parts[4].startswith('--') else None):
             result = self.invoke(["hermes", *parts])
         if result.returncode != 0:
             _fail("KANBAN_UNAVAILABLE", result.stderr.strip() or result.stdout.strip()
@@ -1553,36 +1555,9 @@ class IngestKanbanAdapter:
                 slice_template_hash = (self.workflow.knowledge._slice(
                     value["batch_id"], node.name.partition(":")[2])["template_hash"]
                     if node.kind == "pass-slice" else None)
-                instructions = (self.workflow.revision_instructions(value)
-                    if self.workflow.revision_allows(value, node.name) else
-                    (self.workflow.execution_template(value, node.name.partition(':')[2])
-                    if node.kind == 'pass-slice' else None) or templates.get(node.kind))
-                executor = executor_for(node.kind, instructions)
-                body = json.dumps({"workflow_id": workflow_id, "node": node.name,
-                                   "executor": executor,
-                                   "kind": node.kind,
-                                   "input_fingerprint": node.input_fingerprint,
-                                   "vault": str(self.workflow.vault),
-                                   "worker_contract": "pinned-v1" if pin else "phase-7-pending",
-                                   "template_id": pin["template_id"] if pin else None,
-                                   "template_hash": pin["template_hash"] if pin else None,
-                                   "slice_template_hash": slice_template_hash,
-                                   "dispatcher_script": str(Path(__file__).resolve().parents[2] /
-                                       "hermes-obsidian-governed-ingest-orchestrator/scripts/dispatch_ingest_workflow.py"),
-                                   "domain_script": str(Path(__file__).resolve().parents[2] /
-                                       "hermes-obsidian-controlled-ingest/scripts/manage_knowledge_build.py"),
-                                   "worker_request": {"workflow_id": workflow_id, "node": node.name},
-                                   "worker_binding": (str(_vault_path(self.workflow.vault,
-                                       f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json")) if pin else None),
-                                   "worker_command": (shlex.join(["python3", str(Path(__file__).resolve().parents[2] /
-                                       "hermes-obsidian-governed-ingest-orchestrator/scripts/run_preparation_worker.py"),
-                                       "--vault", str(self.workflow.vault), "--binding", str(_vault_path(self.workflow.vault,
-                                       f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json"))])
-                                       if node.kind in ("source-prepare", "exact-plan") else None),
-                                   "instructions": instructions,
-                                   "citation_revision_rule": ("Historical superseded citation Passes are audit only. For candidate decisions use only citations whose pass_id is not named by a later supersedes_pass_id in that task; retain all Pass IDs as history. Never propose or omit superseded candidates."
-                                       if value.get('pass_revision') and node.kind == 'resource-reduce' else None)},
-                                  ensure_ascii=False, sort_keys=True)
+                # Reusing a card still authenticates its current amendment template.
+                slice_instructions = (self.workflow.execution_template(value, node.name.partition(':')[2])
+                    if node.kind == 'pass-slice' else None)
                 # Native create ignores archived idempotency keys. Reuse the Vault's
                 # current failed binding until an explicit
                 # repair changes the input identity. Never mint a new card under an
@@ -1594,9 +1569,40 @@ class IngestKanbanAdapter:
                 completed_task = self._completed_pass_binding(value, node, key) or self._completed_reduce_binding(value,node,key)
                 existing=next((c for c in value['kanban']['task_map'] if c['node']==node.name and c['idempotency_key']==key
                     and native_states.get(c['task_id']) not in (None,'archived')),None)
-                task_id = completed_task or (previous['task_id'] if previous else existing['task_id'] if existing else self.kanban.create_node(
-                    slug, node, key, [ids[parent] for parent in node.parents], body,
-                    enable_workers=False))  # bind the complete graph before releasing cards
+                task_id = completed_task or (previous['task_id'] if previous else existing['task_id'] if existing else None)
+                if task_id is None:
+                    with span('reconciliation_card_body', target_node=node.name):
+                        instructions = (self.workflow.revision_instructions(value)
+                            if self.workflow.revision_allows(value, node.name) else
+                            slice_instructions or templates.get(node.kind))
+                        executor = executor_for(node.kind, instructions)
+                        body = json.dumps({"workflow_id": workflow_id, "node": node.name,
+                                           "executor": executor,
+                                           "kind": node.kind,
+                                           "input_fingerprint": node.input_fingerprint,
+                                           "vault": str(self.workflow.vault),
+                                           "worker_contract": "pinned-v1" if pin else "phase-7-pending",
+                                           "template_id": pin["template_id"] if pin else None,
+                                           "template_hash": pin["template_hash"] if pin else None,
+                                           "slice_template_hash": slice_template_hash,
+                                           "dispatcher_script": str(Path(__file__).resolve().parents[2] /
+                                               "hermes-obsidian-governed-ingest-orchestrator/scripts/dispatch_ingest_workflow.py"),
+                                           "domain_script": str(Path(__file__).resolve().parents[2] /
+                                               "hermes-obsidian-controlled-ingest/scripts/manage_knowledge_build.py"),
+                                           "worker_request": {"workflow_id": workflow_id, "node": node.name},
+                                           "worker_binding": (str(_vault_path(self.workflow.vault,
+                                               f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json")) if pin else None),
+                                           "worker_command": (shlex.join(["python3", str(Path(__file__).resolve().parents[2] /
+                                               "hermes-obsidian-governed-ingest-orchestrator/scripts/run_preparation_worker.py"),
+                                               "--vault", str(self.workflow.vault), "--binding", str(_vault_path(self.workflow.vault,
+                                               f"_system/ledgers/ingest-workflows/{workflow_id}/bindings/{fingerprint(key)}.json"))])
+                                               if node.kind in ("source-prepare", "exact-plan") else None),
+                                           "instructions": instructions,
+                                           "citation_revision_rule": ("Historical superseded citation Passes are audit only. For candidate decisions use only citations whose pass_id is not named by a later supersedes_pass_id in that task; retain all Pass IDs as history. Never propose or omit superseded candidates."
+                                               if value.get('pass_revision') and node.kind == 'resource-reduce' else None)},
+                                          ensure_ascii=False, sort_keys=True)
+                    task_id = self.kanban.create_node(slug, node, key,
+                        [ids[parent] for parent in node.parents], body, enable_workers=False)
                 ids[node.name] = task_id
                 if pin:
                     record = {"workflow_id": workflow_id, "node": node.name, "task_id": task_id,
@@ -1789,15 +1795,15 @@ class IngestKanbanAdapter:
                     "state": "paused" if self.workflow.pending_pause(updated) else updated["state"],
                     "pause": self.workflow.pause_status(updated),
                     "revision": updated["revision"], "background_dispatch": active_canary,
-                    "program_dispatch": any(executor_for(n.kind, self.workflow.revision_instructions(updated)
-                        if self.workflow.revision_allows(updated, n.name) else
-                        (self.workflow.execution_template(updated, n.name.partition(':')[2])
-                        if n.kind == 'pass-slice' else None) or templates.get(n.kind)) != 'model'
-                        and not domain_completed(self.workflow, updated, n)
+                    "program_dispatch": any(not domain_completed(self.workflow, updated, n)
                         and not self._failed_card(workflow_id, n)
                         and self._eligible(updated, n, nodes,by_name=nodes_by_name)
                         and (n.kind!='pass-slice' or (n.name in pass_window
                              and self.workflow.knowledge._slice(updated['batch_id'],n.name.partition(':')[2])['state']=='ready'))
+                        and executor_for(n.kind, self.workflow.revision_instructions(updated)
+                        if self.workflow.revision_allows(updated, n.name) else
+                        (self.workflow.execution_template(updated, n.name.partition(':')[2])
+                        if n.kind == 'pass-slice' else None) or templates.get(n.kind)) != 'model'
                         for n in nodes),
                     "board_id": slug, "task_count": len(task_map),
                     "canary_complete": canary_done, "canary_report_ref": canary_report,

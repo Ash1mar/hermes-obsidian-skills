@@ -107,6 +107,25 @@ def test_native_archived_keys_do_not_recreate_failed_bindings(tmp_path, monkeypa
         adapter.execution_failure({**req, 'task_id':'unbound'}, 'OTHER', 'old worker')
 
 
+def test_reused_failed_cards_do_not_construct_body_or_resolve_executor(tmp_path,monkeypatch):
+    import ingest_kanban as module
+    target,adapter,value,req=setup_worker(tmp_path)
+    adapter.execution_failure(req,'PREPARATION_RUNTIME_FAILED','pending explicit repair')
+    adapter._sync_current(value['workflow_id'])
+    original=module.executor_for;resolved=[]
+    def resolve(kind,instructions):
+        resolved.append(kind)
+        return original(kind,instructions)
+    monkeypatch.setattr(module,'executor_for',resolve)
+    before={p:p.read_bytes() for p in target.glob('_system/ledgers/ingest-workflows/*/bindings/*.json')}
+    adapter._sync_current(value['workflow_id'])
+    # Other ready sources can still need executor selection; the failed source
+    # and its blocked exact-plan dependent must not be resolved for card reuse.
+    assert 'exact-plan' not in resolved
+    assert resolved.count('source-prepare')<=1
+    assert all(p.read_bytes()==data for p,data in before.items())
+
+
 def test_source_completion_during_failure_projection_retries_fresh_graph(tmp_path, monkeypatch):
     _, adapter, value, req = setup_worker(tmp_path)
     adapter.execution_failure(req, 'PREPARATION_RUNTIME_FAILED', 'pending source')
