@@ -62,6 +62,21 @@ def test_unknown_attempt_metadata_is_not_treated_as_never_started():
         assert cli.task_has_runs('board','t')
 
 
+def test_projection_includes_archived_status_without_per_card_reads():
+    calls=[];rows=[{'id':f'old-{i}','status':'archived','started_at':1} for i in range(40)]
+    def invoke(argv):
+        calls.append(argv)
+        assert argv[4]=='list' and '--archived' in argv
+        return subprocess.CompletedProcess(argv,0,json.dumps(rows),'')
+    cli=KanbanCLI(invoke)
+    with cli.projection('board'):
+        cli.ensure_board('board')
+        for row in rows:
+            assert cli.task_status('board',row['id'])=='archived'
+            cli.archive('board',row['id'])
+    assert len(calls)==1
+
+
 def test_archived_status_reuses_same_projection_show_and_expires():
     calls=[]
     def invoke(argv):

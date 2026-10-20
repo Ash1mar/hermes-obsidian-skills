@@ -107,6 +107,54 @@ def test_native_archived_keys_do_not_recreate_failed_bindings(tmp_path, monkeypa
         adapter.execution_failure({**req, 'task_id':'unbound'}, 'OTHER', 'old worker')
 
 
+def test_reused_failed_cards_do_not_construct_body_or_resolve_executor(tmp_path,monkeypatch):
+    import ingest_kanban as module
+    target,adapter,value,req=setup_worker(tmp_path)
+    adapter.execution_failure(req,'PREPARATION_RUNTIME_FAILED','pending explicit repair')
+    adapter._sync_current(value['workflow_id'])
+    monkeypatch.setattr(adapter.kanban,'task_states',lambda slug:{task['id']:
+        adapter.kanban.waited.get(task['id'],'done' if task['id'] in adapter.kanban.completed else 'blocked')
+        for task in adapter.kanban.tasks.values()},raising=False)
+    original=module.executor_for;resolved=[]
+    def resolve(kind,instructions):
+        resolved.append(kind)
+        return original(kind,instructions)
+    monkeypatch.setattr(module,'executor_for',resolve)
+    dumps=module.json.dumps
+    def encode(value,*args,**kwargs):
+        assert not (isinstance(value,dict) and 'worker_request' in value and 'instructions' in value),'unused card body constructed'
+        return dumps(value,*args,**kwargs)
+    monkeypatch.setattr(module.json,'dumps',encode)
+    before={p:p.read_bytes() for p in target.glob('_system/ledgers/ingest-workflows/*/bindings/*.json')}
+    adapter._sync_current(value['workflow_id'])
+    # Other ready sources can still need executor selection; the failed source
+    # and its blocked exact-plan dependent must not be resolved for card reuse.
+    assert 'exact-plan' not in resolved
+    assert all(p.read_bytes()==data for p,data in before.items())
+
+
+@pytest.mark.parametrize('matching_failure',[True,False])
+def test_current_failure_skips_only_redundant_ended_run_diagnosis(tmp_path,monkeypatch,matching_failure):
+    target,adapter,value,req=setup_worker(tmp_path)
+    adapter.execution_failure(req,'PREPARATION_RUNTIME_FAILED','pending explicit repair')
+    adapter._sync_current(value['workflow_id'])
+    if not matching_failure:
+        path=target/f'_system/ledgers/ingest-workflows/{value["workflow_id"]}/reports/failed-{fingerprint(req["node"])[:16]}.json'
+        report=json.loads(path.read_text());report['input_fingerprint']='sha256:'+'0'*64
+        path.write_text(json.dumps(report))
+    monkeypatch.setattr(adapter.kanban,'task_has_runs',lambda slug,tid:tid==req['task_id'],raising=False)
+    class Observed(Exception):pass
+    def snapshot(slug,tid):
+        assert tid==req['task_id']
+        raise Observed('fresh diagnosis required without current failure')
+    monkeypatch.setattr(adapter.kanban,'task_snapshot',snapshot,raising=False)
+    if not matching_failure:
+        with pytest.raises(Observed):adapter._sync_current(value['workflow_id'])
+    else:
+        adapter._sync_current(value['workflow_id'])
+        assert adapter.kanban.waited[req['task_id']]=='archived'
+
+
 def test_source_completion_during_failure_projection_retries_fresh_graph(tmp_path, monkeypatch):
     _, adapter, value, req = setup_worker(tmp_path)
     adapter.execution_failure(req, 'PREPARATION_RUNTIME_FAILED', 'pending source')

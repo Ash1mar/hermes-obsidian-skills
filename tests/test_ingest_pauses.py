@@ -134,7 +134,7 @@ def test_exact_plan_commits_during_projection_and_watcher_waits_for_receipt(vaul
     adapter.workflow.knowledge.plan_batch({"batch_id": "race-batch", "actor": "agent",
         "registry_revision": 1, "exact_reading_budget": True,
         "tasks": [{"task_id": "race-task", "target_refs": refs}]})
-    original = fake.create_node
+    original = fake.ensure_board
     committed = []
     def commit_during_projection(*args, **kwargs):
         result = original(*args, **kwargs)
@@ -144,9 +144,9 @@ def test_exact_plan_commits_during_projection_and_watcher_waits_for_receipt(vaul
                 expected_revision=current["revision"], target_stage="analyzing", batch_id="race-batch"))
             committed.append(True)
         return result
-    monkeypatch.setattr(fake, "create_node", commit_during_projection)
-    # Exercise the actual watcher: its first sync sees the new boundary but cannot
-    # snapshot it until the next sync initializes the adopted batch's slices.
+    monkeypatch.setattr(fake, "ensure_board", commit_during_projection)
+    # Exercise the actual watcher with a commit during projection. Wake hints may
+    # remove a sleep; the authoritative pause receipt and slice setup must remain.
     spec = importlib.util.spec_from_file_location("pause_watch", ROOT /
         "hermes-obsidian-governed-ingest-orchestrator/scripts/watch_ingest_workflow.py")
     watcher = importlib.util.module_from_spec(spec)
@@ -156,7 +156,7 @@ def test_exact_plan_commits_during_projection_and_watcher_waits_for_receipt(vaul
     monkeypatch.setattr(watcher.time, "sleep", lambda duration: sleeps.append(duration))
     watcher.watch(str(vault), value["workflow_id"])
     current = adapter.workflow.status(value["workflow_id"])
-    assert sleeps and current["pause_control"]["evidence_digest"]
+    assert committed and current["pause_control"]["evidence_digest"]
     assert current["pause_control"]["boundary"] == "exact_plan"
     assert adapter.workflow.knowledge._batch("race-batch")["slices_initialized"]
     assert not fake.unblocked

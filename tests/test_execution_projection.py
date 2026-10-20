@@ -67,3 +67,19 @@ def test_analyzing_graph_does_not_scan_unopened_reduce_tasks(vault):
     workflow['current_stage']='reducing'
     with pytest.raises(AssertionError,match='unopened Reduce'):
         desired_graph(service,workflow)
+
+
+def test_template_lookup_avoids_copy_but_public_plan_remains_isolated(vault,monkeypatch):
+    service,workflow,path,plan=setup_plan(vault)
+    original=execution.copy.deepcopy;copies=[]
+    monkeypatch.setattr(execution.copy,'deepcopy',lambda value:copies.append(value) or original(value))
+    with service.execution_projection():
+        assert service.execution_template(workflow,'s1')=='<!-- isolated template -->\n'
+        assert service.execution_template(workflow,'absent') is None
+        assert copies==[]
+        public=service.execution_plan(workflow)
+        assert len(copies)==1
+        public['new_slice_ids'].clear()
+        assert service.execution_template(workflow,'s1') is not None
+        changed=copy.deepcopy(workflow);changed['batch_id']='different'
+        with pytest.raises(ContractError,match='STALE_INPUT'):service.execution_template(changed,'s1')
