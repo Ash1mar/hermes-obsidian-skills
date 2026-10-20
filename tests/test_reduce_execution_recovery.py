@@ -110,6 +110,40 @@ def test_cancelled_reduce_recovery_preserves_domain_and_pins_new_native_identity
     assert not adapter._execution_blocked(value['workflow_id'], next(n for n in desired_graph(adapter.workflow, resumed) if n.name == fresh['node']))
 
 
+def call_proof():
+    return {'reserved_attempts_preserved':True,'new_calls_granted':0,'native_call_outcomes':[
+        {'attempt_id':'fixture-attempt','journal_name':'fixture.json','journal_sha256':'a'*64,
+         'session_id':'fixture-session','ordinal':2,'state':'request_rejected',
+         'evidence_path':'fixture-native-evidence.json','evidence_sha256':'b'*64,'same_attempt_retry_authorized':False}]}
+
+
+@pytest.mark.parametrize('code',['PROGRAM_EXECUTION_FAILED','NATIVE_REQUEST_REJECTED','NATIVE_COMPLETION_UNKNOWN'])
+def test_authenticated_call_recovery_remains_ready_through_resume(vault,monkeypatch,code):
+    adapter,value,card,request,ref=stopped_reducer(vault,monkeypatch)
+    failure=json.loads((vault/ref).read_text());failure['error_code']=code;(vault/ref).write_text(json.dumps(failure))
+    request['entries'][0]['failure_sha256']=hashlib.sha256((vault/ref).read_bytes()).hexdigest();request['input_digest']=mutation_digest(request)
+    monkeypatch.setattr('native_call_state.recovery_evidence',lambda *_:call_proof())
+    adapter.recover_reduce_execution(request)
+    current=adapter.workflow.status(value['workflow_id']);adapter.workflow.assert_execution_ready(current)
+    adapter.resume(workflow_request(workflow_id=value['workflow_id'],actor='agent',expected_revision=current['revision']))
+    resumed=adapter.workflow.status(value['workflow_id'])
+    assert next(c for c in resumed['kanban']['task_map'] if c['node']==card['node'])['task_id']!=card['task_id']
+
+
+@pytest.mark.parametrize('change',['missing-proof','extra-calls','lost-reservation','allow-retry','unknown-state','missing-ended-run'])
+def test_call_recovery_readiness_requires_sealed_no_new_quota_proof(change):
+    from hermes_source_units.execution_plan import authenticated_call_recovery
+    entry={**call_proof(),'ended_run_ids':['1'],'failure':{'error_code':'PROGRAM_EXECUTION_FAILED'}}
+    assert authenticated_call_recovery(entry)
+    if change=='missing-proof':entry.pop('native_call_outcomes')
+    if change=='extra-calls':entry['new_calls_granted']=1
+    if change=='lost-reservation':entry['reserved_attempts_preserved']=False
+    if change=='allow-retry':entry['native_call_outcomes'][0]['same_attempt_retry_authorized']=True
+    if change=='unknown-state':entry['native_call_outcomes'][0]['state']='output_valid'
+    if change=='missing-ended-run':entry['ended_run_ids']=[]
+    assert not authenticated_call_recovery(entry)
+
+
 @pytest.mark.parametrize('change,code', [
     ('failure_hash','STALE_INPUT'), ('actor','ACTOR_MISMATCH'), ('worker','ACCESS_DENIED'),
     ('live','WORKER_ACTIVE'), ('semantic','RECOVERY_NOT_ALLOWED'), ('budget','RECOVERY_NOT_ALLOWED'),

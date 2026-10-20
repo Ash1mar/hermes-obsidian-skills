@@ -25,6 +25,7 @@ from hermes_source_units.validation import fingerprint, validate_record, record_
 from hermes_source_units.ingest_workflow import SOURCE_FAILURE_CODES
 from hermes_source_units.workflow_guard import workflow_write_guard, worker_binding, WORKER_LOCK_TIMEOUT
 from hermes_source_units.runtime_telemetry import measured, span
+from ingest_graph_reuse import derive as derive_graph,graph_scope
 
 
 def _fail(code: str, message: str) -> None:
@@ -132,6 +133,10 @@ def mechanical_failure_codes(report, scope='mechanical/v1', *, input_limit=30000
 
 @measured('desired_graph', lambda service, workflow: {'vault':service.vault,'workflow_id':workflow['workflow_id'],'stage':workflow['current_stage']})
 def desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any]) -> list[Node]:
+    return derive_graph(service,workflow,lambda:_desired_graph(service,workflow))
+
+
+def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, Any]) -> list[Node]:
     """Derive the DAG from Vault records, never from Kanban's task state."""
     nodes: list[Node] = []
     workflow_id = workflow["workflow_id"]
@@ -1374,6 +1379,7 @@ class IngestKanbanAdapter:
         return self.sync(followup)
 
     @measured('reconciliation', lambda self, request, **kwargs: {'vault':self.workflow.vault, 'workflow_id':request['workflow_id']})
+    @graph_scope()
     def sync(self, request: Mapping[str, Any], *, yield_requested=None) -> dict[str, Any]:
         if (os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
                 or os.environ.get("HERMES_KANBAN_TASK")):

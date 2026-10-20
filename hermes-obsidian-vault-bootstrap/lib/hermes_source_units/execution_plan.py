@@ -27,6 +27,21 @@ def execution_recovery_key(scope,entry):
     return entry['node'],scope,cause
 
 
+def authenticated_call_recovery(entry):
+    """Recognize the existing admission's sealed no-new-quota call evidence."""
+    rows=entry.get('native_call_outcomes')
+    return (entry.get('failure',{}).get('error_code') in
+            ('NATIVE_REQUEST_REJECTED','NATIVE_COMPLETION_UNKNOWN','PROGRAM_EXECUTION_FAILED')
+        and entry.get('reserved_attempts_preserved') is True and entry.get('new_calls_granted')==0
+        and bool(entry.get('ended_run_ids')) and isinstance(rows,list) and bool(rows)
+        and all(isinstance(r,dict) and r.get('state') in ('request_rejected','completion_unknown')
+            and r.get('same_attempt_retry_authorized') is False and isinstance(r.get('ordinal'),int)
+            and not isinstance(r['ordinal'],bool) and r['ordinal']>0
+            and all(isinstance(r.get(k),str) and r[k] for k in
+                ('attempt_id','journal_name','journal_sha256','session_id','evidence_path','evidence_sha256'))
+            for r in rows))
+
+
 PACKET_CAUSES={
     'ACCESS_DENIED':'ACCESS_DENIED at $: ACCESS_DENIED at $: typed submission requires a bounded model slice',
     'STALE_INPUT':'STALE_INPUT at $: STALE_INPUT at $: reviewed candidate identity changed'}
@@ -145,8 +160,9 @@ class ExecutionPlanMixin:
                     fail('STALE_INPUT','packet recovery lacks its recognized cause or native input proof')
                 if scope=='reduce-cancel/v1':
                     cause=entry.get('previous_task_id')
-                    if (not isinstance(cause,str) or not cause or entry.get('failure',{}).get('error_code')
-                            not in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED')):
+                    if (not isinstance(cause,str) or not cause or (entry.get('failure',{}).get('error_code')
+                            not in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED')
+                            and not authenticated_call_recovery(entry))):
                         fail('STALE_INPUT','Reduce cancellation recovery lacks its exact ended native identity')
                 if scope=='semantic-output/v1' and (not entry.get('previous_task_id') or not (entry.get('output_seed') or entry.get('uncalled_reservation') or entry.get('exhausted_continuation') or entry.get('uncalled_packet'))):
                     fail('STALE_INPUT','shared output recovery lacks its authenticated attempt evidence')
