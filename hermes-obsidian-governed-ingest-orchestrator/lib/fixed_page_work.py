@@ -124,8 +124,10 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     if isinstance(caller,HermesCaller):
         from fixed_page_replay import restore
         from fixed_semantic_recovery import authenticated_replay
-        with authenticated_replay(adapter,binding) as prove:
-            old_written,old_held,restored=restore(adapter,binding,value,state,caller,project,prove)
+        from hermes_source_units.runtime_telemetry import span
+        with span('historical_page_restore',vault=adapter.workflow.vault,binding=binding):
+            with authenticated_replay(adapter,binding) as prove:
+                old_written,old_held,restored=restore(adapter,binding,value,state,caller,project,prove)
         written.extend(old_written);held.extend(old_held);calls.extend(p['audit_ref'] for p in old_written)
         if restored:save()  # One publication, no per-body receipt/cleanup replay.
     # One native owner, at most two independent bodies; plan mutations and

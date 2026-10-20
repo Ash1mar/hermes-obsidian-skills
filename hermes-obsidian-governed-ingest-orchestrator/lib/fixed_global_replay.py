@@ -88,3 +88,22 @@ def recorded_packet(adapter,binding,value,remaining,state,ref,project,*,pending=
     return {'view':view,'input_codepoints':size,'unit_count':len(chosen),
         'candidate_refs':sorted({h for u in chosen for h in u['handles']}),
         'proposal_refs':view['coordination']['proposal_refs'],'previous_state_sha256':g.state_digest(state),'units':chosen}
+
+
+def restore_prefix(adapter,binding,value,refs,project,prove):
+    """Rebuild every cumulative state; caller authenticates entry/exit once.
+
+    This installs no saved state and writes no journal, receipt or progress.
+    A partial prefix may end while detail units remain; preserve that queue.
+    """
+    from semantic_output import read_saved_output,check
+    state=g.initial();remaining=g.units(value);pending=[];calls=[]
+    for ref in refs:
+        phase='global-detail' if pending else 'global-plan'
+        packet=recorded_packet(adapter,binding,value,remaining,state,ref,project,pending=pending)
+        _,call,(updated,requested)=read_saved_output(adapter,binding,phase,packet['view'],
+            lambda draft:check(phase,value,packet,state,draft),prove,ref)
+        if pending:pending=pending[1:]
+        else:remaining=remaining[packet['unit_count']:];pending=requested
+        state=updated;calls.append(call)
+    return state,remaining,pending,calls

@@ -244,6 +244,48 @@ def continuation_permit(adapter,binding,path,record):
     return matches[0] if matches else None
 
 
+def read_saved_output(adapter,binding,phase,view,validator,prove,expected_ref):
+    """Read-only full finite-journal proof inside a checked historical boundary."""
+    from fixed_semantic import prepare_request_projection,decode_semantic_response
+    path=path_for(adapter,binding,phase,view)
+    if not path.is_file():held('historical success lacks its finite attempt journal')
+    record=_load_json(path);sc=schema_for(phase,view);attempts=record.get('attempts',[])
+    if (record.get('contract')!=CONTRACT or record.get('phase')!=phase
+        or record.get('input_sha256')!=fingerprint(view) or record.get('schema_sha256')!=fingerprint(sc)
+        or not attempts):held('historical output identity differs')
+    permit=continuation_permit(adapter,binding,path,record)
+    if len(attempts)>(3 if permit else 2):held('historical extra attempt lacks its original authority')
+    for index,attempt in enumerate(attempts):
+        if (attempt.get('attempt')!=index+1 or attempt.get('attempt_id')!=fingerprint({'path':path.name,'attempt':index+1})
+            or not attempt.get('audit_ref')):held('historical attempt identity or completion differs')
+        correction=attempt.get('correction')
+        if index==0 and correction is not None or index==2 and correction!=permit['diagnostic']:
+            held('historical correction authority differs')
+        prepared=prepare_request_projection(phase,view,sc,[],correction)
+        if prepared['input_size']>30000 or fingerprint(prepared['wire'])!=attempt.get('wire_sha256'):
+            held('historical full request or budget differs')
+        ref=attempt['audit_ref'];ap=_vault_path(adapter.workflow.vault,ref);audit=_load_json(ap)
+        if (audit.get('phase')!=phase or audit.get('native_task_id')!=attempt.get('task_id')
+            or str(audit.get('native_run_id'))!=str(attempt.get('run_id'))
+            or audit.get('output_attempt_id',attempt['attempt_id'])!=attempt['attempt_id']
+            or attempt.get('session_id') and audit.get('model',{}).get('session_id')!=attempt['session_id']):
+            held('historical journal differs from its native audit')
+        found=prove(ap,prepared['wire'],sc,[])
+        if found is None:held('historical output lacks an exact current native proof')
+        try:
+            try:draft,_=decode_semantic_response(found[0])
+            except json.JSONDecodeError as exc:raise ContractError('INVALID_SCHEMA','$',str(exc)) from exc
+            result=validator(draft)
+        except ContractError as exc:
+            if (attempt.get('state')!='rejected' or not attempt.get('correctable') or exc.code not in ELIGIBLE
+                or index==len(attempts)-1):held('historical rejection/correction no longer matches a successful prefix')
+            continue
+        if index!=len(attempts)-1 or attempt.get('state')!='valid' or ref!=expected_ref:
+            held('historical successful response/ordinal differs')
+        return draft,ref,result
+    held('historical prefix has no authenticated final success')
+
+
 def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None,state=None):
     from fixed_semantic import prepare_request_projection,decode_semantic_response,HermesCaller,attach_receipt
     from fixed_semantic_media import image_catalog,select_images

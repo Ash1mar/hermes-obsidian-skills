@@ -38,7 +38,7 @@ def main():
             for p, b in expected.items():
                 (target / p).parent.mkdir(parents=True, exist_ok=True)
                 (target / p).write_bytes(b)
-    for name in ('ingest_kanban.py','ingest_graph_reuse.py'):
+    for name in ('ingest_kanban.py','ingest_graph_reuse.py','ingest_completion.py'):
         adapter_source = ROOT / 'hermes-obsidian-controlled-ingest/lib' / name
         adapter_target = ROOT / 'hermes-obsidian-governed-ingest-orchestrator/lib' / name
         if args.check:

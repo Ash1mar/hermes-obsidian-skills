@@ -1,5 +1,21 @@
 # Runtime timing and incremental projection
 
+Reconciliation completion/record reuse is scoped to one cycle and fingerprints
+actual dependency contents. Partial revision-covered slices and complex final
+stages retain their ordinary proof. A shared parent-node index avoids repeated
+whole-graph filtering. Refreshes keep only unchanged terminal native snapshots;
+native grant reads and archive subtree discovery remain uncached.
+
+Historical global planning restores its ordered finite journals inside one
+authenticated entry/exit. It still reconstructs every full request, all rejected
+attempts/corrections, original third-call permission and every cumulative state;
+it never trusts serialized progress as an accepted state. Unchanged journals and
+receipts are not rewritten, and restored progress is published once. The normal
+executor handles unfinished work and unused corrections. Trace
+historical_planning_restore and historical_page_restore separately, and record
+native worker start, first new SDK request and first persisted body. Offline
+completion lookups/validation are not a complete resume latency benchmark.
+
 Recovery measurements must separate read-only historical reauthentication from
 full online resume-to-first-request latency. Compare an identical successful
 prefix and held set; report excluded native admission, dispatch and publication

@@ -996,6 +996,21 @@ def run_reduce(adapter,binding,caller):
     planning_failure=None
     try:
         with planning_scope(input_value):
+            from semantic_output import output_boundary
+            boundary,_=output_boundary(adapter,binding) if isinstance(caller,HermesCaller) else (None,None)
+            if prefix and not boundary:
+                from fixed_global_replay import restore_prefix
+                from fixed_semantic_recovery import authenticated_replay
+                with span('historical_planning_restore',vault=adapter.workflow.vault,binding=binding,count=len(prefix)):
+                    with authenticated_replay(adapter,binding) as prove:
+                        restored,rest,details,calls=restore_prefix(adapter,binding,input_value,prefix,prepare_request_projection,prove)
+                    state=restored;remaining=rest;call_refs.extend(calls);sequence=len(calls)
+                    progress_ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-inputs/global-progress-{input_value['input_id']}-{sequence}.json"
+                    _write_atomic(_vault_path(adapter.workflow.vault,progress_ref),_json_bytes({'contract':GLOBAL_CONTRACT,'binding':binding,
+                        'input_ref':ref,'completed_packet_count':sequence,'state':state,'successful_call_refs':call_refs,
+                        'pending_detail_units':[u['unit'] for u in details],'source_submitted':False}))
+                for unit in details:
+                    plan_call('global-detail',select(adapter,binding,'global-detail',detail_packet(input_value,unit,state,prepare_request_projection),prepare_request_projection))
             while remaining:
                 packet=(recorded_packet(adapter,binding,input_value,remaining,state,prefix[sequence],prepare_request_projection)
                     if sequence<len(prefix) else planning_packet(adapter,binding,input_value,remaining,state,prepare_request_projection))
