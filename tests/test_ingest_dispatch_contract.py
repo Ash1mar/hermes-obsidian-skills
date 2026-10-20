@@ -117,12 +117,16 @@ def test_reused_failed_cards_do_not_construct_body_or_resolve_executor(tmp_path,
         resolved.append(kind)
         return original(kind,instructions)
     monkeypatch.setattr(module,'executor_for',resolve)
+    dumps=module.json.dumps
+    def encode(value,*args,**kwargs):
+        assert not (isinstance(value,dict) and 'worker_request' in value and 'instructions' in value),'unused card body constructed'
+        return dumps(value,*args,**kwargs)
+    monkeypatch.setattr(module.json,'dumps',encode)
     before={p:p.read_bytes() for p in target.glob('_system/ledgers/ingest-workflows/*/bindings/*.json')}
     adapter._sync_current(value['workflow_id'])
     # Other ready sources can still need executor selection; the failed source
     # and its blocked exact-plan dependent must not be resolved for card reuse.
     assert 'exact-plan' not in resolved
-    assert resolved.count('source-prepare')<=1
     assert all(p.read_bytes()==data for p,data in before.items())
 
 

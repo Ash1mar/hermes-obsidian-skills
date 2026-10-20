@@ -134,7 +134,7 @@ def test_exact_plan_commits_during_projection_and_watcher_waits_for_receipt(vaul
     adapter.workflow.knowledge.plan_batch({"batch_id": "race-batch", "actor": "agent",
         "registry_revision": 1, "exact_reading_budget": True,
         "tasks": [{"task_id": "race-task", "target_refs": refs}]})
-    original = fake.create_node
+    original = fake.ensure_board
     committed = []
     def commit_during_projection(*args, **kwargs):
         result = original(*args, **kwargs)
@@ -144,7 +144,7 @@ def test_exact_plan_commits_during_projection_and_watcher_waits_for_receipt(vaul
                 expected_revision=current["revision"], target_stage="analyzing", batch_id="race-batch"))
             committed.append(True)
         return result
-    monkeypatch.setattr(fake, "create_node", commit_during_projection)
+    monkeypatch.setattr(fake, "ensure_board", commit_during_projection)
     # Exercise the actual watcher: its first sync sees the new boundary but cannot
     # snapshot it until the next sync initializes the adopted batch's slices.
     spec = importlib.util.spec_from_file_location("pause_watch", ROOT /
