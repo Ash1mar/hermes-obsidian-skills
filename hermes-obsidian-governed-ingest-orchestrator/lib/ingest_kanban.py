@@ -370,6 +370,9 @@ class KanbanCLI:
         return True  # Hermes defaults this setting to enabled.
 
     def ensure_board(self, slug: str) -> None:
+        # A successful same-cycle task list already proves this board exists.
+        if self._projection_board == slug and self._projection_rows:
+            return
         boards = json.loads(self.command("kanban", "boards", "list", "--json"))
         if any(item["slug"] == slug for item in boards):
             return
@@ -1705,6 +1708,12 @@ class IngestKanbanAdapter:
                     self._projection_failure(workflow_id, node, ids[node.name],
                                              "DEPENDENCY_EXECUTION_BLOCKED", failed_parent.name)
                 if (not domain_completed(self.workflow, updated, node) and hasattr(self.kanban, "task_snapshot")
+                        # An already archived card with a current failure needs
+                        # no second diagnosis of why its old native run ended.
+                        # Active/unproven cards and archive subtree reads stay live.
+                        and not (self._failed_card(workflow_id,node)
+                            and hasattr(self.kanban,'task_status')
+                            and self.kanban.task_status(slug,ids[node.name])=='archived')
                         and (not hasattr(self.kanban,'task_has_runs') or self.kanban.task_has_runs(slug,ids[node.name]))):
                     snapshot = self.kanban.task_snapshot(slug, ids[node.name])
                     ended = [r for r in snapshot.get("runs", []) if r.get("ended_at")]
