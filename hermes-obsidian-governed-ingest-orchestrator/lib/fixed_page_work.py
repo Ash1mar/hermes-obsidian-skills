@@ -10,6 +10,7 @@ from contextvars import copy_context
 from hermes_source_units import ContractError
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.source_units import _vault_path,_write_atomic,_json_bytes
+from hermes_source_units.runtime_telemetry import measured,span
 from fixed_semantic_schema import schema
 import fixed_reduce
 import fixed_global_packets as g
@@ -20,6 +21,8 @@ LOCAL={'READING_WINDOW_OVERSIZE','SEMANTIC_IMAGE_OVERSIZE','SEMANTIC_REVIEW_REQU
        'UNRESOLVED_REFERENCE','SEMANTIC_OUTPUT_HELD'}
 
 
+@measured('reduce_page_measure',lambda adapter,value,page,caller,project:{
+    'vault':adapter.workflow.vault,'page_path':page['path']})
 def measure(adapter,value,page,caller,project):
     from fixed_semantic import HermesCaller
     from fixed_semantic_media import image_catalog,select_images,require_images_fit
@@ -146,6 +149,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
       for original in list(state['pages']):
         if original['path'] in restored:continue
         page=next(p for p in working['pages'] if p['path']==original['path'])
+        prepared=None
         try:
             view,size=measure(adapter,value,page,caller,project)
             if size>LIMIT:
@@ -169,12 +173,18 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                 working=updated;calls.append(audit)
                 attach_receipt(adapter,audit,{'ok':True,'validated':True,'state':'budget_refined_page_plan','original_plan_sha256':original_plan_sha})
                 with progress_lock:save()
-            else:children=[page]
+            else:
+                children=[page]
+                # This exact local page/input has not been refined or mutated.
+                # Only reuse within this iteration; later/refined plans remeasure.
+                prepared=(view,size)
         except ContractError as exc:
             defer(page,'page-plan',exc);continue
         for child in children:
             try:
-                child_view,n=measure(adapter,value,child,caller,project)
+                with span('reduce_page_packet',vault=adapter.workflow.vault,binding=binding,
+                          page_path=child['path'],reused_measure=prepared is not None):
+                    child_view,n=prepared if prepared is not None else measure(adapter,value,child,caller,project)
                 if n>LIMIT:raise ContractError('READING_WINDOW_OVERSIZE','$','complete page input exceeds bound')
                 if len(pending)>=capacity:drain()
                 if halt.is_set():drain(True);raise RuntimeError('independent page work stopped by a shared failure')

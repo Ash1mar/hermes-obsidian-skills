@@ -2277,9 +2277,13 @@ class IngestKanbanAdapter:
                     "source_coverage": self.workflow.source_coverage(workflow)}
         if not str(request["node"]).startswith("pass-slice:"):
             workflow, node = self._batch_worker(request)
-            return {"ok": True, "node": node.name, "batch_id": workflow["batch_id"],
+            checked = {"ok": True, "node": node.name, "batch_id": workflow["batch_id"],
                     "release_id": workflow.get("release_id"),
                     "input_fingerprint": node.input_fingerprint}
+            if node.name == 'global-reduce':
+                # A shared pure graph never grants a cohort consumer permission.
+                self.worker_control_check(request, checked=checked)
+            return checked
         workflow, value = self._slice_worker(str(request["workflow_id"]),
                                              str(request["node"]),
                                              str(request["task_id"]), verify_inputs=verify_inputs)

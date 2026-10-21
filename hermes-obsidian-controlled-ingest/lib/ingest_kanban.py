@@ -619,6 +619,9 @@ class IngestKanbanAdapter:
                             "hermes-obsidian-governed-ingest-orchestrator/config/orchestration.json")
         self.source_prepare_concurrency = int(config.get("source_prepare_concurrency", 2))
         self.program_worker_concurrency = int(config.get('program_worker_concurrency', 2))
+        self.reduce_page_concurrency = int(config.get('reduce_page_concurrency', 2))
+        if not 1 <= self.reduce_page_concurrency <= 10:
+            _fail('INVALID_SCHEMA', 'reduce_page_concurrency must be between 1 and 10')
         if self.program_worker_concurrency < 1:
             _fail('INVALID_SCHEMA', 'program_worker_concurrency must be positive')
         if self.source_prepare_concurrency < 1:
@@ -2274,9 +2277,13 @@ class IngestKanbanAdapter:
                     "source_coverage": self.workflow.source_coverage(workflow)}
         if not str(request["node"]).startswith("pass-slice:"):
             workflow, node = self._batch_worker(request)
-            return {"ok": True, "node": node.name, "batch_id": workflow["batch_id"],
+            checked = {"ok": True, "node": node.name, "batch_id": workflow["batch_id"],
                     "release_id": workflow.get("release_id"),
                     "input_fingerprint": node.input_fingerprint}
+            if node.name == 'global-reduce':
+                # A shared pure graph never grants a cohort consumer permission.
+                self.worker_control_check(request, checked=checked)
+            return checked
         workflow, value = self._slice_worker(str(request["workflow_id"]),
                                              str(request["node"]),
                                              str(request["task_id"]), verify_inputs=verify_inputs)
@@ -2293,6 +2300,30 @@ class IngestKanbanAdapter:
                     if any(t['task_id']==tid for t in workflow['pass_revision']['tasks'])] if self.workflow.revision_allows(workflow, request['node']) else value["task_ids"]),
                 "input_fingerprint": value["input_fingerprint"],
                 "worker_request": dict(request)}
+
+    @measured('worker_live_control_check', lambda self, request, **kwargs: {'vault':self.workflow.vault,'binding':request})
+    def worker_control_check(self, request: Mapping[str, Any], *, checked: Mapping[str, Any]) -> None:
+        """Additional send-time stop/binding check; never replaces full evidence authority."""
+        self.validate_worker_request(request)
+        if not self.enable_workers or request['node']!='global-reduce':
+            _fail('ACCESS_DENIED','live page control requires a fully checked global reducer')
+        workflow=self.workflow.status(request['workflow_id'])
+        self.workflow.assert_not_paused(workflow)
+        self.workflow.pinned_templates(workflow)
+        if (workflow['cancel_requested'] or workflow['batch_id']!=checked['batch_id']
+                or workflow['scope'].get('execution_mode')!='auto_full'
+                or workflow['dispatch_policy']['mode']!='full'):
+            _fail('WORKFLOW_STOPPED','automatic page work is no longer active')
+        key=f"ingest:{workflow['workflow_id']}:global-reduce:{checked['input_fingerprint']}"
+        matching=[c for c in workflow['kanban']['task_map'] if c['node']==request['node'] and c.get('task_id')==request['task_id']]
+        pin=next(p for p in workflow['template_pins'] if p['kind']=='global-reduce')
+        if len(matching)!=1 or matching[0]['idempotency_key']!=key or request['template_hash']!=pin['template_hash']:
+            _fail('STALE_INPUT','page task binding or template changed after full check')
+        path=_vault_path(self.workflow.vault,f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/reports/failed-{fingerprint(request['node'])[:16]}.json")
+        if path.exists():
+            failure=_load_json(path)
+            if failure.get('task_id')==request['task_id'] and failure.get('idempotency_key')==key and failure.get('error_code'):
+                _fail('EXECUTION_BLOCKED','page task became execution blocked')
 
     def worker_heartbeat(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if not str(request["node"]).startswith("pass-slice:"):
