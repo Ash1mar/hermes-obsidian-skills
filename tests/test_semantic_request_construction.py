@@ -154,10 +154,14 @@ def sdk(monkeypatch):
     agent_package.__path__ = []
     delegation = ModuleType('agent.delegation_context')
     delegation.delegated_child_context = no_span
+    recovery = ModuleType('agent.turn_recovery')
+    recovery.validate_response_shape = lambda _agent,response: (response is None or getattr(response,'invalid',False),
+        ['empty provider response'] if response is None else getattr(response,'details',[]))
     monkeypatch.setitem(sys.modules, 'run_agent', run_agent)
     monkeypatch.setitem(sys.modules, 'hermes_state', state)
     monkeypatch.setitem(sys.modules, 'agent', agent_package)
     monkeypatch.setitem(sys.modules, 'agent.delegation_context', delegation)
+    monkeypatch.setitem(sys.modules, 'agent.turn_recovery', recovery)
     monkeypatch.setattr(fixed, 'span', no_span)
     monkeypatch.setattr(runtime_telemetry, 'span', no_span)
     caller = object.__new__(fixed.HermesCaller)

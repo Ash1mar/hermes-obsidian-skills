@@ -33,6 +33,22 @@ def request_identity(api_kwargs):
     return hashlib.sha256(json.dumps(api_kwargs,ensure_ascii=False,sort_keys=True,default=str).encode()).hexdigest()
 
 
+def checked_response(agent,response):
+    """Stop an invalid returned frame before the native conversation retry loop."""
+    from agent.turn_recovery import validate_response_shape
+    invalid,details=validate_response_shape(agent,response)
+    if not invalid:return response
+    # Preserve returned provider data, never HTTP client/request credentials.
+    fields={name:getattr(response,name) for name in ('status','error','incomplete_details','output','choices','usage')
+        if hasattr(response,name)}
+    evidence=json.loads(json.dumps(fields,ensure_ascii=False,default=str))
+    raise StopNativeCall({'contract':CONTRACT,'state':'completion_unknown','retryable':False,
+        'source':'native_response_validation','error':{'class':'InvalidNativeResponse',
+            'message':'Native response shape is invalid; held without another provider request',
+            'details':list(details)},'response_evidence':evidence,
+        'response_evidence_sha256':fingerprint(evidence)})
+
+
 def record(outcome,prepared,session,*,request_sha256=None,output_format=None):
     """Append evidence, leave the original ordinal/reservation untouched."""
     from semantic_output import ACTIVE,write

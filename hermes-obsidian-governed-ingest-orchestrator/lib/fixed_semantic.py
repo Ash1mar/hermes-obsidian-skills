@@ -138,10 +138,10 @@ class HermesCaller:
                         'source':'local_request_guard','error':{'class':type(exc).__name__,'message':str(exc)}}) from exc
 
             def _fixed_api(self,call,api_kwargs,*args,**kwargs):
-                from native_call_state import classify,StopNativeCall,request_identity
+                from native_call_state import classify,StopNativeCall,request_identity,checked_response
                 self.fixed_final_request_sha256=request_identity(api_kwargs)
                 self.fixed_final_output_format=copy.deepcopy(api_kwargs.get('text',{}).get('format',api_kwargs.get('response_format')))
-                try:return call(api_kwargs,*args,**kwargs)
+                try:return checked_response(self,call(api_kwargs,*args,**kwargs))
                 except Exception as exc:
                     outcome=classify(exc)
                     if outcome['retryable']:raise

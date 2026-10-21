@@ -38,9 +38,32 @@ def test_unknown_completion_also_stops_duplicate_generation(sdk):
     assert exc.value.outcome['state']=='completion_unknown'
 
 
+@pytest.mark.parametrize('response',[None,NS(invalid=True,details=['empty choices'],choices=[],usage={'output_tokens':0})])
+def test_returned_invalid_response_escapes_native_retry_without_new_ordinal(sdk,response):
+    agent=guarded_agent(sdk);count=0
+    def empty(*_):
+        nonlocal count
+        count+=1;return response
+    with pytest.raises(calls.StopNativeCall) as exc:
+        for _ in range(3):
+            try:agent._fixed_api(empty,api_request(agent))
+            except Exception:continue
+    assert count==1
+    assert exc.value.outcome['state']=='completion_unknown' and not exc.value.outcome['retryable']
+    assert exc.value.outcome['source']=='native_response_validation'
+    assert exc.value.outcome['response_evidence_sha256']==fingerprint(exc.value.outcome['response_evidence'])
+
+
+def test_valid_native_frame_keeps_semantic_json_failure_for_existing_finite_validator(sdk):
+    agent=guarded_agent(sdk);response=NS(choices=[NS(message=NS(content='not JSON'))])
+    assert agent._fixed_api(lambda *_:response,api_request(agent)) is response
+
+
 def test_final_codex_frame_is_rechecked_after_conversion(sdk,monkeypatch):
     agent=guarded_agent(sdk);base=type(agent).__mro__[1];seen=[]
-    monkeypatch.setattr(base,'_run_codex_stream',lambda _self,request,**kw:seen.append(copy.deepcopy(request)),raising=False)
+    def native_frame(_self,request,**kw):
+        seen.append(copy.deepcopy(request));return NS(output=[{'type':'message','content':'native frame'}])
+    monkeypatch.setattr(base,'_run_codex_stream',native_frame,raising=False)
     request=api_request(agent,form='responses');agent._apply_fixed_format(request);agent._run_codex_stream(request)
     assert len(seen)==1 and seen[0]['text']['format']['strict'] is True
     request['input'].append({'role':'user','content':'extra'})

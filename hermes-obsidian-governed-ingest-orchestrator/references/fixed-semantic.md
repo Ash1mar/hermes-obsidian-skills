@@ -5,6 +5,10 @@ request rejection or unknown completion, retaining the original ordinal and
 request. Deterministic local/backend request failures stop unchanged SDK retries;
 unknown completion is held rather than resent. A returned model output still
 uses the ordinary canonical schema, semantics and one finite correction.
+Returned empty/malformed native frames also pass the native response-shape
+validator at the fixed API boundary. An invalid frame is preserved as unknown
+completion before the conversation loop can resend it; it does not consume a
+semantic correction or gain another ordinal. Existing unknown calls stay held.
 The final Codex Responses frame is checked after SDK conversion as well as at
 the ordinary API boundary. The current non-slot open-object schema is not strict
 business-schema enforcement and still awaits genuine backend compatibility proof.
