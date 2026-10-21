@@ -2297,6 +2297,30 @@ class IngestKanbanAdapter:
                 "input_fingerprint": value["input_fingerprint"],
                 "worker_request": dict(request)}
 
+    @measured('worker_live_control_check', lambda self, request, **kwargs: {'vault':self.workflow.vault,'binding':request})
+    def worker_control_check(self, request: Mapping[str, Any], *, checked: Mapping[str, Any]) -> None:
+        """Additional send-time stop/binding check; never replaces full evidence authority."""
+        self.validate_worker_request(request)
+        if not self.enable_workers or request['node']!='global-reduce':
+            _fail('ACCESS_DENIED','live page control requires a fully checked global reducer')
+        workflow=self.workflow.status(request['workflow_id'])
+        self.workflow.assert_not_paused(workflow)
+        self.workflow.pinned_templates(workflow)
+        if (workflow['cancel_requested'] or workflow['batch_id']!=checked['batch_id']
+                or workflow['scope'].get('execution_mode')!='auto_full'
+                or workflow['dispatch_policy']['mode']!='full'):
+            _fail('WORKFLOW_STOPPED','automatic page work is no longer active')
+        key=f"ingest:{workflow['workflow_id']}:global-reduce:{checked['input_fingerprint']}"
+        matching=[c for c in workflow['kanban']['task_map'] if c['node']==request['node'] and c.get('task_id')==request['task_id']]
+        pin=next(p for p in workflow['template_pins'] if p['kind']=='global-reduce')
+        if len(matching)!=1 or matching[0]['idempotency_key']!=key or request['template_hash']!=pin['template_hash']:
+            _fail('STALE_INPUT','page task binding or template changed after full check')
+        path=_vault_path(self.workflow.vault,f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/reports/failed-{fingerprint(request['node'])[:16]}.json")
+        if path.exists():
+            failure=_load_json(path)
+            if failure.get('task_id')==request['task_id'] and failure.get('idempotency_key')==key and failure.get('error_code'):
+                _fail('EXECUTION_BLOCKED','page task became execution blocked')
+
     def worker_heartbeat(self, request: Mapping[str, Any]) -> dict[str, Any]:
         if not str(request["node"]).startswith("pass-slice:"):
             return self.worker_check(request)

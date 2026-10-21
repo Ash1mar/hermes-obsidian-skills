@@ -44,10 +44,14 @@ add related-page navigation only; compatible conditions may be sections, while
 version/scope/conflict/QA differences remain explicit. Consumed requests retain
 their original wire and schema. No all-batch regrouping or draft rewriting.
 
-Independent Reduce page bodies may use at most two concurrent native requests,
-within the configured worker capacity. Each request owns its SDK session, database,
+Independent Reduce page bodies use the fixed `reduce_page_concurrency` limit (1–6),
+separate from Pass/program-worker capacity. Each request owns its SDK session, database,
 images and existing finite attempt journal; progress publication and identity
-changes remain serialized. Drain bodies before a page-refinement call. A shared
+changes remain serialized. Full Reduce page entry checks run outside ACTION_LOCK;
+other phases retain their lock policy. Live cancel/pause/binding/template/failure checks
+run again at the SDK boundary; result persistence still requires full evidence checks.
+Dependency scan/enumeration/read/hash, graph cache wait/hit/invalidations and actual
+build work have separate mechanical timings. Drain bodies before a page-refinement call. A shared
 authority failure prevents new requests; cancellation still uses the original
 native owner and supported stop operation. This does not release a pause.
 Non-slot semantic outputs request a native open-object JSON schema and retain the full
@@ -135,7 +139,8 @@ Explicit old source-hold recovery uses the narrowly authenticated `source-hold/v
 
 Source proposals use existing membership, concise summary and identity/path hint fields; they do not write page bodies or restate all candidates. Global coordination preserves compatible proposals by default and records concrete grounds and affected pN handles in the existing `reason` when it splits, merges or omits them. See `references/fixed-semantic.md`. Full evidence, coverage, page review and durable pause requirements remain mandatory.
 
-For user-authorized partial closure of an unfinished `reduce-dependencies/v1` revision, use `skip-reduce-tasks` with its current `revision_id`. Each exact latest citation needs a reviewer reason, persisted review evidence, `native_audit_ref`, and `disposition_kind` (`unverifiable_material` or `unverified_model_result`). The operator authenticates the ended native request/response, predecessor and full current reading authority. Uncalled work and budget/permission/transport failures cannot be disguised as content loss. The gap ledger retains originals and withheld candidates; only the effective revision task list narrows. Only an authenticated uncalled remainder receives a new binding under the same tasks, evidence and concurrency bound. Partial closure may reach `revision_review` with explicit losses; acceptance and continuation remain separate. A cancelled partial slice is never relabeled as successful worker output.
+For user-authorized partial closure of an unfinished `reduce-dependencies/v1` revision, use `skip-reduce-tasks` with its current `revision_id`. Each exact latest citation needs a reviewer reason, persisted review evidence,
+ative_audit_ref`, and `disposition_kind` (`unverifiable_material` or `unverified_model_result`). The operator authenticates the ended native request/response, predecessor and full current reading authority. Uncalled work and budget/permission/transport failures cannot be disguised as content loss. The gap ledger retains originals and withheld candidates; only the effective revision task list narrows. Only an authenticated uncalled remainder receives a new binding under the same tasks, evidence and concurrency bound. Partial closure may reach `revision_review` with explicit losses; acceptance and continuation remain separate. A cancelled partial slice is never relabeled as successful worker output.
 
 For an explicitly authorized input-size or packaging improvement in a cancelled Pass batch, read `references/compact-execution.md`. Use `prepare_execution_amendment.py`, review `amend-execution --dry-run`, then apply the same saved request. This preserves canonical tasks, completed results and pause history and installs compact inputs only for unfinished slices. It never resumes or releases a pause. Unknown/stale evidence, active native consumers and incomplete revision review block the amendment. Interrupted commits require the same saved request through the supported recovery path.
 

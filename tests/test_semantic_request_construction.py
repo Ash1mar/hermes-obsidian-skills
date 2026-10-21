@@ -440,3 +440,12 @@ def test_page_caller_forks_have_independent_request_images_and_db_owners(sdk):
     assert one.runtime is sdk.caller.runtime and one.model==two.model==sdk.caller.model
     one.images.append({'fixture':'one-only'})
     assert two.images==[] and sdk.caller.images==[{'fixture':'parent-only'}]
+
+
+def test_live_control_cancel_after_construction_prevents_sdk_request(sdk):
+    agent=guarded_agent(sdk)
+    def cancel():raise ContractError('WORKFLOW_STOPPED','$','cancelled after full evidence check')
+    agent.fixed_live_control_check=cancel
+    with pytest.raises(StopNativeCall,match='cancelled after full evidence check'):
+        agent._interruptible_api_call(api_request(agent))
+    assert not sdk.requests
