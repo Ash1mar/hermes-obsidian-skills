@@ -57,6 +57,21 @@ def test_one_local_refusal_preserves_the_other_real_markdown_without_formal_subm
  assert len(progress['held'])==1 and len(progress['written'])==1 and 'content' not in progress['written'][0]
 
 
+def test_ordinary_page_packet_is_measured_once_with_original_evidence(tmp_path,monkeypatch):
+ v=fixture_value();a,b,submitted=setup(tmp_path,monkeypatch,v)
+ real=work.measure;measured=[]
+ def measure(*args):
+  measured.append(args[2]['path']);return real(*args)
+ monkeypatch.setattr(work,'measure',measure)
+ def call(_a,_b,phase,view,*args,**kwargs):
+  if phase=='global-plan':return proposal_response([proposal_page(['p1'],'one'),proposal_page(['p2'],'two')]),'routing'
+  assert view['original_evidence'] and len(view['candidates'])==1
+  return {'content':'# Native body '+view['candidates'][0]['candidate']},'body-'+view['candidates'][0]['candidate']
+ monkeypatch.setattr(fixed,'model_call',call)
+ assert fixed.execute(a,'fixture',lambda:None)['ok']
+ assert len(measured)==len(set(measured))==len(submitted[0]['pages'])==2
+
+
 def test_failed_later_plan_does_not_discard_independent_ready_page_work(tmp_path,monkeypatch):
  v=fixture_value();a,b,submitted=setup(tmp_path,monkeypatch,v);monkeypatch.setattr(g,'PROPOSAL_OUTPUT_SLOTS',1)
  phases=[]

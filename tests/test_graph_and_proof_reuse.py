@@ -1,5 +1,7 @@
 """Reuse pure work only; independent file and database mutations invalidate it."""
-import json,sqlite3
+import json,sqlite3,os,threading,time
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from types import SimpleNamespace as NS
 import pytest
 from hermes_source_units.validation import fingerprint
@@ -15,10 +17,110 @@ def test_graph_reuse_tracks_contents_memberships_and_control_with_same_revision(
     def build():built.append(1);return [len(built)]
     with graph_scope():
         assert derive(service,w,build)==derive(service,w,build)==[1]
-        task.write_text('{"changed":true}');assert derive(service,w,build)==[2]
+        stamp=task.stat().st_mtime_ns
+        task.write_text('{"changed":true}');os.utime(task,ns=(stamp,stamp))
+        assert derive(service,w,build)==[2]
         (slices/'new.json').write_text('{}');assert derive(service,w,build)==[3]
         w['cancel_requested']=True;assert derive(service,w,build)==[4]
     with graph_scope():assert derive(service,w,build)==[5]
+
+
+def graph_fixture(tmp_path):
+    from hermes_source_units.source_units import _load_json
+    batch=tmp_path/'batch.json';batch.write_text('{"task_ids":["t"]}')
+    task=tmp_path/'task.json';task.write_text('{"value":1}')
+    slices=tmp_path/'slices';slices.mkdir();(slices/'s.json').write_text('{}')
+    k=NS(_batch=lambda _:_load_json(batch),_batch_path=lambda _:batch,
+         _slice_root=lambda _:slices,_task_path=lambda _:task)
+    return NS(vault=tmp_path,knowledge=k),{'workflow_id':'fixture','batch_id':'b','revision':1},task,slices
+
+
+def wait_pending(scope,count):
+    deadline=time.monotonic()+5
+    while time.monotonic()<deadline:
+        with scope['condition']:
+            if sum(len(x['pending']) for x in scope['lanes'].values())==count:return
+        time.sleep(.005)
+    pytest.fail('cohort registration did not settle')
+
+
+def test_scan_closes_before_io_and_late_arrivals_share_only_next_scan(tmp_path,monkeypatch):
+    import ingest_graph_reuse as reuse
+    from hermes_source_units.source_units import _load_json
+    service,w,task,_=graph_fixture(tmp_path)
+    real=reuse.dependencies;entered=[threading.Event(),threading.Event()]
+    release=[threading.Event(),threading.Event()];lookups=[]
+    def scan(*args,**kwargs):
+        if kwargs['scan_role']=='lookup':
+            lookups.append(kwargs['shared_callers']);n=len(lookups)-1
+            if n<2:
+                entered[n].set();assert release[n].wait(5)
+        return real(*args,**kwargs)
+    monkeypatch.setattr(reuse,'dependencies',scan)
+    def build():return [_load_json(task)['value']]
+    with graph_scope() as scope,ThreadPoolExecutor(max_workers=4) as pool:
+        first=pool.submit(copy_context().run,derive,service,w,build)
+        assert entered[0].wait(5)
+        second=[pool.submit(copy_context().run,derive,service,w,build) for _ in range(2)]
+        wait_pending(scope,2);release[0].set();assert first.result(timeout=5)==[1]
+        assert entered[1].wait(5)
+        # Same revision/size/mtime change occurs before the next cohort reads.
+        stamp=task.stat().st_mtime_ns;task.write_text('{"value":2}');os.utime(task,ns=(stamp,stamp))
+        late=pool.submit(copy_context().run,derive,service,w,build)
+        wait_pending(scope,1);release[1].set()
+        assert [f.result(timeout=5) for f in second]==[[2],[2]]
+        assert late.result(timeout=5)==[2]
+        assert lookups==[1,2,1] and scope['builds']==2
+
+
+def test_captured_build_does_not_reread_and_mutation_never_gets_published(tmp_path,monkeypatch):
+    from pathlib import Path
+    from hermes_source_units.source_units import _load_json
+    from hermes_source_units import ContractError
+    service,w,task,slices=graph_fixture(tmp_path);reads=[];real=Path.read_bytes
+    def counted(path):
+        if path==task:reads.append(1)
+        return real(path)
+    monkeypatch.setattr(Path,'read_bytes',counted)
+    def build():
+        first=_load_json(task);first['value']=99
+        assert _load_json(task)['value']==1
+        return [1]
+    with graph_scope():
+        assert derive(service,w,build)==[1] and len(reads)==2
+        # Every later lookup hashes actual bytes and enumerates actual members.
+        assert derive(service,w,build)==[1] and len(reads)==3
+        (slices/'s.json').unlink()
+        assert derive(service,w,build)==[1] and len(reads)==5
+    def changing():
+        task.write_text('{"value":2}')
+        assert _load_json(task)['value']==1
+        return [1]
+    with graph_scope():
+        with pytest.raises(ContractError,match='SOURCE_CHANGED'):derive(service,w,changing)
+        assert derive(service,w,lambda:[_load_json(task)['value']])==[2]
+
+
+def test_failed_cohort_wakes_all_waiters_and_later_lookup_checks_again(tmp_path,monkeypatch):
+    import ingest_graph_reuse as reuse
+    from hermes_source_units import ContractError
+    service,w,_,_=graph_fixture(tmp_path);real=reuse.dependencies
+    entered=threading.Event();release=threading.Event();lookups=[]
+    def scan(*args,**kwargs):
+        if kwargs['scan_role']=='lookup':
+            lookups.append(1)
+            if len(lookups)==1:entered.set();assert release.wait(5)
+            if len(lookups)==2:raise ContractError('SOURCE_UNAVAILABLE','$','isolated read failure')
+        return real(*args,**kwargs)
+    monkeypatch.setattr(reuse,'dependencies',scan)
+    with graph_scope() as scope,ThreadPoolExecutor(max_workers=3) as pool:
+        first=pool.submit(copy_context().run,derive,service,w,lambda:[1])
+        assert entered.wait(5)
+        rest=[pool.submit(copy_context().run,derive,service,w,lambda:[1]) for _ in range(2)]
+        wait_pending(scope,2);release.set();assert first.result(timeout=5)==[1]
+        for f in rest:
+            with pytest.raises(ContractError,match='SOURCE_UNAVAILABLE'):f.result(timeout=5)
+        assert derive(service,w,lambda:[1])==[1] and len(lookups)==3
 
 
 def test_transcript_proof_reuses_connection_but_detects_database_update(tmp_path):

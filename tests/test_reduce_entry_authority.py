@@ -31,6 +31,16 @@ def test_other_phase_entry_keeps_existing_action_lock(tmp_path):
         'page-review',{},lambda *_:('{"decision":"approved","review_note":"fixture"}',{}),30000)
 
 
+def test_full_global_check_does_not_treat_shared_graph_as_live_permission(tmp_path):
+ request={'workflow_id':'fixture','node':'global-reduce'}
+ def stopped(*_a,**_k):raise ContractError('WORKFLOW_STOPPED','$','cancel while waiting for shared scan')
+ adapter=NS(workflow=NS(vault=tmp_path),validate_worker_request=lambda _:None,
+     _batch_worker=lambda _:(dict(batch_id='b'),NS(name='global-reduce',input_fingerprint='input')),
+     worker_control_check=stopped)
+ with pytest.raises(ContractError,match='WORKFLOW_STOPPED'):
+  kanban.IngestKanbanAdapter.worker_check(adapter,request)
+
+
 @pytest.mark.parametrize('change',['none','cancel','pause','binding','template','failure'])
 def test_send_time_control_rechecks_live_state_without_dependency_graph(tmp_path,monkeypatch,change):
     request={'workflow_id':'fixture','node':'global-reduce','task_id':'owner','template_hash':'pin'}

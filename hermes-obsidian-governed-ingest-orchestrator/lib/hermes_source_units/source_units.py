@@ -16,6 +16,7 @@ from .chunk_engine import (ENGINE_VERSION, ChunkEngineInput, ChunkProfile,
 from .validation import ContractError, canonical_json, fingerprint, validate_record, validate_references
 from .vault_config import CONFIG_PATH, declaration
 from .file_locks import exclusive_lock as _exclusive_lock
+from .record_snapshot import snapshot_json
 
 ARTIFACT_ROOT = "_system/sources/artifacts"
 UNIT_ROOT = "_system/sources/units"
@@ -58,6 +59,9 @@ def _child_path(parent: Path, relative: str, vault: Path) -> Path:
 
 def _load_json(path: Path) -> Any:
     try:
+        captured, value = snapshot_json(path)
+        if captured:
+            return value
         return json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         _fail("SOURCE_UNAVAILABLE", f"cannot read JSON {path}: {exc}")

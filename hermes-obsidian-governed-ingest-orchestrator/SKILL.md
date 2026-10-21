@@ -56,6 +56,14 @@ Dependency scan/enumeration/read/hash, graph cache wait/hit/invalidations and ac
 build work have separate mechanical timings. Drain bodies before a page-refinement call. A shared
 authority failure prevents new requests; cancellation still uses the original
 native owner and supported stop operation. This does not release a pause.
+Within that native invocation, waiting checks may share one closed dependency
+scan cohort. Only callers registered before its scan starts share its current
+bytes and pure graph; later arrivals require the next scan, with no fill delay.
+Build readers parse the captured bytes, then a fresh scan confirms a new build.
+Each consumer still checks its own live control/binding, and later checks read
+current bytes and membership again. No revision/mtime-only validity shortcut.
+Ordinary unrefined pages reuse their first packet measurement only within that
+unchanged page iteration; refined pages and changed inputs are remeasured.
 Non-slot semantic outputs request a native open-object JSON schema and retain the full
 canonical output validation, original evidence and existing correction allowance.
 

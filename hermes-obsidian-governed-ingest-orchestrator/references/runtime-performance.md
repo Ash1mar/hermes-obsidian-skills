@@ -361,3 +361,25 @@ and the existing native call boundary still checks authority. No allowance,
 native proof, source validation or domain submission guard is cached or removed.
 Count these remaining authority checks in the runtime timeline rather than
 claiming the standalone schema profile as end-to-end recovery savings.
+
+## Reduce dependency scan cohorts (2026-10-21)
+
+The graph scanner retains each file's bytes and SHA-256 for that calculation;
+JSON readers use the captured bytes during pure graph construction. A fresh
+content/membership scan confirms each newly built graph before publishing it.
+Cached graph hits still require a current scan, never revision/size/mtime only.
+A native invocation's threads register into closed cohorts: the first waiting
+caller starts immediately; callers arriving during that scan form the next
+cohort. Registration/publication use a short condition lock; I/O and building
+hold neither that lock nor ACTION_LOCK. Distinct workflow/control identities
+never share. Exceptions wake all cohort consumers; no error result is cached.
+Every global reducer consumer rechecks current control and its own binding;
+SDK and persistence checks, finite attempts and unknown outcomes remain intact.
+
+Record lookup versus build-confirmation scans, files/bytes, cohort size, leader
+and per-consumer wait, with parent spans identifying trigger boundaries. Measure
+ordinary per-page packing once per unchanged iteration; refinement paths retain
+fresh measurements. Compare actual scans/bytes per valid saved native body,
+request timing and total failed/recovered usage. A larger SDK peak alone does
+not establish throughput or cost improvement. Reuse valid historical returns;
+never replay them or resend unknown attempts to manufacture parallel load.
