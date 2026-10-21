@@ -130,11 +130,11 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                 old_written,old_held,restored=restore(adapter,binding,value,state,caller,project,prove)
         written.extend(old_written);held.extend(old_held);calls.extend(p['audit_ref'] for p in old_written)
         if restored:save()  # One publication, no per-body receipt/cleanup replay.
-    # One native owner, at most two independent bodies; plan mutations and
+    # One native owner, a configured bounded set of independent bodies; plan mutations and
     # progress publication remain serialized. No nested scheduling or new task IDs.
     from semantic_output import output_boundary
     boundary,_=output_boundary(adapter,binding)
-    capacity=1 if boundary else min(2,getattr(adapter,'program_worker_concurrency',2))
+    capacity=1 if boundary else min(6,getattr(adapter,'reduce_page_concurrency',2))
     pending=set()
     def drain(all_pending=False):
         if not pending:return
@@ -149,7 +149,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         try:
             view,size=measure(adapter,value,page,caller,project)
             if size>LIMIT:
-                drain(True)  # A planning call must not become a third model call.
+                drain(True)  # Planning shares the body-call bound, never adds a slot.
                 base,packet=refinement(adapter,value,working,page,caller,project)
                 packet=select(adapter,binding,'global-detail',packet,project)
                 def validate(draft):

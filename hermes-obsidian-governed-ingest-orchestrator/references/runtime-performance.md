@@ -1,5 +1,15 @@
 # Runtime timing and incremental projection
 
+## Current Reduce capacity observation
+
+The user explicitly raised independent Reduce page-body concurrency to a fixed
+maximum of 6. `reduce_page_concurrency` is persisted separately from program-worker
+and Pass capacity, which remain 2. Earlier concurrency-2 observations below are
+historical baselines. Do not auto-tune this setting. Preserve unknown calls and
+finite journals, reuse valid results, and stop on sustained ineffective consumption
+or a severe shared defect. Acceptance still requires the durable `checkpoint_1`;
+this observation does not release Build Finalize.
+
 Reconciliation completion/record reuse is scoped to one cycle and fingerprints
 actual dependency contents. Partial revision-covered slices and complex final
 stages retain their ordinary proof. A shared parent-node index avoids repeated

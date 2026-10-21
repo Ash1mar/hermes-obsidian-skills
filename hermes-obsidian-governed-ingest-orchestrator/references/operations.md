@@ -420,8 +420,12 @@ under the same cause requires diagnosis. Use the same reviewed request for apply
 Keep `config/orchestration.json`'s `program_worker_concurrency` at two. Native configured
 capacity can further reduce this bound, never increase it. Fixed program claims share a
 Vault mutex and recheck running native claims immediately before their ordinary claim CAS.
-Each fixed semantic worker calls the model sequentially, including per-page writing.
-The global reducer remains a single node. Other workflow consumers must be isolated during
+The global reducer remains a single native node. Its independent page bodies use
+`reduce_page_concurrency` (1–6, currently fixed at 6 by explicit user authorization),
+separate from program-worker and Pass capacity. Each call has an independent caller,
+adapter and finite journal; plan mutations and progress writes stay serialized.
+Planning drains all body calls first, and a single-output boundary uses one slot.
+Other workflow consumers must be isolated during
 scoped deployment/observation; the upper bound is not permission to dispatch another stage.
 
 Use the existing operator control cancellation with one stable operation ID at the bounded

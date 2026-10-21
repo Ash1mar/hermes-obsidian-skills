@@ -99,16 +99,23 @@ def test_later_independent_page_review_still_runs_after_a_local_rejection(tmp_pa
  assert report['accepted_review_calls']==['audit-e2'] and report['held'][0]['page']=='e1' and report['finalized'] is False
 
 
-def test_two_body_calls_overlap_with_independent_attempts_and_inherited_context(tmp_path,monkeypatch):
+@pytest.mark.parametrize('capacity',[2,6])
+def test_body_calls_overlap_with_independent_attempts_and_inherited_context(tmp_path,monkeypatch,capacity):
  import threading
  from contextvars import ContextVar
  import semantic_output
  v=fixture_value();a,b,submitted=setup(tmp_path,monkeypatch,v)
- rendezvous=threading.Barrier(2);marker=ContextVar('fixture_marker');token=marker.set('bound-owner')
+ a.reduce_page_concurrency=capacity
+ for n in range(3,capacity+1):
+  candidate=copy.deepcopy(v['view']['candidates'][0]);candidate['candidate']='c'+str(n)
+  v['view']['candidates'].append(candidate)
+  v['view']['proposals'].append({'proposal':'p'+str(n),'candidate_refs':['c'+str(n)],'summary':'Independent '+str(n),'identity_hints':[],'path_hints':[]})
+  v['backend']['mapping']['c'+str(n)]=[{'pass_id':str(n)*64,'candidate_id':str(n)}]
+ rendezvous=threading.Barrier(capacity);marker=ContextVar('fixture_marker');token=marker.set('bound-owner')
  lock=threading.Lock();active=0;peak=0;attempts=[]
  def call(_a,_b,phase,view,*args,**kwargs):
   nonlocal active,peak
-  if phase=='global-plan':return proposal_response([proposal_page(['p1'],'one'),proposal_page(['p2'],'two')]),'plan'
+  if phase=='global-plan':return proposal_response([proposal_page(['p'+str(n)],'topic-'+str(n)) for n in range(1,capacity+1)]),'plan'
   assert marker.get()=='bound-owner'
   with lock:
    active+=1;peak=max(peak,active);attempts.append(semantic_output.ACTIVE.get()[0].name)
@@ -119,6 +126,6 @@ def test_two_body_calls_overlap_with_independent_attempts_and_inherited_context(
  monkeypatch.setattr(fixed,'model_call',call)
  try:assert fixed.execute(a,'fixture',lambda:None)['ok']
  finally:marker.reset(token)
- assert peak==2 and len(set(attempts))==2 and len(submitted)==1
+ assert peak==capacity and len(set(attempts))==capacity and len(submitted)==1
  progress=json.loads(next(tmp_path.rglob('page-work-*.json')).read_text())
- assert len(progress['written'])==2 and not progress['held']
+ assert len(progress['written'])==capacity and not progress['held']

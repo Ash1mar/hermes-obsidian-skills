@@ -619,6 +619,9 @@ class IngestKanbanAdapter:
                             "hermes-obsidian-governed-ingest-orchestrator/config/orchestration.json")
         self.source_prepare_concurrency = int(config.get("source_prepare_concurrency", 2))
         self.program_worker_concurrency = int(config.get('program_worker_concurrency', 2))
+        self.reduce_page_concurrency = int(config.get('reduce_page_concurrency', 2))
+        if not 1 <= self.reduce_page_concurrency <= 6:
+            _fail('INVALID_SCHEMA', 'reduce_page_concurrency must be between 1 and 6')
         if self.program_worker_concurrency < 1:
             _fail('INVALID_SCHEMA', 'program_worker_concurrency must be positive')
         if self.source_prepare_concurrency < 1:
