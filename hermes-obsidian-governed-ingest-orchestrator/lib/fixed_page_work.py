@@ -127,7 +127,6 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     if isinstance(caller,HermesCaller):
         from fixed_page_replay import restore
         from fixed_semantic_recovery import authenticated_replay
-        from hermes_source_units.runtime_telemetry import span
         with span('historical_page_restore',vault=adapter.workflow.vault,binding=binding):
             with authenticated_replay(adapter,binding) as prove:
                 old_written,old_held,restored=restore(adapter,binding,value,state,caller,project,prove)
