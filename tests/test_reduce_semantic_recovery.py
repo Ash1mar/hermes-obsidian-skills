@@ -53,7 +53,7 @@ def call_fixture(tmp_path, phase='page-write'):
 def replay(c, **changes):
     return recover_reduce(c.adapter, c.binding, changes.get('phase', c.audit['phase']),
         changes.get('wire', c.wire), changes.get('output_schema', c.output_schema), changes.get('images', []),
-        lambda raw:(json.loads(raw), None), home=c.home)
+        lambda raw:(json.loads(raw), None), home=c.home,entry_checked=changes.get('entry_checked',False))
 
 
 @pytest.mark.parametrize('phase', ['resource-reduce','global-reduce','global-plan','global-detail','page-write'])
@@ -113,6 +113,23 @@ def test_reduce_replay_rechecks_current_authority_before_reuse(tmp_path):
         if count == 2: raise ContractError('WORKFLOW_STOPPED', '$', 'cancelled during replay verification')
     c.adapter.worker_check = checked
     with pytest.raises(ContractError, match='WORKFLOW_STOPPED'): replay(c)
+
+
+def test_adjacent_checked_entry_still_checks_exit_before_reuse(tmp_path):
+    c=call_fixture(tmp_path)
+    c.adapter.worker_check(c.binding)
+    assert replay(c,entry_checked=True)[0]==c.draft
+    assert len(c.checks)==2  # One upstream full entry, one full exit.
+    def changed(_):raise ContractError('SOURCE_CHANGED','$','evidence changed during replay')
+    c.adapter.worker_check=changed
+    with pytest.raises(ContractError,match='SOURCE_CHANGED'):replay(c,entry_checked=True)
+
+
+def test_checked_entry_does_not_skip_current_execution_readiness(tmp_path):
+    c=call_fixture(tmp_path)
+    def paused(_):raise ContractError('WORKFLOW_PAUSED','$','new pause')
+    c.adapter.workflow.assert_execution_ready=paused
+    with pytest.raises(ContractError,match='WORKFLOW_PAUSED'):replay(c,entry_checked=True)
 
 
 def test_source_hold_authorizes_exact_native_replay_with_persisted_image_marker(tmp_path):

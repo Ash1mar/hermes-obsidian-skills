@@ -50,6 +50,8 @@ images and existing finite attempt journal; progress publication and identity
 changes remain serialized. Full Reduce page entry checks run outside ACTION_LOCK;
 other phases retain their lock policy. Live cancel/pause/binding/template/failure checks
 run again at the SDK boundary; result persistence still requires full evidence checks.
+The adjacent Reduce page replay lookup may reuse that entry check only within
+the same call; current execution readiness and full replay-exit checks remain.
 Dependency scan/enumeration/read/hash, graph cache wait/hit/invalidations and actual
 build work have separate mechanical timings. Drain bodies before a page-refinement call. A shared
 authority failure prevents new requests; cancellation still uses the original
