@@ -407,6 +407,7 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
     if isinstance(caller,HermesCaller) and not correction:
         from fixed_semantic_recovery import recover_reduce
         options={}
+        if page_entry:options['entry_checked']=True
         if phase=='resource-reduce':
             from source_result_review import replay_paths
             candidates=replay_paths(adapter,binding,view)

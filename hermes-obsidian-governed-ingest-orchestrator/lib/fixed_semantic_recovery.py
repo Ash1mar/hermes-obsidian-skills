@@ -139,7 +139,7 @@ def transcript_reply(a,wire,*,home=None):
         if owned:db.close()
 
 
-def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode, *, home=None, candidate_paths=None):
+def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode, *, home=None, candidate_paths=None, entry_checked=False):
     """Replay an exact genuine reducer call under a fresh authorized native identity.
 
     This uses existing native audit/transcript evidence, not a semantic cache.
@@ -147,7 +147,9 @@ def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode,
     """
     if phase not in ('resource-reduce', 'global-reduce', 'global-plan', 'global-detail', 'page-write'):
         return None
-    adapter.worker_check(binding)
+    # Only the adjacent trusted model-call entry may supply this flag. It is
+    # never persisted as permission; workflow readiness and exit checks stay live.
+    if not entry_checked:adapter.worker_check(binding)
     workflow = adapter.workflow.status(binding['workflow_id'])
     adapter.workflow.assert_execution_ready(workflow)
     permitted = {binding['task_id']: None}
