@@ -421,7 +421,7 @@ Keep `config/orchestration.json`'s `program_worker_concurrency` at two. Native c
 capacity can further reduce this bound, never increase it. Fixed program claims share a
 Vault mutex and recheck running native claims immediately before their ordinary claim CAS.
 The global reducer remains a single native node. Its independent page bodies use
-`reduce_page_concurrency` (1–6, currently fixed at 6 by explicit user authorization),
+`reduce_page_concurrency` (1–10, currently fixed at 10 by explicit user authorization),
 separate from program-worker and Pass capacity. Each call has an independent caller,
 adapter and finite journal; plan mutations and progress writes stay serialized.
 Planning drains all body calls first, and a single-output boundary uses one slot.

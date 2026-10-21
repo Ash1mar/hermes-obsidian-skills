@@ -134,7 +134,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     # progress publication remain serialized. No nested scheduling or new task IDs.
     from semantic_output import output_boundary
     boundary,_=output_boundary(adapter,binding)
-    capacity=1 if boundary else min(6,getattr(adapter,'reduce_page_concurrency',2))
+    capacity=1 if boundary else min(10,getattr(adapter,'reduce_page_concurrency',2))
     pending=set()
     def drain(all_pending=False):
         if not pending:return

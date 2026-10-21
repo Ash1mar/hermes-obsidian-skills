@@ -99,7 +99,7 @@ def test_later_independent_page_review_still_runs_after_a_local_rejection(tmp_pa
  assert report['accepted_review_calls']==['audit-e2'] and report['held'][0]['page']=='e1' and report['finalized'] is False
 
 
-@pytest.mark.parametrize('capacity',[2,6])
+@pytest.mark.parametrize('capacity',[2,6,10])
 def test_body_calls_overlap_with_independent_attempts_and_inherited_context(tmp_path,monkeypatch,capacity):
  import threading
  from contextvars import ContextVar
@@ -110,7 +110,7 @@ def test_body_calls_overlap_with_independent_attempts_and_inherited_context(tmp_
   candidate=copy.deepcopy(v['view']['candidates'][0]);candidate['candidate']='c'+str(n)
   v['view']['candidates'].append(candidate)
   v['view']['proposals'].append({'proposal':'p'+str(n),'candidate_refs':['c'+str(n)],'summary':'Independent '+str(n),'identity_hints':[],'path_hints':[]})
-  v['backend']['mapping']['c'+str(n)]=[{'pass_id':str(n)*64,'candidate_id':str(n)}]
+  v['backend']['mapping']['c'+str(n)]=[{'pass_id':f'{n:064x}','candidate_id':str(n)}]
  rendezvous=threading.Barrier(capacity);marker=ContextVar('fixture_marker');token=marker.set('bound-owner')
  lock=threading.Lock();active=0;peak=0;attempts=[]
  def call(_a,_b,phase,view,*args,**kwargs):
