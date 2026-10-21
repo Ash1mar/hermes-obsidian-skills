@@ -133,6 +133,8 @@ class HermesCaller:
                 try:
                     if apply:self._apply_fixed_format(api_kwargs)
                     self._check_fixed_request(api_kwargs)
+                    guard=getattr(self,'fixed_live_control_check',None)
+                    if guard:guard()
                 except Exception as exc:
                     raise StopNativeCall({'contract':'native-call-outcome/v1','state':'request_rejected','retryable':False,
                         'source':'local_request_guard','error':{'class':type(exc).__name__,'message':str(exc)}}) from exc
@@ -237,6 +239,7 @@ class HermesCaller:
             agent.fixed_schema_size=prepared['schema_size']
             agent.fixed_input_size=prepared['input_size']
             agent.fixed_construction_counts=prepared['construction_counts']
+            agent.fixed_live_control_check=prepared.get('live_control_check')
             from native_call_state import StopNativeCall,record
             try:
                 with span('sdk_model_request',phase=phase,session_id=agent.session_id):
@@ -270,7 +273,7 @@ class HermesCaller:
                 # No request, schema or construction scope survives this SDK session.
                 for name in ('fixed_request','fixed_text_request','fixed_expected_request',
                              'fixed_images','fixed_output_schema','fixed_transport_schema',
-                             'fixed_construction_counts'):
+                             'fixed_construction_counts','fixed_live_control_check'):
                     if hasattr(agent,name): delattr(agent,name)
 
 
@@ -383,11 +386,23 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
                 prepared['closed']=True
                 return model_call(adapter,binding,phase,clarified,caller,limit,policy=policy,attempt_limit=attempt_limit)
         raise ContractError('READING_WINDOW_OVERSIZE','$','fixed task instructions/schema/materials exceed the bound; no truncation or model call')
-    with ACTION_LOCK:
-        if binding['node'].startswith('pass-slice:'):
-            live=_load_json(Path(os.environ['HERMES_KANBAN_WORKSPACE'])/'worker-request.json')
-            adapter.worker_check(live)
-        else: adapter.worker_check(binding)
+    page_entry=phase=='page-write' and binding['node']=='global-reduce'
+    with span('semantic_entry_authority',vault=adapter.workflow.vault,binding=binding,phase=phase,
+              lock_policy='isolated_page_reader' if page_entry else 'action_lock'):
+        if page_entry:
+            checked=adapter.worker_check(binding)
+        else:
+            with span('semantic_action_lock_wait',phase=phase):ACTION_LOCK.acquire()
+            try:
+                with span('semantic_action_lock_hold',phase=phase):
+                    if binding['node'].startswith('pass-slice:'):
+                        live=_load_json(Path(os.environ['HERMES_KANBAN_WORKSPACE'])/'worker-request.json')
+                        adapter.worker_check(live)
+                    else:adapter.worker_check(binding)
+            finally:ACTION_LOCK.release()
+    if page_entry and isinstance(caller,HermesCaller):
+        control=getattr(adapter,'worker_control_check',None)
+        prepared['live_control_check']=(lambda:control(binding,checked=checked)) if control else lambda:adapter.worker_check(binding)
     if isinstance(caller,HermesCaller): caller.input_limit=limit
     if isinstance(caller,HermesCaller) and not correction:
         from fixed_semantic_recovery import recover_reduce
