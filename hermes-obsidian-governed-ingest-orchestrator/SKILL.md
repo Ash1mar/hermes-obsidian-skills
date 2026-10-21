@@ -44,7 +44,7 @@ add related-page navigation only; compatible conditions may be sections, while
 version/scope/conflict/QA differences remain explicit. Consumed requests retain
 their original wire and schema. No all-batch regrouping or draft rewriting.
 
-Independent Reduce page bodies use the fixed `reduce_page_concurrency` limit (1–6),
+Independent Reduce page bodies use the fixed `reduce_page_concurrency` limit (1–10),
 separate from Pass/program-worker capacity. Each request owns its SDK session, database,
 images and existing finite attempt journal; progress publication and identity
 changes remain serialized. Full Reduce page entry checks run outside ACTION_LOCK;

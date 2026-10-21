@@ -9,8 +9,9 @@ from hermes_source_units import ContractError
 from hermes_source_units.validation import fingerprint
 
 
-def test_six_page_entry_checks_overlap_without_shared_action_lock(tmp_path):
-    barrier=threading.Barrier(6)
+@pytest.mark.parametrize('capacity',[6,10])
+def test_page_entry_checks_overlap_without_shared_action_lock(tmp_path,capacity):
+    barrier=threading.Barrier(capacity)
     def check(_):
         assert not fixed.ACTION_LOCK._is_owned()
         barrier.wait(timeout=5)
@@ -19,8 +20,8 @@ def test_six_page_entry_checks_overlap_without_shared_action_lock(tmp_path):
     def call(n):
         return fixed.model_call(adapter,binding,'page-write',{'fixture':n},
             lambda *_:('{"content":"isolated fixture"}',{'origin':'isolated'}),30000)
-    with ThreadPoolExecutor(max_workers=6) as pool:
-        assert len(list(pool.map(call,range(6))))==6
+    with ThreadPoolExecutor(max_workers=capacity) as pool:
+        assert len(list(pool.map(call,range(capacity))))==capacity
 
 
 def test_other_phase_entry_keeps_existing_action_lock(tmp_path):
