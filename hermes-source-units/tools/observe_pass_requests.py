@@ -106,7 +106,8 @@ def prepare(args):
     from native_pass_identity import visible_packet
     from fixed_semantic_media import image_catalog
     protect(args.vault, args.skill)
-    quiet(args.vault)
+    if not args.prepare_only:
+        quiet(args.vault)
     root = Path(args.output).resolve()
     if root.exists():
         raise RuntimeError('output must be new; existing attempts are never replayed')
@@ -179,8 +180,16 @@ def prepare(args):
         'formal_results_imported': False, 'automatic_corrections': False,
         'new_formal_passes': 0, 'mineru_executed': False}
     write(root / 'manifest.json', manifest)
-    if formal_snapshot(Path(args.vault)) != before:
+    after = formal_snapshot(Path(args.vault))
+    changes = sorted(k for k in before.keys() | after.keys() if before.get(k) != after.get(k))
+    manifest['formal_changes_during_preparation'] = changes
+    manifest['offline_only'] = bool(args.prepare_only)
+    write(root / 'manifest.json', manifest)
+    if changes and not args.prepare_only:
         raise RuntimeError('formal state changed during preparation; do not start')
+    # Offline material inspection may coexist with an unrelated active reducer.
+    # It grants no permission to execute: run() always prepares afresh and checks
+    # stopped state, while every actual SDK call rechecks that condition.
     return root, manifest
 
 
