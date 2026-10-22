@@ -435,6 +435,7 @@ def run(args):
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--child', action='store_true')
+    p.add_argument('--prepare-only', action='store_true', help='verify and freeze inputs without creating a caller or making model requests')
     p.add_argument('--job')
     p.add_argument('--vault')
     p.add_argument('--source')
@@ -451,7 +452,13 @@ def main():
     else:
         if not all((args.vault, args.source, args.batch, args.skill)) or args.tasks_per_job < 1:
             p.error('vault, source, batch, skill and positive tasks-per-job are required')
-        run(args)
+        if args.prepare_only:
+            root, manifest = prepare(args)
+            print(json.dumps({'prepared_only': True, 'output': str(root),
+                              'tasks': manifest['task_count'], 'jobs': len(manifest['jobs']),
+                              'model_calls': 0}), flush=True)
+        else:
+            run(args)
 
 
 if __name__ == '__main__':
