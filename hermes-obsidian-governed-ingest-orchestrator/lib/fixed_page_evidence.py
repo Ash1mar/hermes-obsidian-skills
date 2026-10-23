@@ -54,4 +54,6 @@ def select(adapter,binding,phase,view,project):
     if path_for(adapter,binding,phase,encoded).exists():return encoded
     sc=schema_for(phase,view)
     # Includes the decoding instruction and schema, not just a smaller JSON body.
-    return encoded if project(phase,encoded,sc,[])['input_size']<project(phase,view,sc,[])['input_size'] else view
+    chosen=encoded if project(phase,encoded,sc,[])['input_size']<project(phase,view,sc,[])['input_size'] else view
+    if phase=='page-write':chosen={**chosen,'page_scope_contract':'assigned-candidates/v1'}
+    return chosen

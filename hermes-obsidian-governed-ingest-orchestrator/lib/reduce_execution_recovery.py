@@ -50,8 +50,11 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
     if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', rid):
         fail('INVALID_SCHEMA', 'invalid recovery ID')
     scope=request.get('recovery_scope')
-    if scope not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1'):
+    if scope not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','reduce-disposition/v1'):
         fail('INVALID_SCHEMA', 'Reduce recovery requires a supported explicit correction scope')
+    if scope=='reduce-disposition/v1':
+        from reduce_disposition import contract_hash
+        if request.get('target_contract_sha256')!=contract_hash():fail('STALE_INPUT','Reduce disposition contract changed')
     if scope=='semantic-output/v1':
         from semantic_output_recovery import contract_hash
         if request.get('target_contract_sha256')!=contract_hash():fail('STALE_INPUT','shared output-correction contract changed')
@@ -145,7 +148,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     fail('STALE_INPUT', 'failure evidence or binding changed')
                 projection=scope=='reduce-cancel/v1' and report.get('error_code')=='DISPATCH_ARTIFACT_CHANGED'
                 call_failure=scope=='reduce-cancel/v1' and report.get('error_code') in ('NATIVE_REQUEST_REJECTED','NATIVE_COMPLETION_UNKNOWN','PROGRAM_EXECUTION_FAILED')
-                allowed=(('INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','INVALID_TRANSITION','READING_WINDOW_OVERSIZE') if scope=='semantic-output/v1' else ('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
+                allowed=(('SEMANTIC_REVIEW_REQUIRED','SEMANTIC_OUTPUT_HELD','INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','NATIVE_COMPLETION_UNKNOWN','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED') if scope=='reduce-disposition/v1' else ('INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','INVALID_TRANSITION','READING_WINDOW_OVERSIZE') if scope=='semantic-output/v1' else ('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
                     ('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED'))
                 if not review and ((report.get('error_code') not in allowed and not call_failure) or (scope in ('source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3') and node.kind!='resource-reduce')):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
@@ -190,6 +193,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 if scope=='semantic-output/v1':
                     from semantic_output_recovery import verify
                     audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))
+                if scope=='reduce-disposition/v1':
+                    from reduce_disposition import verify
+                    audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))
                 if entry.get('stop_after_output') is not None:
                     if scope!='reduce-cancel/v1':fail('INVALID_SCHEMA','output stop limit belongs to existing cancellation recovery')
                     from semantic_output import verify_stop_boundary
@@ -225,6 +231,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
             ref = f'_system/ledgers/ingest-workflows/{wid}/execution-recoveries/{rid}.json'
             report = {'request': dict(request), 'entries': audited, 'batch_id': value['batch_id'],
                       'domain_inputs_changed': False, 'semantic_retry_authorized': scope in ('source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','source-result-review/v1') or
+                          scope=='reduce-disposition/v1' or
                           (scope=='semantic-output/v1' and any(not e.get('uncalled_packet') for e in audited))}
             path = _vault_path(service.vault, ref)
             data = _json_bytes(report)

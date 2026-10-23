@@ -12,6 +12,17 @@ def read_outcome(adapter,binding,view,prove,images):
     path=path_for(adapter,binding,'page-write',view)
     if not path.is_file():return None
     journal=_load_json(path);attempts=journal.get('attempts',[]);schema=schema_for('page-write',view)
+    from reduce_disposition import output_permit,read_recovery
+    permit=output_permit(adapter,binding,path,journal)
+    if permit:
+        if len(attempts)==permit['preserved_attempt_count']:return None
+        ref=attempts[-1].get('audit_ref')
+        if not ref:return None
+        try:
+            draft,_,_=read_recovery(adapter,binding,'page-write',view,
+                lambda d:check('page-write',None,None,None,d),prove,ref,path,journal,permit)
+        except ContractError:return None
+        return {'kind':'valid','ref':ref,'draft':draft,'error':None}
     if (journal.get('contract')!=CONTRACT or journal.get('phase')!='page-write' or
         journal.get('input_sha256')!=fingerprint(view) or journal.get('schema_sha256')!=fingerprint(schema) or not 1<=len(attempts)<=2):return None
     last=None;previous=None
@@ -63,6 +74,9 @@ def restore(adapter,binding,value,state,caller,project,prove):
         for row in old.get('held',[]):held_by[row['path']]=row
     written=[];held=[];done=set()
     for page in state['pages']:
+        from reduce_disposition import page_permit
+        permission=page_permit(adapter,binding,page)
+        if permission and permission['action'] in ('revise-page-plan','exclude-covered'):continue
         row=written_by.get(page['path']) or held_by.get(page['path'])
         if not row or row.get('candidate_refs')!=page['candidate_refs']:continue
         view,size=measure(adapter,value,page,caller,project)

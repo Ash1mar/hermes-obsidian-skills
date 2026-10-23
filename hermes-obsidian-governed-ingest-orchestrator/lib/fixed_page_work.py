@@ -94,10 +94,10 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':phase,
                 'code':exc.code,'reason':str(exc),'audit_ref':getattr(exc,'semantic_audit_ref',None)})
             save()
-    def write(page,view,owner,local_caller):
+    def write(page,view,owner,local_caller,attempt_limit=2):
         if halt.is_set():return
         answer,audit,_=checked_output(owner,binding,'page-write',view,local_caller,model_call,
-            lambda d:check('page-write',value,None,None,d))
+            lambda d:check('page-write',value,None,None,d),attempt_limit=attempt_limit)
         content=answer['content'];ref=f"{prefix}/page-drafts/{fingerprint(view)}.md"
         owner.worker_check(binding)
         if halt.is_set():return
@@ -110,14 +110,14 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             calls.append(audit);attach_receipt(owner,audit,{'ok':True,'validated':True,'state':'page_body_only','draft_ref':ref})
             save()
         stop_at_output_boundary(owner,binding,'page-write',view)
-    def body(page,view):
+    def body(page,view,attempt_limit=2):
         from fixed_semantic import HermesCaller
         from ingest_kanban import IngestKanbanAdapter
         # No shared SDK/DB/image/request scope between the two model calls.
         local_caller=caller.fork() if isinstance(caller,HermesCaller) else caller
         owner=(IngestKanbanAdapter(adapter.workflow.vault,enable_workers=adapter.enable_workers)
                if isinstance(adapter,IngestKanbanAdapter) else adapter)
-        try:write(page,view,owner,local_caller)
+        try:write(page,view,owner,local_caller,attempt_limit)
         except ContractError as exc:
             if exc.code not in LOCAL:halt.set();raise
             defer(page,'page-write',exc)
@@ -148,25 +148,44 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
       for original in list(state['pages']):
         if original['path'] in restored:continue
         page=next(p for p in working['pages'] if p['path']==original['path'])
+        from reduce_disposition import page_permit,revision_packet
+        disposition=page_permit(adapter,binding,page)
+        scope_revision=bool(disposition and disposition['action']=='revise-page-plan')
+        if disposition and disposition['action']=='defer':
+            defer(page,'page-write',ContractError('SEMANTIC_REVIEW_REQUIRED','$',
+                'Explicit deferral retains a necessary coverage gap: '+disposition['reason']))
+            continue
+        if disposition and disposition['action']=='exclude-covered':
+            covered=disposition['covered_by_candidate']
+            if not any(covered in p['candidate_refs'] for p in written):
+                defer(page,'page-write',ContractError('SEMANTIC_REVIEW_REQUIRED','$','covering native body is not verified'))
+                continue
+            working['pages']=[p for p in working['pages'] if p!=page]
+            working['omitted_candidate_refs'].extend(page['candidate_refs'])
+            working['reasons'].append('Explicit exact-duplicate exclusion; '+disposition['authorization_ref'])
+            save();continue
         prepared=None
         try:
             view,size=measure(adapter,value,page,caller,project)
-            if size>LIMIT:
+            if size>LIMIT or scope_revision:
                 drain(True)  # Planning shares the body-call bound, never adds a slot.
-                base,packet=refinement(adapter,value,working,page,caller,project)
+                base,packet=(revision_packet(value,working,page,disposition) if scope_revision
+                    else refinement(adapter,value,working,page,caller,project))
                 packet=select(adapter,binding,'global-detail',packet,project)
                 def validate(draft):
                     from fixed_global_targets import expand
                     updated=g.accept(value,base,packet,draft)
                     # The caller sees the exact dynamic member-set constraint.
                     expanded=expand('global-detail',packet['view'],draft)
+                    if scope_revision and len(expanded['pages'])>4:
+                        raise ContractError('INVALID_SCHEMA','$','authorized local revision permits at most four children')
                     for index,p in enumerate(expanded['pages']):
                         _,n=measure(adapter,value,p,caller,project)
                         if n>LIMIT:raise ContractError('INVALID_SCHEMA',f'$.pages[{index}].candidate_refs',
                             f'complete output page request has {n} codepoints, exceeds supplied {LIMIT}; choose a smaller complete member set without dropping claims')
                     return updated
                 routed,audit,updated=checked_output(adapter,binding,'global-detail',packet['view'],caller,model_call,
-                    validate,packet=packet,state=base)
+                    validate,packet=packet,state=base,attempt_limit=1 if scope_revision else 2)
                 from fixed_global_targets import expand
                 children=expand('global-detail',packet['view'],routed)['pages']
                 working=updated;calls.append(audit)
@@ -187,7 +206,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                 if n>LIMIT:raise ContractError('READING_WINDOW_OVERSIZE','$','complete page input exceeds bound')
                 if len(pending)>=capacity:drain()
                 if halt.is_set():drain(True);raise RuntimeError('independent page work stopped by a shared failure')
-                pending.add(pool.submit(copy_context().run,body,child,child_view))
+                pending.add(pool.submit(copy_context().run,body,child,child_view,1 if scope_revision else 2))
             except ContractError as exc:defer(child,'page-write',exc)
       drain(True)
     finally:
