@@ -250,6 +250,10 @@ def read_saved_output(adapter,binding,phase,view,validator,prove,expected_ref):
     path=path_for(adapter,binding,phase,view)
     if not path.is_file():held('historical success lacks its finite attempt journal')
     record=_load_json(path);sc=schema_for(phase,view);attempts=record.get('attempts',[])
+    from reduce_disposition import output_permit, read_recovery
+    disposition=output_permit(adapter,binding,path,record)
+    if disposition and len(attempts)>disposition['preserved_attempt_count']:
+        return read_recovery(adapter,binding,phase,view,validator,prove,expected_ref,path,record,disposition)
     if (record.get('contract')!=CONTRACT or record.get('phase')!=phase
         or record.get('input_sha256')!=fingerprint(view) or record.get('schema_sha256')!=fingerprint(sc)
         or not attempts):held('historical output identity differs')
@@ -286,7 +290,7 @@ def read_saved_output(adapter,binding,phase,view,validator,prove,expected_ref):
     held('historical prefix has no authenticated final success')
 
 
-def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None,state=None):
+def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None,state=None,attempt_limit=2):
     from fixed_semantic import prepare_request_projection,decode_semantic_response,HermesCaller,attach_receipt
     from fixed_semantic_media import image_catalog,select_images
     from fixed_semantic_recovery import native_reply
@@ -305,11 +309,16 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
                 if entry['node']==binding['node'] and seed.get('journal_name')==path.name:record=copy.deepcopy(seed['record'])
         record=record or {'contract':CONTRACT,'phase':phase,'input_sha256':fingerprint(view),'schema_sha256':fingerprint(output_schema),'attempts':[]}
     if record['schema_sha256']!=fingerprint(output_schema):held('schema changed; previous allowance is not reset')
+    from reduce_disposition import output_permit, execute_output
+    disposition=output_permit(adapter,binding,path,record)
+    if disposition:
+        return execute_output(adapter,binding,phase,view,caller,model_call,validator,path,record,disposition)
     images=select_images(view['original_evidence']['tasks'],image_catalog(adapter,view['original_evidence'])) if isinstance(caller,HermesCaller) and 'original_evidence' in view else []
     permit=continuation_permit(adapter,binding,path,record)
     if len(record['attempts'])>2 and not permit:held('extra attempt lacks explicit continuation authority')
     correction=None
-    for index in range(3 if permit else 2):
+    maximum=3 if permit else attempt_limit
+    for index in range(maximum):
         if index==2:correction=copy.deepcopy(permit['diagnostic'])
         attempt=record['attempts'][index] if index<len(record['attempts']) else None
         prepared=prepare_request_projection(phase,view,output_schema,images,correction)
@@ -384,7 +393,7 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
         write(path,record)
         if call_ref:error.semantic_audit_ref=call_ref
         if not eligible:raise error
-        if index==(2 if permit else 1):raise error
+        if index==maximum-1:raise error
         # Freeze a correction only once reserved/sent. A pre-call size failure
         # consumes no second ordinal; a newer measured diagnostic may use that
         # same unused slot without rewriting the first call or its old diagnosis.

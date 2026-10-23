@@ -651,6 +651,47 @@ review cache or new finalization boundary is introduced.
 
 ### Interrupt and resume without resetting output attempts
 
+### Explicit bounded Reduce disposition
+
+`recover-reduce-execution` also accepts `recovery_scope: reduce-disposition/v1`
+with the current `reduce_disposition.contract_hash()` as `target_contract_sha256`.
+This is explicit operator authorization, not an automatic retry policy or a way
+to erase historical limits. Keep the usual cancelled/drained workflow, exact
+ended node/task/failure SHA and revision/digest checks. Each node entry adds
+`snapshot_ref/snapshot_sha256` and `outputs`, containing exact
+`attempt_ref/attempt_sha256`, `action` and a concrete `reason`.
+
+Supported actions:
+
+- `revise-output`: one native replacement of a rejected planning/body output.
+- `regenerate-output`: one new native body generation after an isolated old
+  executor stopped. Original requests remain unknown, including unbound
+  reservations; no assertion that they were not executed or were free is made.
+- `revise-page-plan`: one native local scope/identity revision preserving every
+  assigned candidate, with at most four child pages and one body call per child.
+  Citations and claims cannot be rewritten by the operator or omitted for fit.
+- `defer`: a formal coverage gap; no model call and no checkpoint acceptance.
+- `exclude-covered`: no model call, admitted only for an exact duplicate full
+  candidate observation and a different current covering candidate. The covering
+  native body must be verified before the excluded page can be removed. Similar
+  titles, keywords or operator-authored equivalence claims are insufficient.
+
+Admission reconstructs native planning, checks current evidence/identity/schema,
+authenticates available old responses and seals every historical ordinal. A
+logical output can receive this explicit disposition only once across task IDs.
+An appended call has no automatic correction. Cancellation before reservation
+consumes no added call; cancellation or unknown completion after reservation
+cannot authorize another one. Ordinary untouched work retains its normal quota.
+Apply never resumes or releases a pause. Proceed with a separately authorized
+native operator resume, preserve successes, stop sustained waste or a severe
+shared defect and drain via the existing stable cancellation operation.
+
+Global ownership is resolved first, including queued proposals. Local planning
+then changes only affected member sets; bodies whose input changes must be
+revalidated under their own finite journal, while identical valid bodies remain
+reusable. Skipped/deferred work is not completed work. This contract grants no
+acceptance of necessary coverage gaps and no Build Finalize continuation.
+
 Use the existing `cancel` operation for an immediate stop. A response that
 finishes during cancellation is saved and checked; cancellation never permits
 starting its correction. This is an interrupted continuation, not an additional

@@ -70,7 +70,9 @@ def test_encoded_failure_cannot_fall_back_to_a_new_original_allowance(tmp_path):
 
 def test_small_inputs_keep_original_when_decoder_instruction_cost_exceeds_saving(tmp_path):
     a,b,_=fixture(tmp_path);v={'candidates':[],'original_evidence':{'tasks':[]}}
-    assert e.select(a,b,'page-write',v,prepare_request_projection)==v
+    selected=e.select(a,b,'page-write',v,prepare_request_projection)
+    assert selected=={**v,'page_scope_contract':'assigned-candidates/v1'}
+    assert 'Other material in the original reading' in wire_prompt('page-write',selected,schema('page-write'))['system']
 
 
 def test_review_uses_identical_encoding_without_rewriting_draft_or_parent():

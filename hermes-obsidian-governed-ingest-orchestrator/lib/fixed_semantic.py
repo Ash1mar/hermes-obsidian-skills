@@ -313,6 +313,9 @@ def wire_prompt(phase,view,output_schema,correction=None):
         body['required_result_slots']=[t['task'] for t in view.get('tasks',[])]
     if correction: body['correction'] = _stable_objects(correction)
     system=COMMON+'\n'+RULES[phase]
+    if phase=='page-write' and view.get('page_scope_contract')=='assigned-candidates/v1':
+        from reduce_disposition import PAGE_RULE
+        system+=' '+PAGE_RULE
     if phase in ('page-write','page-review') and view.get('evidence_encoding')=='lossless-page-evidence/v1':
         from fixed_page_evidence import INSTRUCTION
         system+=INSTRUCTION

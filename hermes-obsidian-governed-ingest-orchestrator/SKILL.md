@@ -25,6 +25,16 @@ only after authenticating ended runs, original request/transcript and durable
 call evidence; PROGRAM_EXECUTION_FAILED alone or zero token usage is insufficient.
 Rejected/unknown reservations remain held, with no automatic retry or new quota.
 
+An explicit user-authorized `recover-reduce-execution` scope
+`reduce-disposition/v1` may seal a stopped output's original journal and grant
+one native revision/regeneration, one bounded local page plan, an exact-duplicate
+exclusion or a formal coverage-gap deferral. Use `references/operations.md` and
+`python3 "<skill-dir>/scripts/prepare_reduce_dispositions.py"` for dry-run request
+preparation. Original unknown calls remain unknown; new task IDs do not reset
+budgets. No automatic correction or necessary-gap acceptance is granted. Resolve
+global ownership first, then affected bodies; retain valid planning, citations
+and identical bodies, and stop at the separately authorized checkpoint.
+
 During one execution/reconciliation cycle, pure graph calculation can be reused
 only after current dependency bytes and directory membership match. Cancellation,
 pause, bindings, templates and parent outcomes are checked live. Native proof

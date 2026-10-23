@@ -22,7 +22,7 @@ def fail(code, message):
 
 def execution_recovery_key(scope,entry):
     """Shared admission/replay identity; journals separately enforce call budget."""
-    cause=(entry.get('previous_task_id') if scope in ('reduce-cancel/v1','semantic-output/v1')
+    cause=(entry.get('previous_task_id') if scope in ('reduce-cancel/v1','semantic-output/v1','reduce-disposition/v1')
            else packet_recovery_cause(entry.get('failure',{})) if scope=='revision-citation-packet/v1' else None)
     return entry['node'],scope,cause
 
@@ -184,6 +184,15 @@ class ExecutionPlanMixin:
                     if (permit.get('attempt_ordinal')!=3 or not permit.get('prior_attempts_sha256')
                         or not any(e.get('node')==entry['node'] and e.get('continue_exhausted') is True for e in request['entries'])):
                         fail('STALE_INPUT','exhausted output continuation lacks explicit bounded authorization')
+                if scope=='reduce-disposition/v1':
+                    rows=entry.get('output_dispositions',[])
+                    requested=next((e.get('outputs',[]) for e in request['entries'] if e['node']==entry['node']),[])
+                    if (not entry.get('previous_task_id') or not rows or len(rows)!=len(requested)
+                        or entry.get('original_calls_preserved') is not True
+                        or entry.get('accepted_coverage_gaps') is not False
+                        or any(r.get('additional_calls') not in (0,1) or not r.get('prior_attempts_sha256')
+                            or r.get('attempt_ordinal')!=r.get('preserved_attempt_count',-1)+1 for r in rows)):
+                        fail('STALE_INPUT','Reduce disposition lacks sealed attempts and finite explicit authority')
                 keys.append(execution_recovery_key(scope,entry))
             if (request['workflow_id'] != workflow['workflow_id']
                     or request['actor'] != workflow['actor']
