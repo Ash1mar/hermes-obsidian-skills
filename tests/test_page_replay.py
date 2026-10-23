@@ -10,7 +10,7 @@ from hermes_source_units.validation import fingerprint
 
 
 def fixture(tmp_path,answers):
-    a=NS(workflow=NS(vault=tmp_path));b={'workflow_id':'fixture','node':'global-reduce'}
+    a=NS(workflow=NS(vault=tmp_path,status=lambda _:{'execution_recovery_history':[]}));b={'workflow_id':'fixture','node':'global-reduce'}
     view={'identity':{'kind':'fact','identity_key':'x','canonical_name':'X','aliases':[]},'path':'x.md','candidates':[],'existing_page':None}
     schema=schema_for('page-write',view);attempts=[];raws={};path=path_for(a,b,'page-write',view)
     for i,(answer,state,correctable) in enumerate(answers,1):

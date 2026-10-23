@@ -43,7 +43,8 @@ def test_explicit_regeneration_preserves_unknown_and_never_retries_it(tmp_path,m
     path,old,_=grant(c,'regenerate-output')
     assert c.run()[0]==answer() and len(c.calls)==2
     after=json.loads(path.read_text())['attempts']
-    assert after[:1]==old and old[0]['state']=='reserved' and old[0]['session_id']=='uncertain-native'
+    assert after[:1]==old and old[0]['diagnostic']['code']=='NATIVE_COMPLETION_UNKNOWN'
+    assert old[0]['session_id']=='uncertain-native' and not old[0].get('audit_ref')
 
 
 def test_failed_explicit_revision_has_no_automatic_correction(tmp_path,monkeypatch):
