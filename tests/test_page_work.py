@@ -72,6 +72,24 @@ def test_ordinary_page_packet_is_measured_once_with_original_evidence(tmp_path,m
  assert len(measured)==len(set(measured))==len(submitted[0]['pages'])==2
 
 
+def test_refinement_replay_rejects_oversized_children_before_accepting_correction(monkeypatch):
+ import fixed_global_targets as targets
+ parent={'candidate_refs':['c1','c2']}
+ oversized={'pages':[parent]}
+ corrected={'pages':[{'candidate_refs':['c1']},{'candidate_refs':['c2']}]}
+ base={'pages':[]};before=copy.deepcopy(base)
+ monkeypatch.setattr(g,'accept',lambda _v,b,_p,d:{'pages':copy.deepcopy(d['pages'])})
+ monkeypatch.setattr(targets,'expand',lambda _phase,_view,d:d)
+ monkeypatch.setattr(work,'measure',lambda _a,_v,p,_c,_project:({},31751 if len(p['candidate_refs'])==2 else 20000))
+ with pytest.raises(ContractError,match='31751.*30000') as failure:
+  work.accept_refinement(None,{},base,{'view':{}},oversized,None,None)
+ assert failure.value.code=='INVALID_SCHEMA' and base==before
+ result=work.accept_refinement(None,{},base,{'view':{}},corrected,None,None)
+ assert [p['candidate_refs'] for p in result['pages']]==[['c1'],['c2']]
+ with pytest.raises(ContractError,match='at most 1 children'):
+  work.accept_refinement(None,{},base,{'view':{}},corrected,None,None,max_pages=1)
+
+
 def test_failed_later_plan_does_not_discard_independent_ready_page_work(tmp_path,monkeypatch):
  v=fixture_value();a,b,submitted=setup(tmp_path,monkeypatch,v);monkeypatch.setattr(g,'PROPOSAL_OUTPUT_SLOTS',1)
  phases=[]

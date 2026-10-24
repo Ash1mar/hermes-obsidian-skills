@@ -83,7 +83,7 @@ def verify(adapter, workflow, node, binding, entry, failure, runs):
     from fixed_semantic_schema import schema_for
     from fixed_global_targets import planning_packet, select
     from semantic_output import path_for, CONTRACT as JOURNAL, check, read_saved_output
-    from fixed_page_work import measure, refinement
+    from fixed_page_work import measure, refinement, accept_refinement
     from fixed_semantic import HermesCaller
 
     if node.name != 'global-reduce':
@@ -131,7 +131,7 @@ def verify(adapter, workflow, node, binding, entry, failure, runs):
             offer('global-detail', packet['view'], packet, base)
             continue
         _, _, working = read_saved_output(adapter, binding, 'global-detail', packet['view'],
-            lambda d: g.accept(value, base, packet, d), prove, last['audit_ref'])
+            lambda d: accept_refinement(adapter,value,base,packet,d,page_caller,project), prove, last['audit_ref'])
         for child in working['pages']:
             if set(child['candidate_refs']) <= set(page['candidate_refs']):
                 cv, size = measure(adapter, value, child, page_caller, project)
