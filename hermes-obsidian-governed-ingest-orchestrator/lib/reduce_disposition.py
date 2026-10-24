@@ -16,6 +16,8 @@ from hermes_source_units.validation import fingerprint
 SCOPE = 'reduce-disposition/v1'
 CONTRACT = 'bounded-reduce-disposition/v1'
 ACTIONS = {'revise-output', 'regenerate-output', 'revise-page-plan', 'defer', 'exclude-covered'}
+MAX_RECOVERY_CALLS = 2
+MAX_DISPOSITIONS = 4
 PAGE_RULE = ('Write only the assigned candidates under this page identity. Other material in the original reading '
     'package is available for checking, not an additional obligation to express every table or topic. '
     'Prior evidence_qa is review narrative, not another factual claim. review/needs-qa labels and '
@@ -58,9 +60,46 @@ def output_permit(adapter, binding, path, record):
                         or fingerprint(record['attempts'][:n]) != row['prior_attempts_sha256']):
                     fail('sealed original attempts changed')
                 found.append({**row, 'authorization_ref': pointer['report_ref']})
-    if len(found) > 1:
-        fail('one explicit disposition per logical output; another ID cannot reset budget')
-    return found[0] if found else None
+    previous = None
+    for row in found:
+        expected = predecessor(previous) if previous else None
+        if row.get('supersedes') != expected:
+            fail('one explicit disposition chain per logical output; another ID cannot reset budget')
+        if previous and row['preserved_attempt_count'] < previous['preserved_attempt_count']+previous['additional_calls']:
+            fail('disposition chain cannot erase consumed attempts')
+        for item in row.get('basis',[]):
+            if hashlib.sha256(_vault_path(adapter.workflow.vault,item['ref']).read_bytes()).hexdigest()!=item['sha256']:
+                fail('transition evidence changed')
+        previous = row
+    if len(found) > MAX_DISPOSITIONS or sum(r['additional_calls'] for r in found) > MAX_RECOVERY_CALLS:
+        fail('cumulative explicit recovery budget exceeded')
+    return found[-1] if found else None
+
+
+def predecessor(permit):
+    return {'report_ref': permit['authorization_ref'],
+        'disposition_sha256': fingerprint({k:v for k,v in permit.items() if k!='authorization_ref'})}
+
+
+def transition_basis(adapter, row, previous, record):
+    """A changed ID/reason alone is never new recovery authority."""
+    if row.get('supersedes') != predecessor(previous):
+        fail('transition must pin the exact preceding disposition')
+    if len(record['attempts']) != previous['preserved_attempt_count'] + previous['additional_calls']:
+        fail('use or resolve the previous authority before another disposition')
+    basis = row.get('basis')
+    clarification = row.get('clarification')
+    if (not isinstance(basis,list) or not basis or len(basis)>8
+            or not isinstance(clarification,str) or not clarification.strip() or len(clarification)>2000):
+        fail('transition needs persisted new evidence/corrected cause and a bounded clarification')
+    if len({b.get('ref') for b in basis}) != len(basis):fail('duplicate transition evidence')
+    for item in basis:
+        path = _vault_path(adapter.workflow.vault,item['ref'])
+        if not path.is_file() or hashlib.sha256(path.read_bytes()).hexdigest()!=item.get('sha256'):
+            fail('transition evidence changed')
+    if basis == previous.get('basis') or clarification == previous.get('correction',{}).get('targeted_clarification'):
+        fail('unchanged evidence or clarification cannot grant another call')
+    return copy.deepcopy(basis), clarification
 
 
 def planning_state(adapter, binding, value, permitted):
@@ -155,8 +194,13 @@ def verify(adapter, workflow, node, binding, entry, failure, runs):
         if (record.get('contract') != JOURNAL or record.get('phase') != phase or not attempts
                 or record['input_sha256'] != fingerprint(view) or record['schema_sha256'] != fingerprint(sc)):
             fail('output input/schema differs')
-        if output_permit(adapter, binding, path, record):
-            fail('logical output already has a disposition; use its remaining authority')
+        previous = output_permit(adapter, binding, path, record)
+        basis, targeted = transition_basis(adapter,row,previous,record) if previous else (None,None)
+        history = [r for _,e in reports(adapter,binding) for r in e.get('output_dispositions',[])
+                   if r['journal_name']==path.name]
+        extra = int(action in ('revise-output','regenerate-output','revise-page-plan'))
+        if len(history)>=MAX_DISPOSITIONS or sum(r['additional_calls'] for r in history)+extra>MAX_RECOVERY_CALLS:
+            fail('cumulative disposition/call budget exhausted; retain necessary coverage gap')
         for i, attempt in enumerate(attempts, 1):
             prior = permitted.get(attempt.get('task_id'))
             if (attempt.get('attempt') != i or attempt.get('attempt_id') != fingerprint({'path': path.name, 'attempt': i})
@@ -188,6 +232,10 @@ def verify(adapter, workflow, node, binding, entry, failure, runs):
             'previous_failure': {k:v for k,v in last.get('diagnostic', {}).items()
                 if k in ('code','reason','rule','page_findings','missing','unknown')},
             'old_unknown_execution_preserved': not bool(last.get('audit_ref'))}
+        if targeted:
+            clarification['targeted_clarification'] = targeted
+            clarification['basis'] = basis
+            clarification['instruction'] += ' The targeted clarification is operator review guidance, not new source evidence or permission to change claims/citations. Verify it against the supplied originals; preserve concrete unresolved limitations.'
         if phase != 'page-write':
             from fixed_global_targets import offered
             clarification['allowed_target_refs'] = [t.get('target_ref') for t in offered(view) if t.get('target_ref')]
@@ -200,6 +248,9 @@ def verify(adapter, workflow, node, binding, entry, failure, runs):
             'attempt_ordinal': len(attempts) + 1, 'additional_calls': int(action in ('revise-output', 'regenerate-output','revise-page-plan')),
             'correction': clarification, 'page': packet if phase == 'page-write' else None,
             'coverage_gap': action == 'defer'})
+        if previous:
+            sealed[-1].update(supersedes=predecessor(previous),basis=basis,
+                cumulative_additional_calls=sum(r['additional_calls'] for r in history)+extra)
         if action == 'revise-page-plan':
             sealed[-1].update(planning_calls=1, child_body_calls=4,
                 rule='one native local plan; at most four children, each one body call; preserve every candidate')
@@ -260,8 +311,12 @@ def page_permit(adapter,binding,page):
             p=row.get('page')
             if p and p['path']==page['path'] and p['candidate_refs']==page['candidate_refs'] and p['identity']==page['identity']:
                 found.append({**row,'authorization_ref':pointer['report_ref']})
-    if len(found)>1:fail('duplicate page disposition')
-    return found[0] if found else None
+    if not found:return None
+    names={r['journal_name'] for r in found}
+    if len(names)!=1:fail('conflicting logical outputs own one page disposition')
+    root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/output-attempts"
+    path=root/next(iter(names))
+    return output_permit(adapter,binding,path,_load_json(path))
 
 
 def revision_packet(value,state,page,permit):
