@@ -73,6 +73,9 @@ def output_permit(adapter, binding, path, record):
             fail('only a nonexecuting deferral can surrender unused authority')
         if previous and row['preserved_attempt_count'] != previous['preserved_attempt_count']+previous['additional_calls']-forfeited:
             fail('disposition chain cannot erase consumed attempts or reset surrendered calls')
+        if forfeited and any(a.get('authorization_ref') == previous['authorization_ref']
+                             for a in record['attempts'][row['preserved_attempt_count']:]):
+            fail('an already reserved attempt cannot be surrendered as unused')
         for item in row.get('basis') or []:
             if hashlib.sha256(_vault_path(adapter.workflow.vault,item['ref']).read_bytes()).hexdigest()!=item['sha256']:
                 fail('transition evidence changed')

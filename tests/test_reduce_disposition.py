@@ -168,3 +168,11 @@ def test_defer_records_failed_or_surrenders_unused_recovery_without_new_cause(tm
     later['report_sha256']=hashlib.sha256(report.read_bytes()).hexdigest()
     with pytest.raises(ContractError,match='erase consumed attempts'):
         disposition.output_permit(c.adapter,c.binding,path,record)
+    if used:
+        row.update(preserved_attempt_count=prior['preserved_attempt_count'],
+            prior_attempts_sha256=fingerprint(record['attempts'][:prior['preserved_attempt_count']]))
+        report.write_text(json.dumps({'request':{'recovery_scope':disposition.SCOPE},
+            'entries':[{'node':'global-reduce','output_dispositions':[row]}]}))
+        later['report_sha256']=hashlib.sha256(report.read_bytes()).hexdigest()
+        with pytest.raises(ContractError,match='already reserved attempt'):
+            disposition.output_permit(c.adapter,c.binding,path,record)
