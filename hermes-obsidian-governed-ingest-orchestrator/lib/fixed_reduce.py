@@ -235,11 +235,14 @@ def expand(value, draft):
         if backend.get('source_review'):request['replaces_reduction_id']=backend['source_review']['replaces_reduction_id']
     else:
         decisions=[]
+        from fixed_destinations import routes,check_links
+        destinations=routes(value,draft['pages'])
+        check_links(draft['pages'],destinations)
         for page in draft['pages']:
             identity=page['identity']; key=fingerprint({'kind':identity['kind'],'identity_key':identity['identity_key']})
             old=backend['existing_pages'].get(key)
             decisions.append({'candidate_refs':refs(page['candidate_refs']),'identity':identity,
-                'action':'update' if old else 'create','path':page['path'],'content':page['content']})
+                'action':'update' if old else 'create','path':destinations[page['path']],'content':page['content']})
         request={'batch_id':backend['batch_id'],'actor':backend['actor'],
             'resource_reduction_ids':[r['reduction_id'] for r in backend['reductions']],
             'runs':[{'run_id':'run-fixed-'+value['input_id'][:32],'actor':backend['actor'],
@@ -268,6 +271,16 @@ def submit(adapter, binding, input_ref, draft):
     if not result.get('ok'): fail('REDUCTION_FAILED','Reduce did not persist every requested draft; inspect durable failures')
     receipt={'ok':True,'validated':True,'input_ref':input_ref,
         'reduction_id':result['reduction']['reduction_id'] if 'reduction' in result else result['coordination']['coordination_id']}
+    if value['backend']['kind']=='global-reduce':
+        routed=[{'logical_path':p['path'],'destination':d['path'],'identity':p['identity'],
+                 'native_content_sha256':hashlib.sha256(p['content'].encode('utf-8')).hexdigest()}
+                for p,d in zip(draft['pages'],request['runs'][0]['decisions']) if p['path']!=d['path']]
+        if routed:
+            record={'contract':'knowledge-destination-routing/v1','input_ref':input_ref,'routes':routed,
+                    'native_plans_and_bodies_unchanged':True,'reduction_id':receipt['reduction_id']}
+            route_ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/worker-receipts/destinations-{fingerprint(record)}.json"
+            _write_atomic(_vault_path(adapter.workflow.vault,route_ref),_json_bytes(record))
+            receipt['destination_routing_ref']=route_ref
     ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/worker-receipts/reduce-{fingerprint(receipt)}.json"
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(receipt))
     return {'ok':True,'validated':True,'receipt_ref':ref}

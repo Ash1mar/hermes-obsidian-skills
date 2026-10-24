@@ -35,7 +35,8 @@ def contract_hash():
     root = Path(__file__).resolve().parent
     return hashlib.sha256(b''.join((root / n).read_bytes() for n in (
         'reduce_disposition.py', 'semantic_output.py', 'fixed_page_work.py',
-        'fixed_page_replay.py', 'reduce_execution_recovery.py', 'fixed_page_evidence.py', 'fixed_semantic.py'))).hexdigest()
+        'fixed_page_replay.py', 'reduce_execution_recovery.py', 'fixed_page_evidence.py', 'fixed_semantic.py',
+        'fixed_reduce.py','fixed_destinations.py','hermes_source_units/knowledge_destinations.py'))).hexdigest()
 
 
 def reports(adapter, binding):

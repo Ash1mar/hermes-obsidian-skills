@@ -2037,7 +2037,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             if occupied is not None and occupied != subject_id:
                 _fail("DUPLICATE", "output path belongs to another stable subject", f"$.decisions[{index}].path")
             target = _vault_path(self.vault, output_path)
-            if output_path.split("/")[0] not in ("20_Notes", "30_Cards", "40_Concepts", "50_Projects") or target.suffix.lower() != ".md":
+            from .knowledge_destinations import governed
+            if not governed(output_path):
                 _fail("INVALID_OUTPUT_PATH", "Reduce output must be governed Markdown", f"$.decisions[{index}].path")
             content = str(raw["content"]).replace("\r\n", "\n").replace("\r", "\n")
             if not content.strip():

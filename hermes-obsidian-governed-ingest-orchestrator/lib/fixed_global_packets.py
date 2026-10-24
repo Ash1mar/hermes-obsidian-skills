@@ -191,6 +191,8 @@ def accept(value,state,packet,draft):
     registered={p['path'].casefold():key(p) for p in value['view'].get('existing_pages',[])}
     if any(p['path'].casefold() in registered and registered[p['path'].casefold()]!=key(p) for p in result['pages']):
         fail('IDENTITY_CONFLICT','planned path belongs to another registered identity')
+    from fixed_destinations import routes
+    routes(value,result['pages'])  # Validate storage roots and physical collisions before body work.
     result['omitted_candidate_refs'].extend(draft['omitted_candidate_refs'])
     all_handles=[c for p in result['pages'] for c in p['candidate_refs']]+result['omitted_candidate_refs']
     if len(all_handles)!=len(set(all_handles)):fail('DUPLICATE','accumulated plan uses a candidate twice')
