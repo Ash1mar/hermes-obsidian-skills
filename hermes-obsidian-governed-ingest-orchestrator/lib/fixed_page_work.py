@@ -76,6 +76,21 @@ def refinement(adapter,value,state,page,caller,project):
     return base,packet
 
 
+def accept_refinement(adapter,value,base,packet,draft,caller,project,*,max_pages=None):
+    """One acceptance contract for live and historical local page plans."""
+    from fixed_global_targets import expand
+    updated=g.accept(value,base,packet,draft)
+    expanded=expand('global-detail',packet['view'],draft)
+    if max_pages is not None and len(expanded['pages'])>max_pages:
+        raise ContractError('INVALID_SCHEMA','$',f'authorized local revision permits at most {max_pages} children')
+    for index,page in enumerate(expanded['pages']):
+        _,size=measure(adapter,value,page,caller,project)
+        if size>LIMIT:
+            raise ContractError('INVALID_SCHEMA',f'$.pages[{index}].candidate_refs',
+                f'complete output page request has {size} codepoints, exceeds supplied {LIMIT}; choose a smaller complete member set without dropping claims')
+    return updated
+
+
 def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project,*,planning_failure=None):
     from semantic_output import execute as checked_output,check,stop_at_output_boundary
     from fixed_global_targets import select
@@ -173,17 +188,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                     else refinement(adapter,value,working,page,caller,project))
                 packet=select(adapter,binding,'global-detail',packet,project)
                 def validate(draft):
-                    from fixed_global_targets import expand
-                    updated=g.accept(value,base,packet,draft)
-                    # The caller sees the exact dynamic member-set constraint.
-                    expanded=expand('global-detail',packet['view'],draft)
-                    if scope_revision and len(expanded['pages'])>4:
-                        raise ContractError('INVALID_SCHEMA','$','authorized local revision permits at most four children')
-                    for index,p in enumerate(expanded['pages']):
-                        _,n=measure(adapter,value,p,caller,project)
-                        if n>LIMIT:raise ContractError('INVALID_SCHEMA',f'$.pages[{index}].candidate_refs',
-                            f'complete output page request has {n} codepoints, exceeds supplied {LIMIT}; choose a smaller complete member set without dropping claims')
-                    return updated
+                    return accept_refinement(adapter,value,base,packet,draft,caller,project,
+                        max_pages=4 if scope_revision else None)
                 routed,audit,updated=checked_output(adapter,binding,'global-detail',packet['view'],caller,model_call,
                     validate,packet=packet,state=base,attempt_limit=1 if scope_revision else 2)
                 from fixed_global_targets import expand
