@@ -176,6 +176,7 @@ def test_scoped_global_validate_and_finalize_leave_unowned_tasks_unfinished(vaul
     reductions=[k.reduce_resource(r)['reduction'] for r in requests]
     c=fixture(tmp_path/'authority');c.w['batch_id']='scope-integration'
     c.page['candidate_refs']=requests[0]['proposals'][0]['candidate_refs']
+    c.scope['proof']['pages']=[c.page]
     c.scope['proof']['omitted_candidate_refs']=requests[1]['proposals'][0]['candidate_refs']
     c.scope['proof'].update(task_partition(k,tasks,[c.page]))
     assert len(c.scope['proof']['run_tasks'])==1 and len(c.scope['proof']['outside_page_scope_task_ids'])==1
@@ -218,3 +219,33 @@ def test_task_partition_cannot_isolate_missing_evidence_of_an_adopted_claim(vaul
     assert len(result['outside_scope_required_inspection_gaps'])==1
     monkeypatch.setattr(dep,'citation_dependency_gaps',lambda *_:[{'missing':'required'}])
     with pytest.raises(ContractError,match='allowed page depends'):task_partition(k,tasks,[{'candidate_refs':refs}])
+
+
+@pytest.mark.parametrize('changed',['journal','body','source','native_audit'])
+def test_admitted_proof_reuse_checks_seals_and_preserves_receipt_append(tmp_path,monkeypatch,changed):
+    import reduce_coverage as execution
+    import fixed_destinations
+    from hermes_source_units.validation import fingerprint
+    c=fixture(tmp_path)
+    source={'contract':'input','view':{},'backend':{}}
+    source_sha=c.save('source.json',source)
+    c.save('audit.json',{'response_sha256':'native','receipt_refs':[],'validated':True})
+    journal_sha=c.save('journal.json',{'attempts':[{'state':'valid'}]})
+    (tmp_path/'body.md').write_text(c.content)
+    row={**c.page,'draft_ref':'body.md','draft_sha256':hashlib.sha256(c.content.encode()).hexdigest(),
+         'storage_destination':c.page['path'],'input_sha256':'0'*64,'audit_ref':'audit.json'}
+    c.scope['manifest'].update(allowed_pages=[row],gaps=[],source_snapshot_ref='source.json',source_snapshot_sha256=source_sha)
+    c.scope['proof'].update(native_bodies_authenticated=1,finite_journal_seals=[{
+        'ref':'journal.json','sha256':journal_sha,'audit_ref':'audit.json',
+        'audit_semantic_sha256':fingerprint({'response_sha256':'native'})}])
+    monkeypatch.setattr(fixed_destinations,'routes',lambda *_:{row['path']:row['storage_destination']})
+    monkeypatch.setattr(fixed_destinations,'compile_content',lambda value,page,dest:(page['content'],[]))
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path))
+    assert execution.reuse_pages(adapter,source,c.scope)[0]['content']==c.content
+    c.save('audit.json',{'response_sha256':'native','receipt_refs':['new-receipt'],'validated':True})
+    assert execution.reuse_pages(adapter,source,c.scope)[0]['content']==c.content
+    if changed=='journal':c.save('journal.json',{'attempts':[{'state':'valid'},{'state':'reserved'}]})
+    elif changed=='body':(tmp_path/'body.md').write_text('changed')
+    elif changed=='source':c.save('source.json',{**source,'view':{'changed':True}})
+    else:c.save('audit.json',{'response_sha256':'changed'})
+    with pytest.raises(ContractError):execution.reuse_pages(adapter,source,c.scope)
