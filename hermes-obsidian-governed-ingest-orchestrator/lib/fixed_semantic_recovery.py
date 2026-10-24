@@ -38,7 +38,7 @@ def permitted_tasks(adapter,binding):
         if report is None:
             report=json.loads(data)
             if scope is not None:scope['reports'][key]=report
-        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','reduce-disposition/v1'):continue
+        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1'):continue
         for entry in report['entries']:
             if entry['node']==binding['node']:permitted[entry['previous_task_id']]=entry
     return permitted

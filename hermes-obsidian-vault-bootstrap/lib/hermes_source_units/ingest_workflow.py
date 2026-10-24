@@ -616,6 +616,10 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                 batch = self.knowledge._batch(value["batch_id"])
                 if "sha256:" + fingerprint(batch["task_ids"]) != value["pinned_inputs"]["task_ids_fingerprint"]:
                     _fail("STALE_INPUT", "batch task set changed")
+            if target == 'completed':
+                from .reduce_coverage import batch_outcome
+                if batch_outcome(self.knowledge,self.knowledge._batch(value['batch_id'])):
+                    _fail('INCOMPLETE_COVERAGE','limited scope can terminate only as partial')
             if target == "checkpoint_1":
                 batch = self.knowledge._batch(value["batch_id"])
                 if not batch.get("run_ids") or batch["state"] != "checkpoint_1":
@@ -658,8 +662,8 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                 if value["scope"].get("execution_mode") != "auto_full":
                     _fail("ACCESS_DENIED", "automatic checkpoint decision was not requested")
                 decision_ref = str(request.get("decision_ref", ""))
-                expected_ref = (f"{WORKFLOW_ROOT}/{value['workflow_id']}/"
-                                f"decisions/{checkpoint_name}.json")
+                from .reduce_coverage import checkpoint_ref
+                expected_ref = checkpoint_ref(value,'decisions',checkpoint_name)
                 if decision_ref != expected_ref:
                     _fail("ACCESS_DENIED", "checkpoint decision path is outside this workflow")
                 decision_path = _vault_path(self.vault, decision_ref)

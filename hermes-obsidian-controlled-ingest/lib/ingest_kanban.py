@@ -143,7 +143,7 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
     workflow_id = workflow["workflow_id"]
     def add(name: str, kind: str, parents: tuple[str, ...], inputs: Any,
             gate: bool = False) -> str:
-        if kind in ('resource-reduce', 'global-reduce'):
+        if kind in ('resource-reduce', 'global-reduce', 'checkpoint-1-validate'):
             recovery = next((r for r in reversed(workflow.get('execution_recovery_history', []))
                              if name in r['nodes']), None)
             if recovery:
@@ -1971,6 +1971,9 @@ class IngestKanbanAdapter:
                 payload: Mapping[str, Any]) -> str:
         ref = (f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/"
                f"reports/{name}.json")
+        if name=='checkpoint-1-validation':
+            from hermes_source_units.reduce_coverage import checkpoint_ref
+            ref=checkpoint_ref(workflow,'reports',name)
         _write_atomic(_vault_path(self.workflow.vault, ref), _json_bytes(payload))
         return ref
 
@@ -2001,8 +2004,8 @@ class IngestKanbanAdapter:
                     "evidence": dict(evidence)}
         if lint is not None:
             decision["lint"] = dict(lint)
-        ref = (f"_system/ledgers/ingest-workflows/{value['workflow_id']}/"
-               f"decisions/{checkpoint}.json")
+        from hermes_source_units.reduce_coverage import checkpoint_ref
+        ref = checkpoint_ref(value,'decisions',checkpoint)
         path = _vault_path(self.workflow.vault, ref)
         encoded = _json_bytes(decision)
         if path.exists() and path.read_bytes() != encoded:
@@ -2097,7 +2100,8 @@ class IngestKanbanAdapter:
                                            for item in lint.get("issues", [])
                                            if item.get("severity") == "error"]})
             release_ref = f"_system/knowledge-releases/{release_id}/manifest.json"
-            target = ("partial" if self.workflow.source_coverage(workflow)["failed"] or self.workflow.skipped_pass_tasks(workflow)
+            from hermes_source_units.reduce_coverage import batch_outcome
+            target = ("partial" if batch_outcome(self.workflow.knowledge,self.workflow.knowledge._batch(batch_id)) or self.workflow.source_coverage(workflow)["failed"] or self.workflow.skipped_pass_tasks(workflow)
                       else "completed")
             updated = self._advance(workflow, target, [release_ref, report])
         else:

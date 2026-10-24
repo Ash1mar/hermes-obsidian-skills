@@ -262,6 +262,14 @@ def submit(adapter, binding, input_ref, draft):
     if value['binding']!=binding or fingerprint({k:v for k,v in value.items() if k!='input_id'})!=value['input_id']:
         fail('STALE_INPUT','reducer input snapshot changed')
     request=expand(value,draft)
+    from reduce_coverage import current
+    scope=current(adapter,binding)
+    if scope:
+        request['coverage_scope']=scope['ref']
+        for run in request['runs']:
+            run['coverage_scope']=scope['ref']
+            run['tasks']=scope['proof']['run_tasks']
+            run['run_id']='run-scoped-'+fingerprint({'input':value['input_id'],'scope':scope['ref']})[:32]
     with worker_binding(binding), workflow_write_guard(adapter.workflow.vault,
             kinds=(value['backend']['kind'],),actor=value['backend']['actor']):
         if snapshot(adapter,binding)['input_id']!=value['input_id']:

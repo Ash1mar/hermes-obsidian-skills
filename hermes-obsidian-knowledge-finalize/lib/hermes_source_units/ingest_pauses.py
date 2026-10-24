@@ -145,6 +145,12 @@ class WorkflowPauseMixin:
         for run_id in batch["run_ids"]:
             self.knowledge.validate_run(run_id)
             tree(self.knowledge._run_path(run_id).parent)
+        from .reduce_coverage import active
+        coverage=active(self.vault,value)
+        if coverage:
+            for field in ('authorization','manifest'):
+                pin(coverage['ref'][field+'_ref'])
+            pin(coverage['proof']['approval_ref'])
         for artifact in value["artifacts"]:
             for ref in artifact["refs"]:
                 pin(ref)
@@ -185,6 +191,7 @@ class WorkflowPauseMixin:
                 "pinned_inputs": value["pinned_inputs"], "dispatch_policy": value["dispatch_policy"],
                 "source_outcomes": value.get("source_outcomes", []),
                 "pass_coverage_gaps": value.get('pass_skip_history',[]),
+                "reduce_coverage": ({'outcome':'limited_scope','coverage_complete':False,'scope':coverage['ref']} if coverage else None),
                 "pass_outcome": 'partial' if self.skipped_pass_tasks(value) else 'complete',
                 "checkpoints": value["checkpoints"], "files": files}
 
@@ -201,7 +208,8 @@ class WorkflowPauseMixin:
                 return value  # Next sync initializes slices before snapshotting their evidence.
             evidence = self._pause_evidence(value, boundary)
             digest = "sha256:" + fingerprint(evidence)
-            ref = f"_system/ledgers/ingest-workflows/{value['workflow_id']}/pauses/{boundary}.json"
+            from .reduce_coverage import checkpoint_ref
+            ref = checkpoint_ref(value,'pauses',boundary)
             report = {"contract": "hermes-ingest-pause/v1", "evidence_digest": digest, "evidence": evidence}
             path = _vault_path(self.vault, ref)
             if path.exists() and _load_json(path) != report:

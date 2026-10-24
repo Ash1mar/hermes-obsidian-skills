@@ -92,6 +92,11 @@ def accept_refinement(adapter,value,base,packet,draft,caller,project,*,max_pages
 
 
 def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project,*,planning_failure=None):
+    from reduce_coverage import current,execute as scoped_execute
+    scope=current(adapter,binding)
+    if scope:
+        if planning_failure:raise ContractError('COVERAGE_SCOPE_INVALID','$','approved scope requires full native planning')
+        return scoped_execute(adapter,binding,value,state,scope)
     from semantic_output import execute as checked_output,check,stop_at_output_boundary
     from fixed_global_targets import select
     original_plan_sha=fingerprint(state);working=copy.deepcopy(state);written=[];calls=[];held=[]
