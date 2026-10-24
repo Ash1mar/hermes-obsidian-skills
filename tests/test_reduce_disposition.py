@@ -131,3 +131,48 @@ def test_transition_rejects_fork_unused_authority_and_missing_new_basis(tmp_path
     with pytest.raises(ContractError,match='previous authority'):disposition.transition_basis(c.adapter,row,prior,record)
     prior={**prior,'additional_calls':0};row['supersedes']=disposition.predecessor(prior)
     with pytest.raises(ContractError,match='persisted new evidence'):disposition.transition_basis(c.adapter,row,prior,record)
+
+
+@pytest.mark.parametrize('used',[False,True])
+def test_defer_records_failed_or_surrenders_unused_recovery_without_new_cause(tmp_path,monkeypatch,used):
+    c=fixture(tmp_path,monkeypatch,[answer(True),answer(True),answer(True),answer()])
+    with pytest.raises(ContractError):c.run()
+    path,old,pointer=grant(c)
+    if used:
+        with pytest.raises(ContractError):c.run()
+    record=json.loads(path.read_text())
+    prior=disposition.output_permit(c.adapter,c.binding,path,record)
+    row={k:v for k,v in prior.items() if k!='authorization_ref'}
+    row.update(action='defer',additional_calls=0,supersedes=disposition.predecessor(prior),
+        preserved_attempt_count=len(record['attempts']),prior_attempts_sha256=fingerprint(record['attempts']),
+        forfeited_previous_calls=int(not used),basis=None)
+    assert disposition.transition_basis(c.adapter,row,prior,record)==(None,None)
+    report=path.parent.parent/'deferred-recovery.json'
+    report.write_text(json.dumps({'request':{'recovery_scope':disposition.SCOPE},
+        'entries':[{'node':'global-reduce','output_dispositions':[row]}]}))
+    later={'report_ref':report.relative_to(c.adapter.workflow.vault).as_posix(),
+        'report_sha256':hashlib.sha256(report.read_bytes()).hexdigest()}
+    c.adapter.workflow.status=lambda _:{'execution_recovery_history':[pointer,later]}
+    before=path.read_bytes()
+    with pytest.raises(ContractError,match='disposition holds'):c.run()
+    assert path.read_bytes()==before and len(c.calls)==2+int(used)
+    # Surrender does not refund the original grant. The complete history still
+    # includes it and any later recovery needs a new pinned cause.
+    permit=disposition.output_permit(c.adapter,c.binding,path,record)
+    again={'supersedes':disposition.predecessor(permit),'action':'revise-output','clarification':'Retry'}
+    with pytest.raises(ContractError,match='persisted new evidence'):
+        disposition.transition_basis(c.adapter,again,permit,record)
+    row['forfeited_previous_calls']=1 if used else 0
+    report.write_text(json.dumps({'request':{'recovery_scope':disposition.SCOPE},
+        'entries':[{'node':'global-reduce','output_dispositions':[row]}]}))
+    later['report_sha256']=hashlib.sha256(report.read_bytes()).hexdigest()
+    with pytest.raises(ContractError,match='erase consumed attempts'):
+        disposition.output_permit(c.adapter,c.binding,path,record)
+    if used:
+        row.update(preserved_attempt_count=prior['preserved_attempt_count'],
+            prior_attempts_sha256=fingerprint(record['attempts'][:prior['preserved_attempt_count']]))
+        report.write_text(json.dumps({'request':{'recovery_scope':disposition.SCOPE},
+            'entries':[{'node':'global-reduce','output_dispositions':[row]}]}))
+        later['report_sha256']=hashlib.sha256(report.read_bytes()).hexdigest()
+        with pytest.raises(ContractError,match='already reserved attempt'):
+            disposition.output_permit(c.adapter,c.binding,path,record)
