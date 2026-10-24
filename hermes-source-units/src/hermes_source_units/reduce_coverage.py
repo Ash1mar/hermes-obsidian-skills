@@ -113,7 +113,8 @@ def check_request(service, request, *, global_request=False):
             check_decisions(current,run['decisions'])
     else:check_decisions(current,request['decisions'])
     expected=current['proof'].get('run_tasks')
-    if expected is None:fail('scope requires task-isolation certification before materialization')
+    if expected is None or 'partial_task_ids' not in current['proof']:
+        fail('scope requires source-completion isolation certification before materialization')
     if any(r['tasks']!=expected for r in (request['runs'] if global_request else [request])):
         fail('run may contain only tasks supporting the approved page set')
     return scope
@@ -134,6 +135,14 @@ def check_run(service, run):
             'held_page_count':current['manifest']['held_page_count']}
 
 
+def partial_tasks(service,scope):
+    if not scope:return set()
+    current,_=resolve(service,scope);proof=current['proof'];partial=set(proof['partial_task_ids'])
+    if not partial.issubset(t['task_id'] for t in proof['run_tasks']):fail('partial-task partition differs')
+    if partial!={g['task_id'] for g in proof['task_coverage_gaps']}:fail('partial tasks lost their unfinished evidence')
+    return partial
+
+
 def batch_outcome(service,batch):
     if not batch.get('global_reduction_id'):return {}
     record=service._global_reduction(batch['batch_id'],batch['global_reduction_id'])
@@ -151,22 +160,43 @@ def batch_outcome(service,batch):
             'held_page_count':current['manifest']['held_page_count'],
             'deferred_candidate_occurrences':current['manifest']['deferred_candidate_occurrences'],
             'outside_page_scope_task_ids':proof['outside_page_scope_task_ids'],
-            'outside_scope_required_inspection_gaps':proof['outside_scope_required_inspection_gaps']}
+            'outside_scope_required_inspection_gaps':proof['outside_scope_required_inspection_gaps'],
+            'partial_task_ids':proof['partial_task_ids'],'task_coverage_gaps':proof['task_coverage_gaps']}
 
 
 def task_partition(service,tasks,pages):
     """Only actual adopted citation ownership may assign work to a scoped run."""
+    with service.source.reading_snapshot():
+        return _task_partition(service,tasks,pages)
+
+
+def _task_partition(service,tasks,pages):
     from .reading_dependencies import required_reading,citation_dependency_gaps
+    from .validation import canonical_json,validate_references
+    from .knowledge_build import _overlaps
     candidates,records=service._pass_index(t['task_id'] for t in tasks)
-    used=set()
+    used=set();used_passes={};supports={}
     for page in pages:
         for ref in page['candidate_refs']:
             match=candidates.get((ref['pass_id'],ref['candidate_id']))
             if not match or match[0]['pass_kind']!='citation':fail('scoped support is not a current citation')
-            used.add(match[0]['task_id'])
-    selected=[];outside=[];gaps=[]
+            record,candidate=match;used.add(record['task_id']);used_passes[record['pass_id']]=record
+            supports.setdefault(record['task_id'],[]).extend(candidate['support_refs'])
+    task_records={t['task_id']:service._task(t['task_id']) for t in tasks}
+    def pass_refs(record):
+        return [i['source_ref'] for i in record['inspections']]+[r for c in record['candidates'] for r in c['support_refs']]
+    def task_refs(task):
+        return [*task['target_refs'],*[i['source_ref'] for i in task['inspections']],*[i['source_ref'] for i in task['deferred']]]
+    refs=[r for p in used_passes.values() for r in pass_refs(p)]
+    refs.extend(r for t in task_records.values() for r in task_refs(t))
+    actor=next(iter(task_records.values()))['actor']
+    index={canonical_json(u['ref']):u for u in service._live_units(refs,actor,service._document_registry_revision())}
+    def units_for(refs):
+        return [index[k] for k in dict.fromkeys(canonical_json(r['unit_ref']) for r in refs)]
+    for record in used_passes.values():validate_references('knowledge_pass',record,units_for(pass_refs(record)))
+    selected=[];outside=[];gaps=[];partial=[];coverage_gaps=[]
     for snapshot in tasks:
-        tid=snapshot['task_id'];task=service._task(tid)
+        tid=snapshot['task_id'];task=task_records[tid]
         if task['revision']!=snapshot['revision']:fail('task revision changed during isolation')
         package=service._existing_reading_package(task,task['actor'],service._document_registry_revision())
         missing=[]
@@ -174,9 +204,23 @@ def task_partition(service,tasks,pages):
             _,supplement=required_reading(service.source,package)
             missing=citation_dependency_gaps(service.source,package,records[tid][-1],supplement)
         if tid in used:
-            if missing or task['deferred']:fail('an allowed page depends on unfinished required inspection')
+            if missing or any(_overlaps(d['source_ref'],r) for d in task['deferred'] for r in supports[tid]):
+                fail('an allowed page depends on unfinished required inspection')
+            probe={**task,'status':'completed','deferred':[],
+                'outputs':['_system/knowledge-builds/pending.md'],'reason':'scope completion probe'}
+            error=None
+            try:validate_references('work',probe,units_for(task_refs(task)))
+            except ContractError as exc:
+                if exc.code not in ('INCOMPLETE_COVERAGE','INVALID_COMPLETION'):raise
+                error={'code':exc.code,'reason':str(exc)}
+            if error or task['deferred']:
+                partial.append(tid);coverage_gaps.append({'task_id':tid,'completion_error':error,
+                    'target_refs':task['target_refs'],'inspections':task['inspections'],'deferred':task['deferred'],
+                    'completed':False})
             selected.append(snapshot)
         else:
             outside.append(tid);gaps.extend(missing)
     return {'run_tasks':selected,'outside_page_scope_task_ids':outside,
-            'outside_scope_required_inspection_gaps':gaps}
+            'outside_scope_required_inspection_gaps':gaps,'partial_task_ids':partial,
+            'task_coverage_gaps':coverage_gaps,'adopted_citation_passes_checked':len(used_passes),
+            'citation_support_failures':0}

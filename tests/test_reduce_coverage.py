@@ -28,7 +28,7 @@ def fixture(tmp_path):
         'approval_sha256':approval_sha,'pages':[page],'new_model_calls_granted':0,
         'omitted_candidate_refs':[{'pass_id':'pass','candidate_id':'gap'}],
         'run_tasks':[{'task_id':'owned','revision':1}],'outside_page_scope_task_ids':['outside'],
-        'outside_scope_required_inspection_gaps':[]}
+        'outside_scope_required_inspection_gaps':[],'partial_task_ids':[],'task_coverage_gaps':[]}
     request={'recovery_scope':'reduce-coverage/v1','workflow_id':w['workflow_id'],'actor':'agent','input_digest':'d'}
     report={'request':request,'batch_id':'batch','entries':[{'coverage_admission':proof}]}
     report_sha=save('admission.json',report)
@@ -166,12 +166,20 @@ def test_reopen_preserves_domain_and_pause_history_with_crash_replay(vault,monke
 from test_p3_knowledge_build import vault
 
 
-def test_scoped_global_validate_and_finalize_leave_unowned_tasks_unfinished(vault,tmp_path,monkeypatch):
+@pytest.mark.parametrize('partial_source',[False,True])
+def test_scoped_global_validate_and_finalize_leave_unowned_tasks_unfinished(vault,tmp_path,monkeypatch,partial_source):
     from test_p3_knowledge_build import prepare_layered_reduce_batch,resource_reduce_requests
     from hermes_source_units.reduce_coverage import task_partition
     import hermes_source_units.reduce_coverage as coverage
     from hermes_source_units.ingest_workflow import FileIngestWorkflowService
     k,_,citations,tasks=prepare_layered_reduce_batch(vault,'scope-integration')
+    if partial_source:
+        from hermes_source_units.source_units import _write_atomic
+        task=k._task(tasks[0]['task_id']);ref=task['inspections'][0]['source_ref']
+        unit=next(u for u in k._live_units([ref],'agent',1) if u['ref']==ref['unit_ref'])
+        start=unit['locator']['span']['start']
+        task['inspections'][0]['source_ref']={**ref,'span':{'start':start,'end':start+1}}
+        _write_atomic(k._task_path(task['task_id']),_json_bytes(task))
     requests=resource_reduce_requests('scope-integration',citations,tasks)
     reductions=[k.reduce_resource(r)['reduction'] for r in requests]
     c=fixture(tmp_path/'authority');c.w['batch_id']='scope-integration'
@@ -193,6 +201,7 @@ def test_scoped_global_validate_and_finalize_leave_unowned_tasks_unfinished(vaul
     validation=k.validate_batch('scope-integration')
     assert validation['ok'] and validation['coverage_complete'] is False
     assert validation['uncovered_task_ids']==c.scope['proof']['outside_page_scope_task_ids']
+    assert bool(validation['partial_task_ids'])==partial_source
     page=json.loads(k._run_path(run['run_id']).read_bytes())['page_revisions'][0]
     result=k.finalize_batch({'batch_id':'scope-integration','actor':'agent','finalizations':[{
         'run_id':run['run_id'],'actor':'agent','expected_revision':1,'reviews':[{
@@ -202,6 +211,10 @@ def test_scoped_global_validate_and_finalize_leave_unowned_tasks_unfinished(vaul
     outside=c.scope['proof']['outside_page_scope_task_ids'][0]
     assert k._task(outside)['status']=='running'
     assert k._task(outside)['revision']==next(t['revision'] for t in tasks if t['task_id']==outside)
+    if partial_source:
+        assert k._task(tasks[0]['task_id'])['status']=='running'
+        assert k._task(tasks[0]['task_id'])['revision']==tasks[0]['revision']
+        assert k.validate_batch('scope-integration')['ok']
 
 
 def test_task_partition_cannot_isolate_missing_evidence_of_an_adopted_claim(vault,monkeypatch):

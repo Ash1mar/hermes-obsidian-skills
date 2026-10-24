@@ -1962,6 +1962,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
     def reduce(self, request: Mapping[str, Any]) -> dict[str, Any]:
         from .reduce_coverage import check_request
         scope=check_request(self,request)
+        from .reduce_coverage import partial_tasks
+        partial_task_ids=partial_tasks(self,scope)
         run_id, actor = str(request["run_id"]), str(request["actor"])
         path = self._run_path(run_id)
         task_snapshots = list(request["tasks"])
@@ -1989,9 +1991,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             completion_probe = {**task, "status": "completed", "deferred": [],
                                 "outputs": ["_system/knowledge-builds/pending.md"],
                                 "reason": "coverage probe"}
-            if task["deferred"]:
+            if task["deferred"] and task['task_id'] not in partial_task_ids:
                 _fail("INCOMPLETE_COVERAGE", "Reduce cannot consume a task with deferred target ranges")
-            if not task["inspections"]:
+            if not task["inspections"] and task['task_id'] not in partial_task_ids:
                 _fail("INCOMPLETE_COVERAGE", "context inspection does not cover the task target")
             package=self._existing_reading_package(task,actor,int(request['document_registry_revision']))
             if package is not None:
@@ -2000,7 +2002,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 if any(not any(_covers(i['source_ref'],ref) for i in passes[-1]['inspections'])
                        for ref in supplement['required_refs']):
                     _fail('INCOMPLETE_COVERAGE','required table dependency lacks citation inspection; historical records retained')
-            validate_references("work", completion_probe, task_units)
+            if task['task_id'] not in partial_task_ids:
+                validate_references("work", completion_probe, task_units)
         subjects = {item["subject_id"]: item for item in registry["subjects"]}
         paths = {item["current_path"]: item["subject_id"] for item in registry["subjects"]
                  if item["status"] == "active"}
@@ -2578,8 +2581,14 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         validate_record("identity_registry", proposed_registry)
         proposed_tasks: list[tuple[Path, dict[str, Any]]] = []
         task_refs: list[dict[str, Any]] = []
+        from .reduce_coverage import partial_tasks
+        partial_task_ids=partial_tasks(self,run.get('coverage_scope'))
         for snapshot in run["tasks"]:
             task = self._task(snapshot["task_id"])
+            if task['task_id'] in partial_task_ids:
+                if task['revision']!=snapshot['revision'] or task['status']!='running':
+                    _fail('REVISION_CONFLICT','unfinished scoped source task changed')
+                continue
             if task["revision"] == snapshot["revision"]:
                 task.update({"status": "completed", "revision": task["revision"] + 1,
                              "outputs": sorted(outputs_by_task[task["task_id"]]),
@@ -2652,10 +2661,12 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 try:
                     result = self.validate_run(run_id)
                     run = _load_json(self._run_path(run_id))
+                    from .reduce_coverage import partial_tasks
+                    partial_task_ids=partial_tasks(self,run.get('coverage_scope'))
                     snapshot_ids = []
                     for snapshot in run["tasks"]:
                         task = self._task(snapshot["task_id"])
-                        if run["state"] == "draft":
+                        if run["state"] == "draft" or task['task_id'] in partial_task_ids:
                             if (task["revision"] != snapshot["revision"] or task["status"] != "running"
                                     or task["actor"] != run["actor"]):
                                 _fail("REVISION_CONFLICT", "draft run task changed after Reduce")
@@ -2753,7 +2764,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 run_states.append(_load_json(path).get("state") if path.is_file() else "missing")
             all_runs_completed = bool(run_states) and all(state == "completed" for state in run_states)
             task_states = [self._task(task_id)["status"] for task_id in batch["task_ids"]
-                           if task_id not in scope_outcome.get('outside_page_scope_task_ids',[])]
+                           if task_id not in set(scope_outcome.get('outside_page_scope_task_ids',[]))|set(scope_outcome.get('partial_task_ids',[]))]
             completed = all_runs_completed and all(state in ("completed", "skipped") for state in task_states)
             blocked = bool(failures) or any(state in ("blocked", "failed") for state in task_states)
             state = "completed" if completed else ("blocked" if blocked else "finalizing")

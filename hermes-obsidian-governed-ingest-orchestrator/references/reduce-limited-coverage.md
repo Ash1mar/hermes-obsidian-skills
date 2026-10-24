@@ -11,6 +11,15 @@ complete. Required inspection gaps in those tasks remain explicitly listed;
 any such gap in an adopted task still blocks admission. The complete source
 task set remains pinned and accounted separately from page-run membership.
 
+Adopted citation support must pass exact reference/inspection validation. Whole
+source-task coverage is a separate check. A partially inspected task can support
+an inspected page subset only when no adopted support intersects its deferred
+ranges and no required dependency is unread. Its original remaining targets,
+inspections and deferrals are recorded as unfinished. Scoped Reduce does not
+claim task completion; even a later approved page Finalize leaves these tasks'
+status, revision and outputs unchanged. Full-scope operations keep the original
+whole-task coverage requirement.
+
 When an implementation correction requires recertification before any formal
 run exists, use the same scope with the exact prior scope reference and pinned
 new cause. The approved manifest cannot change. Reuse the admitted native proof
