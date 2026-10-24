@@ -1982,6 +1982,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
              *[item["source_ref"] for item in task["inspections"]],
              *[item["source_ref"] for item in task["deferred"]]]],
             actor, int(request["document_registry_revision"]))
+        scoped_unit_index=({canonical_json(u['ref']):u for u in task_units} if scope else None)
         for task in tasks:
             passes = passes_by_task.get(task["task_id"], [])
             if not passes or passes[0]["sequence"] != 0 or passes[0]["pass_kind"] != "candidate":
@@ -2003,7 +2004,11 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                        for ref in supplement['required_refs']):
                     _fail('INCOMPLETE_COVERAGE','required table dependency lacks citation inspection; historical records retained')
             if task['task_id'] not in partial_task_ids:
-                validate_references("work", completion_probe, task_units)
+                units=task_units
+                if scoped_unit_index is not None:
+                    refs=[*task['target_refs'],*[i['source_ref'] for i in task['inspections']],*[d['source_ref'] for d in task['deferred']]]
+                    units=[scoped_unit_index[k] for k in dict.fromkeys(canonical_json(r['unit_ref']) for r in refs)]
+                validate_references("work", completion_probe, units)
         subjects = {item["subject_id"]: item for item in registry["subjects"]}
         paths = {item["current_path"]: item["subject_id"] for item in registry["subjects"]
                  if item["status"] == "active"}
