@@ -66,9 +66,14 @@ def output_permit(adapter, binding, path, record):
         expected = predecessor(previous) if previous else None
         if row.get('supersedes') != expected:
             fail('one explicit disposition chain per logical output; another ID cannot reset budget')
-        if previous and row['preserved_attempt_count'] < previous['preserved_attempt_count']+previous['additional_calls']:
-            fail('disposition chain cannot erase consumed attempts')
-        for item in row.get('basis',[]):
+        forfeited = row.get('forfeited_previous_calls', 0)
+        if (type(forfeited) is not int or forfeited < 0 or not previous and forfeited
+                or forfeited and (row['action'] != 'defer' or row['additional_calls'] != 0
+                    or forfeited > previous['additional_calls'])):
+            fail('only a nonexecuting deferral can surrender unused authority')
+        if previous and row['preserved_attempt_count'] != previous['preserved_attempt_count']+previous['additional_calls']-forfeited:
+            fail('disposition chain cannot erase consumed attempts or reset surrendered calls')
+        for item in row.get('basis') or []:
             if hashlib.sha256(_vault_path(adapter.workflow.vault,item['ref']).read_bytes()).hexdigest()!=item['sha256']:
                 fail('transition evidence changed')
         previous = row
@@ -86,7 +91,15 @@ def transition_basis(adapter, row, previous, record):
     """A changed ID/reason alone is never new recovery authority."""
     if row.get('supersedes') != predecessor(previous):
         fail('transition must pin the exact preceding disposition')
-    if len(record['attempts']) != previous['preserved_attempt_count'] + previous['additional_calls']:
+    consumed = len(record['attempts']) - previous['preserved_attempt_count']
+    if row.get('action') == 'defer':
+        if not 0 <= consumed <= previous['additional_calls']:
+            fail('deferral must preserve the exact preceding attempt prefix')
+        # A deferral grants no call and may surrender an unused reservation.
+        # Its reason/current attempt prefix are sealed by verify(); new evidence
+        # is necessary to recover later, not to record an unresolved failure.
+        return None, None
+    if consumed != previous['additional_calls']:
         fail('use or resolve the previous authority before another disposition')
     basis = row.get('basis')
     clarification = row.get('clarification')
@@ -252,6 +265,9 @@ def verify(adapter, workflow, node, binding, entry, failure, runs):
         if previous:
             sealed[-1].update(supersedes=predecessor(previous),basis=basis,
                 cumulative_additional_calls=sum(r['additional_calls'] for r in history)+extra)
+            if action == 'defer':
+                sealed[-1]['forfeited_previous_calls'] = previous['additional_calls'] - (
+                    len(attempts) - previous['preserved_attempt_count'])
         if action == 'revise-page-plan':
             sealed[-1].update(planning_calls=1, child_body_calls=4,
                 rule='one native local plan; at most four children, each one body call; preserve every candidate')
