@@ -37,7 +37,8 @@ def successor_delta(prior, successor, selected_ids):
             or successor.get('supersedes_pass_id') != prior['pass_id']
             or not successor.get('revision_id') or successor['sequence'] != prior['sequence'] + 1
             or any(prior[k] != successor[k] for k in (
-                'task_id', 'actor', 'reading_window_id', 'reading_package_id'))):
+                'task_id', 'actor', 'reading_window_id', 'reading_package_id'))
+            or any(prior.get(k) != successor.get(k) for k in ('batch_id', 'reading_package_fingerprint'))):
         fail('successor must retain the original task, source window and immediate predecessor')
     old = {c['candidate_id']: c for c in prior['candidates']}
     new = {c['candidate_id']: c for c in successor['candidates']}
@@ -112,7 +113,10 @@ def preview(service, workflow, selections):
             fail('citation predecessor fingerprint changed')
         package = pin(f'_system/knowledge-builds/task-{tid}/readings/{prior["reading_package_id"]}.json')
         k._reading_package_fingerprint(package, prior['reading_package_id'])
-        if package['window']['core_refs'] != task['target_refs']:
+        if (package['window']['core_refs'] != task['target_refs']
+                or prior['reading_window_id'] != package['window']['window_id']
+                or package['actor'] != workflow['actor'] or prior['actor'] != workflow['actor']
+                or package['document_registry_revision'] != batch['document_registry_revision']):
             fail('citation reading window differs from task ownership')
         candidates = {c['candidate_id']: c for c in prior['candidates']}
         chosen = selection.get('candidate_ids', [])

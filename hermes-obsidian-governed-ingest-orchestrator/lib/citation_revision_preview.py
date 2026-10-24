@@ -33,6 +33,9 @@ def inspect(adapter, request, *, dry_run):
         service.assert_execution_ready(value)
         service._verify_execution_evidence(value)
         with _exclusive_lock(service.knowledge._batch_lock_path(value['batch_id'])):
+            if any(s['state'] == 'leased' or s['lease']['worker_id']
+                   for s in service.knowledge._slices(value['batch_id'])):
+                fail('live slice leases block citation inspection')
             report = preview(service, value, request.get('selections', []))
         return {'ok': True, 'applied': False, 'resumed': False,
                 'new_model_calls_granted': 0, 'impact': report}
