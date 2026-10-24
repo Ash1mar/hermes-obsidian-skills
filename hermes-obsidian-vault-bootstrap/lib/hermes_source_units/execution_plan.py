@@ -127,8 +127,6 @@ class ExecutionPlanMixin:
     def assert_execution_ready(self, workflow):
         pending=_vault_path(self.vault,f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/coverage-reopen.pending.json")
         if pending.exists():fail('EXECUTION_PLAN_PENDING','finish the exact pending coverage reopen before dispatch')
-        from .reduce_coverage import active
-        active(self.vault,workflow)
         self.verify_pass_skips(workflow)
         if self._execution_journal(workflow['workflow_id']).exists():
             fail('EXECUTION_PLAN_PENDING', 'finish the authorized amendment before resume/dispatch')
@@ -206,6 +204,8 @@ class ExecutionPlanMixin:
                     or any(key in recovered for key in keys)):
                 fail('STALE_INPUT', 'execution recovery identity changed or repeated')
             recovered.update(keys)
+        from .reduce_coverage import active
+        active(self.vault,workflow)
         plan = self.execution_plan(workflow)
         batch_ref = self.knowledge._batch(workflow['batch_id']).get('execution_plan_ref') if workflow['batch_id'] else None
         workflow_ref = workflow.get('execution_plan', {}).get('path')

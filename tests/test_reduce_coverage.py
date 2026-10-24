@@ -52,6 +52,7 @@ def test_exact_scope_requires_bound_native_worker_and_exact_gaps(tmp_path,monkey
     import hermes_source_units.reduce_coverage as coverage
     monkeypatch.setattr(coverage,'resolve',lambda *_:(c.scope,c.w))
     from hermes_source_units.ingest_workflow import FileIngestWorkflowService
+    monkeypatch.setattr(FileIngestWorkflowService,'__init__',lambda *_:None)
     monkeypatch.setattr(FileIngestWorkflowService,'status',lambda *_:c.w)
     run={'actor':'agent','coverage_scope':c.scope['ref'],'decisions':[{**c.page,'content':c.content}]}
     req={'batch_id':'batch','actor':'agent','coverage_scope':c.scope['ref'], 'runs':[run],
@@ -120,6 +121,7 @@ def test_reopen_preserves_domain_and_pause_history_with_crash_replay(vault,monke
     path.write_text(json.dumps({'state':'draft','coverage_scope':scope['ref']}))
     monkeypatch.setattr(a.workflow.knowledge,'_global_reduction',lambda *_:{'coverage_scope':scope['ref']})
     # A real ended validator identity is required; fixture board uses an archived card.
+    w['kanban']['task_map']=[c for c in w['kanban']['task_map'] if c['node']!='checkpoint-1-validate']
     w['kanban']['task_map'].append({**card,'node':'checkpoint-1-validate'})
     a.workflow._write(w)
     basis='_system/new-cause.json';(vault/basis).write_text('{"cause":"new evidence"}')

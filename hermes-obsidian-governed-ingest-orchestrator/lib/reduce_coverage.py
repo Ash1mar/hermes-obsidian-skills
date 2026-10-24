@@ -32,9 +32,14 @@ def verify_pages(adapter,binding,value,manifest,prove):
     destinations=routes(value,manifest['allowed_pages']+manifest['gaps'])
     from urllib.parse import unquote,urlsplit
     import posixpath,re
-    gaps={destinations[p['path']] for p in manifest['gaps']}
+    gaps={destinations[p['path']].casefold() for p in manifest['gaps']}
     gap_names={p['identity']['canonical_name'] for p in manifest['gaps']}
     gap_names.update(a for p in manifest['gaps'] for a in p['identity'].get('aliases',[]))
+    gap_names={n.casefold() for n in gap_names}
+    for p in manifest['gaps']:
+        for path in (p['path'],destinations[p['path']]):
+            gap_names.update((path.casefold(),path.removesuffix('.md').casefold(),
+                posixpath.basename(path).removesuffix('.md').casefold()))
     for row in manifest['allowed_pages']:
         page={k:copy.deepcopy(row[k]) for k in ('identity','path','candidate_refs')}
         view,size=measure(adapter,value,page,HermesCaller(),prepare_request_projection)
@@ -55,13 +60,13 @@ def verify_pages(adapter,binding,value,manifest,prove):
         # Explicit authored links cannot introduce a dependency on a held page.
         # This checks actual Markdown/wiki edges, not broad source proximity.
         for target in re.findall(r'!?\[\[([^\]]+)\]\]',compiled):
-            target=target.split('|')[0].split('#')[0]
+            target=unquote(target.split('|')[0].split('#')[0]).casefold()
             if target in gap_names or target in gaps or target+'.md' in gaps:fail('allowed page links to a held page')
         for href in re.findall(r'!?\[[^\]]*\]\(([^\s)]+)(?:\s+"[^"]*")?\)',compiled):
             parsed=urlsplit(href.strip('<>'))
             if not parsed.scheme and parsed.path:
                 target=posixpath.normpath(posixpath.join(posixpath.dirname(destinations[row['path']]),unquote(parsed.path)))
-                if target in gaps:fail('allowed page depends on deferred content')
+                if target.casefold() in gaps:fail('allowed page depends on deferred content')
         written.append({**page,'draft_ref':expected,'audit_ref':row['audit_ref'],'input_sha256':row['input_sha256']})
     return written
 

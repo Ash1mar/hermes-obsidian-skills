@@ -79,7 +79,7 @@ def recover(adapter,request,*,dry_run=False):
                 new.update(current_stage='reducing',resume_stage='reducing',revision=value['revision']+1)
                 new['pause_control']={'boundary':None,'evidence_digest':None,'report_ref':None,'history':value['pause_control']['history']}
                 new['checkpoints']['checkpoint_1']={'state':'pending','approval_digest':None,'approved_by':None,'decision_ref':None,'decision_sha256':None}
-                newbatch.update(run_ids=[],global_reduction_id=None,revision=batch['revision']+1,last_operation='coverage_reopen')
+                newbatch.update(run_ids=[],global_reduction_id=None,revision=batch['revision']+1,last_operation='amend-execution')
                 writes=[{'ref':ref,'old_sha256':None,'data':data.decode()},
                     {'ref':service.knowledge._batch_path(batch['batch_id']).relative_to(service.vault).as_posix(),
                      'old_sha256':hashlib.sha256(service.knowledge._batch_path(batch['batch_id']).read_bytes()).hexdigest(),'data':_json_bytes(newbatch).decode()},
