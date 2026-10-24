@@ -291,7 +291,7 @@ def test_validator_recovery_preserves_drafts_and_grants_no_domain_calls(tmp_path
     c=fixture(tmp_path);c.save('run.json',{'state':'draft'});c.save('global.json',{'state':'completed'})
     digest=c.save('basis.json',{'cause':'confirmed validator correction'})
     monkeypatch.setattr(coverage,'batch_outcome',lambda *_:{'coverage_complete':False})
-    k=SimpleNamespace(_batch=lambda _:{'global_reduction_id':'global','run_ids':['run']},
+    k=SimpleNamespace(_batch=lambda _:{'batch_id':'batch','global_reduction_id':'global','run_ids':['run']},
         _run_path=lambda _:tmp_path/'run.json',validate_run=lambda _:{'ok':True},
         _global_reduction_path=lambda *_:tmp_path/'global.json')
     a=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,knowledge=k))
