@@ -262,3 +262,43 @@ def test_admitted_proof_reuse_checks_seals_and_preserves_receipt_append(tmp_path
     elif changed=='source':c.save('source.json',{**source,'view':{'changed':True}})
     else:c.save('audit.json',{'response_sha256':'changed'})
     with pytest.raises(ContractError):execution.reuse_pages(adapter,source,c.scope)
+
+
+@pytest.mark.parametrize('case',['approved','unauthorized','changed_status'])
+def test_batch_partition_preserves_prior_authorized_exclusions(tmp_path,monkeypatch,case):
+    import hermes_source_units.reduce_coverage as coverage
+    from hermes_source_units.ingest_workflow import FileIngestWorkflowService
+    c=fixture(tmp_path)
+    monkeypatch.setattr(coverage,'resolve',lambda *_:(c.scope,c.w))
+    monkeypatch.setattr(FileIngestWorkflowService,'__init__',lambda *_:None)
+    monkeypatch.setattr(FileIngestWorkflowService,'verify_pass_skips',lambda *_:[])
+    monkeypatch.setattr(FileIngestWorkflowService,'skipped_pass_tasks',lambda *_:set() if case=='unauthorized' else {'skipped'})
+    batch={'batch_id':'batch','global_reduction_id':'global','run_ids':['run'],'task_ids':['owned','outside','skipped']}
+    service=SimpleNamespace(vault=tmp_path,_task=lambda _:{'status':'running' if case=='changed_status' else 'skipped'},
+        _global_reduction=lambda *_:{'coverage_scope':c.scope['ref'],
+            'omitted_candidate_refs':c.scope['proof']['omitted_candidate_refs'],'run_ids':['run']})
+    if case!='approved':
+        with pytest.raises(ContractError):coverage.batch_outcome(service,batch)
+    else:
+        result=coverage.batch_outcome(service,batch)
+        assert result['previously_excluded_task_ids']==['skipped']
+        assert result['coverage_complete'] is False and result['previous_exclusions_completed'] is False
+
+
+def test_validator_recovery_preserves_drafts_and_grants_no_domain_calls(tmp_path,monkeypatch):
+    import reduce_coverage as execution
+    import hermes_source_units.reduce_coverage as coverage
+    c=fixture(tmp_path);c.save('run.json',{'state':'draft'});c.save('global.json',{'state':'completed'})
+    digest=c.save('basis.json',{'cause':'confirmed validator correction'})
+    monkeypatch.setattr(coverage,'batch_outcome',lambda *_:{'coverage_complete':False})
+    k=SimpleNamespace(_batch=lambda _:{'global_reduction_id':'global','run_ids':['run']},
+        _run_path=lambda _:tmp_path/'run.json',validate_run=lambda _:{'ok':True},
+        _global_reduction_path=lambda *_:tmp_path/'global.json')
+    a=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,knowledge=k))
+    before={p:p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    result=execution.verify_validator(a,c.w,SimpleNamespace(name='checkpoint-1-validate'),{},
+        {'basis':[{'ref':'basis.json','sha256':digest}]})
+    assert result['validator_recovery']['new_model_calls_granted']==0
+    assert result['validator_recovery']['domain_outputs_preserved']
+    assert before=={p:p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
+    with pytest.raises(ContractError):execution.verify_validator(a,c.w,SimpleNamespace(name='global-reduce'),{}, {'basis':[]})

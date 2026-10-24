@@ -50,9 +50,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
     if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', rid):
         fail('INVALID_SCHEMA', 'invalid recovery ID')
     scope=request.get('recovery_scope')
-    if scope not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1'):
+    if scope not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1','reduce-validation/v1'):
         fail('INVALID_SCHEMA', 'Reduce recovery requires a supported explicit correction scope')
-    if scope in ('reduce-coverage/v1','reduce-coverage-reopen/v1'):
+    if scope in ('reduce-coverage/v1','reduce-coverage-reopen/v1','reduce-validation/v1'):
         from reduce_coverage import contract_hash
         if request.get('target_contract_sha256')!=contract_hash():fail('STALE_INPUT','coverage contract changed')
         if scope=='reduce-coverage-reopen/v1':
@@ -122,7 +122,8 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
             for entry in entries:
                 name = entry.get('node')
                 node = nodes.get(name)
-                if not node or node.kind not in ('resource-reduce', 'global-reduce'):
+                permitted_kinds=('checkpoint-1-validate',) if scope=='reduce-validation/v1' else ('resource-reduce','global-reduce')
+                if not node or node.kind not in permitted_kinds:
                     fail('INVALID_TRANSITION', 'only interrupted resource/global Reduce can recover')
                 if domain_completed(service, value, node) and not review:
                     fail('INVALID_TRANSITION', 'reuse completed Reduce through trusted reconciliation, never regenerate it')
@@ -157,6 +158,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 allowed=(('SEMANTIC_REVIEW_REQUIRED','SEMANTIC_OUTPUT_HELD','INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','NATIVE_COMPLETION_UNKNOWN','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED') if scope in ('reduce-disposition/v1','reduce-coverage/v1') else ('INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','INVALID_TRANSITION','READING_WINDOW_OVERSIZE') if scope=='semantic-output/v1' else ('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
                     ('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED'))
                 if scope=='reduce-coverage/v1':allowed=(*allowed,'REDUCTION_FAILED')
+                if scope=='reduce-validation/v1':allowed=('COVERAGE_SCOPE_INVALID','VALIDATION_FAILED','PROGRAM_EXECUTION_FAILED','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED')
                 if not review and ((report.get('error_code') not in allowed and not call_failure) or (scope in ('source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3') and node.kind!='resource-reduce')):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
                 snap = adapter.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
@@ -169,13 +171,14 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 original=cancelled_projection_binding(adapter,value,node,card,report,binding,path,snap) if projection else None
                 body = json.loads(task.get('body', '{}'))
                 template_hash = next(p['template_hash'] for p in value['template_pins'] if p['kind'] == node.kind)
+                expected_executor='program-v1' if scope=='reduce-validation/v1' else 'semantic-v1'
                 if (task.get('created_by') != 'ingest-workflow'
-                        or executor_for(node.kind, templates[node.kind]) != 'semantic-v1'
+                        or executor_for(node.kind, templates[node.kind]) != expected_executor
                         or any(binding.get(k) != v for k, v in {
                             'workflow_id': wid, 'node': name, 'task_id': binding['task_id'] if projection else card['task_id'], 'actor': value['actor'],
                             'input_fingerprint': node.input_fingerprint, 'template_hash': template_hash}.items())
                         or any(body.get(k) != v for k, v in {
-                            'workflow_id': wid, 'node': name, 'vault': str(service.vault), 'executor': 'semantic-v1',
+                            'workflow_id': wid, 'node': name, 'vault': str(service.vault), 'executor': expected_executor,
                             'input_fingerprint': node.input_fingerprint, 'worker_binding': str(path),
                             'template_hash': template_hash}.items())):
                     fail('STALE_INPUT', 'native card or pinned worker binding changed')
@@ -197,6 +200,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 if scope=='reduce-coverage/v1':
                     from reduce_coverage import verify
                     audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))
+                if scope=='reduce-validation/v1':
+                    from reduce_coverage import verify_validator
+                    audited[-1].update(verify_validator(adapter,value,node,binding,entry))
                 if call_failure:
                     from native_call_state import recovery_evidence
                     audited[-1].update(recovery_evidence(adapter,value,binding,runs))

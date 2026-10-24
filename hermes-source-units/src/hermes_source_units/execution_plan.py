@@ -22,7 +22,7 @@ def fail(code, message):
 
 def execution_recovery_key(scope,entry):
     """Shared admission/replay identity; journals separately enforce call budget."""
-    cause=(entry.get('previous_task_id') if scope in ('reduce-cancel/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1')
+    cause=(entry.get('previous_task_id') if scope in ('reduce-cancel/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1','reduce-validation/v1')
            else packet_recovery_cause(entry.get('failure',{})) if scope=='revision-citation-packet/v1' else None)
     return entry['node'],scope,cause
 
@@ -195,6 +195,12 @@ class ExecutionPlanMixin:
                         or any(r.get('additional_calls') not in (0,1) or not r.get('prior_attempts_sha256')
                             or r.get('attempt_ordinal')!=r.get('preserved_attempt_count',-1)+1 for r in rows)):
                         fail('STALE_INPUT','Reduce disposition lacks sealed attempts and finite explicit authority')
+                if scope=='reduce-validation/v1':
+                    proof=entry.get('validator_recovery',{})
+                    if (entry['node']!='checkpoint-1-validate' or not proof.get('draft_runs')
+                            or proof.get('new_model_calls_granted')!=0 or proof.get('domain_outputs_preserved') is not True
+                            or proof.get('pause_released') is not False or not proof.get('basis')):
+                        fail('STALE_INPUT','validator recovery must preserve domain products and pause authority')
                 keys.append(execution_recovery_key(scope,entry))
             if (request['workflow_id'] != workflow['workflow_id']
                     or request['actor'] != workflow['actor']

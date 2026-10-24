@@ -20,6 +20,16 @@ claim task completion; even a later approved page Finalize leaves these tasks'
 status, revision and outputs unchanged. Full-scope operations keep the original
 whole-task coverage requirement.
 
+Existing authorized Pass exclusions remain a third, separate partition of the
+original batch. Recheck their immutable skip audit and current skipped status;
+never count them complete or silently require page-run assignment for them.
+
+For a corrected deterministic checkpoint validator, the same recovery entry
+accepts `recovery_scope=reduce-validation/v1`. It pins the ended program card,
+failure, current code contract and correction evidence; checks the existing
+global result and every draft run; and creates only a new validator execution.
+It grants no domain calls, changes no draft/native output, and releases no pause.
+
 When an implementation correction requires recertification before any formal
 run exists, use the same scope with the exact prior scope reference and pinned
 new cause. The approved manifest cannot change. Reuse the admitted native proof

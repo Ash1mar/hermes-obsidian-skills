@@ -11,6 +11,7 @@ from hermes_source_units.reduce_coverage import active,pinned,fail
 def contract_hash():
     root=Path(__file__).parent
     names=['reduce_coverage.py','reduce_coverage_reopen.py','fixed_page_work.py','fixed_reduce.py',
+           'reduce_execution_recovery.py','hermes_source_units/execution_plan.py',
            'hermes_source_units/reduce_coverage.py','hermes_source_units/knowledge_build.py',
            'hermes_source_units/schemas/contracts.json']
     return fingerprint({n:hashlib.sha256((root/n).read_bytes()).hexdigest() for n in names})
@@ -183,6 +184,29 @@ def verify(adapter,workflow,node,binding,entry,failure,runs):
         proof['reused_native_authorization']=previous['ref']
         result.update(supersedes_scope=previous['ref'],basis=entry['basis'])
     return result
+
+
+def verify_validator(adapter,workflow,node,binding,entry):
+    """Retry only a deterministic validator; preserve every native domain result."""
+    if node.name!='checkpoint-1-validate':fail('validation recovery owns checkpoint_1 validation only')
+    knowledge=adapter.workflow.knowledge;batch=knowledge._batch(workflow['batch_id'])
+    if not batch.get('global_reduction_id') or not batch['run_ids']:fail('reuse a durable global result before validation retry')
+    basis=entry.get('basis',[])
+    if not basis or len(basis)>8:fail('validator retry needs a pinned correction cause')
+    for item in basis:pinned(adapter.workflow.vault,item['ref'],item['sha256'])
+    checks=[]
+    for rid in batch['run_ids']:
+        path=knowledge._run_path(rid);knowledge.validate_run(rid)
+        checks.append({'run_id':rid,'manifest_ref':path.relative_to(adapter.workflow.vault).as_posix(),
+                       'manifest_sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+    from hermes_source_units.reduce_coverage import batch_outcome
+    outcome=batch_outcome(knowledge,batch)
+    path=knowledge._global_reduction_path(batch['batch_id'],batch['global_reduction_id'])
+    return {'validator_recovery':{'global_reduction_id':batch['global_reduction_id'],
+        'global_ref':path.relative_to(adapter.workflow.vault).as_posix(),
+        'global_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'draft_runs':checks,
+        'basis':basis,'new_model_calls_granted':0,'domain_outputs_preserved':True,
+        'coverage_complete':outcome.get('coverage_complete'),'pause_released':False}}
 
 
 def execute(adapter,binding,value,state,scope):

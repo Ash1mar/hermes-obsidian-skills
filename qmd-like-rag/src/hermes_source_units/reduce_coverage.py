@@ -152,8 +152,14 @@ def batch_outcome(service,batch):
     if w['batch_id']!=batch['batch_id'] or record['omitted_candidate_refs']!=current['proof']['omitted_candidate_refs']:
         fail('global gap accounting differs')
     proof=current['proof']
-    if set(batch['task_ids'])!={t['task_id'] for t in proof['run_tasks']}|set(proof['outside_page_scope_task_ids']):
+    from .ingest_workflow import FileIngestWorkflowService
+    workflow_service=FileIngestWorkflowService(service.vault)
+    workflow_service.verify_pass_skips(w)
+    excluded=workflow_service.skipped_pass_tasks(w)
+    covered={t['task_id'] for t in proof['run_tasks']}|set(proof['outside_page_scope_task_ids'])
+    if covered & excluded or set(batch['task_ids'])!=covered|excluded:
         fail('batch task partition differs')
+    if any(service._task(t)['status']!='skipped' for t in excluded):fail('approved exclusion status changed')
     if batch['run_ids']!=record['run_ids']:fail('batch run set differs')
     return {'outcome':'limited_scope','coverage_complete':False,'coverage_scope':scope,
             'allowed_page_count':len(current['proof']['pages']),
@@ -161,7 +167,8 @@ def batch_outcome(service,batch):
             'deferred_candidate_occurrences':current['manifest']['deferred_candidate_occurrences'],
             'outside_page_scope_task_ids':proof['outside_page_scope_task_ids'],
             'outside_scope_required_inspection_gaps':proof['outside_scope_required_inspection_gaps'],
-            'partial_task_ids':proof['partial_task_ids'],'task_coverage_gaps':proof['task_coverage_gaps']}
+            'partial_task_ids':proof['partial_task_ids'],'task_coverage_gaps':proof['task_coverage_gaps'],
+            'previously_excluded_task_ids':sorted(excluded),'previous_exclusions_completed':False}
 
 
 def task_partition(service,tasks,pages):
