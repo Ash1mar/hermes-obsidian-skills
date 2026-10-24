@@ -10,7 +10,7 @@ from test_incremental_global_reduce import page,response,project
 from test_p3_knowledge_build import vault,prepare_layered_reduce_batch,resource_reduce_requests
 import fixed_reduce
 import fixed_global_packets as g
-from fixed_destinations import routes,check_links
+from fixed_destinations import routes,check_links,compile_content
 
 
 def test_native_topic_path_reaches_governed_draft_without_rewriting_prose(vault):
@@ -82,3 +82,19 @@ def test_routing_preserves_relative_sibling_links_but_never_rewrites_source_link
     pages[0]['content']='[[topic/b]]'
     with pytest.raises(ContractError,match='wiki reference'):
         check_links(pages,routes(value,pages))
+
+
+def test_exact_authorized_asset_target_is_preserved_without_changing_native_body():
+    value=fixture_value();asset='_system/sources/artifacts/r/rev/images/a.jpg'
+    value['view']['original_evidence']['tasks'][0]['materials'].append({'ref':'m2',
+        'asset':{'path':asset,'permission':'this registered whole asset only'}})
+    p={**page('c1'),'path':'topic/a.md','content':'# Test\n![original](../'+asset+'#view)\n'}
+    before=copy.deepcopy((value,p));destinations=routes(value,[p])
+    compiled,edits=compile_content(value,p,destinations)
+    assert compiled==p['content'].replace('../_system','../../_system')
+    assert len(edits)==1 and edits[0]['canonical_asset_path']==asset
+    assert (value,p)==before
+    # Another task's registered asset never supplies authority to this page.
+    p['candidate_refs']=['c2']
+    with pytest.raises(ContractError,match='outside exact authorized originals'):
+        compile_content(value,p,routes(value,[p]))
