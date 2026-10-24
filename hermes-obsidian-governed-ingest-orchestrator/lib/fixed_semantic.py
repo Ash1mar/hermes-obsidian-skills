@@ -316,6 +316,9 @@ def wire_prompt(phase,view,output_schema,correction=None):
     if phase=='page-write' and view.get('page_scope_contract')=='assigned-candidates/v1':
         from reduce_disposition import PAGE_RULE
         system+=' '+PAGE_RULE
+    if phase=='page-write' and correction and correction.get('targeted_clarification'):
+        from reduce_disposition import PAGE_RULE
+        system+=' Explicit reviewed scope clarification: '+PAGE_RULE+' Selected citation evidence means the assigned candidates and their necessary support; the complete reading package is supplied for checking. Do not turn unrelated core materials or QA narratives into additional page coverage obligations. Apply the targeted clarification only after checking the originals.'
     if phase in ('page-write','page-review') and view.get('evidence_encoding')=='lossless-page-evidence/v1':
         from fixed_page_evidence import INSTRUCTION
         system+=INSTRUCTION

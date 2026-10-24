@@ -85,3 +85,49 @@ def test_cancel_after_grant_before_reservation_does_not_use_budget(tmp_path,monk
     c.adapter.worker_check=lambda _:(_ for _ in ()).throw(ContractError('WORKFLOW_STOPPED','$','stop'))
     with pytest.raises(ContractError,match='WORKFLOW_STOPPED'):c.run()
     assert len(c.calls)==2 and json.loads(path.read_text())['attempts']==old
+
+
+def transition(c,path,pointer,action='revise-output'):
+    prior=disposition.output_permit(c.adapter,c.binding,path,json.loads(path.read_text()))
+    evidence=c.adapter.workflow.vault/'review.json';evidence.write_text('{"scope":"isolated corrected cause"}')
+    basis=[{'ref':evidence.name,'sha256':hashlib.sha256(evidence.read_bytes()).hexdigest()}]
+    record=json.loads(path.read_text())
+    row={k:v for k,v in prior.items() if k!='authorization_ref'}
+    row.update(supersedes=disposition.predecessor(prior),basis=basis,action=action,
+        preserved_attempt_count=len(record['attempts']),prior_attempts_sha256=fingerprint(record['attempts']),
+        attempt_ordinal=len(record['attempts'])+1,additional_calls=int(action=='revise-output'))
+    row['correction']={**row['correction'],'targeted_clarification':'Check assigned claims only.'}
+    report=path.parent.parent/'next-recovery.json'
+    report.write_text(json.dumps({'request':{'recovery_scope':disposition.SCOPE},
+        'entries':[{'node':'global-reduce','output_dispositions':[row]}]}))
+    current={'report_ref':report.relative_to(c.adapter.workflow.vault).as_posix(),
+        'report_sha256':hashlib.sha256(report.read_bytes()).hexdigest()}
+    c.adapter.workflow.status=lambda _:{'execution_recovery_history':[pointer,current]}
+    return row,prior,evidence
+
+
+def test_deferred_output_can_resume_with_sealed_new_basis_without_reset(tmp_path,monkeypatch):
+    c=fixture(tmp_path,monkeypatch,[answer(True),answer(True),answer()])
+    with pytest.raises(ContractError):c.run()
+    path,old,pointer=grant(c,'defer')
+    # Historical nonexecution grants have zero additional calls.
+    report=tmp_path/pointer['report_ref'];payload=json.loads(report.read_text())
+    payload['entries'][0]['output_dispositions'][0]['additional_calls']=0
+    report.write_text(json.dumps(payload));pointer['report_sha256']=hashlib.sha256(report.read_bytes()).hexdigest()
+    row,prior,evidence=transition(c,path,pointer)
+    disposition.transition_basis(c.adapter,{**row,'clarification':'Check assigned claims only.'},prior,json.loads(path.read_text()))
+    assert c.run()[0]==answer() and len(c.calls)==3
+    assert json.loads(path.read_text())['attempts'][:2]==old
+    evidence.write_text('changed')
+    with pytest.raises(ContractError,match='transition evidence changed'):c.run()
+
+
+def test_transition_rejects_fork_unused_authority_and_missing_new_basis(tmp_path,monkeypatch):
+    c=fixture(tmp_path,monkeypatch,[answer(True),answer(True)])
+    with pytest.raises(ContractError):c.run()
+    path,_,pointer=grant(c)
+    record=json.loads(path.read_text());prior=disposition.output_permit(c.adapter,c.binding,path,record)
+    row={'supersedes':disposition.predecessor(prior),'clarification':'A different ID is insufficient.'}
+    with pytest.raises(ContractError,match='previous authority'):disposition.transition_basis(c.adapter,row,prior,record)
+    prior={**prior,'additional_calls':0};row['supersedes']=disposition.predecessor(prior)
+    with pytest.raises(ContractError,match='persisted new evidence'):disposition.transition_basis(c.adapter,row,prior,record)
