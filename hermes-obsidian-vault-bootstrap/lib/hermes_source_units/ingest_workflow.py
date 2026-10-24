@@ -616,6 +616,10 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                 batch = self.knowledge._batch(value["batch_id"])
                 if "sha256:" + fingerprint(batch["task_ids"]) != value["pinned_inputs"]["task_ids_fingerprint"]:
                     _fail("STALE_INPUT", "batch task set changed")
+            if target == 'completed':
+                from .reduce_coverage import batch_outcome
+                if batch_outcome(self.knowledge,self.knowledge._batch(value['batch_id'])):
+                    _fail('INCOMPLETE_COVERAGE','limited scope can terminate only as partial')
             if target == "checkpoint_1":
                 batch = self.knowledge._batch(value["batch_id"])
                 if not batch.get("run_ids") or batch["state"] != "checkpoint_1":

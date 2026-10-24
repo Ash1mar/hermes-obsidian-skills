@@ -1306,6 +1306,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 continue
             run = _load_json(path)
             validate_record("build_run", run)
+            from .reduce_coverage import check_run
+            check_run(self,run)
             run_details.append({"run_id": run_id, "state": run["state"], "revision": run["revision"]})
             for snapshot in run["tasks"]:
                 covered.setdefault(snapshot["task_id"], []).append(run_id)
@@ -1956,6 +1958,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         return outputs
 
     def reduce(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .reduce_coverage import check_request
+        scope=check_request(self,request)
         run_id, actor = str(request["run_id"]), str(request["actor"])
         path = self._run_path(run_id)
         task_snapshots = list(request["tasks"])
@@ -2071,6 +2075,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                   "identity_registry_revision": registry["revision"], "tasks": task_snapshots,
                   "decisions": decisions, "page_revisions": [item[0] for item in page_drafts],
                   "reviews": [], "reason": str(request.get("reason", ""))}
+        if scope:record['coverage_scope']=scope
         validate_references("build_run", record, units)
         if path.exists():
             existing = _load_json(path)
@@ -2244,6 +2249,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
     def reduce_global(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Coordinate resource proposals once, then materialize ordinary draft runs."""
         self.source.enable_session_cache()
+        from .reduce_coverage import check_request
+        scope=check_request(self,request,global_request=True)
         batch_id, actor = str(request["batch_id"]), str(request["actor"])
         reduction_ids = sorted(str(item) for item in request["resource_reduction_ids"])
         if not reduction_ids or len(set(reduction_ids)) != len(reduction_ids):
@@ -2261,6 +2268,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                                      "output_fingerprint": item["output_fingerprint"]}
                                     for item in reductions],
             "template_id": template_id, "template_hash": template_hash,
+            **({'coverage_scope':scope} if scope else {}),
         })
         coordination_id = fingerprint({"batch_id": batch_id,
                                        "input_fingerprint": input_fingerprint,
@@ -2283,6 +2291,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             "state": "completed", "revision": 1,
             "reason": str(request.get("reason", "")),
         }
+        if scope:record['coverage_scope']=scope
         validate_record("global_reduction", record)
 
         with _exclusive_lock(self._global_reduction_lock_path(batch_id)):
@@ -2464,6 +2473,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         path = self._run_path(run_id)
         run = _load_json(path)
         validate_record("build_run", run)
+        from .reduce_coverage import check_run
+        check_run(self,run)
         if run["state"] == "completed":
             return {"ok": True, "committed": False, "run": run}
         if run["revision"] != int(request["expected_revision"]):
@@ -2596,6 +2607,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
     def validate_run(self, run_id: str) -> dict[str, Any]:
         run = _load_json(self._run_path(run_id))
         validate_record("build_run", run)
+        from .reduce_coverage import check_run
+        check_run(self,run)
         self._decision_task_outputs(run)
         refs = [ref for page in run["page_revisions"] for ref in page["support_refs"]]
         units = self._live_units(refs, run["actor"], self._document_registry_revision()) if refs else []
@@ -2655,10 +2668,12 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             uncovered = sorted(task["task_id"] for task in tasks
                                if task["status"] not in ("blocked", "failed", "skipped")
                                and task["task_id"] not in covered)
+            from .reduce_coverage import batch_outcome
+            scope_outcome=batch_outcome(self,batch)
             ready = not failures and not duplicate and not outside and not uncovered
             state = "checkpoint_1" if ready else "analyzing"
             updated = self._store_batch(batch, state=state, operation="validate", failures=failures)
-            return {"ok": ready, "batch": updated, "runs": results, "failures": failures,
+            return {"ok": ready, **scope_outcome, "batch": updated, "runs": results, "failures": failures,
                     "uncovered_task_ids": uncovered, "duplicate_task_run_ids": duplicate,
                     "outside_batch_task_ids": outside,
                     "terminal_exceptions": sorted(task["task_id"] for task in tasks
@@ -2685,6 +2700,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 run_id = str(item["run_id"])
                 run = _load_json(self._run_path(run_id))
                 validate_record("build_run", run)
+                from .reduce_coverage import check_run
+                check_run(self,run)
                 if run["state"] == "completed":
                     continue
                 if run["actor"] != actor or run["revision"] != int(item["expected_revision"]):

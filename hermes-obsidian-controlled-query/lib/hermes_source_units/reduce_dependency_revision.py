@@ -26,7 +26,8 @@ def assert_unconsumed_resources(service,value,task_ids):
 
 
 def scoped(value):
-    return value.get('pass_revision',{}).get('revision_scope') in REDUCE_SCOPES
+    revision=value.get('pass_revision',{})
+    return revision.get('revision_scope') in REDUCE_SCOPES and revision.get('state') in ('running','awaiting_review')
 
 
 def snapshot(service,value):

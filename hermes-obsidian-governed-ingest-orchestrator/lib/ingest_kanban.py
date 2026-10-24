@@ -2097,7 +2097,8 @@ class IngestKanbanAdapter:
                                            for item in lint.get("issues", [])
                                            if item.get("severity") == "error"]})
             release_ref = f"_system/knowledge-releases/{release_id}/manifest.json"
-            target = ("partial" if self.workflow.source_coverage(workflow)["failed"] or self.workflow.skipped_pass_tasks(workflow)
+            from hermes_source_units.reduce_coverage import batch_outcome
+            target = ("partial" if batch_outcome(self.workflow.knowledge,self.workflow.knowledge._batch(batch_id)) or self.workflow.source_coverage(workflow)["failed"] or self.workflow.skipped_pass_tasks(workflow)
                       else "completed")
             updated = self._advance(workflow, target, [release_ref, report])
         else:

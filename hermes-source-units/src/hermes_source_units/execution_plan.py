@@ -22,7 +22,7 @@ def fail(code, message):
 
 def execution_recovery_key(scope,entry):
     """Shared admission/replay identity; journals separately enforce call budget."""
-    cause=(entry.get('previous_task_id') if scope in ('reduce-cancel/v1','semantic-output/v1','reduce-disposition/v1')
+    cause=(entry.get('previous_task_id') if scope in ('reduce-cancel/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1')
            else packet_recovery_cause(entry.get('failure',{})) if scope=='revision-citation-packet/v1' else None)
     return entry['node'],scope,cause
 
@@ -125,6 +125,10 @@ class ExecutionPlanMixin:
         return plan
 
     def assert_execution_ready(self, workflow):
+        pending=_vault_path(self.vault,f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/coverage-reopen.pending.json")
+        if pending.exists():fail('EXECUTION_PLAN_PENDING','finish the exact pending coverage reopen before dispatch')
+        from .reduce_coverage import active
+        active(self.vault,workflow)
         self.verify_pass_skips(workflow)
         if self._execution_journal(workflow['workflow_id']).exists():
             fail('EXECUTION_PLAN_PENDING', 'finish the authorized amendment before resume/dispatch')

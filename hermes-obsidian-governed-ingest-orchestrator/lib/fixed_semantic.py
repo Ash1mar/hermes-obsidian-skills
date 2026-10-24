@@ -365,6 +365,9 @@ def prepare_request_projection(phase,view,output_schema,images=(),correction=Non
 
 @measured('semantic_call', lambda adapter, binding, phase, view, caller, limit, correction=None, **kwargs: {'vault':adapter.workflow.vault,'binding':binding,'phase':phase})
 def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2):
+    from reduce_coverage import current
+    if current(adapter,binding):
+        raise ContractError('COVERAGE_SCOPE_INVALID','$','approved limited scope permits native reuse only; no fresh semantic calls')
     if attempt_limit==1 and correction:
         raise ContractError('INVALID_TRANSITION','$','single-attempt admission does not permit a correction call')
     output_schema=slot_schema(phase,view.get('tasks',[])) if phase in ('candidate','citation') else schema_for(phase,view)
