@@ -111,8 +111,9 @@ def test_reopen_preserves_domain_and_pause_history_with_crash_replay(vault,monke
     w['current_stage']='checkpoint_1';w['resume_stage']='checkpoint_1'
     w['pause_control']={'boundary':'checkpoint_1','evidence_digest':'sha256:'+'1'*64,
         'report_ref':'_system/test-pause.json','history':[]}
+    decision='_system/test-decision.json';(vault/decision).write_text('{"decision":"old"}')
     w['checkpoints']['checkpoint_1']={'state':'approved','approval_digest':'sha256:'+'1'*64,
-        'approved_by':'agent','decision_ref':None,'decision_sha256':None}
+        'approved_by':'agent','decision_ref':decision,'decision_sha256':hashlib.sha256((vault/decision).read_bytes()).hexdigest()}
     a.workflow._write(w)
     (vault/'_system/test-pause.json').write_text('{"pause":"old"}')
     batch=a.workflow.knowledge._batch(w['batch_id']);batch['run_ids']=['isolated-retired'];batch['global_reduction_id']='1'*64
@@ -146,6 +147,13 @@ def test_reopen_preserves_domain_and_pause_history_with_crash_replay(vault,monke
     assert new['state']=='cancelled' and new['current_stage']=='reducing' and new['cancel_requested']
     assert new['checkpoints']['checkpoint_1']['state']=='pending'
     assert new['pause_control']['history']==w['pause_control']['history']
+    assert (vault/decision).read_text()=='{"decision":"old"}'
+    assert (vault/w['pause_control']['report_ref']).read_text()=='{"pause":"old"}'
+    from hermes_source_units.reduce_coverage import checkpoint_ref
+    assert checkpoint_ref(new,'decisions','checkpoint_1')!=checkpoint_ref(w,'decisions','checkpoint_1')
+    assert checkpoint_ref(new,'pauses','checkpoint_1')!=checkpoint_ref(w,'pauses','checkpoint_1')
+    report=json.loads((vault/new['execution_recovery_history'][-1]['report_ref']).read_bytes())
+    assert report['retired_checkpoint_evidence'][decision]['content']=='{"decision":"old"}'
     assert all(p.read_bytes()==raw for p,raw in protected.items())
     assert reopen.recover(a,req)['replayed']
     assert not reopen.pending_path(a.workflow,w['workflow_id']).exists()

@@ -12,6 +12,16 @@ ADMIT='reduce-coverage/v1'
 REOPEN='reduce-coverage-reopen/v1'
 
 
+def checkpoint_ref(workflow,folder,name):
+    """New validation gets a new address; every original audit file stays intact."""
+    suffix=''
+    if name in ('checkpoint_1','checkpoint-1-validation'):
+        pointers=[p for p in workflow.get('execution_recovery_history',[])
+                  if 'checkpoint-1-validate' in p.get('nodes',[])]
+        if pointers:suffix='-'+fingerprint(pointers[-1])[:24]
+    return f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/{folder}/{name}{suffix}.json"
+
+
 def fail(message):
     raise ContractError('COVERAGE_SCOPE_INVALID','$',message)
 

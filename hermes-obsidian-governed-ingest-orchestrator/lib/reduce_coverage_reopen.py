@@ -64,6 +64,9 @@ def recover(adapter,request,*,dry_run=False):
                         'ended_run_ids':[str(r['id']) for r in snap['runs']], 'new_model_calls_granted':0})
                 evidence={}
                 refs=[value['pause_control']['report_ref'],value['checkpoints']['checkpoint_1'].get('decision_ref')]
+                from hermes_source_units.reduce_coverage import checkpoint_ref
+                validation_ref=checkpoint_ref(value,'reports','checkpoint-1-validation')
+                if _vault_path(service.vault,validation_ref).exists():refs.append(validation_ref)
                 for ref in refs:
                     if ref:
                         raw=_vault_path(service.vault,ref).read_bytes()
@@ -85,8 +88,7 @@ def recover(adapter,request,*,dry_run=False):
                      'old_sha256':hashlib.sha256(service.knowledge._batch_path(batch['batch_id']).read_bytes()).hexdigest(),'data':_json_bytes(newbatch).decode()},
                     {'ref':service._path(wid).relative_to(service.vault).as_posix(),
                      'old_sha256':hashlib.sha256(service._path(wid).read_bytes()).hexdigest(),'data':_json_bytes(new).decode()}]
-                plan={'request':dict(request),'writes':writes,'retired_pause_ref':value['pause_control']['report_ref'],
-                      'retired_pause_sha256':evidence[value['pause_control']['report_ref']]['sha256'],'report_ref':ref}
+                plan={'request':dict(request),'writes':writes,'report_ref':ref}
                 from hermes_source_units.validation import validate_record
                 validate_record('ingest_workflow',new);validate_record('knowledge_batch',newbatch)
             if dry_run:return {'ok':True,'applied':False,'resumed':False,'new_model_calls_granted':0,'report_ref':plan['report_ref']}
@@ -97,9 +99,5 @@ def recover(adapter,request,*,dry_run=False):
                 if existing==hashlib.sha256(raw).hexdigest():continue
                 if existing!=item['old_sha256']:fail('control changed during pending reopen')
                 _write_atomic(path,raw)
-            path=_vault_path(service.vault,plan['retired_pause_ref'])
-            if path.exists():
-                if hashlib.sha256(path.read_bytes()).hexdigest()!=plan['retired_pause_sha256']:fail('retired pause differs')
-                path.unlink()  # Its exact bytes are retained in the immutable recovery report.
             journal.unlink()
             return {'ok':True,'applied':True,'resumed':False,'report_ref':plan['report_ref'],'new_model_calls_granted':0}

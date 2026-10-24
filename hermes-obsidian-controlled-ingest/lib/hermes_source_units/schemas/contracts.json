@@ -1876,7 +1876,7 @@
           "input_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
           "report_ref": {"type": "string", "format": "vault-relative-path"},
           "report_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
-          "nodes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^(pass-slice:.+|resource-reduce:.+|global-reduce)$"}}
+          "nodes": {"type": "array", "minItems": 1, "uniqueItems": true, "items": {"type": "string", "pattern": "^(pass-slice:.+|resource-reduce:.+|global-reduce|checkpoint-1-validate)$"}}
         }, "required": ["recovery_id", "input_digest", "report_ref", "report_sha256", "nodes"], "additionalProperties": false}},
         "execution_plan": {"type": "object", "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}}, "required": ["path", "sha256"], "additionalProperties": false},
         "contract": {"const": "hermes-ingest-workflow/v1"},

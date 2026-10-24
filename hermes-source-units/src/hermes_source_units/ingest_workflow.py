@@ -662,8 +662,8 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                 if value["scope"].get("execution_mode") != "auto_full":
                     _fail("ACCESS_DENIED", "automatic checkpoint decision was not requested")
                 decision_ref = str(request.get("decision_ref", ""))
-                expected_ref = (f"{WORKFLOW_ROOT}/{value['workflow_id']}/"
-                                f"decisions/{checkpoint_name}.json")
+                from .reduce_coverage import checkpoint_ref
+                expected_ref = checkpoint_ref(value,'decisions',checkpoint_name)
                 if decision_ref != expected_ref:
                     _fail("ACCESS_DENIED", "checkpoint decision path is outside this workflow")
                 decision_path = _vault_path(self.vault, decision_ref)

@@ -208,7 +208,8 @@ class WorkflowPauseMixin:
                 return value  # Next sync initializes slices before snapshotting their evidence.
             evidence = self._pause_evidence(value, boundary)
             digest = "sha256:" + fingerprint(evidence)
-            ref = f"_system/ledgers/ingest-workflows/{value['workflow_id']}/pauses/{boundary}.json"
+            from .reduce_coverage import checkpoint_ref
+            ref = checkpoint_ref(value,'pauses',boundary)
             report = {"contract": "hermes-ingest-pause/v1", "evidence_digest": digest, "evidence": evidence}
             path = _vault_path(self.vault, ref)
             if path.exists() and _load_json(path) != report:

@@ -32,7 +32,8 @@ scoped runs cannot be finalized after withdrawal.
 
 The two control-record writes use a persistent pending journal. Dispatch/resume
 is blocked until the exact request is replayed to completion. Previous pause
-and checkpoint decision bytes are retained in the recovery report before the
-canonical pause is retired, permitting a fresh evidence-bound pause later.
+and checkpoint decision files remain intact. Their bytes are also pinned in the
+recovery report; new validation, decision and pause files use a new versioned
+address, permitting a fresh evidence-bound pause later without deleting history.
 Reopening after checkpoint continuation, Build completion or publication is
 outside this operation's authority.

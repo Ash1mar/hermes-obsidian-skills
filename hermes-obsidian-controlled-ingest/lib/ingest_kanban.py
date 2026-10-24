@@ -1971,6 +1971,9 @@ class IngestKanbanAdapter:
                 payload: Mapping[str, Any]) -> str:
         ref = (f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/"
                f"reports/{name}.json")
+        if name=='checkpoint-1-validation':
+            from hermes_source_units.reduce_coverage import checkpoint_ref
+            ref=checkpoint_ref(workflow,'reports',name)
         _write_atomic(_vault_path(self.workflow.vault, ref), _json_bytes(payload))
         return ref
 
@@ -2001,8 +2004,8 @@ class IngestKanbanAdapter:
                     "evidence": dict(evidence)}
         if lint is not None:
             decision["lint"] = dict(lint)
-        ref = (f"_system/ledgers/ingest-workflows/{value['workflow_id']}/"
-               f"decisions/{checkpoint}.json")
+        from hermes_source_units.reduce_coverage import checkpoint_ref
+        ref = checkpoint_ref(value,'decisions',checkpoint)
         path = _vault_path(self.workflow.vault, ref)
         encoded = _json_bytes(decision)
         if path.exists() and path.read_bytes() != encoded:
