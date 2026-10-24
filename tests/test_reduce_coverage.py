@@ -302,3 +302,17 @@ def test_validator_recovery_preserves_drafts_and_grants_no_domain_calls(tmp_path
     assert result['validator_recovery']['domain_outputs_preserved']
     assert before=={p:p.read_bytes() for p in tmp_path.rglob('*') if p.is_file()}
     with pytest.raises(ContractError):execution.verify_validator(a,c.w,SimpleNamespace(name='global-reduce'),{}, {'basis':[]})
+
+
+def test_validator_recovery_changes_only_validator_and_descendant_identities(vault,monkeypatch):
+    from test_reduce_execution_recovery import stopped_reducer
+    from ingest_kanban import _desired_graph
+    a,w,_,_,_=stopped_reducer(vault,monkeypatch,'global-reduce')
+    before={n.name:n.input_fingerprint for n in _desired_graph(a.workflow,w)}
+    changed=copy.deepcopy(w)
+    changed.setdefault('execution_recovery_history',[]).append({
+        'nodes':['checkpoint-1-validate'],'input_digest':'sha256:'+'1'*64})
+    after={n.name:n.input_fingerprint for n in _desired_graph(a.workflow,changed)}
+    assert before['global-reduce']==after['global-reduce']
+    assert before['checkpoint-1-validate']!=after['checkpoint-1-validate']
+    assert all(before[n]==after[n] for n in before if n.startswith(('resource-reduce:','pass-slice:')))

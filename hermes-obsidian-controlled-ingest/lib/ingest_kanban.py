@@ -143,7 +143,7 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
     workflow_id = workflow["workflow_id"]
     def add(name: str, kind: str, parents: tuple[str, ...], inputs: Any,
             gate: bool = False) -> str:
-        if kind in ('resource-reduce', 'global-reduce'):
+        if kind in ('resource-reduce', 'global-reduce', 'checkpoint-1-validate'):
             recovery = next((r for r in reversed(workflow.get('execution_recovery_history', []))
                              if name in r['nodes']), None)
             if recovery:
