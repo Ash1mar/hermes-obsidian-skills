@@ -44,8 +44,14 @@ def active(vault, workflow):
         if scope==REOPEN:
             if not found or request['coverage_scope']!=found['ref']:fail('withdrawal has no matching scope')
             found=None;continue
-        if found:fail('withdraw the existing limited scope before admitting another')
         entry=report['entries'][0];proof=entry['coverage_admission']
+        if found and (entry.get('supersedes_scope')!=found['ref']
+                or proof.get('reused_native_authorization')!=found['ref']
+                or proof['manifest_sha256']!=found['ref']['manifest_sha256']):
+            fail('an active scope may only be recertified with the identical approved manifest')
+        if found:
+            if not entry.get('basis'):fail('recertification has no pinned cause')
+            for item in entry['basis']:pinned(vault,item['ref'],item['sha256'])
         manifest=pinned(vault,proof['manifest_ref'],proof['manifest_sha256'])
         approval=pinned(vault,proof['approval_ref'],proof['approval_sha256'])
         if (manifest['workflow_id']!=workflow['workflow_id'] or not approval.get('accept_necessary_coverage_gaps')
@@ -106,6 +112,10 @@ def check_request(service, request, *, global_request=False):
             if run.get('coverage_scope')!=scope:fail('draft run lost coverage scope')
             check_decisions(current,run['decisions'])
     else:check_decisions(current,request['decisions'])
+    expected=current['proof'].get('run_tasks')
+    if expected is None:fail('scope requires task-isolation certification before materialization')
+    if any(r['tasks']!=expected for r in (request['runs'] if global_request else [request])):
+        fail('run may contain only tasks supporting the approved page set')
     return scope
 
 
@@ -115,6 +125,7 @@ def check_run(service, run):
     batch=service._batch(w['batch_id'])
     if run['run_id'] not in batch['run_ids'] or run['actor']!=w['actor']:fail('run is outside the scoped batch')
     check_decisions(current,run['decisions'],persisted=True)
+    if run['tasks']!=current['proof']['run_tasks']:fail('run task isolation differs')
     hashes={p['path']:p['authored_content_sha256'] for p in current['proof']['pages']}
     if len(run['page_revisions'])!=len(hashes) or any(hashes.get(p['path'])!=p['authored_sha256'] for p in run['page_revisions']):
         fail('draft bytes or downstream page set changed')
@@ -131,7 +142,41 @@ def batch_outcome(service,batch):
     current,w=resolve(service,scope)
     if w['batch_id']!=batch['batch_id'] or record['omitted_candidate_refs']!=current['proof']['omitted_candidate_refs']:
         fail('global gap accounting differs')
+    proof=current['proof']
+    if set(batch['task_ids'])!={t['task_id'] for t in proof['run_tasks']}|set(proof['outside_page_scope_task_ids']):
+        fail('batch task partition differs')
+    if batch['run_ids']!=record['run_ids']:fail('batch run set differs')
     return {'outcome':'limited_scope','coverage_complete':False,'coverage_scope':scope,
             'allowed_page_count':len(current['proof']['pages']),
             'held_page_count':current['manifest']['held_page_count'],
-            'deferred_candidate_occurrences':current['manifest']['deferred_candidate_occurrences']}
+            'deferred_candidate_occurrences':current['manifest']['deferred_candidate_occurrences'],
+            'outside_page_scope_task_ids':proof['outside_page_scope_task_ids'],
+            'outside_scope_required_inspection_gaps':proof['outside_scope_required_inspection_gaps']}
+
+
+def task_partition(service,tasks,pages):
+    """Only actual adopted citation ownership may assign work to a scoped run."""
+    from .reading_dependencies import required_reading,citation_dependency_gaps
+    candidates,records=service._pass_index(t['task_id'] for t in tasks)
+    used=set()
+    for page in pages:
+        for ref in page['candidate_refs']:
+            match=candidates.get((ref['pass_id'],ref['candidate_id']))
+            if not match or match[0]['pass_kind']!='citation':fail('scoped support is not a current citation')
+            used.add(match[0]['task_id'])
+    selected=[];outside=[];gaps=[]
+    for snapshot in tasks:
+        tid=snapshot['task_id'];task=service._task(tid)
+        if task['revision']!=snapshot['revision']:fail('task revision changed during isolation')
+        package=service._existing_reading_package(task,task['actor'],service._document_registry_revision())
+        missing=[]
+        if package:
+            _,supplement=required_reading(service.source,package)
+            missing=citation_dependency_gaps(service.source,package,records[tid][-1],supplement)
+        if tid in used:
+            if missing or task['deferred']:fail('an allowed page depends on unfinished required inspection')
+            selected.append(snapshot)
+        else:
+            outside.append(tid);gaps.extend(missing)
+    return {'run_tasks':selected,'outside_page_scope_task_ids':outside,
+            'outside_scope_required_inspection_gaps':gaps}

@@ -26,7 +26,9 @@ def fixture(tmp_path):
         'authored_content_sha256':hashlib.sha256(content.encode()).hexdigest()}
     proof={'manifest_ref':'manifest.json','manifest_sha256':digest,'approval_ref':'approval.json',
         'approval_sha256':approval_sha,'pages':[page],'new_model_calls_granted':0,
-        'omitted_candidate_refs':[{'pass_id':'pass','candidate_id':'gap'}]}
+        'omitted_candidate_refs':[{'pass_id':'pass','candidate_id':'gap'}],
+        'run_tasks':[{'task_id':'owned','revision':1}],'outside_page_scope_task_ids':['outside'],
+        'outside_scope_required_inspection_gaps':[]}
     request={'recovery_scope':'reduce-coverage/v1','workflow_id':w['workflow_id'],'actor':'agent','input_digest':'d'}
     report={'request':request,'batch_id':'batch','entries':[{'coverage_admission':proof}]}
     report_sha=save('admission.json',report)
@@ -54,7 +56,8 @@ def test_exact_scope_requires_bound_native_worker_and_exact_gaps(tmp_path,monkey
     from hermes_source_units.ingest_workflow import FileIngestWorkflowService
     monkeypatch.setattr(FileIngestWorkflowService,'__init__',lambda *_:None)
     monkeypatch.setattr(FileIngestWorkflowService,'status',lambda *_:c.w)
-    run={'actor':'agent','coverage_scope':c.scope['ref'],'decisions':[{**c.page,'content':c.content}]}
+    run={'actor':'agent','coverage_scope':c.scope['ref'],'decisions':[{**c.page,'content':c.content}],
+         'tasks':c.scope['proof']['run_tasks']}
     req={'batch_id':'batch','actor':'agent','coverage_scope':c.scope['ref'], 'runs':[run],
          'omitted_candidate_refs':c.scope['proof']['omitted_candidate_refs']}
     with pytest.raises(ContractError):check_request(service,req,global_request=True)
@@ -79,6 +82,7 @@ def test_downstream_run_carries_incomplete_outcome_and_blocks_changed_draft(tmp_
     monkeypatch.setattr(coverage,'resolve',lambda *_:(c.scope,c.w))
     service=SimpleNamespace(vault=tmp_path,_batch=lambda _: {'run_ids':['run']})
     run={'run_id':'run','actor':'agent','coverage_scope':c.scope['ref'],'decisions':[c.page],
+         'tasks':c.scope['proof']['run_tasks'],
          'page_revisions':[{'path':c.page['path'],'authored_sha256':c.page['authored_content_sha256']}]}
     assert check_run(service,run)['coverage_complete'] is False
     run['page_revisions'][0]['authored_sha256']='0'*64
@@ -160,3 +164,57 @@ def test_reopen_preserves_domain_and_pause_history_with_crash_replay(vault,monke
 
 
 from test_p3_knowledge_build import vault
+
+
+def test_scoped_global_validate_and_finalize_leave_unowned_tasks_unfinished(vault,tmp_path,monkeypatch):
+    from test_p3_knowledge_build import prepare_layered_reduce_batch,resource_reduce_requests
+    from hermes_source_units.reduce_coverage import task_partition
+    import hermes_source_units.reduce_coverage as coverage
+    from hermes_source_units.ingest_workflow import FileIngestWorkflowService
+    k,_,citations,tasks=prepare_layered_reduce_batch(vault,'scope-integration')
+    requests=resource_reduce_requests('scope-integration',citations,tasks)
+    reductions=[k.reduce_resource(r)['reduction'] for r in requests]
+    c=fixture(tmp_path/'authority');c.w['batch_id']='scope-integration'
+    c.page['candidate_refs']=requests[0]['proposals'][0]['candidate_refs']
+    c.scope['proof']['omitted_candidate_refs']=requests[1]['proposals'][0]['candidate_refs']
+    c.scope['proof'].update(task_partition(k,tasks,[c.page]))
+    assert len(c.scope['proof']['run_tasks'])==1 and len(c.scope['proof']['outside_page_scope_task_ids'])==1
+    monkeypatch.setattr(coverage,'resolve',lambda *_:(c.scope,c.w))
+    monkeypatch.setattr(coverage,'active',lambda *_:c.scope)
+    monkeypatch.setattr(FileIngestWorkflowService,'status',lambda *_:c.w)
+    run={'run_id':'run-scope-integration','actor':'agent','tasks':c.scope['proof']['run_tasks'],
+        'expected_registry_revision':0,'document_registry_revision':1,'coverage_scope':c.scope['ref'],
+        'decisions':[{**c.page,'content':c.content,'action':'create'}],'reason':'isolated subset'}
+    request={'batch_id':'scope-integration','actor':'agent','resource_reduction_ids':[r['reduction_id'] for r in reductions],
+        'runs':[run],'omitted_candidate_refs':c.scope['proof']['omitted_candidate_refs'],'coverage_scope':c.scope['ref']}
+    with worker_binding({'workflow_id':c.w['workflow_id'],'task_id':'native','node':'global-reduce'}):
+        assert k.reduce_global(request)['ok']
+    validation=k.validate_batch('scope-integration')
+    assert validation['ok'] and validation['coverage_complete'] is False
+    assert validation['uncovered_task_ids']==c.scope['proof']['outside_page_scope_task_ids']
+    page=json.loads(k._run_path(run['run_id']).read_bytes())['page_revisions'][0]
+    result=k.finalize_batch({'batch_id':'scope-integration','actor':'agent','finalizations':[{
+        'run_id':run['run_id'],'actor':'agent','expected_revision':1,'reviews':[{
+            'page_id':page['page_id'],'authored_sha256':page['authored_sha256'],
+            'parent_authored_sha256':None,'actor':'reviewer','note':'isolated review'}]}]})
+    assert result['batch_completed'] and result['coverage_complete'] is False
+    outside=c.scope['proof']['outside_page_scope_task_ids'][0]
+    assert k._task(outside)['status']=='running'
+    assert k._task(outside)['revision']==next(t['revision'] for t in tasks if t['task_id']==outside)
+
+
+def test_task_partition_cannot_isolate_missing_evidence_of_an_adopted_claim(vault,monkeypatch):
+    from test_p3_knowledge_build import prepare_layered_reduce_batch,resource_reduce_requests
+    from hermes_source_units.reduce_coverage import task_partition
+    import hermes_source_units.reading_dependencies as dep
+    k,_,citations,tasks=prepare_layered_reduce_batch(vault,'scope-dependency')
+    request=resource_reduce_requests('scope-dependency',citations,tasks)[0]
+    refs=request['proposals'][0]['candidate_refs']
+    monkeypatch.setattr(k,'_existing_reading_package',lambda task,*_:{'task_id':task['task_id']})
+    monkeypatch.setattr(dep,'required_reading',lambda *_:([],{}))
+    monkeypatch.setattr(dep,'citation_dependency_gaps',lambda source,package,record,supplement:
+        [{'task_id':record['task_id']}] if record['task_id']==tasks[1]['task_id'] else [])
+    result=task_partition(k,tasks,[{'candidate_refs':refs}])
+    assert len(result['outside_scope_required_inspection_gaps'])==1
+    monkeypatch.setattr(dep,'citation_dependency_gaps',lambda *_:[{'missing':'required'}])
+    with pytest.raises(ContractError,match='allowed page depends'):task_partition(k,tasks,[{'candidate_refs':refs}])

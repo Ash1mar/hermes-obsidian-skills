@@ -21,6 +21,51 @@ def current(adapter,binding):
     return active(adapter.workflow.vault,adapter.workflow.status(binding['workflow_id']))
 
 
+def journal_seals(adapter,manifest):
+    """Seal the finite outcomes already authenticated by the admission."""
+    root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{manifest['workflow_id']}/output-attempts"
+    by_input={}
+    for p in root.glob('*.json'):
+        record=_load_json(p)
+        if record.get('phase')=='page-write':by_input.setdefault(record.get('input_sha256'),[]).append((p,record))
+    seals=[]
+    for row in manifest['allowed_pages']:
+        found=by_input.get(row['input_sha256'],[])
+        if len(found)!=1:fail('native body lacks a unique finite journal')
+        p,journal=found[0];last=journal['attempts'][-1]
+        if last.get('state')!='valid' or last.get('audit_ref')!=row['audit_ref']:fail('accepted native outcome changed')
+        audit=_load_json(_vault_path(adapter.workflow.vault,row['audit_ref']))
+        seals.append({'ref':p.relative_to(adapter.workflow.vault).as_posix(),'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),
+            'audit_ref':row['audit_ref'],'audit_semantic_sha256':fingerprint({k:v for k,v in audit.items() if k not in ('receipt_refs','validated')})})
+    return seals
+
+
+def reuse_pages(adapter,value,scope):
+    """Reuse an admitted native proof only after current source and byte checks."""
+    from fixed_destinations import routes,compile_content
+    manifest=scope['manifest'];vault=adapter.workflow.vault
+    if scope['proof'].get('native_bodies_authenticated')!=len(manifest['allowed_pages']):fail('incomplete admitted native proof')
+    source=pinned(vault,manifest['source_snapshot_ref'],manifest['source_snapshot_sha256'])
+    if any(source[k]!=value[k] for k in ('contract','view','backend')):fail('admitted source authority changed')
+    for seal in scope['proof'].get('finite_journal_seals',[]):
+        pinned(vault,seal['ref'],seal['sha256'])
+        audit=_load_json(_vault_path(vault,seal['audit_ref']))
+        if fingerprint({k:v for k,v in audit.items() if k not in ('receipt_refs','validated')})!=seal['audit_semantic_sha256']:
+            fail('admitted native audit changed')
+    destinations=routes(value,manifest['allowed_pages']+manifest['gaps']);written=[]
+    for row in manifest['allowed_pages']:
+        raw=_vault_path(vault,row['draft_ref']).read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=row['draft_sha256']:fail('admitted native body changed')
+        page={k:copy.deepcopy(row[k]) for k in ('identity','path','candidate_refs','draft_ref','audit_ref','input_sha256')}
+        page['content']=raw.decode('utf-8');compiled,_=compile_content(value,page,destinations)
+        normalized=compiled.replace('\r\n','\n').replace('\r','\n').rstrip()+'\n'
+        if (destinations[row['path']]!=row['storage_destination']
+                or hashlib.sha256(compiled.encode()).hexdigest()!=row['submitted_content_sha256']
+                or hashlib.sha256(normalized.encode()).hexdigest()!=row['authored_content_sha256']):fail('admitted output differs')
+        written.append(page)
+    return written
+
+
 def verify_pages(adapter,binding,value,manifest,prove):
     """Authenticate exact finite native output, never a cached 'valid' label."""
     from fixed_page_work import measure
@@ -75,7 +120,16 @@ def verify(adapter,workflow,node,binding,entry,failure,runs):
     import fixed_reduce
     from reduce_disposition import planning_state
     from fixed_semantic_recovery import permitted_tasks
-    if node.name!='global-reduce' or active(adapter.workflow.vault,workflow):fail('admission requires an unscoped global Reduce')
+    previous=active(adapter.workflow.vault,workflow)
+    if node.name!='global-reduce':fail('admission requires global Reduce')
+    if previous:
+        if entry.get('supersedes_scope')!=previous['ref'] or entry.get('manifest_sha256')!=previous['ref']['manifest_sha256']:
+            fail('recertification must preserve the exact approved page/gap scope')
+        batch=adapter.workflow.knowledge._batch(workflow['batch_id'])
+        if batch['run_ids'] or batch.get('global_reduction_id'):fail('withdraw consumed scope before recertifying')
+        basis=entry.get('basis',[])
+        if not basis:fail('recertification requires a pinned correction cause')
+        for item in basis:pinned(adapter.workflow.vault,item['ref'],item['sha256'])
     vault=adapter.workflow.vault
     manifest=pinned(vault,entry['manifest_ref'],entry['manifest_sha256'])
     approval=pinned(vault,entry['approval_ref'],entry['approval_sha256'])
@@ -85,14 +139,21 @@ def verify(adapter,workflow,node,binding,entry,failure,runs):
             or approval.get('actor')!=workflow['actor'] or not approval.get('accept_necessary_coverage_gaps')
             or approval.get('manifest_sha256')!=entry['manifest_sha256']
             or approval.get('stop_after')!='checkpoint_1' or approval.get('new_model_calls_granted')!=0):fail('exact incomplete-scope approval required')
-    value=pinned(vault,manifest['source_snapshot_ref'],manifest['source_snapshot_sha256'])
-    if value!=fixed_reduce.preview_snapshot(adapter,binding):fail('source snapshot is stale')
+    source=pinned(vault,manifest['source_snapshot_ref'],manifest['source_snapshot_sha256'])
+    value=fixed_reduce.preview_snapshot(adapter,binding)
+    if any(source[k]!=value[k] for k in ('contract','view','backend')):fail('source snapshot is stale')
     work=pinned(vault,manifest['native_page_work_ref'],manifest['native_page_work_sha256'])
-    if work['binding']!=binding or work.get('planning_failure') or work.get('formal_global_submitted'):fail('incomplete or changed native planning')
+    if work['binding']!=source['binding'] or work.get('planning_failure') or work.get('formal_global_submitted'):fail('incomplete or changed native planning')
     permitted=permitted_tasks(adapter,binding)
     permitted[binding['task_id']]={'ended_run_ids':[str(r['id']) for r in runs]}
-    state,remaining,pending,calls,prove=planning_state(adapter,binding,value,permitted)
-    if remaining or pending:fail('every proposal needs completed native ownership')
+    if previous:
+        # Existing admitted planning remains bound to the identical complete source
+        # snapshot; a new card does not require another semantic/native replay.
+        state={'pages':manifest['allowed_pages']+manifest['gaps'],'omitted_candidate_refs':[]}
+        calls=[None]*previous['proof']['native_planning_calls_authenticated'];prove=None
+    else:
+        state,remaining,pending,calls,prove=planning_state(adapter,binding,value,permitted)
+        if remaining or pending:fail('every proposal needs completed native ownership')
     allowed=manifest['allowed_pages'];gaps=manifest['gaps'];allrows=allowed+gaps
     paths=[p['path'] for p in allrows]
     if len(set(paths))!=len(paths) or len({fingerprint(p['identity']) for p in allrows})!=len(paths):fail('scope identities or paths overlap')
@@ -104,7 +165,7 @@ def verify(adapter,workflow,node,binding,entry,failure,runs):
             or manifest.get('whole_batch_coverage_complete') is not False):fail('incomplete scope counts differ')
     for a,b in ((allowed,work['written']),(gaps,work['held'])):
         if {p['path']:p['candidate_refs'] for p in a}!={p['path']:p['candidate_refs'] for p in b}:fail('approved set differs from current durable outcomes')
-    written=verify_pages(adapter,binding,value,manifest,prove)
+    written=reuse_pages(adapter,value,previous) if previous else verify_pages(adapter,binding,value,manifest,prove)
     rows=[]
     for p in allowed:
         rows.append({'path':p['storage_destination'],'identity':p['identity'],
@@ -114,7 +175,14 @@ def verify(adapter,workflow,node,binding,entry,failure,runs):
     proof.update(pages=rows,omitted_candidate_refs=[r for p in gaps for c in p['candidate_refs'] for r in value['backend']['mapping'][c]],
         new_model_calls_granted=0,native_bodies_authenticated=len(written),native_planning_calls_authenticated=len(calls),
         gaps_completed=False,source_snapshot_sha256=manifest['source_snapshot_sha256'])
-    return {'coverage_admission':proof,'original_calls_preserved':True}
+    from hermes_source_units.reduce_coverage import task_partition
+    proof.update(task_partition(adapter.workflow.knowledge,value['backend']['tasks'],rows))
+    proof['finite_journal_seals']=journal_seals(adapter,manifest)
+    result={'coverage_admission':proof,'original_calls_preserved':True}
+    if previous:
+        proof['reused_native_authorization']=previous['ref']
+        result.update(supersedes_scope=previous['ref'],basis=entry['basis'])
+    return result
 
 
 def execute(adapter,binding,value,state,scope):
@@ -125,8 +193,8 @@ def execute(adapter,binding,value,state,scope):
     # Bind the full source view/backend independently of the new native card.
     source=pinned(adapter.workflow.vault,manifest['source_snapshot_ref'],manifest['source_snapshot_sha256'])
     if any(source[k]!=value[k] for k in ('contract','view','backend')):fail('scoped source inputs changed')
-    with authenticated_replay(adapter,binding) as prove:
-        written=verify_pages(adapter,binding,value,manifest,prove)
+    if not scope['proof'].get('finite_journal_seals'):fail('scope lacks sealed finite native outcomes')
+    written=reuse_pages(adapter,value,scope)
     effective=copy.deepcopy(state)
     effective['pages']=[{k:p[k] for k in ('identity','path','candidate_refs')} for p in manifest['allowed_pages']]
     effective['omitted_candidate_refs']=[c for p in manifest['gaps'] for c in p['candidate_refs']]

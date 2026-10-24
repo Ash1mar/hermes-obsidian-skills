@@ -1388,6 +1388,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             } for item in resource_reductions]
             status["global_reduction"] = global_reduction
             status["uncovered_task_ids"] = uncovered
+        from .reduce_coverage import batch_outcome
+        status.update(batch_outcome(self,batch))
         return status
 
     def resume_batch(self, batch_id: str) -> dict[str, Any]:
@@ -2380,7 +2382,12 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 for decision in run["decisions"]:
                     used_refs.extend(self._candidate_ref_key(item)
                                      for item in decision["candidate_refs"])
-            if set(run_task_owners) != eligible:
+            expected_run_tasks=eligible
+            if scope:
+                from .reduce_coverage import resolve
+                admitted,_=resolve(self,scope)
+                expected_run_tasks={t['task_id'] for t in admitted['proof']['run_tasks']}
+            if set(run_task_owners) != expected_run_tasks:
                 _fail("INCOMPLETE_COVERAGE",
                       "global reducer must assign every eligible task to one draft run")
             if len(set(used_refs)) != len(used_refs):
@@ -2670,7 +2677,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                                and task["task_id"] not in covered)
             from .reduce_coverage import batch_outcome
             scope_outcome=batch_outcome(self,batch)
-            ready = not failures and not duplicate and not outside and not uncovered
+            unresolved=[tid for tid in uncovered if tid not in scope_outcome.get('outside_page_scope_task_ids',[])]
+            ready = not failures and not duplicate and not outside and not unresolved
             state = "checkpoint_1" if ready else "analyzing"
             updated = self._store_batch(batch, state=state, operation="validate", failures=failures)
             return {"ok": ready, **scope_outcome, "batch": updated, "runs": results, "failures": failures,
@@ -2689,6 +2697,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             _fail("DUPLICATE", "batch finalize contains duplicate run ids", "$.finalizations")
         with _exclusive_lock(self._batch_lock_path(batch_id)):
             batch = self._batch(batch_id)
+            from .reduce_coverage import batch_outcome
+            scope_outcome=batch_outcome(self,batch)
             if batch["actor"] != actor:
                 _fail("ACCESS_DENIED", "batch finalize actor does not own the batch")
             if not set(run_ids).issubset(set(batch["run_ids"])):
@@ -2742,12 +2752,13 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 path = self._run_path(run_id)
                 run_states.append(_load_json(path).get("state") if path.is_file() else "missing")
             all_runs_completed = bool(run_states) and all(state == "completed" for state in run_states)
-            task_states = [self._task(task_id)["status"] for task_id in batch["task_ids"]]
+            task_states = [self._task(task_id)["status"] for task_id in batch["task_ids"]
+                           if task_id not in scope_outcome.get('outside_page_scope_task_ids',[])]
             completed = all_runs_completed and all(state in ("completed", "skipped") for state in task_states)
             blocked = bool(failures) or any(state in ("blocked", "failed") for state in task_states)
             state = "completed" if completed else ("blocked" if blocked else "finalizing")
             updated = self._store_batch(batch, state=state, operation="finalize", failures=failures)
-            return {"ok": not failures, "batch": updated, "results": results,
+            return {"ok": not failures, **scope_outcome, "batch": updated, "results": results,
                     "failures": failures, "all_runs_completed": all_runs_completed,
                     "batch_completed": completed}
 

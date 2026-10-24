@@ -5,6 +5,18 @@ This is an explicit change to acceptance scope. Ordinary defer/resume retains
 the full-coverage gate. Only the owner operator can admit exact persisted,
 hash-pinned scope and approval documents for the same stopped workflow.
 
+Run task membership is derived from actual adopted citation ownership. Tasks
+without any adopted candidate stay outside the page scope and are not marked
+complete. Required inspection gaps in those tasks remain explicitly listed;
+any such gap in an adopted task still blocks admission. The complete source
+task set remains pinned and accounted separately from page-run membership.
+
+When an implementation correction requires recertification before any formal
+run exists, use the same scope with the exact prior scope reference and pinned
+new cause. The approved manifest cannot change. Reuse the admitted native proof
+after current source, input, destination and content checks; seal finite journals
+for worker reuse. No calls are granted and old unknown outcomes remain unknown.
+
 The manifest lists every allowed native page (identity, candidates, destination,
 native and submitted content hashes), every necessary deferred candidate and
 its reason. Admission authenticates the complete proposal plan and each allowed
