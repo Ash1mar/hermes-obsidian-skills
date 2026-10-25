@@ -365,6 +365,13 @@ def prepare_request_projection(phase,view,output_schema,images=(),correction=Non
 
 @measured('semantic_call', lambda adapter, binding, phase, view, caller, limit, correction=None, **kwargs: {'vault':adapter.workflow.vault,'binding':binding,'phase':phase})
 def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2):
+    from citation_amendment_calls import proof_only,invoke
+    if proof_only(adapter,binding):
+        # Checkpoint admission authenticates saved results while workers are
+        # stopped. It never passes through fresh-execution admission.
+        def no_fresh_call():
+            raise ContractError('CITATION_AMENDMENT_HELD','$','acceptance may authenticate existing native results only')
+        return invoke(adapter,binding,phase,view,caller,limit,correction,no_fresh_call)
     return _model_call(adapter,binding,phase,view,caller,limit,correction,
                        policy=policy,attempt_limit=attempt_limit)
 

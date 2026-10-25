@@ -19,12 +19,18 @@ def active(adapter,binding):
     return bool(value and value['phase']!='complete')
 
 
+def proof_only(adapter,binding):
+    value=state(adapter.workflow.vault,binding['workflow_id'])
+    return bool(value and value['phase']=='awaiting_acceptance')
+
+
 def check_dispatch(adapter,binding,phase,view,prepared):
     """Check the actual consumed projection, not a second reconstruction."""
     reservation=CALL.get()
     if not reservation:
         if active(adapter,binding):fail('active amendment has no logical request reservation')
         return
+    if proof_only(adapter,binding):fail('acceptance cannot claim or send a model request')
     identity=prepared['identity']
     if identity['phase']!=phase or identity['view']!=view or prepared['closed'] or prepared['consumed']:
         fail('reserved final request changed before dispatch')
