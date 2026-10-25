@@ -1211,7 +1211,7 @@ class IngestKanbanAdapter:
             _fail('INVALID_SCHEMA', 'describe the corrected mechanical cause')
         entries = request.get('entries')
         scope=request.get('recovery_scope','mechanical/v1')
-        if scope not in ('mechanical/v1','phase-packet-grouping/v1','correction-reserve-admission/v1','legacy-slice-config/v1','revision-citation-packet/v1'):
+        if scope not in ('mechanical/v1','phase-packet-grouping/v1','correction-reserve-admission/v1','legacy-slice-config/v1','revision-citation-packet/v1','amendment-native-result/v1'):
             _fail('INVALID_SCHEMA','unknown recovery scope')
         if (not isinstance(entries, list) or not entries or any(not isinstance(e, dict) for e in entries)
                 or len({e.get('node') for e in entries}) != len(entries)):
@@ -1232,7 +1232,7 @@ class IngestKanbanAdapter:
                         'revision':value['revision'], 'report_ref':prior['report_ref'], 'nodes':prior['nodes']}
             value = self.workflow._mutation(request)
             self.workflow.assert_execution_ready(value)
-            legacy_revision=(scope in ('mechanical/v1','legacy-slice-config/v1','revision-citation-packet/v1') and value['current_stage']=='reducing'
+            legacy_revision=(scope in ('mechanical/v1','legacy-slice-config/v1','revision-citation-packet/v1','amendment-native-result/v1') and value['current_stage']=='reducing'
                 and value.get('pass_revision',{}).get('revision_scope')=='reduce-dependencies/v1'
                 and value['pass_revision']['state']=='running'
                 and request.get('revision_id')==value['pass_revision']['revision_id'])
@@ -1313,6 +1313,8 @@ class IngestKanbanAdapter:
                         codes=[report['error_code']]
                     elif legacy_revision and scope=='mechanical/v1':
                         codes=None  # Verify the ended native cancellation below.
+                    elif legacy_revision and scope=='amendment-native-result/v1':
+                        codes=['AUTHENTICATED_NATIVE_RESULT_REPLAY']  # No model request or CLI permission.
                     else:
                         codes = mechanical_failure_codes(report,scope,input_limit=batch['slice_config']['slice_max_input_codepoints'])
                     if scope in ('phase-packet-grouping/v1','correction-reserve-admission/v1'):
@@ -1346,6 +1348,10 @@ class IngestKanbanAdapter:
                         service._verify_planned_measurement(service._task(tid), batch['actor'],
                             batch['document_registry_revision'], None)
                     packet_identity=None
+                    native_replay=None
+                    if scope=='amendment-native-result/v1':
+                        from citation_native_authority import verify_replay_recovery
+                        native_replay=verify_replay_recovery(self,value,request,binding)
                     if scope=='revision-citation-packet/v1' or (legacy_revision and scope=='mechanical/v1'
                             and report.get('error_code')=='PROGRAM_EXECUTION_FAILED'):
                         from revision_packet_recovery import verify,inspection_slots,unspent_correction,cause_key,verify_bootstrap
@@ -1358,6 +1364,7 @@ class IngestKanbanAdapter:
                         'failure_sha256':hashlib.sha256(data).hexdigest(), 'failure':report, 'codes':codes})
                     if legacy_identity:audited[-1]['legacy_identity']=legacy_identity
                     if packet_identity:audited[-1]['revision_packet_identity']=packet_identity
+                    if native_replay:audited[-1]['native_result_replay']=native_replay
                 result = {'ok':True, 'workflow_id':wid, 'recovery_id':rid, 'applied':not dry_run,
                           'nodes':[e['node'] for e in audited], 'state':'cancelled', 'resumed':False}
                 if dry_run:

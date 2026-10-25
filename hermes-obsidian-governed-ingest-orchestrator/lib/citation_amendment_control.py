@@ -10,6 +10,7 @@ from hermes_source_units.validation import fingerprint
 def contract_hash():
     import hermes_source_units.citation_amendment as core
     names=['citation_amendment_control.py','citation_amendment_worker.py','citation_amendment_calls.py',
+           'citation_native_authority.py','orchestration.py',
            'citation_amendment_admission.py','citation_local_proof.py','fixed_semantic.py','fixed_reduce.py',
            'reduce_coverage.py','hermes_source_units/pass_revision.py','hermes_source_units/knowledge_build.py',
            'hermes_source_units/workflow_guard.py','hermes_source_units/reduce_dependency_revision.py',
@@ -244,6 +245,22 @@ def recover(adapter,request,*,dry_run=False):
         if action=='start':return start(adapter,request)
         if action=='accept-successor':return accept_successor(adapter,request)
         if action=='reopen-downstream':return reopen_downstream(adapter,request)
+        if action=='recover-native-execution':
+            w=service.status(wid);drained(adapter,w)
+            if value['phase']!='citation':fail('native-result recovery currently owns only this citation phase')
+            cards=[c for c in w['kanban']['task_map'] if c['node'].startswith('pass-slice:')
+                   and c['node'].partition(':')[2] in w['pass_revision']['slice_ids']]
+            if len(cards)!=1:fail('recover exactly one selected native citation card')
+            card=cards[0];failure=_vault_path(service.vault,
+                f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint(card["node"])[:16]}.json')
+            recovery=stored_step(service,wid,value,'native_result_replay_request',lambda:mutation(w,
+                recovery_id='native-replay-'+fingerprint(value['operation_id'])[:40],
+                recovery_scope='amendment-native-result/v1',amendment_id=value['operation_id'],
+                revision_id=value['revision_id'],target_contract_sha256=contract_hash(),
+                reason=request.get('reason',''),basis=request.get('basis',[]),
+                entries=[{'node':card['node'],'task_id':card['task_id'],
+                          'failure_sha256':hashlib.sha256(failure.read_bytes()).hexdigest()}]))
+            return adapter.recover_pass_execution(recovery)
         if action=='authorize-call':
             w=service.status(wid);drained(adapter,w)
             if value['phase'] not in ('citation','downstream'):fail('only held native work can receive another bounded reservation')

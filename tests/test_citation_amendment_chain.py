@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
+from contextlib import contextmanager,nullcontext
 from pathlib import Path
 import pytest
 from test_p3_knowledge_build import vault,workflow_request
@@ -18,6 +19,22 @@ import fixed_reduce
 import fixed_semantic as semantic
 import citation_amendment_control as control
 import citation_amendment_calls as calls
+
+@contextmanager
+def native_worker_context(a,binding,monkeypatch):
+    from citation_native_authority import capture
+    capture(a,binding['workflow_id'])
+    original=a.kanban.task_snapshot
+    def trusted_only(*args):
+        assert not os.environ.get('HERMES_KANBAN_TASK'),'worker attempted a trusted Kanban query'
+        return original(*args)
+    with monkeypatch.context() as env:
+        env.setattr(a.kanban,'task_snapshot',trusted_only)
+        env.setenv('HERMES_KANBAN_TASK',binding['task_id'])
+        env.setenv('HERMES_KANBAN_BOARD',a.workflow.status(binding['workflow_id'])['kanban']['board_id'])
+        env.setenv('HERMES_KANBAN_RUN_ID','1')
+        env.setenv('HERMES_INGEST_EXECUTOR','semantic-v1')
+        yield
 
 def fixture(vault,monkeypatch,mode='condition'):
     import test_reduce_execution_recovery as recovery_fixture
@@ -174,7 +191,8 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
             raise AssertionError('late old worker must never enter a domain mutation')
     current=a.workflow.status(w['workflow_id']);a.resume(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
     current=sync(a,w['workflow_id']);card=next(c for c in current['kanban']['task_map'] if c['node'].startswith('pass-slice:'))
-    begun=a.worker_begin({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id'],'worker_id':'native-citation'})
+    canonical=json.loads(Path(a.kanban.by_id[card['task_id']]['body']['worker_binding']).read_text())
+    begun=a.worker_begin(canonical)
     bound=begun['worker_request'];workspace=tmp_path/'native-worker';workspace.mkdir();_write_atomic(workspace/'worker-request.json',_json_bytes(bound))
     monkeypatch.setenv('HERMES_KANBAN_WORKSPACE',str(workspace));monkeypatch.setenv('HERMES_KANBAN_RUN_ID','1')
     packet=json.loads((vault/begun['model_input']['path']).read_text())
@@ -183,7 +201,30 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
     capture_context(vault,bound,packet_path,packet)
     task=packet['tasks'][0];view=semantic.subset(packet,[task],'citation')
     caller=NativeFixtureCaller(home,mode)
-    response,audit=semantic.model_call(a,bound,'citation',view,caller,30000,attempt_limit=1)
+    with native_worker_context(a,bound,monkeypatch) if mode=='condition' else nullcontext():
+        response,audit=semantic.model_call(a,bound,'citation',view,caller,30000,attempt_limit=1)
+    if mode=='condition':
+        # A received native result survives a program failure and a new owner;
+        # the existing response is replayed, never another model allowance.
+        a.execution_failure(bound,'ACCESS_DENIED','Isolated original program called a trusted-only interface')
+        a.kanban.ended.add(bound['task_id']);current=a.workflow.status(w['workflow_id'])
+        a.cancel(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
+        cause=root(vault,w['workflow_id'])/'corrected-program.json'
+        _write_atomic(cause,_json_bytes({'cause':'Moved ownership evidence capture to the trusted dispatcher; CLI denial remains.'}))
+        recovery=command(a,request,'recover-native-execution',reason='Replay the authentic saved result after a verified program repair.',
+            basis=[{'ref':cause.relative_to(vault).as_posix(),'sha256':hashlib.sha256(cause.read_bytes()).hexdigest()}])
+        result=a.recover_reduce_execution(recovery);assert result['applied'] and not result['resumed']
+        current=a.workflow.status(w['workflow_id']);a.resume(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
+        current=sync(a,w['workflow_id']);replacement=next(c for c in current['kanban']['task_map'] if c['node']==card['node'])
+        assert replacement['task_id']!=card['task_id']
+        canonical=json.loads(Path(a.kanban.by_id[replacement['task_id']]['body']['worker_binding']).read_text())
+        begun=a.worker_begin(canonical);bound=begun['worker_request'];_write_atomic(workspace/'worker-request.json',_json_bytes(bound))
+        packet_path,packet=verified_packet(vault,begun['model_input'],a.worker_check(bound));capture_context(vault,bound,packet_path,packet)
+        task=packet['tasks'][0];view=semantic.subset(packet,[task],'citation')
+        with native_worker_context(a,bound,monkeypatch):
+            replayed,replayed_audit=semantic.model_call(a,bound,'citation',view,caller,30000,attempt_limit=1)
+        assert replayed==response and replayed_audit==audit and caller.calls==['citation']
+        assert sum(len(j['attempts']) for j in pending_calls(vault,w['workflow_id'])['jobs'].values())==1
     authored,_,_=semantic.prepare_pass_items(a,response,packet,[task],'citation')
     item=authored[0];k=a.workflow.knowledge;mapping=k.model_input(prior['task_id'],json.loads((vault/f'_system/knowledge-builds/task-{prior["task_id"]}/readings/{prior["reading_package_id"]}.json').read_text()),persist=False)['mapping']
     def expand(ref):return copy.deepcopy(mapping[ref] if isinstance(ref,str) else ref)
@@ -192,7 +233,7 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
     draft={k0:prior[k0] for k0 in ('task_id','actor','reading_package_id')}
     draft.update(expected_revision=k._task(prior['task_id'])['revision'],registry_revision=1,sequence=prior['sequence']+1,
                  pass_kind='citation',candidates=candidates,inspections=inspections,empty_reason='')
-    with worker_binding(bound),workflow_write_guard(vault,kinds=('pass-slice',)):
+    with (native_worker_context(a,bound,monkeypatch) if mode=='condition' else nullcontext()),worker_binding(bound),workflow_write_guard(vault,kinds=('pass-slice',)):
         bad=copy.deepcopy(draft);bad['candidates'][1]['finding']='Unselected unauthorized mutation'
         rejected=k.record_pass_batch({'batch_id':w['batch_id'],'passes':[bad]})
         assert not rejected['ok'] and len(k._pass_index([prior['task_id']])[1][prior['task_id']])==2
@@ -204,10 +245,13 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
     current=sync(a,w['workflow_id'])
     source_card=next(c for c in current['kanban']['task_map'] if c['node'] in state(vault,w['workflow_id'])['downstream_nodes'] and c['node'].startswith('resource-reduce:'))
     binding=json.loads(Path(a.kanban.by_id[source_card['task_id']]['body']['worker_binding']).read_text())
-    assert semantic.run_reduce(a,binding,caller)['ok'];a.kanban.ended.add(binding['task_id']);current=sync(a,w['workflow_id'])
+    with native_worker_context(a,binding,monkeypatch) if mode=='condition' else nullcontext():
+        assert semantic.run_reduce(a,binding,caller)['ok']
+    a.kanban.ended.add(binding['task_id']);current=sync(a,w['workflow_id'])
     global_card=next(c for c in current['kanban']['task_map'] if c['node']=='global-reduce')
     gb=json.loads(Path(a.kanban.by_id[global_card['task_id']]['body']['worker_binding']).read_text())
-    with pytest.raises(ContractError,match='Local native revision finished'):semantic.run_reduce(a,gb,caller)
+    with (native_worker_context(a,gb,monkeypatch) if mode=='condition' else nullcontext()),pytest.raises(ContractError,match='Local native revision finished'):
+        semantic.run_reduce(a,gb,caller)
     a.kanban.ended.add(gb['task_id'])
     # Record the supported stop on its original binding, then drain it.
     a.execution_failure(gb,'WORKFLOW_STOPPED','Local native revision finished')
