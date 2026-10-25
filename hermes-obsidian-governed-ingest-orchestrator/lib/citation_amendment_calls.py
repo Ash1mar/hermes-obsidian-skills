@@ -97,7 +97,6 @@ def proof(adapter,binding,record,*,require_stopped=False):
     body,_=decode_semantic_response(found[0])
     raw_body=copy.deepcopy(body)
     from fixed_semantic_recovery import _request_text
-    import json
     request=json.loads(_request_text(record['wire']['user']))
     if audit['phase']!=request['phase']:fail('native phase differs from its actual request')
     if request['phase']=='citation':
