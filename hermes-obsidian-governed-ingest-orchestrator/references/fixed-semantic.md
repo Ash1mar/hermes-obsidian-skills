@@ -173,6 +173,14 @@ Build template dependency changes in the pause evidence. The checkpoint decision
 domain results, coverage, budgets and continuation history do not change. There
 is no resume, sync, card creation or pause release. See operations.md.
 
+If one repeated checkpoint validation has advanced only the batch revision,
+adoption may additionally record a batch_metadata_refresh. The approved decision's
+complete batch snapshot, its approval revalidation revision (+1), and canonical
+bytes must exactly reproduce the old paused batch hash. Current bytes must match
+the same approved snapshot with only a later revision counter. Every other file,
+field, membership and decision stays exact. This does not rewrite the batch,
+rerun validation or approve changed evidence. Missing proof remains blocked.
+
 Each model invocation is a one-turn native Hermes session with no tools, Skill
 lookup, context files, memory or fallback agent. Its instructions, JSON schema,
 evidence and correction all count toward the input bound. No material is silently

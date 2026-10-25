@@ -164,3 +164,55 @@ def test_second_adoption_id_cannot_replace_the_recorded_contract(held):
     another=workflow_request(**{**{k:v for k,v in req.items() if k!='input_digest'},
         'adoption_id':'new-id','expected_revision':current['revision']})
     with pytest.raises(ContractError,match='IDEMPOTENCY_CONFLICT'):a.adopt_build_acceptance(another)
+
+
+def batch_counter_drift(held,vault):
+    """Simulate approval's revalidation, then one later unchanged validation."""
+    from hermes_source_units.source_units import _json_bytes
+    a,w,req=held
+    batch=a.workflow.knowledge._batch(w['batch_id'])
+    approved={**batch,'revision':batch['revision']-1}
+    ref=f"_system/ledgers/ingest-workflows/{w['workflow_id']}/decisions/approved-batch.json"
+    path=vault/ref;path.parent.mkdir(parents=True)
+    decision={'contract':'hermes-ingest-checkpoint-decision/v1','workflow_id':w['workflow_id'],
+        'checkpoint':'checkpoint_1','approval_digest':w['checkpoints']['checkpoint_1']['approval_digest'],
+        'ok':True,'blocking_codes':[],'evidence':{'batch':approved}}
+    path.write_bytes(_json_bytes(decision))
+    w['checkpoints']['checkpoint_1'].update(decision_ref=ref,decision_sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+    a.workflow._write(w)
+    evidence=a.workflow._pause_evidence(w,'checkpoint_1')
+    saved={'contract':'hermes-ingest-pause/v1','evidence_digest':'sha256:'+fingerprint(evidence),'evidence':evidence}
+    pause_ref=f"_system/ledgers/ingest-workflows/{w['workflow_id']}/pauses/counter-drift.json"
+    (vault/pause_ref).write_bytes(_json_bytes(saved))
+    w['pause_control'].update(report_ref=pause_ref,evidence_digest=saved['evidence_digest'])
+    a.workflow._write(w)
+    # Only the revision changes, as validate_batch does for identical input.
+    a.workflow.knowledge._batch_path(w['batch_id']).write_bytes(_json_bytes({**batch,'revision':batch['revision']+1}))
+    req=workflow_request(**{**{k:v for k,v in req.items() if k!='input_digest'},
+        'evidence_digest':saved['evidence_digest']})
+    return a,w,req
+
+
+def test_exact_revision_only_drift_is_proven_from_approved_checkpoint(held,vault):
+    a,w,req=batch_counter_drift(held,vault)
+    before=a.workflow.knowledge._batch_path(w['batch_id']).read_bytes()
+    result=a.adopt_build_acceptance(req)
+    report=json.loads((vault/result['report_ref']).read_text())
+    proof=report['batch_metadata_refresh']
+    assert proof['paused_revision']==proof['approved_revision']+1
+    assert proof['current_revision']==proof['paused_revision']+1
+    assert a.workflow.knowledge._batch_path(w['batch_id']).read_bytes()==before
+    current=a.workflow.status(w['workflow_id'])
+    verify_policy_adoption(a.workflow,current)
+    assert a.workflow.pending_pause(current)=='checkpoint_1'
+    assert a.workflow._pause_evidence(current,'checkpoint_1')==json.loads((vault/current['pause_control']['report_ref']).read_text())['evidence']
+
+
+@pytest.mark.parametrize('field,value',[('last_operation','reduce'),('cooldown_reason','different'),('revision',1)])
+def test_revision_compatibility_never_accepts_other_batch_changes(held,vault,field,value):
+    from hermes_source_units.source_units import _json_bytes
+    a,w,req=batch_counter_drift(held,vault)
+    path=a.workflow.knowledge._batch_path(w['batch_id']);batch=json.loads(path.read_text())
+    batch[field]=value;path.write_bytes(_json_bytes(batch));before=files(vault)
+    with pytest.raises(ContractError,match='STALE_INPUT'):a.adopt_build_acceptance(req)
+    assert before==files(vault)

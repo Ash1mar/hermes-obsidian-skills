@@ -748,3 +748,11 @@ is written last. Pause evidence changes only its Build template dependency.
 No sync, worker launch, model allowance, domain reacceptance, publication or
 Provider action occurs. Later explicit continue-workflow must use the NEW held
 pause digest. Editing the audit's old/new reports or templates blocks execution.
+
+An evidenced legacy repeated-validation counter may be refreshed in the new
+pause report only: the pinned approved decision's complete batch snapshot plus
+its one approval revalidation must reproduce the exact old batch hash; current
+bytes must differ solely in a later revision counter. The batch file is never
+rewritten, and all other paused evidence must match. The audit names this extra
+batch_metadata_refresh and later continuation verifies its proof. Arbitrary
+hash drift, missing approved snapshots or changed business/coverage fields fail.

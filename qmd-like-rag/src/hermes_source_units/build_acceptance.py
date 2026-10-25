@@ -5,7 +5,7 @@ import hashlib
 import re
 
 from .validation import ContractError
-from .source_units import _load_json, _vault_path, _sha
+from .source_units import _load_json, _vault_path, _sha, _json_bytes
 from .validation import fingerprint, validate_record
 
 CONTRACT = 'program-build-acceptance/v1'
@@ -14,7 +14,60 @@ ADOPTION = 'build-acceptance-policy-adoption/v1'
 MARKER = '<!-- hermes-program-build-acceptance/v1 -->'
 
 
-def rebase_pause_evidence(evidence, previous_pin, target_pin):
+def _verify_batch_refresh(vault, proof, evidence):
+    """Prove repeated validation changed only the batch's revision counter."""
+    def fail():
+        raise ContractError('STALE_INPUT', '$', 'checkpoint batch metadata drift lacks exact approved evidence')
+    checkpoint = evidence['checkpoints']['checkpoint_1']
+    ref = proof['decision_ref']
+    if ref != checkpoint.get('decision_ref') or not ref:
+        fail()
+    raw = _vault_path(vault, ref).read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != checkpoint['decision_sha256'] or digest != proof['decision_sha256'] or evidence['files'].get(ref) != digest:
+        fail()
+    decision = _load_json(_vault_path(vault, ref))
+    approved = decision.get('evidence', {}).get('batch')
+    if (decision.get('contract') != 'hermes-ingest-checkpoint-decision/v1'
+            or decision.get('workflow_id') != evidence['workflow_id'] or decision.get('checkpoint') != 'checkpoint_1'
+            or decision.get('approval_digest') != checkpoint['approval_digest']
+            or decision.get('ok') is not True or decision.get('blocking_codes') != [] or not approved):
+        fail()
+    validate_record('knowledge_batch', approved)
+    if (proof['path'] != f"_system/ledgers/knowledge-build-batches/{approved['batch_id']}.json"
+            or approved['state'] != 'checkpoint_1' or approved['last_operation'] != 'validate' or approved['failures']
+            or proof['approved_revision'] != approved['revision'] or proof['paused_revision'] != approved['revision']+1
+            or proof['current_revision'] <= proof['paused_revision']):
+        fail()
+    for field, revision in (('previous_sha256', proof['paused_revision']), ('current_sha256', proof['current_revision'])):
+        expected = hashlib.sha256(_json_bytes({**approved, 'revision': revision})).hexdigest()
+        if proof[field] != expected:
+            fail()
+    if evidence['files'].get(proof['path']) != proof['previous_sha256']:
+        fail()
+
+
+def checkpoint_batch_refresh(service, workflow, evidence, actual):
+    """Only the evidenced post-checkpoint repeated-validate counter may drift."""
+    path = service.knowledge._batch_path(workflow['batch_id']).relative_to(service.vault).as_posix()
+    ref = workflow['checkpoints']['checkpoint_1'].get('decision_ref')
+    if not ref or path not in evidence['files'] or path not in actual['files']:
+        raise ContractError('STALE_INPUT', '$', 'checkpoint evidence changed before adoption')
+    approved = _load_json(_vault_path(service.vault, ref)).get('evidence', {}).get('batch', {})
+    current = service.knowledge._batch(workflow['batch_id'])
+    proof = {'path': path, 'decision_ref': ref, 'decision_sha256': workflow['checkpoints']['checkpoint_1']['decision_sha256'],
+             'approved_revision': approved.get('revision'), 'paused_revision': approved.get('revision', -1)+1,
+             'current_revision': current['revision'], 'previous_sha256': evidence['files'][path],
+             'current_sha256': actual['files'][path]}
+    _verify_batch_refresh(service.vault, proof, evidence)
+    refreshed = copy.deepcopy(evidence)
+    refreshed['files'][path] = proof['current_sha256']
+    if refreshed != actual:
+        raise ContractError('STALE_INPUT', '$', 'adoption cannot refresh changed domain evidence')
+    return proof
+
+
+def rebase_pause_evidence(evidence, previous_pin, target_pin, batch_refresh=None):
     """Change exactly one template dependency; all domain evidence stays pinned."""
     updated = copy.deepcopy(evidence)
     if updated['files'].pop(previous_pin['path'], None) != previous_pin['template_hash'][7:]:
@@ -22,6 +75,8 @@ def rebase_pause_evidence(evidence, previous_pin, target_pin):
     if target_pin['path'] in updated['files']:
         raise ContractError('STALE_INPUT', '$', 'new Build template already occurs in old pause evidence')
     updated['files'][target_pin['path']] = target_pin['template_hash'][7:]
+    if batch_refresh:
+        updated['files'][batch_refresh['path']] = batch_refresh['current_sha256']
     return updated
 
 
@@ -68,8 +123,11 @@ def verify_policy_adoption(service, workflow):
         if saved['evidence_digest'] != pause['evidence_digest'] or 'sha256:'+fingerprint(saved['evidence']) != pause['evidence_digest']:
             fail('Build policy adoption pause digest changed')
         reports.append(saved)
+    refresh = report.get('batch_metadata_refresh')
+    if refresh:
+        _verify_batch_refresh(service.vault, refresh, reports[0]['evidence'])
     if (request['evidence_digest'] != report['previous_pause']['evidence_digest']
-            or rebase_pause_evidence(reports[0]['evidence'], old, target) != reports[1]['evidence']):
+            or rebase_pause_evidence(reports[0]['evidence'], old, target, refresh) != reports[1]['evidence']):
         fail('Build policy adoption changed domain evidence')
 
 

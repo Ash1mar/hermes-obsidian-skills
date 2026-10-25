@@ -6,7 +6,8 @@ import os
 import re
 
 from hermes_source_units import ContractError
-from hermes_source_units.build_acceptance import ADOPTION, MARKER, rebase_pause_evidence, verify_policy_adoption
+from hermes_source_units.build_acceptance import (ADOPTION, MARKER, rebase_pause_evidence,
+    verify_policy_adoption, checkpoint_batch_refresh)
 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _vault_path, _write_atomic
 from hermes_source_units.validation import fingerprint, record_validation_scope, validate_record
 
@@ -117,12 +118,14 @@ def adopt_build_acceptance(adapter, request, *, dry_run=False):
             old_report = _load_json(old_path)
             evidence = service._pause_evidence(value, 'checkpoint_1')
             if (old_report.get('contract') != 'hermes-ingest-pause/v1'
-                    or old_report.get('evidence') != evidence or old_report.get('evidence_digest') != control['evidence_digest']
-                    or 'sha256:'+fingerprint(evidence) != control['evidence_digest']):
+                    or old_report.get('evidence_digest') != control['evidence_digest']
+                    or 'sha256:'+fingerprint(old_report['evidence']) != control['evidence_digest']):
                 fail('STALE_INPUT', 'checkpoint evidence changed before adoption')
+            refresh = (checkpoint_batch_refresh(service,value,old_report['evidence'],evidence)
+                       if old_report['evidence'] != evidence else None)
             target = {'kind': 'build-finalize', 'template_id': template['template_id'], 'template_hash': digest,
                       'path': prefix+'templates/build-finalize-'+digest[7:]+'.md'}
-            new_evidence = rebase_pause_evidence(evidence, previous, target)
+            new_evidence = rebase_pause_evidence(old_report['evidence'], previous, target, refresh)
             new_report = {'contract': 'hermes-ingest-pause/v1', 'evidence_digest': 'sha256:'+fingerprint(new_evidence),
                           'evidence': new_evidence}
             pause = {**copy.deepcopy(control), 'evidence_digest': new_report['evidence_digest'],
@@ -133,6 +136,7 @@ def adopt_build_acceptance(adapter, request, *, dry_run=False):
                       'previous_pause_sha256': hashlib.sha256(old_path.read_bytes()).hexdigest(),
                       'new_pause_sha256': hashlib.sha256(_json_bytes(new_report)).hexdigest(), 'native_inventory': native,
                       'domain_evidence_unchanged': True, 'resumed': False, 'pause_released': False}
+            if refresh:report['batch_metadata_refresh']=refresh
             updated = copy.deepcopy(value)
             updated['template_pins'] = [target if p['kind'] == 'build-finalize' else p for p in value['template_pins']]
             updated['pause_control'] = pause
