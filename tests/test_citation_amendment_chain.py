@@ -20,6 +20,9 @@ import citation_amendment_control as control
 import citation_amendment_calls as calls
 
 def fixture(vault,monkeypatch):
+    import test_reduce_execution_recovery as recovery_fixture
+    original=recovery_fixture.prepare_layered_reduce_batch
+    monkeypatch.setattr(recovery_fixture,'prepare_layered_reduce_batch',lambda v,b:original(v,b,initialize_slices=True))
     a,w,card,*_=stopped_reducer(vault,monkeypatch,'global-reduce')
     k=a.workflow.knowledge;b=k._batch(w['batch_id']);base=vault/f'_system/ledgers/ingest-workflows/{w["workflow_id"]}'
     binding=json.loads(Path(a.kanban.by_id[card['task_id']]['body']['worker_binding']).read_text())
