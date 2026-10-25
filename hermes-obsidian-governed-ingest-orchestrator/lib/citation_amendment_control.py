@@ -3,7 +3,7 @@ import copy
 import hashlib
 from pathlib import Path
 from hermes_source_units import mutation_digest
-from hermes_source_units.citation_amendment import (SCOPE,fail,root,state,plan,save,row,transaction,replay,pending_calls,basis_key)
+from hermes_source_units.citation_amendment import (SCOPE,fail,root,state,plan,save,row,transaction,replay,pending_calls,basis_key,lineage_limits)
 from hermes_source_units.source_units import _load_json,_vault_path,_json_bytes,_write_atomic,_exclusive_lock
 from hermes_source_units.validation import fingerprint
 
@@ -61,7 +61,7 @@ def prepare(adapter,request,dry_run):
             type(budgets[p]) is not int or type(limits[p]) is not int or not 1<=budgets[p]<=limits[p]<=caps[p] for p in caps) or budgets.get('citation')!=1:
         fail('explicit phase budgets and cumulative limits are required; no default fresh attempts')
     ledger=pending_calls(service.vault,wid);lineage=selection['task_id']
-    if lineage in ledger.get('limits',{}) and ledger['limits'][lineage]!=limits:fail('operation/version changes cannot reset cumulative limits')
+    if lineage in ledger.get('limits',{}) and lineage_limits(ledger,lineage,limits)!=limits:fail('operation/version changes cannot reset cumulative limits')
     for p in caps:
         spent=sum(a['lineage']==lineage and a['phase']==p for j in ledger['jobs'].values() for a in j['attempts'])
         if spent+budgets[p]>limits[p]:fail('requested authority exceeds remaining cumulative lineage budget')
@@ -96,7 +96,7 @@ def prepare(adapter,request,dry_run):
     if dry_run:return {'ok':True,'applied':False,'resumed':False,'impact':impact,'budgets':budgets}
     value={'operation_id':op,'phase':'prepared','revision_id':'citation-'+fingerprint({'operation':op,'workflow':wid})[:40],'plan_ref':path.relative_to(service.vault).as_posix(),
            'plan_sha256':hashlib.sha256(_json_bytes(frozen)).hexdigest(),'steps':{},'downstream_nodes':[]}
-    ledger.setdefault('limits',{})[lineage]=limits
+    ledger.setdefault('limits',{}).setdefault(lineage,limits)
     ledger.setdefault('causes',{}).setdefault(lineage,[]).append(cause)
     audit_root=service.vault/f'_system/ledgers/ingest-workflows/{wid}'
     call_evidence=[]
@@ -232,11 +232,17 @@ def recover(adapter,request,*,dry_run=False):
                 return {'ok':True,'replayed':True,'phase':value['phase'],'resumed':False}
             return prepare(adapter,request,dry_run)
         if not value or value['operation_id']!=request['recovery_id']:fail('continue the same durable amendment operation')
+        if action=='recover-native-execution' and value['phase']=='downstream':
+            node=request.get('node')
+            if node not in value['downstream_nodes']:fail('recover one exact affected local node')
+            from citation_amendment_calls import execution_admission
+            readiness=execution_admission(adapter,wid,node)
+            if dry_run:return {'ok':True,'phase':value['phase'],'applied':False,'resumed':False,'execution_admission':readiness}
         if dry_run:return {'ok':True,'phase':value['phase'],'applied':False,'resumed':False}
         action_key=action+':'+str(value.get('generation',0))
         if action=='authorize-call':action_key=action+':'+fingerprint({k:request.get(k) for k in ('logical_work','supersedes_attempt_sha256')})
         if action=='reopen-downstream':action_key=action+':'+fingerprint({k:request.get(k) for k in ('target_paths','basis','clarification')})
-        if action=='recover-native-execution':action_key=action+':'+value['phase']+':'+str(request.get('node','citation'))
+        if action=='recover-native-execution':action_key=action+':'+value['phase']+':'+str(request.get('node','citation'))+':'+contract_hash()
         previous=value.get('action_requests',{}).get(action_key)
         if previous!=request:
             service._mutation(request)
@@ -254,8 +260,16 @@ def recover(adapter,request,*,dry_run=False):
                 if node not in value['downstream_nodes']:fail('recover one exact affected local node')
                 card=next(c for c in w['kanban']['task_map'] if c['node']==node)
                 failure=_vault_path(service.vault,f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint(node)[:16]}.json')
-                local=stored_step(service,wid,value,'local_execution_recovery:'+card['task_id'],lambda:mutation(w,
-                    recovery_id='local-execution-'+fingerprint({'op':value['operation_id'],'task':card['task_id']})[:40],
+                # Certification never guesses legacy dispatch state. It can
+                # continue only a journal with a durable no-claim record.
+                from hermes_source_units.citation_amendment import continue_call
+                for status in readiness:
+                    if status['state']=='reserved_not_dispatched':
+                        ledger=pending_calls(service.vault,wid)
+                        continue_call((root(service.vault,wid)/'budgets.json',ledger,status['logical_work'],status['ordinal'],True),
+                                      contract_hash(),status['ended_run_ids'])
+                local=stored_step(service,wid,value,'local_execution_recovery:'+card['task_id']+':'+contract_hash(),lambda:mutation(w,
+                    recovery_id='local-execution-'+fingerprint({'op':value['operation_id'],'task':card['task_id'],'contract':contract_hash()})[:40],
                     recovery_scope='reduce-cancel/v1',amendment_id=value['operation_id'],target_contract_sha256=contract_hash(),
                     reason=request.get('reason',''),basis=request.get('basis',[]),
                     entries=[{'node':node,'task_id':card['task_id'],'failure_sha256':hashlib.sha256(failure.read_bytes()).hexdigest()}]))
@@ -284,6 +298,12 @@ def recover(adapter,request,*,dry_run=False):
                 fail('pin an existing logical reservation in this amendment')
             old=attempts[-1]
             if request.get('supersedes_attempt_sha256')!=fingerprint(old):fail('pin the exact failed/unknown reservation')
+            prior_grants=value.get('retry_grants',{}).get(logical,[])
+            if prior_grants and prior_grants[-1]['supersedes_attempt_sha256']==fingerprint(old):
+                old_grant=prior_grants[-1]
+                if any(old_grant.get(k)!=request.get(k) for k in ('basis','reason','cumulative_limit')):
+                    fail('an outstanding reservation grant already owns this predecessor')
+                return {'ok':True,'replayed':True,'additional_calls':0,'resumed':False}
             snap=adapter.kanban.task_snapshot(w['kanban']['board_id'],old['binding']['task_id'])
             if snap['task'].get('worker_pid') or not snap['runs'] or any(not r.get('ended_at') for r in snap['runs']):
                 fail('old native executor must be ended before controlled regeneration')
@@ -293,10 +313,21 @@ def recover(adapter,request,*,dry_run=False):
                 fail('a different corrected cause/new evidence is required; another ID is insufficient')
             for b in basis:
                 if hashlib.sha256(_vault_path(service.vault,b['ref']).read_bytes()).hexdigest()!=b['sha256']:fail('retry cause changed')
-            phase=logical.partition(':')[0]
-            if sum(a['phase']==phase and a['lineage']==frozen['selection']['task_id'] for j in ledger['jobs'].values() for a in j['attempts'])>=frozen['cumulative_limits'][phase]:
+            phase=logical.partition(':')[0];lineage=frozen['selection']['task_id']
+            limits=lineage_limits(ledger,lineage,frozen['cumulative_limits'])
+            extension=None
+            if 'cumulative_limit' in request:
+                new=request['cumulative_limit'];caps={'citation':2,'source':2,'plan':2,'body':4}
+                if type(new) is not int or new!=limits[phase]+1 or new>caps[phase]:
+                    fail('explicit cumulative extension permits exactly one call within the bounded phase cap')
+                extension={'lineage':lineage,'phase':phase,'previous_limit':limits[phase],'cumulative_limit':new,
+                    'additional_calls':1,'basis':basis,'reason':request['reason'],'operation_id':value['operation_id'],
+                    'supersedes_attempt_sha256':fingerprint(old)}
+                ledger.setdefault('limit_extensions',[]).append(extension);limits[phase]=new
+            if sum(a['phase']==phase and a['lineage']==lineage for j in ledger['jobs'].values() for a in j['attempts'])>=limits[phase]:
                 fail('cumulative lineage quota exhausted')
             grant={'supersedes_attempt_sha256':fingerprint(old),'basis':basis,'reason':request['reason'],'additional_calls':1}
+            if extension:grant['cumulative_limit']=extension['cumulative_limit']
             for path,guide in value.get('force_guidance',{}).items():
                 work=_load_json(_vault_path(service.vault,value['work_ref']))
                 page=next((p for p in work['state']['pages'] if p['path']==path),None)
@@ -304,7 +335,14 @@ def recover(adapter,request,*,dry_run=False):
             if prior_grants and prior_grants[-1]['supersedes_attempt_sha256']==fingerprint(old):
                 if prior_grants[-1]!=grant:fail('an outstanding reservation grant already owns this predecessor')
                 return {'ok':True,'replayed':True,'resumed':False}
-            value.setdefault('retry_grants',{}).setdefault(logical,[]).append(grant);save(service.vault,wid,value)
+            value.setdefault('retry_grants',{}).setdefault(logical,[]).append(grant)
+            if extension:
+                # One durable transaction: a crash cannot install a ceiling
+                # without its exact grant, or a grant without its ceiling.
+                with _exclusive_lock(base/'budget.lock'):
+                    transaction(service.vault,wid,[row(service.vault,base/'budgets.json',ledger),
+                        row(service.vault,base/'active.json',value)],'quota-'+fingerprint(grant))
+            else:save(service.vault,wid,value)
             return {'ok':True,'additional_calls':1,'resumed':False,'old_unknown_status_preserved':True}
         if action=='admit':
             from citation_amendment_admission import admit

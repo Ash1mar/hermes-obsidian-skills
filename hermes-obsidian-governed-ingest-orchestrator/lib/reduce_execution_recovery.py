@@ -165,7 +165,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     ('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED'))
                 if scope=='reduce-coverage/v1':allowed=(*allowed,'REDUCTION_FAILED')
                 local_amendment=scope=='reduce-cancel/v1' and bool(request.get('amendment_id'))
-                if local_amendment:allowed=(*allowed,'RECOVERY_NOT_ALLOWED')
+                if local_amendment:allowed=(*allowed,'RECOVERY_NOT_ALLOWED','CITATION_AMENDMENT_HELD')
                 if scope=='reduce-validation/v1':allowed=('COVERAGE_SCOPE_INVALID','VALIDATION_FAILED','PROGRAM_EXECUTION_FAILED','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED')
                 if not review and ((report.get('error_code') not in allowed and not call_failure) or (scope in ('source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3') and node.kind!='resource-reduce')):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
