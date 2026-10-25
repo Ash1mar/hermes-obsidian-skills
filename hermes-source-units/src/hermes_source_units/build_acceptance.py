@@ -1,13 +1,134 @@
 """Small, deterministic Build acceptance policy; never a semantic approval."""
 from collections import Counter
+import copy
+import hashlib
 import re
 
 from .validation import ContractError
-from .source_units import _load_json, _vault_path, _sha
+from .source_units import _load_json, _vault_path, _sha, _json_bytes
 from .validation import fingerprint, validate_record
 
 CONTRACT = 'program-build-acceptance/v1'
 POLICY = 'explicit-page-risks/v1'
+ADOPTION = 'build-acceptance-policy-adoption/v1'
+MARKER = '<!-- hermes-program-build-acceptance/v1 -->'
+
+
+def _verify_batch_refresh(vault, proof, evidence):
+    """Prove repeated validation changed only the batch's revision counter."""
+    def fail():
+        raise ContractError('STALE_INPUT', '$', 'checkpoint batch metadata drift lacks exact approved evidence')
+    checkpoint = evidence['checkpoints']['checkpoint_1']
+    ref = proof['decision_ref']
+    if ref != checkpoint.get('decision_ref') or not ref:
+        fail()
+    raw = _vault_path(vault, ref).read_bytes()
+    digest = hashlib.sha256(raw).hexdigest()
+    if digest != checkpoint['decision_sha256'] or digest != proof['decision_sha256'] or evidence['files'].get(ref) != digest:
+        fail()
+    decision = _load_json(_vault_path(vault, ref))
+    approved = decision.get('evidence', {}).get('batch')
+    if (decision.get('contract') != 'hermes-ingest-checkpoint-decision/v1'
+            or decision.get('workflow_id') != evidence['workflow_id'] or decision.get('checkpoint') != 'checkpoint_1'
+            or decision.get('approval_digest') != checkpoint['approval_digest']
+            or decision.get('ok') is not True or decision.get('blocking_codes') != [] or not approved):
+        fail()
+    validate_record('knowledge_batch', approved)
+    if (proof['path'] != f"_system/ledgers/knowledge-build-batches/{approved['batch_id']}.json"
+            or approved['state'] != 'checkpoint_1' or approved['last_operation'] != 'validate' or approved['failures']
+            or proof['approved_revision'] != approved['revision'] or proof['paused_revision'] != approved['revision']+1
+            or proof['current_revision'] <= proof['paused_revision']):
+        fail()
+    for field, revision in (('previous_sha256', proof['paused_revision']), ('current_sha256', proof['current_revision'])):
+        expected = hashlib.sha256(_json_bytes({**approved, 'revision': revision})).hexdigest()
+        if proof[field] != expected:
+            fail()
+    if evidence['files'].get(proof['path']) != proof['previous_sha256']:
+        fail()
+
+
+def checkpoint_batch_refresh(service, workflow, evidence, actual):
+    """Only the evidenced post-checkpoint repeated-validate counter may drift."""
+    path = service.knowledge._batch_path(workflow['batch_id']).relative_to(service.vault).as_posix()
+    ref = workflow['checkpoints']['checkpoint_1'].get('decision_ref')
+    if not ref or path not in evidence['files'] or path not in actual['files']:
+        raise ContractError('STALE_INPUT', '$', 'checkpoint evidence changed before adoption')
+    approved = _load_json(_vault_path(service.vault, ref)).get('evidence', {}).get('batch', {})
+    current = service.knowledge._batch(workflow['batch_id'])
+    proof = {'path': path, 'decision_ref': ref, 'decision_sha256': workflow['checkpoints']['checkpoint_1']['decision_sha256'],
+             'approved_revision': approved.get('revision'), 'paused_revision': approved.get('revision', -1)+1,
+             'current_revision': current['revision'], 'previous_sha256': evidence['files'][path],
+             'current_sha256': actual['files'][path]}
+    _verify_batch_refresh(service.vault, proof, evidence)
+    refreshed = copy.deepcopy(evidence)
+    refreshed['files'][path] = proof['current_sha256']
+    if refreshed != actual:
+        raise ContractError('STALE_INPUT', '$', 'adoption cannot refresh changed domain evidence')
+    return proof
+
+
+def rebase_pause_evidence(evidence, previous_pin, target_pin, batch_refresh=None):
+    """Change exactly one template dependency; all domain evidence stays pinned."""
+    updated = copy.deepcopy(evidence)
+    if updated['files'].pop(previous_pin['path'], None) != previous_pin['template_hash'][7:]:
+        raise ContractError('STALE_INPUT', '$', 'old pause does not pin the previous Build template')
+    if target_pin['path'] in updated['files']:
+        raise ContractError('STALE_INPUT', '$', 'new Build template already occurs in old pause evidence')
+    updated['files'][target_pin['path']] = target_pin['template_hash'][7:]
+    if batch_refresh:
+        updated['files'][batch_refresh['path']] = batch_refresh['current_sha256']
+    return updated
+
+
+def verify_policy_adoption(service, workflow):
+    """Read-only audit validation on later resume/dispatch and continuation."""
+    pointer = workflow.get('build_acceptance_adoption')
+    if pointer is None:
+        return
+    def fail(message):
+        raise ContractError('STALE_INPUT', '$', message)
+    prefix = f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/"
+    if pointer['report_ref'] != prefix+'build-acceptance-adoptions/'+pointer['adoption_id']+'.json':
+        fail('Build policy adoption report is outside its operation')
+    data = _vault_path(service.vault, pointer['report_ref']).read_bytes()
+    if hashlib.sha256(data).hexdigest() != pointer['report_sha256']:
+        fail('Build policy adoption evidence changed')
+    report = _load_json(_vault_path(service.vault, pointer['report_ref']))
+    request = report['request']
+    from .ingest_workflow import mutation_digest
+    old, target = report['previous_pin'], report['target_pin']
+    active = next(p for p in workflow['template_pins'] if p['kind'] == 'build-finalize')
+    if (report.get('contract') != ADOPTION or request['workflow_id'] != workflow['workflow_id']
+            or request['actor'] != workflow['actor'] or request['adoption_scope'] != ADOPTION
+            or request['adoption_id'] != pointer['adoption_id'] or request['input_digest'] != pointer['input_digest']
+            or mutation_digest(request) != request['input_digest'] or target != active
+            or request['previous_pin_digest'] != 'sha256:'+fingerprint(old)
+            or request['target_template_hash'] != target['template_hash']
+            or report['previous_pause']['history'] != report['new_pause']['history']
+            or report['previous_pause']['boundary'] != 'checkpoint_1' or report['new_pause']['boundary'] != 'checkpoint_1'):
+        fail('Build policy adoption identity, pins or held boundary changed')
+    for pin in (old, target):
+        raw = _vault_path(service.vault, pin['path']).read_bytes()
+        if pin['kind'] != 'build-finalize' or 'sha256:'+hashlib.sha256(raw).hexdigest() != pin['template_hash']:
+            fail('Build policy adoption template changed')
+    if MARKER not in _vault_path(service.vault, target['path']).read_text(encoding='utf-8'):
+        fail('adopted Build template lacks program acceptance')
+    reports = []
+    for name in ('previous', 'new'):
+        pause = report[name+'_pause']
+        raw = _vault_path(service.vault, pause['report_ref']).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != report[name+'_pause_sha256']:
+            fail('Build policy adoption pause report changed')
+        saved = _load_json(_vault_path(service.vault, pause['report_ref']))
+        if saved['evidence_digest'] != pause['evidence_digest'] or 'sha256:'+fingerprint(saved['evidence']) != pause['evidence_digest']:
+            fail('Build policy adoption pause digest changed')
+        reports.append(saved)
+    refresh = report.get('batch_metadata_refresh')
+    if refresh:
+        _verify_batch_refresh(service.vault, refresh, reports[0]['evidence'])
+    if (request['evidence_digest'] != report['previous_pause']['evidence_digest']
+            or rebase_pause_evidence(reports[0]['evidence'], old, target, refresh) != reports[1]['evidence']):
+        fail('Build policy adoption changed domain evidence')
 
 
 def _fail(message):

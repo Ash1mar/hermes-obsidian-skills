@@ -721,3 +721,38 @@ recovery of that node replaces this execution limit; restarting or plain resume
 does not erase it. This shared limit covers source grouping, global plan/detail
 and page-writing outputs; it is not a promise to resume an unknown native call or
 to cross a durable stage pause.
+
+## Adopt program Build acceptance at checkpoint_1
+
+Only an explicitly user-authorized trusted operator may invoke this operation.
+Use the installed entry point with the same request for dry-run and apply:
+
+```bash
+python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" adopt-build-acceptance --request "<request.json>" --dry-run
+python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" adopt-build-acceptance --request "<request.json>"
+```
+
+The request has ordinary workflow_id, actor, expected_revision and input_digest,
+a stable adoption_id, adoption_scope=build-acceptance-policy-adoption/v1, reason,
+observed evidence_digest, previous_pin_digest (sha256: plus the canonical Build
+pin fingerprint), and target_template_hash from the installed Build worker pack.
+Only legacy-to-program adoption is supported, once per workflow. Replay the same
+request after interruption; another ID or changed request cannot replace it.
+
+Requires current approved checkpoint_1, its latched uncontinued pause, no native
+consumers/runnable cards/leases, and no Build calls, journals, completed builds or
+downstream bindings. Current pause evidence is revalidated read-only; missing or
+changed inputs remain blocked. Original template and pause reports survive.
+New template, pause report and adoption audit are immutable; the workflow pointer
+is written last. Pause evidence changes only its Build template dependency.
+No sync, worker launch, model allowance, domain reacceptance, publication or
+Provider action occurs. Later explicit continue-workflow must use the NEW held
+pause digest. Editing the audit's old/new reports or templates blocks execution.
+
+An evidenced legacy repeated-validation counter may be refreshed in the new
+pause report only: the pinned approved decision's complete batch snapshot plus
+its one approval revalidation must reproduce the exact old batch hash; current
+bytes must differ solely in a later revision counter. The batch file is never
+rewritten, and all other paused evidence must match. The audit names this extra
+batch_metadata_refresh and later continuation verifies its proof. Arbitrary
+hash drift, missing approved snapshots or changed business/coverage fields fail.

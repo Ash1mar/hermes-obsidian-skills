@@ -91,6 +91,8 @@ class WorkflowPauseMixin:
 
     def _pause_evidence(self, value, boundary):
         """Pin authoritative bytes, never volatile Kanban status or ledger revision."""
+        from .build_acceptance import verify_policy_adoption
+        verify_policy_adoption(self, value)
         self.pinned_templates(value)
         files = {}
         trees = set()

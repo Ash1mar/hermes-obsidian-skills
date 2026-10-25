@@ -16,4 +16,13 @@ Optional `scope.pause_after` is an immutable, unique list drawn from `exact_plan
 
 `continue-workflow` requires the standard actor/revision/input digest plus `boundary`, observed `evidence_digest` and a stable `continue_id`. Only a trusted non-worker operator may invoke it after user authorization. Every continuation rechecks source identities and bytes, validated UnitSets, task/Pass and batch artifacts, run results, checkpoint decisions, release records and relevant Provider evidence. Changed evidence is a blocker, not an implicit approval refresh. Replaying the same continuation is idempotent and cannot release a later pause. Ordinary resume/sync only restore dispatch, retaining the pause. The checkpoint's verified decision and the operator's permission to move beyond it are separate records.
 
+The narrow adopt-build-acceptance exception changes only the Build Finalize pin
+at an accepted, latched checkpoint_1 before any Build attempt or downstream
+binding. It adds build_acceptance_adoption with an immutable request/report hash,
+keeps all prior snapshots, and replaces the active pause pointer with a new
+immutable report whose domain evidence is identical and only the Build template
+file dependency differs. Continuation history and checkpoint approval remain
+unchanged. Later execution and continuation verify this lineage; an old pause
+digest cannot authorize continuation. The command never calls sync or resume.
+
 Each auto checkpoint has a persisted validation report and decision file under the workflow ledger. The decision binds the workflow ID, checkpoint, approval digest, result and blocking codes. The workflow service verifies the file hash and rechecks current batch or release plan and lint evidence before recording `approved_by: hermes:auto`. A changed decision or changed underlying Vault input fails closed. Manual approvals remain available. A failed auto check blocks that card; it does not advance the gate.

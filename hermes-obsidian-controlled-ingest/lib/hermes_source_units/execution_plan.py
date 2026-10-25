@@ -152,6 +152,8 @@ class ExecutionPlanMixin:
         return plan
 
     def assert_execution_ready(self, workflow):
+        from .build_acceptance import verify_policy_adoption
+        verify_policy_adoption(self, workflow)
         from .citation_amendment import state
         state(self.vault,workflow['workflow_id'])  # A pending transaction fences dispatch/resume.
         pending=_vault_path(self.vault,f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/coverage-reopen.pending.json")
