@@ -138,6 +138,5 @@ def validate_acceptance(service, run, page, review):
         if (audit.get('contract') != 'hermes-fixed-semantic-call/v1' or audit.get('node') != 'build-finalize'
                 or not ref.startswith(prefix) or '/' in ref[len(prefix):]
                 or audit.get('phase') != 'page-review' or model.get('origin') != 'hermes_native_model'
-                or not audit.get('response_sha256') or model.get('response_sha256') != audit['response_sha256']
-                or audit.get('validated') is False):
+                or not audit.get('response_sha256') or model.get('response_sha256') != audit['response_sha256']):
             _fail('independent approval lacks native page-review provenance')

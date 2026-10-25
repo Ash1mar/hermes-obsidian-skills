@@ -77,6 +77,19 @@ def test_schema_does_not_allow_claiming_approval_without_state(vault):
     with pytest.raises(ContractError):validate_record('build_acceptance',acceptance)
 
 
+def test_approved_review_survives_a_failed_downstream_receipt(vault):
+    service,run,page=draft(vault,count=2)
+    assessment=assess(service,run,page)
+    ref='_system/ledgers/ingest-workflows/fixture/semantic-calls/approved.json'
+    path=vault/ref;path.parent.mkdir(parents=True)
+    # The finite executor separately authenticates the exact native approved
+    # response. A failed later commit receipt must not invalidate that response.
+    path.write_text(json.dumps({'contract':'hermes-fixed-semantic-call/v1','node':'build-finalize',
+        'workflow_id':'fixture','phase':'page-review','response_sha256':'a'*64,'validated':False,
+        'model':{'origin':'hermes_native_model','response_sha256':'a'*64}}))
+    validate_acceptance(service,run,page,{'acceptance':record(assessment,review_audit_ref=ref)})
+
+
 def execution(tmp_path,monkeypatch,risks):
     binding={'workflow_id':'fixture','node':'build-finalize','task_id':'owner'}
     views=[{'page':'e'+str(n),'content':'body-'+str(n)} for n in range(len(risks))]
