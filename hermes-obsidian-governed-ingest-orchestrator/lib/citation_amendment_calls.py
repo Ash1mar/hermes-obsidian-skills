@@ -79,7 +79,10 @@ def note_audit(ref):
 def proof(adapter,binding,record,*,require_stopped=False):
     from fixed_semantic_recovery import native_proof
     path=_vault_path(adapter.workflow.vault,record['audit_ref'])
-    old=record['binding'];snap=adapter.kanban.task_snapshot(adapter.workflow.status(binding['workflow_id'])['kanban']['board_id'],old['task_id'])
+    old=record['binding']
+    from citation_native_authority import isolated,worker_snapshot
+    snap=(worker_snapshot(adapter,binding,record,require_stopped) if isolated() else
+          adapter.kanban.task_snapshot(adapter.workflow.status(binding['workflow_id'])['kanban']['board_id'],old['task_id']))
     owner=json.loads(snap['task'].get('body','{}'))
     if (snap['task'].get('created_by')!='ingest-workflow' or owner.get('workflow_id')!=binding['workflow_id']
             or owner.get('node')!=old['node'] or owner.get('vault')!=str(adapter.workflow.vault)):
@@ -174,7 +177,7 @@ def authenticate(adapter,wid,phase,*,required_refs=None):
 
 def verification_adapter(vault):
     from ingest_kanban import IngestKanbanAdapter
-    return IngestKanbanAdapter(vault)
+    return IngestKanbanAdapter(vault,enable_workers=True)
 
 def verify_pending_submission(vault,wid,body):
     from hermes_source_units.workflow_guard import _BINDING
@@ -183,7 +186,7 @@ def verify_pending_submission(vault,wid,body):
     value=state(vault,wid);frozen=plan(vault,value);records=[]
     for stored in pending_calls(vault,wid)['jobs'].values():
         records.extend(r for r in stored['attempts'] if r['operation_id']==value['operation_id']
-                       and r['phase']=='citation' and r['binding']['task_id']==binding['task_id'])
+                       and r['phase']=='citation')
     if not records or not records[-1].get('audit_ref'):fail('successor cannot commit without its reserved native response')
     adapter=verification_adapter(vault)
     call=proof(adapter,binding,records[-1])

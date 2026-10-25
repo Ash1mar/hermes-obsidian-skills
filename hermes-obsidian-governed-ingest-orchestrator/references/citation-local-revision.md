@@ -98,3 +98,20 @@ fresh exact approval, validation and checkpoint_1 pause are required again.
 An absent proof or unresolved essential dependency remains held. This contract
 does not fix OCR, expand source authority, silently omit candidates, make skipped
 coverage complete, publish, synchronize a Provider or authorize Build Finalize.
+
+## Native ownership across the worker/operator boundary
+
+Trusted dispatch seals the current canonical card ownership before a claim and
+the actual ended run/request/response evidence before downstream replay. Workers
+read these pinned seals, check their own current canonical binding, native board,
+executor and run identity, and authenticate the unchanged native transcript. They
+never call the trusted Kanban CLI, clear isolation markers or acquire coordination
+permissions. Final successor acceptance and manifest admission still recheck the
+actual native cards and ended runs from the trusted operator.
+
+After a program failure with a complete authenticated citation response,
+`action=recover-native-execution` may rebind exactly that stopped citation through
+the existing Pass execution recovery machinery. Pin the corrected program cause
+in `basis` and `reason`. This is replay-only: no model allowance is added, the old
+reservation remains charged, a changed wire/schema stays held, and refusals or
+unknown completion are ineligible. Resume is a separate authorized operation.

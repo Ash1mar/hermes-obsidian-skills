@@ -48,6 +48,8 @@ def start_and_pin(vault: str | Path, request: Mapping[str, Any]) -> dict[str, An
 
 def dispatch_ready_programs(vault, workflow_id):
     """Use the existing native CLI; no permission or graph snapshot handoff."""
+    from citation_native_authority import capture
+    capture(IngestKanbanAdapter(vault),workflow_id)
     with span('dispatch_cli', vault=vault, workflow_id=workflow_id):
         result = subprocess.run(['hermes', 'ingest-program-dispatch', '--vault', str(vault),
             '--workflow-id', workflow_id], capture_output=True, text=True, timeout=60)
