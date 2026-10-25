@@ -99,7 +99,10 @@ def verify(adapter,workflow,node,binding,entry):
             call=bodies.get(row['audit_ref'])
             if not call or call['body'].get('content','').encode()!=raw:fail('new draft lacks actual native authorship')
             observed=json.loads(_request_text(call['wire']['user']))['input']
-            if observed!={**fixed_reduce.page_view(adapter,current,p),'page_scope_contract':'assigned-candidates/v1'}:
+            guidance=work.get('guidance_authority',{}).get(row['path'])
+            if row.get('review_guidance')!=guidance:fail('body guidance differs from the explicit recovery authority')
+            if observed!={**fixed_reduce.page_view(adapter,current,p),'page_scope_contract':'assigned-candidates/v1',
+                           **({'amendment_review_guidance':guidance} if guidance else {})}:
                 fail('native writer did not observe the current complete page input')
         compiled,_=compile_content(current,{**p,'content':raw.decode()},destinations)
         for target in re.findall(r'!?\[\[([^\]]+)\]\]',compiled):
@@ -156,7 +159,9 @@ def admit(adapter,request):
     entry={'node':'global-reduce','task_id':card['task_id'],'failure_sha256':hashlib.sha256(failure.read_bytes()).hexdigest(),
            'amendment_id':value['operation_id'],'manifest_ref':value['manifest_ref'],'manifest_sha256':value['manifest_sha256'],
            'approval_ref':approval_ref,'approval_sha256':approval_sha}
-    recovery=stored_step(service,wid,value,'new_scope_request',lambda:mutation(w,recovery_id=value['operation_id']+'-admit',
+    generation=value.get('generation',0)
+    recovery=stored_step(service,wid,value,'new_scope_request:'+str(generation),lambda:mutation(w,
+        recovery_id='local-admit-'+fingerprint({'operation':value['operation_id'],'generation':generation})[:40],
         recovery_scope='reduce-coverage/v1',target_contract_sha256=contract_hash(),reason='Reaccept the exact locally revised subset; retain all necessary gaps.',entries=[entry]))
     result=recover_reduce_execution(adapter,recovery)
     return {**result,'resumed':False,'phase':'awaiting_acceptance'}

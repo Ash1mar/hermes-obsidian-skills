@@ -1101,6 +1101,10 @@ class IngestKanbanAdapter:
         amendment=amendment_state(self.workflow.vault,request['workflow_id'])
         if amendment and amendment['phase'] in ('prepared','successor_verified'):
             amendment_fail('complete the current durable control step before resuming workers')
+        if amendment and amendment['phase']=='citation':
+            revision=self.workflow.status(request['workflow_id']).get('pass_revision',{})
+            if revision.get('state')!='running' or revision.get('revision_id')!=amendment['revision_id']:
+                amendment_fail('finish the native revision authorization before resuming')
         if amendment and amendment['phase']=='awaiting_acceptance':
             from hermes_source_units.reduce_coverage import active
             if not active(self.workflow.vault,self.workflow.status(request['workflow_id'])):

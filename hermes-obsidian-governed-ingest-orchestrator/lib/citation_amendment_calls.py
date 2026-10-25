@@ -13,6 +13,17 @@ from hermes_source_units.validation import fingerprint
 JOB=ContextVar('citation_amendment_job',default=None)
 CALL=ContextVar('citation_amendment_call',default=None)
 
+def guidance_equivalent(old,new,guidance):
+    """Only expressly authorized review guidance may differ; no new evidence."""
+    from fixed_semantic_recovery import _request_text
+    if {k:v for k,v in old.items() if k!='user'}!={k:v for k,v in new.items() if k!='user'}:return False
+    try:left=json.loads(_request_text(old['user']));right=json.loads(_request_text(new['user']))
+    except (ValueError,KeyError):return False
+    left=copy.deepcopy(left);right=copy.deepcopy(right)
+    if right.get('input',{}).pop('amendment_review_guidance',None)!=guidance:return False
+    left.get('input',{}).pop('amendment_review_guidance',None)
+    return left==right
+
 def native_home():return Path.home()/'.hermes'
 
 def reconcile(adapter,binding,record,reservation):
@@ -76,6 +87,7 @@ def proof(adapter,binding,record,*,require_stopped=False):
     if found is None:fail('reservation has no authenticated native request/response')
     from fixed_semantic import decode_semantic_response
     body,_=decode_semantic_response(found[0])
+    raw_body=copy.deepcopy(body)
     from fixed_semantic_recovery import _request_text
     import json
     request=json.loads(_request_text(record['wire']['user']))
@@ -83,7 +95,8 @@ def proof(adapter,binding,record,*,require_stopped=False):
     if request['phase']=='citation':
         from fixed_semantic_schema import slot_results
         body=slot_results('citation',body,request['input']['tasks'])
-    return {'audit_ref':record['audit_ref'],'audit':audit,'wire':record['wire'],'body':body,'logical_binding':old}
+    return {'audit_ref':record['audit_ref'],'audit':audit,'wire':record['wire'],'body':body,
+            'raw_body':raw_body,'logical_binding':old}
 
 def invoke(adapter,binding,phase,view,caller,limit,correction,callback):
     value=state(adapter.workflow.vault,binding['workflow_id'])
@@ -127,7 +140,7 @@ def invoke(adapter,binding,phase,view,caller,limit,correction,callback):
             if not record:fail('reserved/unknown native completion remains charged; do not resend')
         found=proof(adapter,binding,record)
         from fixed_semantic_schema import slot_results,validate
-        if phase=='citation':return slot_results(phase,found['body'],view['tasks']),found['audit_ref']
+        if phase=='citation':return slot_results(phase,found['raw_body'],view['tasks']),found['audit_ref']
         validate(phase,found['body'])
         return found['body'],found['audit_ref']
     token=CALL.set(reservation)

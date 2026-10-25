@@ -115,6 +115,21 @@ def command(a,request,action,**fields):
         recovery_id=request['recovery_id'],recovery_scope=request['recovery_scope'],
         target_contract_sha256=control.contract_hash(),action=action,**fields)
 
+def finish_scoped_run(a,request,caller):
+    wid=request['workflow_id'];current=a.workflow.status(wid)
+    a.resume(workflow_request(workflow_id=wid,actor='agent',expected_revision=current['revision']))
+    current=sync(a,wid);card=next(c for c in current['kanban']['task_map'] if c['node']=='global-reduce')
+    gb=json.loads(Path(a.kanban.by_id[card['task_id']]['body']['worker_binding']).read_text())
+    assert semantic.run_reduce(a,gb,caller)['ok'];a.kanban.ended.add(gb['task_id']);current=sync(a,wid)
+    card=next(c for c in current['kanban']['task_map'] if c['node']=='checkpoint-1-validate')
+    begun=a.worker_begin({'workflow_id':wid,'node':card['node'],'task_id':card['task_id']})
+    assert a.worker_complete({'workflow_id':wid,'node':card['node'],'task_id':card['task_id'],
+                              'template_hash':begun['template_hash']})['ok']
+    a.kanban.ended.add(card['task_id']);current=sync(a,wid)
+    assert a.workflow.pending_pause(current)=='checkpoint_1'
+    assert a.recover_reduce_execution(command(a,request,'finish'))['phase']=='complete'
+    return current
+
 class NativeFixtureCaller:
     """Actual request/response hashes in an isolated Kanban-shaped transcript DB."""
     def __init__(self,home,mode='condition'):self.home=home;self.calls=[];self.mode=mode
@@ -215,16 +230,32 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
         a.recover_reduce_execution(admission)
     work_path.write_bytes(sealed_work)
     assert a.recover_reduce_execution(admission)['ok']
-    current=a.workflow.status(w['workflow_id']);a.resume(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
-    current=sync(a,w['workflow_id']);card=next(c for c in current['kanban']['task_map'] if c['node']=='global-reduce')
-    gb=json.loads(Path(a.kanban.by_id[card['task_id']]['body']['worker_binding']).read_text())
-    assert semantic.run_reduce(a,gb,caller)['ok'];a.kanban.ended.add(gb['task_id']);current=sync(a,w['workflow_id'])
-    card=next(c for c in current['kanban']['task_map'] if c['node']=='checkpoint-1-validate')
-    begun=a.worker_begin({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id']})
-    assert a.worker_complete({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id'],
-                              'template_hash':begun['template_hash']})['ok']
-    a.kanban.ended.add(card['task_id']);current=sync(a,w['workflow_id'])
-    assert a.workflow.pending_pause(current)=='checkpoint_1'
-    assert a.recover_reduce_execution(command(a,request,'finish'))['phase']=='complete'
+    current=finish_scoped_run(a,request,caller)
     assert caller.calls==expected
     assert not any(p['boundary']=='checkpoint_1' for p in current['pause_control']['history'])
+    if mode=='body_defer':
+        a.cancel(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
+        review=root(vault,w['workflow_id'])/'new-body-cause.json'
+        _write_atomic(review,_json_bytes({'corrected_cause':'Prior refusal expanded unrelated package obligations; assigned evidence is complete.'}))
+        basis=[{'ref':review.relative_to(vault).as_posix(),'sha256':hashlib.sha256(review.read_bytes()).hexdigest()}]
+        restore=command(a,request,'reopen-downstream',target_paths=[work['held'][0]['path']],basis=basis,
+                        clarification='Check only the assigned candidate and its actual necessary conditions; other package topics are not writing obligations.')
+        assert a.recover_reduce_execution(restore)['citation_and_source_reused']
+        logical=work['held'][0]['logical_work'];attempt=pending_calls(vault,w['workflow_id'])['jobs'][logical]['attempts'][-1]
+        assert a.recover_reduce_execution(command(a,request,'authorize-call',logical_work=logical,
+            supersedes_attempt_sha256=fingerprint(attempt),basis=basis,reason='Corrected the explicit scope misunderstanding.'))['additional_calls']==1
+        caller.mode='condition'
+        current=a.workflow.status(w['workflow_id']);a.resume(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
+        current=sync(a,w['workflow_id']);card=next(c for c in current['kanban']['task_map'] if c['node']=='global-reduce')
+        binding=json.loads(Path(a.kanban.by_id[card['task_id']]['body']['worker_binding']).read_text())
+        with pytest.raises(ContractError,match='Local native revision finished'):semantic.run_reduce(a,binding,caller)
+        a.kanban.ended.add(binding['task_id']);a.execution_failure(binding,'WORKFLOW_STOPPED','Held-body recovery finished')
+        current=a.workflow.status(w['workflow_id']);a.cancel(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
+        updated=state(vault,w['workflow_id']);new_manifest=json.loads((vault/updated['manifest_ref']).read_text())
+        assert not new_manifest['gaps'] and caller.calls==expected+['page-write']
+        approval.update(manifest_sha256=updated['manifest_sha256']);_write_atomic(approval_path,_json_bytes(approval))
+        assert a.recover_reduce_execution(command(a,request,'admit',approval_ref=approval_path.relative_to(vault).as_posix(),
+            approval_sha256=hashlib.sha256(approval_path.read_bytes()).hexdigest()))['ok']
+        current=finish_scoped_run(a,request,caller)
+        assert caller.calls==expected+['page-write']
+        assert len(pending_calls(vault,w['workflow_id'])['jobs'][logical]['attempts'])==2

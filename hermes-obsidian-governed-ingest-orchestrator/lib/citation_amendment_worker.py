@@ -183,11 +183,13 @@ def global_execute(adapter,binding,caller,input_ref,value,frozen,amendment):
                 written.append({**page,'content':raw.decode(),'draft_ref':old['draft_ref'],'audit_ref':old['audit_ref'],
                                 'input_sha256':fingerprint(raw_view)})
                 reuse.append({'path':page['path'],'origin':old,'proof':cert});continue
-        if page['path'] not in affected_paths and page['path'] in old_gaps:
+        if page['path'] not in affected_paths and page['path'] in old_gaps and page['path'] not in amendment.get('force_body_paths',[]):
             held.append({**page,'reason':old_gaps[page['path']].get('reason','Prior necessary coverage remains deferred')});continue
         # A new/split page must be composed exclusively of the selected local
         # closure. All unchanged pages above were proven or remained deferred.
         view={**raw_view,'page_scope_contract':'assigned-candidates/v1'}
+        guidance=amendment.get('force_guidance',{}).get(page['path'])
+        if guidance:view['amendment_review_guidance']=guidance
         logical='body:'+frozen['selection']['task_id']+':'+fingerprint(page['identity'])
         from fixed_page_work import LOCAL
         from hermes_source_units import ContractError
@@ -200,12 +202,14 @@ def global_execute(adapter,binding,caller,input_ref,value,frozen,amendment):
             continue
         raw=draft['content'].encode();path=f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}/page-drafts/{fingerprint(view)}.md'
         _write_atomic(_vault_path(adapter.workflow.vault,path),raw)
-        written.append({**page,'content':draft['content'],'draft_ref':path,'audit_ref':call,'input_sha256':fingerprint(raw_view)})
+        written.append({**page,'content':draft['content'],'draft_ref':path,'audit_ref':call,'input_sha256':fingerprint(raw_view),
+                        **({'review_guidance':guidance} if guidance else {})})
         body_calls.append(call)
     work={'contract':'native-page-work/v1','binding':binding,'input_ref':input_ref,'state':planned,
           'source_authority_sha256':fingerprint({k:value[k] for k in ('contract','view','backend')}),
           'written':[{k:v for k,v in p.items() if k!='content'} for p in written],'held':held,'reuse_proofs':reuse,
           'successful_call_refs':plan_calls+body_calls,'planning_failure':None,'formal_global_submitted':False}
+    work['guidance_authority']=copy.deepcopy(amendment.get('force_guidance',{}))
     ref=save_result(adapter,value,'page-work.json',work)
     from citation_amendment_admission import manifest
     manifest_ref,digest=manifest(adapter,value,work,frozen,amendment)

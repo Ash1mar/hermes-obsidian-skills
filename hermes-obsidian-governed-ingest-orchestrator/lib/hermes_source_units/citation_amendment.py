@@ -10,6 +10,7 @@ SCOPE='reduce-citation-revision/v1'
 PHASES=('prepared','citation','successor_verified','downstream','awaiting_acceptance','complete')
 
 def fail(message):raise ContractError('CITATION_AMENDMENT_HELD','$',message)
+def basis_key(items):return fingerprint(sorted({b['sha256'] for b in items}))
 
 def root(vault,wid):return _vault_path(vault,f'_system/ledgers/ingest-workflows/{wid}/citation-amendments')
 def state(vault,wid):
@@ -125,10 +126,13 @@ def reserve(vault,wid,logical,wire,schema,binding,images=None):
             for item in grant['basis']:
                 if hashlib.sha256(_vault_path(vault,item['ref']).read_bytes()).hexdigest()!=item['sha256']:
                     fail('retry cause changed after authorization')
-        if owned and (owned[-1]['wire_sha256']!=digest or owned[-1]['schema_sha256']!=fingerprint(schema)):
-            fail('an input/version change cannot create another automatic logical allowance')
         may_append=bool(owned and len(owned)==len(grants) and
                         grants[-1]['supersedes_attempt_sha256']==fingerprint(owned[-1]))
+        if owned and (owned[-1]['wire_sha256']!=digest or owned[-1]['schema_sha256']!=fingerprint(schema)):
+            from citation_amendment_calls import guidance_equivalent
+            if not (may_append and grants[-1].get('guidance') and owned[-1]['schema_sha256']==fingerprint(schema)
+                    and guidance_equivalent(owned[-1]['wire'],wire,grants[-1]['guidance'])):
+                fail('an input/version change cannot create another automatic logical allowance')
         if owned and not may_append:
             if owned[-1]['wire_sha256']!=digest or owned[-1]['schema_sha256']!=fingerprint(schema):
                 fail('logical work already reserved under a different input; no automatic new allowance')

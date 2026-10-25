@@ -3,7 +3,7 @@ import copy
 import hashlib
 from pathlib import Path
 from hermes_source_units import mutation_digest
-from hermes_source_units.citation_amendment import (SCOPE,fail,root,state,plan,save,row,transaction,replay,pending_calls)
+from hermes_source_units.citation_amendment import (SCOPE,fail,root,state,plan,save,row,transaction,replay,pending_calls,basis_key)
 from hermes_source_units.source_units import _load_json,_vault_path,_json_bytes,_write_atomic,_exclusive_lock
 from hermes_source_units.validation import fingerprint
 
@@ -49,10 +49,14 @@ def prepare(adapter,request,dry_run):
     if not basis or len(basis)>8 or not request.get('reason','').strip():fail('confirmed correction needs pinned evidence and a reason')
     for b in basis:
         if hashlib.sha256(_vault_path(service.vault,b['ref']).read_bytes()).hexdigest()!=b['sha256']:fail('problem evidence changed')
+    cause={'basis_sha256':basis_key(basis),'reason':request['reason']}
+    if any(c['basis_sha256']==cause['basis_sha256'] or c['reason']==cause['reason']
+           for c in pending_calls(service.vault,wid).get('causes',{}).get(selection['task_id'],[])):
+        fail('the same material/cause cannot obtain another citation grant by changing operation IDs')
     budgets=request.get('budgets',{});limits=request.get('cumulative_limits',{})
     caps={'citation':2,'source':2,'plan':2,'body':4}
     if set(budgets)!=set(caps) or set(limits)!=set(caps) or any(
-            type(budgets[p]) is not int or type(limits[p]) is not int or not 0<=budgets[p]<=limits[p]<=caps[p] for p in caps) or budgets.get('citation')!=1:
+            type(budgets[p]) is not int or type(limits[p]) is not int or not 1<=budgets[p]<=limits[p]<=caps[p] for p in caps) or budgets.get('citation')!=1:
         fail('explicit phase budgets and cumulative limits are required; no default fresh attempts')
     ledger=pending_calls(service.vault,wid);lineage=selection['task_id']
     if lineage in ledger.get('limits',{}) and ledger['limits'][lineage]!=limits:fail('operation/version changes cannot reset cumulative limits')
@@ -62,6 +66,12 @@ def prepare(adapter,request,dry_run):
     # Accepted native evidence is sealed, not re-reviewed semantically.
     import reduce_coverage
     source=_load_json(_vault_path(service.vault,scope['manifest']['source_snapshot_ref']))
+    import fixed_reduce
+    card=next(c for c in w['kanban']['task_map'] if c['node']=='global-reduce')
+    binding=_load_json(_vault_path(service.vault,f'_system/ledgers/ingest-workflows/{wid}/bindings/{fingerprint(card["idempotency_key"])}.json'))
+    fresh=fixed_reduce.preview_snapshot(adapter,binding)
+    if any(source[k]!=fresh[k] for k in ('contract','view','backend')):
+        fail('current upstream material, QA, identities or source results differ from the accepted baseline')
     reduce_coverage.reuse_pages(adapter,source,scope)
     k=service.knowledge;batch=k._batch(w['batch_id'])
     for run_id in batch['run_ids']:k.validate_run(run_id)
@@ -85,6 +95,7 @@ def prepare(adapter,request,dry_run):
     value={'operation_id':op,'phase':'prepared','revision_id':'citation-'+op,'plan_ref':path.relative_to(service.vault).as_posix(),
            'plan_sha256':hashlib.sha256(_json_bytes(frozen)).hexdigest(),'steps':{},'downstream_nodes':[]}
     ledger.setdefault('limits',{})[lineage]=limits
+    ledger.setdefault('causes',{}).setdefault(lineage,[]).append(cause)
     audit_root=service.vault/f'_system/ledgers/ingest-workflows/{wid}'
     call_evidence=[]
     for folder in ('semantic-calls','call-failures'):
@@ -164,6 +175,46 @@ def accept_successor(adapter,request):
     value['phase']='downstream';save(service.vault,wid,value)
     return {'ok':True,'phase':'downstream','resumed':False,'delta':delta}
 
+def reopen_downstream(adapter,request):
+    """Restore approved held bodies without reciting valid upstream evidence."""
+    service=adapter.workflow;wid=request['workflow_id'];value=state(service.vault,wid);w=service.status(wid);drained(adapter,w)
+    prior=value.get('reopen_operator_request');ignore={'expected_revision','input_digest','target_contract_sha256'}
+    same=prior and {k:v for k,v in prior.items() if k not in ignore}=={k:v for k,v in request.items() if k not in ignore}
+    if same and value['phase'] not in ('successor_verified',):return {'ok':True,'replayed':True,'phase':value['phase'],'resumed':False}
+    if not same:
+        if value['phase']!='complete' or service.pending_pause(w)!='checkpoint_1':fail('restore held downstream work only from the reaccepted checkpoint')
+        from hermes_source_units.reduce_coverage import active
+        scope=active(service.vault,w)
+        if not scope or scope['ref']['manifest_sha256']!=value['manifest_sha256']:fail('current scope differs from this amendment')
+        basis=request.get('basis',[]);clarification=request.get('clarification','')
+        frozen=plan(service.vault,value)
+        if not basis or basis_key(basis)==basis_key(frozen['basis']) or not clarification.strip() or len(clarification)>2000:fail('held-body recovery needs new pinned cause and bounded guidance')
+        for b in basis:
+            if hashlib.sha256(_vault_path(service.vault,b['ref']).read_bytes()).hexdigest()!=b['sha256']:fail('held-body recovery basis changed')
+        work=_load_json(_vault_path(service.vault,value['work_ref']));source=_load_json(_vault_path(service.vault,work['input_ref']))
+        held={p['path']:p for p in work['held']};paths=request.get('target_paths',[])
+        if not paths or not set(paths)<=set(held):fail('select actual held paths; verified bodies cannot be reopened')
+        for path in paths:
+            refs=[r for h in held[path]['candidate_refs'] for r in source['backend']['mapping'][h]]
+            owned=any(r['pass_id']==value['successor']['pass_id'] and r['candidate_id'] in
+                      set(value['delta']['domain_affected_candidate_ids'])|set(frozen['selection']['candidate_ids']) for r in refs)
+            if not owned and not held[path].get('logical_work','').startswith('body:'+frozen['selection']['task_id']+':'):
+                fail('unrelated held work is outside this original logical lineage')
+        from reduce_coverage import contract_hash as coverage_hash
+        generation=value.get('generation',0)+1
+        withdraw=mutation(w,recovery_id='body-withdraw-'+fingerprint({'op':value['operation_id'],'generation':generation})[:40],
+            recovery_scope='reduce-coverage-reopen/v1',target_contract_sha256=coverage_hash(),coverage_scope=scope['ref'],basis=basis,reason=clarification)
+        value.setdefault('steps',{})['body-withdraw:'+str(generation)]=withdraw
+        value.update(phase='successor_verified',generation=generation,
+            reopen_operator_request=dict(request),force_body_paths=paths,
+            force_guidance={p:{'clarification':clarification,'basis':basis,
+                'rule':'Review guidance only, not new evidence. Check the assigned facts against the same original material; do not invent, broaden scope or ignore real restrictions.'} for p in paths})
+        save(service.vault,wid,value)
+    from reduce_coverage_reopen import recover as withdraw
+    withdraw(adapter,value['steps']['body-withdraw:'+str(value['generation'])])
+    value['phase']='downstream';save(service.vault,wid,value)
+    return {'ok':True,'phase':'downstream','resumed':False,'citation_and_source_reused':True,'new_calls_granted':0}
+
 def recover(adapter,request,*,dry_run=False):
     service=adapter.workflow;wid=request['workflow_id']
     if request.get('target_contract_sha256')!=contract_hash():fail('amendment implementation contract changed')
@@ -180,7 +231,9 @@ def recover(adapter,request,*,dry_run=False):
             return prepare(adapter,request,dry_run)
         if not value or value['operation_id']!=request['recovery_id']:fail('continue the same durable amendment operation')
         if dry_run:return {'ok':True,'phase':value['phase'],'applied':False,'resumed':False}
-        action_key=action if action!='authorize-call' else action+':'+fingerprint({k:request.get(k) for k in ('logical_work','supersedes_attempt_sha256')})
+        action_key=action+':'+str(value.get('generation',0))
+        if action=='authorize-call':action_key=action+':'+fingerprint({k:request.get(k) for k in ('logical_work','supersedes_attempt_sha256')})
+        if action=='reopen-downstream':action_key=action+':'+fingerprint({k:request.get(k) for k in ('target_paths','basis','clarification')})
         previous=value.get('action_requests',{}).get(action_key)
         if previous!=request:
             service._mutation(request)
@@ -190,6 +243,7 @@ def recover(adapter,request,*,dry_run=False):
             value.setdefault('action_requests',{})[action_key]=dict(request);save(service.vault,wid,value)
         if action=='start':return start(adapter,request)
         if action=='accept-successor':return accept_successor(adapter,request)
+        if action=='reopen-downstream':return reopen_downstream(adapter,request)
         if action=='authorize-call':
             w=service.status(wid);drained(adapter,w)
             if value['phase'] not in ('citation','downstream'):fail('only held native work can receive another bounded reservation')
@@ -204,7 +258,7 @@ def recover(adapter,request,*,dry_run=False):
                 fail('old native executor must be ended before controlled regeneration')
             frozen=plan(service.vault,value);basis=request.get('basis',[])
             prior_grants=value.get('retry_grants',{}).get(logical,[])
-            if not basis or not request.get('reason','').strip() or basis==frozen['basis'] or any(basis==g['basis'] for g in prior_grants):
+            if not basis or not request.get('reason','').strip() or basis_key(basis)==basis_key(frozen['basis']) or any(basis_key(basis)==basis_key(g['basis']) for g in prior_grants):
                 fail('a different corrected cause/new evidence is required; another ID is insufficient')
             for b in basis:
                 if hashlib.sha256(_vault_path(service.vault,b['ref']).read_bytes()).hexdigest()!=b['sha256']:fail('retry cause changed')
@@ -212,6 +266,10 @@ def recover(adapter,request,*,dry_run=False):
             if sum(a['phase']==phase and a['lineage']==frozen['selection']['task_id'] for j in ledger['jobs'].values() for a in j['attempts'])>=frozen['cumulative_limits'][phase]:
                 fail('cumulative lineage quota exhausted')
             grant={'supersedes_attempt_sha256':fingerprint(old),'basis':basis,'reason':request['reason'],'additional_calls':1}
+            for path,guide in value.get('force_guidance',{}).items():
+                work=_load_json(_vault_path(service.vault,value['work_ref']))
+                page=next((p for p in work['state']['pages'] if p['path']==path),None)
+                if page and logical=='body:'+frozen['selection']['task_id']+':'+fingerprint(page['identity']):grant['guidance']=guide
             if prior_grants and prior_grants[-1]['supersedes_attempt_sha256']==fingerprint(old):
                 if prior_grants[-1]!=grant:fail('an outstanding reservation grant already owns this predecessor')
                 return {'ok':True,'replayed':True,'resumed':False}
@@ -222,6 +280,7 @@ def recover(adapter,request,*,dry_run=False):
             return admit(adapter,request)
         if action=='finish':
             w=service.status(wid)
+            if value['phase']=='complete':return {'ok':True,'replayed':True,'phase':'complete','resumed':False}
             from hermes_source_units.reduce_coverage import active
             scope=active(service.vault,w)
             if (value['phase']!='awaiting_acceptance' or service.pending_pause(w)!='checkpoint_1'
