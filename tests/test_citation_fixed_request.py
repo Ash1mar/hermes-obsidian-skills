@@ -115,7 +115,9 @@ def test_explicit_one_call_extension_is_atomic_idempotent_and_keeps_unknown_char
     import citation_amendment_control as control
     wid,binding,adapter,view,p=setup(tmp_path,monkeypatch)
     value=core.state(tmp_path,wid);frozen=core.plan(tmp_path,value)
-    frozen['cumulative_limits']['citation']=1;frozen['basis']=[{'ref':'old','sha256':'a'*64}]
+    original_basis=tmp_path/'old';original_basis.write_text('Original isolated cause',encoding='utf-8')
+    frozen['cumulative_limits']['citation']=1
+    frozen['basis']=[{'ref':'old','sha256':hashlib.sha256(original_basis.read_bytes()).hexdigest()}]
     path=tmp_path/value['plan_ref'];_write_atomic(path,_json_bytes(frozen))
     value['plan_sha256']=hashlib.sha256(path.read_bytes()).hexdigest();core.save(tmp_path,wid,value)
     reservation=core.reserve(tmp_path,wid,'citation:original-task',p['wire'],p['identity']['output_schema'],binding)
