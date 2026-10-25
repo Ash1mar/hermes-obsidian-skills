@@ -1,5 +1,7 @@
 """Small, deterministic Build acceptance policy; never a semantic approval."""
 from collections import Counter
+import copy
+import hashlib
 import re
 
 from .validation import ContractError
@@ -8,6 +10,67 @@ from .validation import fingerprint, validate_record
 
 CONTRACT = 'program-build-acceptance/v1'
 POLICY = 'explicit-page-risks/v1'
+ADOPTION = 'build-acceptance-policy-adoption/v1'
+MARKER = '<!-- hermes-program-build-acceptance/v1 -->'
+
+
+def rebase_pause_evidence(evidence, previous_pin, target_pin):
+    """Change exactly one template dependency; all domain evidence stays pinned."""
+    updated = copy.deepcopy(evidence)
+    if updated['files'].pop(previous_pin['path'], None) != previous_pin['template_hash'][7:]:
+        raise ContractError('STALE_INPUT', '$', 'old pause does not pin the previous Build template')
+    if target_pin['path'] in updated['files']:
+        raise ContractError('STALE_INPUT', '$', 'new Build template already occurs in old pause evidence')
+    updated['files'][target_pin['path']] = target_pin['template_hash'][7:]
+    return updated
+
+
+def verify_policy_adoption(service, workflow):
+    """Read-only audit validation on later resume/dispatch and continuation."""
+    pointer = workflow.get('build_acceptance_adoption')
+    if pointer is None:
+        return
+    def fail(message):
+        raise ContractError('STALE_INPUT', '$', message)
+    prefix = f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/"
+    if pointer['report_ref'] != prefix+'build-acceptance-adoptions/'+pointer['adoption_id']+'.json':
+        fail('Build policy adoption report is outside its operation')
+    data = _vault_path(service.vault, pointer['report_ref']).read_bytes()
+    if hashlib.sha256(data).hexdigest() != pointer['report_sha256']:
+        fail('Build policy adoption evidence changed')
+    report = _load_json(_vault_path(service.vault, pointer['report_ref']))
+    request = report['request']
+    from .ingest_workflow import mutation_digest
+    old, target = report['previous_pin'], report['target_pin']
+    active = next(p for p in workflow['template_pins'] if p['kind'] == 'build-finalize')
+    if (report.get('contract') != ADOPTION or request['workflow_id'] != workflow['workflow_id']
+            or request['actor'] != workflow['actor'] or request['adoption_scope'] != ADOPTION
+            or request['adoption_id'] != pointer['adoption_id'] or request['input_digest'] != pointer['input_digest']
+            or mutation_digest(request) != request['input_digest'] or target != active
+            or request['previous_pin_digest'] != 'sha256:'+fingerprint(old)
+            or request['target_template_hash'] != target['template_hash']
+            or report['previous_pause']['history'] != report['new_pause']['history']
+            or report['previous_pause']['boundary'] != 'checkpoint_1' or report['new_pause']['boundary'] != 'checkpoint_1'):
+        fail('Build policy adoption identity, pins or held boundary changed')
+    for pin in (old, target):
+        raw = _vault_path(service.vault, pin['path']).read_bytes()
+        if pin['kind'] != 'build-finalize' or 'sha256:'+hashlib.sha256(raw).hexdigest() != pin['template_hash']:
+            fail('Build policy adoption template changed')
+    if MARKER not in _vault_path(service.vault, target['path']).read_text(encoding='utf-8'):
+        fail('adopted Build template lacks program acceptance')
+    reports = []
+    for name in ('previous', 'new'):
+        pause = report[name+'_pause']
+        raw = _vault_path(service.vault, pause['report_ref']).read_bytes()
+        if hashlib.sha256(raw).hexdigest() != report[name+'_pause_sha256']:
+            fail('Build policy adoption pause report changed')
+        saved = _load_json(_vault_path(service.vault, pause['report_ref']))
+        if saved['evidence_digest'] != pause['evidence_digest'] or 'sha256:'+fingerprint(saved['evidence']) != pause['evidence_digest']:
+            fail('Build policy adoption pause digest changed')
+        reports.append(saved)
+    if (request['evidence_digest'] != report['previous_pause']['evidence_digest']
+            or rebase_pause_evidence(reports[0]['evidence'], old, target) != reports[1]['evidence']):
+        fail('Build policy adoption changed domain evidence')
 
 
 def _fail(message):

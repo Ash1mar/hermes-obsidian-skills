@@ -164,9 +164,14 @@ page review records retain mode, evidence digest, risks and native review refere
 Draft/unassessed/QA, coverage, release and Provider gates remain unchanged.
 
 Old pinned templates retain their original all-page review behavior. Installation
-does not replace snapshots or migrate bindings. Existing workflows need a
-supported explicit operator action to adopt a different contract; an unavailable
-migration remains blocked. This maintenance adds or invokes no migration API.
+does not replace snapshots or migrate bindings. An explicitly authorized trusted
+operator may use adopt-build-acceptance only at an accepted, latched checkpoint_1
+before Build calls, journals, domain work or downstream bindings exist. The
+operation preserves old snapshots and pause reports, writes a new immutable Build
+template and pause evidence, and commits the workflow pointer last. Only the
+Build template dependency changes in the pause evidence. The checkpoint decision,
+domain results, coverage, budgets and continuation history do not change. There
+is no resume, sync, card creation or pause release. See operations.md.
 
 Each model invocation is a one-turn native Hermes session with no tools, Skill
 lookup, context files, memory or fallback agent. Its instructions, JSON schema,

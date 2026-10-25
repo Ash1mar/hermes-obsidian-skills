@@ -1198,6 +1198,10 @@ class IngestKanbanAdapter:
         from reduce_execution_migration import migrate_reduce_execution
         return migrate_reduce_execution(self, request, dry_run=dry_run)
 
+    def adopt_build_acceptance(self, request, *, dry_run=False):
+        from build_policy_adoption import adopt_build_acceptance
+        return adopt_build_acceptance(self, request, dry_run=dry_run)
+
     def recover_pass_execution(self, request, *, dry_run=False):
         """Authorize one fresh native attempt without changing domain/slice inputs."""
         if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):

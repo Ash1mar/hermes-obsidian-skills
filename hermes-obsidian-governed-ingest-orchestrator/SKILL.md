@@ -172,5 +172,10 @@ no explicit page risk requires semantic review. Read references/fixed-semantic.m
 for the six conservative triggers and exact old-review reuse. No fabricated
 approval, budget reset or automatic content correction is permitted. Old template
 snapshots retain their all-page review contract; installation never migrates them.
+For an explicit user request to adopt the new Build policy on an existing workflow,
+use adopt-build-acceptance in references/operations.md. It requires an accepted,
+latched checkpoint_1 with no Build execution or downstream binding, preserves
+domain results and old evidence, and rebases only the held pause's Build template
+dependency. It never resumes, dispatches, approves content or releases the pause.
 
 New workflows use native program workers for deterministic nodes; read `references/program-execution.md`. Pass, resource/global Reduce and triggered page review use fixed semantic phases described in `references/fixed-semantic.md`: the program owns materials, schema, identity expansion and lifecycle; native model sessions only produce semantic JSON. Normal fixed tasks require no search tools, full Skill reads, long digest copying, request assembly or model-directed retries. Legacy workflows retain their pinned contracts; installation does not silently migrate them.
