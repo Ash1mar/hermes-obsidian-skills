@@ -191,7 +191,8 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
             raise AssertionError('late old worker must never enter a domain mutation')
     current=a.workflow.status(w['workflow_id']);a.resume(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
     current=sync(a,w['workflow_id']);card=next(c for c in current['kanban']['task_map'] if c['node'].startswith('pass-slice:'))
-    begun=a.worker_begin({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id'],'worker_id':'ingest-worker-'+card['task_id']})
+    canonical=json.loads(Path(a.kanban.by_id[card['task_id']]['body']['worker_binding']).read_text())
+    begun=a.worker_begin(canonical)
     bound=begun['worker_request'];workspace=tmp_path/'native-worker';workspace.mkdir();_write_atomic(workspace/'worker-request.json',_json_bytes(bound))
     monkeypatch.setenv('HERMES_KANBAN_WORKSPACE',str(workspace));monkeypatch.setenv('HERMES_KANBAN_RUN_ID','1')
     packet=json.loads((vault/begun['model_input']['path']).read_text())
@@ -202,6 +203,28 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
     caller=NativeFixtureCaller(home,mode)
     with native_worker_context(a,bound,monkeypatch) if mode=='condition' else nullcontext():
         response,audit=semantic.model_call(a,bound,'citation',view,caller,30000,attempt_limit=1)
+    if mode=='condition':
+        # A received native result survives a program failure and a new owner;
+        # the existing response is replayed, never another model allowance.
+        a.execution_failure(bound,'ACCESS_DENIED','Isolated original program called a trusted-only interface')
+        a.kanban.ended.add(bound['task_id']);current=a.workflow.status(w['workflow_id'])
+        a.cancel(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
+        cause=root(vault,w['workflow_id'])/'corrected-program.json'
+        _write_atomic(cause,_json_bytes({'cause':'Moved ownership evidence capture to the trusted dispatcher; CLI denial remains.'}))
+        recovery=command(a,request,'recover-native-execution',reason='Replay the authentic saved result after a verified program repair.',
+            basis=[{'ref':cause.relative_to(vault).as_posix(),'sha256':hashlib.sha256(cause.read_bytes()).hexdigest()}])
+        result=a.recover_reduce_execution(recovery);assert result['applied'] and not result['resumed']
+        current=a.workflow.status(w['workflow_id']);a.resume(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
+        current=sync(a,w['workflow_id']);replacement=next(c for c in current['kanban']['task_map'] if c['node']==card['node'])
+        assert replacement['task_id']!=card['task_id']
+        canonical=json.loads(Path(a.kanban.by_id[replacement['task_id']]['body']['worker_binding']).read_text())
+        begun=a.worker_begin(canonical);bound=begun['worker_request'];_write_atomic(workspace/'worker-request.json',_json_bytes(bound))
+        packet_path,packet=verified_packet(vault,begun['model_input'],a.worker_check(bound));capture_context(vault,bound,packet_path,packet)
+        task=packet['tasks'][0];view=semantic.subset(packet,[task],'citation')
+        with native_worker_context(a,bound,monkeypatch):
+            replayed,replayed_audit=semantic.model_call(a,bound,'citation',view,caller,30000,attempt_limit=1)
+        assert replayed==response and replayed_audit==audit and caller.calls==['citation']
+        assert sum(len(j['attempts']) for j in pending_calls(vault,w['workflow_id'])['jobs'].values())==1
     authored,_,_=semantic.prepare_pass_items(a,response,packet,[task],'citation')
     item=authored[0];k=a.workflow.knowledge;mapping=k.model_input(prior['task_id'],json.loads((vault/f'_system/knowledge-builds/task-{prior["task_id"]}/readings/{prior["reading_package_id"]}.json').read_text()),persist=False)['mapping']
     def expand(ref):return copy.deepcopy(mapping[ref] if isinstance(ref,str) else ref)
