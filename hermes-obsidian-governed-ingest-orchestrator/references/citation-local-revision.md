@@ -115,3 +115,11 @@ the existing Pass execution recovery machinery. Pin the corrected program cause
 in `basis` and `reason`. This is replay-only: no model allowance is added, the old
 reservation remains charged, a changed wire/schema stays held, and refusals or
 unknown completion are ineligible. Resume is a separate authorized operation.
+
+The same action may recover an exact `node` in the amendment's downstream set
+after a corrected program cause, through the existing `reduce-cancel/v1` path.
+It grants zero additional model calls and retains all reservations and finite
+limits. Historical source replay authorizations remain immutable: only this
+accepted successor's source can supersede an obsolete same-input replay, after
+checking the exact old/new candidate mapping, unchanged complete originals and
+every unrelated task. Other sources retain the original identity guard.

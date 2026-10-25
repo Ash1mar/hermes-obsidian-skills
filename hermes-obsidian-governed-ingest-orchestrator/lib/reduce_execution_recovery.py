@@ -164,6 +164,8 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 allowed=(('SEMANTIC_REVIEW_REQUIRED','SEMANTIC_OUTPUT_HELD','INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','NATIVE_COMPLETION_UNKNOWN','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED') if scope in ('reduce-disposition/v1','reduce-coverage/v1') else ('INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','INVALID_TRANSITION','READING_WINDOW_OVERSIZE') if scope=='semantic-output/v1' else ('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
                     ('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED'))
                 if scope=='reduce-coverage/v1':allowed=(*allowed,'REDUCTION_FAILED')
+                local_amendment=scope=='reduce-cancel/v1' and bool(request.get('amendment_id'))
+                if local_amendment:allowed=(*allowed,'RECOVERY_NOT_ALLOWED')
                 if scope=='reduce-validation/v1':allowed=('COVERAGE_SCOPE_INVALID','VALIDATION_FAILED','PROGRAM_EXECUTION_FAILED','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED')
                 if not review and ((report.get('error_code') not in allowed and not call_failure) or (scope in ('source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3') and node.kind!='resource-reduce')):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
@@ -203,6 +205,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     'previous_input_fingerprint': node.input_fingerprint, 'failure_ref': ref,
                     'failure_sha256': hashlib.sha256(data).hexdigest(), 'failure': report,
                     'ended_run_ids': [str(r['id']) for r in runs], 'template_hash': template_hash})
+                if local_amendment:
+                    from citation_amendment_compat import verify_execution_recovery
+                    audited[-1].update(verify_execution_recovery(adapter,value,request,binding))
                 if scope=='reduce-coverage/v1':
                     from reduce_coverage import verify
                     audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))

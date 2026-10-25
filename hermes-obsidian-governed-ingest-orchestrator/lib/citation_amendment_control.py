@@ -10,7 +10,8 @@ from hermes_source_units.validation import fingerprint
 def contract_hash():
     import hermes_source_units.citation_amendment as core
     names=['citation_amendment_control.py','citation_amendment_worker.py','citation_amendment_calls.py',
-           'citation_native_authority.py','orchestration.py',
+           'citation_native_authority.py','citation_amendment_compat.py','orchestration.py',
+           'source_hold_recovery.py','reduce_execution_recovery.py',
            'citation_amendment_admission.py','citation_local_proof.py','fixed_semantic.py','fixed_reduce.py',
            'reduce_coverage.py','hermes_source_units/pass_revision.py','hermes_source_units/knowledge_build.py',
            'hermes_source_units/workflow_guard.py','hermes_source_units/reduce_dependency_revision.py',
@@ -235,6 +236,7 @@ def recover(adapter,request,*,dry_run=False):
         action_key=action+':'+str(value.get('generation',0))
         if action=='authorize-call':action_key=action+':'+fingerprint({k:request.get(k) for k in ('logical_work','supersedes_attempt_sha256')})
         if action=='reopen-downstream':action_key=action+':'+fingerprint({k:request.get(k) for k in ('target_paths','basis','clarification')})
+        if action=='recover-native-execution':action_key=action+':'+value['phase']+':'+str(request.get('node','citation'))
         previous=value.get('action_requests',{}).get(action_key)
         if previous!=request:
             service._mutation(request)
@@ -247,6 +249,18 @@ def recover(adapter,request,*,dry_run=False):
         if action=='reopen-downstream':return reopen_downstream(adapter,request)
         if action=='recover-native-execution':
             w=service.status(wid);drained(adapter,w)
+            if value['phase']=='downstream':
+                node=request.get('node')
+                if node not in value['downstream_nodes']:fail('recover one exact affected local node')
+                card=next(c for c in w['kanban']['task_map'] if c['node']==node)
+                failure=_vault_path(service.vault,f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint(node)[:16]}.json')
+                local=stored_step(service,wid,value,'local_execution_recovery:'+card['task_id'],lambda:mutation(w,
+                    recovery_id='local-execution-'+fingerprint({'op':value['operation_id'],'task':card['task_id']})[:40],
+                    recovery_scope='reduce-cancel/v1',amendment_id=value['operation_id'],target_contract_sha256=contract_hash(),
+                    reason=request.get('reason',''),basis=request.get('basis',[]),
+                    entries=[{'node':node,'task_id':card['task_id'],'failure_sha256':hashlib.sha256(failure.read_bytes()).hexdigest()}]))
+                from reduce_execution_recovery import recover_reduce_execution
+                return recover_reduce_execution(adapter,local)
             if value['phase']!='citation':fail('native-result recovery currently owns only this citation phase')
             cards=[c for c in w['kanban']['task_map'] if c['node'].startswith('pass-slice:')
                    and c['node'].partition(':')[2] in w['pass_revision']['slice_ids']]
