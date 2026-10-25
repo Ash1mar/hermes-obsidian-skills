@@ -59,3 +59,19 @@ def test_local_recovery_readiness_recognizes_only_its_original_sealed_authority(
     if change=='no_cause':request['basis']=[]
     if change=='semantic':entry['failure']['error_code']='SEMANTIC_REVIEW_REQUIRED'
     assert bool(authenticated_local_amendment_recovery(request,entry))==(change=='none')
+
+@pytest.mark.parametrize('job',['source:selected:r','source:other:r',None])
+def test_only_the_certified_source_job_avoids_post_reservation_legacy_reframing(tmp_path,monkeypatch,job):
+    import source_hold_recovery as old
+    from citation_amendment_calls import JOB
+    value={'phase':'downstream','downstream_nodes':['resource-reduce:r']}
+    monkeypatch.setattr(compat,'state',lambda *_:value)
+    monkeypatch.setattr(compat,'plan',lambda *_:{'selection':{'task_id':'selected'}})
+    monkeypatch.setattr(old,'entries',lambda *_:iter([{'_recovery_scope':old.SCOPE}]))
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,status=lambda _:{'workflow_id':'w'}))
+    binding={'workflow_id':'w','node':'resource-reduce:r'};packet=view()
+    token=JOB.set(job)
+    try:
+        assert (old.resolved_view(adapter,binding,packet) is packet)==(job=='source:selected:r')
+        assert (old.resolved_audit_view(adapter,binding,packet) is packet)==(job=='source:selected:r')
+    finally:JOB.reset(token)

@@ -92,6 +92,8 @@ def presence(view):
 
 
 def resolved_view(adapter, binding, view):
+    from citation_amendment_compat import source_job_supersedes_legacy_framing
+    if source_job_supersedes_legacy_framing(adapter,binding):return view
     workflow = adapter.workflow.status(binding['workflow_id'])
     entry = next(entries(workflow, adapter.workflow.vault, binding['node']), None)
     if entry is None:
@@ -115,6 +117,8 @@ def resolved_audit_view(adapter,binding,view):
     """Keep v2 exact-success replay before clarifying the earlier audit's role."""
     if view.get('hold_resolution',{}).get('audit_role'):
         return view
+    from citation_amendment_compat import source_job_supersedes_legacy_framing
+    if source_job_supersedes_legacy_framing(adapter,binding):return view
     workflow=adapter.workflow.status(binding['workflow_id'])
     entry=next(entries(workflow,adapter.workflow.vault,binding['node']),None)
     if entry is None or entry['_recovery_scope']!=SCOPE:
