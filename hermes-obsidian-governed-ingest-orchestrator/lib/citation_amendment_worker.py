@@ -38,10 +38,7 @@ def source_scope(frozen,amendment,value,old):
              if any(refs_key(successor_ref({'pass_id':p,'candidate_id':c},frozen,amendment)) in {refs_key(r) for r in refs} for p,c in affected)]
     return affected,handles
 
-def source_execute(adapter,binding,caller,input_ref,value,frozen,amendment):
-    from fixed_semantic import model_call,attach_receipt
-    from fixed_reduce_packets import validate_packet
-    old=next(r for r in frozen['sources'] if r['resource_id']==value['backend']['resource_id'])
+def source_parts(value,frozen,amendment,old):
     affected,handles=source_scope(frozen,amendment,value,old)
     mapping={refs_key(r):h for h,refs in value['backend']['mapping'].items() for r in refs}
     def rebased(refs):return list(dict.fromkeys(mapping[refs_key(successor_ref(r,frozen,amendment))] for r in refs))
@@ -49,6 +46,13 @@ def source_execute(adapter,binding,caller,input_ref,value,frozen,amendment):
               for p in old['proposals'] if not ({refs_key(r) for r in p['candidate_refs']}&affected)]
     omitted=rebased(old['omitted_candidate_refs'])
     if set(omitted)&set(handles):fail('selected correction was previously source-omitted; explicit scope revision is required')
+    return affected,handles,retained,omitted
+
+def source_execute(adapter,binding,caller,input_ref,value,frozen,amendment):
+    from fixed_semantic import model_call,attach_receipt
+    from fixed_reduce_packets import validate_packet
+    old=next(r for r in frozen['sources'] if r['resource_id']==value['backend']['resource_id'])
+    affected,handles,retained,omitted=source_parts(value,frozen,amendment,old)
     calls=[]
     if handles:
         local=fixed_reduce.resource_view(value,set(handles));packet={'candidate_refs':handles,'view':local}
@@ -83,6 +87,28 @@ def global_plan(adapter,binding,caller,value,frozen,amendment):
     for source in frozen['sources']:
         if source['reduction_id'] not in frozen['retired_source_ids']:continue
         intent=_load_json(_vault_path(adapter.workflow.vault,amendment['source_intents'][source['resource_id']]))
+        observed=_load_json(_vault_path(adapter.workflow.vault,intent['input_ref']))
+        fresh=fixed_reduce._snapshot(adapter,observed['binding'],{'batch_id':frozen['batch_id']})
+        if any(observed[k]!=fresh[k] for k in ('contract','view','backend')):fail('source local input authority changed')
+        affected,handles,retained,omitted=source_parts(fresh,frozen,amendment,source)
+        from citation_amendment_calls import authenticate
+        native={c['audit_ref']:c for c in authenticate(adapter,binding['workflow_id'],'source')}
+        if handles:
+            if len(intent['native_calls'])!=1 or intent['native_calls'][0] not in native:fail('source replacement needs its authenticated native local response')
+            call=native[intent['native_calls'][0]]
+            from fixed_semantic_recovery import _request_text
+            import json
+            local=fixed_reduce.resource_view(fresh,set(handles))
+            if json.loads(_request_text(call['wire']['user']))['input']!=local:fail('native source did not observe its current complete selected material')
+            from fixed_reduce_packets import validate_packet
+            validate_packet({'candidate_refs':handles},call['body'])
+            if call['body']['omitted_candidate_refs']:fail('native local source omitted necessary members')
+            retained.extend(call['body']['proposals'])
+        elif intent['native_calls']:fail('identity-only rebasing cannot introduce a source call')
+        reconstructed={'proposals':retained,'omitted_candidate_refs':omitted,
+            'reason':'Bounded native citation amendment; unchanged proposals retained under exact candidate/inspection identity proof.'}
+        if reconstructed!=intent['draft'] or fixed_reduce.expand(fresh,reconstructed)!=intent['expanded_request']:
+            fail('source submission intent differs from native output and unchanged semantic evidence')
         new=next(r for r in value['backend']['reductions'] if r['resource_id']==source['resource_id'])
         expected=intent['expanded_request']
         if any(new[k]!=expected[k] for k in ('proposals','omitted_candidate_refs','tasks')):fail('formal source differs from its native local submission intent')
@@ -127,7 +153,9 @@ def global_execute(adapter,binding,caller,input_ref,value,frozen,amendment):
     scope=active(adapter.workflow.vault,adapter.workflow.status(binding['workflow_id']))
     if amendment['phase']=='awaiting_acceptance':
         if not scope or scope['ref']['manifest_sha256']!=amendment['manifest_sha256']:fail('approve the newly generated exact limited manifest before formal submission')
-        work=_load_json(_vault_path(adapter.workflow.vault,amendment['work_ref']))
+        path=_vault_path(adapter.workflow.vault,amendment['work_ref'])
+        if hashlib.sha256(path.read_bytes()).hexdigest()!=amendment['work_sha256']:fail('local native work certificate changed')
+        work=_load_json(path)
         if fingerprint({k:value[k] for k in ('contract','view','backend')})!=work['source_authority_sha256']:fail('local downstream inputs changed')
         effective=copy.deepcopy(work['state']);written=scope['manifest']['allowed_pages']
         allowed_paths={p['path'] for p in written}
@@ -160,8 +188,16 @@ def global_execute(adapter,binding,caller,input_ref,value,frozen,amendment):
         # A new/split page must be composed exclusively of the selected local
         # closure. All unchanged pages above were proven or remained deferred.
         view={**raw_view,'page_scope_contract':'assigned-candidates/v1'}
-        with job('body:'+frozen['selection']['task_id']+':'+fingerprint(page['identity'])):
-            draft,call=model_call(adapter,binding,'page-write',view,caller,30000,attempt_limit=1)
+        logical='body:'+frozen['selection']['task_id']+':'+fingerprint(page['identity'])
+        from fixed_page_work import LOCAL
+        from hermes_source_units import ContractError
+        try:
+            with job(logical):draft,call=model_call(adapter,binding,'page-write',view,caller,30000,attempt_limit=1)
+        except ContractError as exc:
+            if exc.code not in LOCAL:raise
+            held.append({**page,'reason':str(exc),'code':exc.code,'logical_work':logical,
+                         'audit_ref':getattr(exc,'semantic_audit_ref',None),'completed':False})
+            continue
         raw=draft['content'].encode();path=f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}/page-drafts/{fingerprint(view)}.md'
         _write_atomic(_vault_path(adapter.workflow.vault,path),raw)
         written.append({**page,'content':draft['content'],'draft_ref':path,'audit_ref':call,'input_sha256':fingerprint(raw_view)})
@@ -173,7 +209,8 @@ def global_execute(adapter,binding,caller,input_ref,value,frozen,amendment):
     ref=save_result(adapter,value,'page-work.json',work)
     from citation_amendment_admission import manifest
     manifest_ref,digest=manifest(adapter,value,work,frozen,amendment)
-    amendment.update(phase='awaiting_acceptance',work_ref=ref,manifest_ref=manifest_ref,manifest_sha256=digest)
+    amendment.update(phase='awaiting_acceptance',work_ref=ref,work_sha256=hashlib.sha256(_vault_path(adapter.workflow.vault,ref).read_bytes()).hexdigest(),
+                     manifest_ref=manifest_ref,manifest_sha256=digest)
     save(adapter.workflow.vault,binding['workflow_id'],amendment)
     from hermes_source_units import ContractError
     raise ContractError('WORKFLOW_STOPPED','$','Local native revision finished; cancel/drain and explicitly approve new limited manifest: '+manifest_ref)

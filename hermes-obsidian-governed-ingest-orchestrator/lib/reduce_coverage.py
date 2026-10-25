@@ -46,6 +46,8 @@ def reuse_pages(adapter,value,scope):
     from fixed_destinations import routes,compile_content
     manifest=scope['manifest'];vault=adapter.workflow.vault
     if scope['proof'].get('native_bodies_authenticated')!=len(manifest['allowed_pages']):fail('incomplete admitted native proof')
+    for seal in scope['proof'].get('extra_control_seals',[]):
+        pinned(vault,seal['ref'],seal['sha256'])
     source=pinned(vault,manifest['source_snapshot_ref'],manifest['source_snapshot_sha256'])
     if any(source[k]!=value[k] for k in ('contract','view','backend')):fail('admitted source authority changed')
     for seal in scope['proof'].get('finite_journal_seals',[]):

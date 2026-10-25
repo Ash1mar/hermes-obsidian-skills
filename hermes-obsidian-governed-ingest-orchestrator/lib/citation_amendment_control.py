@@ -9,7 +9,12 @@ from hermes_source_units.validation import fingerprint
 
 def contract_hash():
     import hermes_source_units.citation_amendment as core
-    names=['citation_amendment_control.py','citation_amendment_worker.py','citation_amendment_calls.py','citation_local_proof.py']
+    names=['citation_amendment_control.py','citation_amendment_worker.py','citation_amendment_calls.py',
+           'citation_amendment_admission.py','citation_local_proof.py','fixed_semantic.py','fixed_reduce.py',
+           'reduce_coverage.py','hermes_source_units/pass_revision.py','hermes_source_units/knowledge_build.py',
+           'hermes_source_units/workflow_guard.py','hermes_source_units/reduce_dependency_revision.py',
+           'hermes_source_units/model_projection.py','hermes_source_units/execution_plan.py',
+           'hermes_source_units/schemas/contracts.json']
     return fingerprint({**{n:hashlib.sha256((Path(__file__).parent/n).read_bytes()).hexdigest() for n in names},
                         'core':hashlib.sha256(Path(core.__file__).read_bytes()).hexdigest()})
 
@@ -47,7 +52,7 @@ def prepare(adapter,request,dry_run):
     budgets=request.get('budgets',{});limits=request.get('cumulative_limits',{})
     caps={'citation':2,'source':2,'plan':2,'body':4}
     if set(budgets)!=set(caps) or set(limits)!=set(caps) or any(
-            type(budgets[p]) is not int or not 1<=budgets[p]<=limits[p]<=caps[p] for p in caps):
+            type(budgets[p]) is not int or type(limits[p]) is not int or not 0<=budgets[p]<=limits[p]<=caps[p] for p in caps) or budgets.get('citation')!=1:
         fail('explicit phase budgets and cumulative limits are required; no default fresh attempts')
     ledger=pending_calls(service.vault,wid);lineage=selection['task_id']
     if lineage in ledger.get('limits',{}) and ledger['limits'][lineage]!=limits:fail('operation/version changes cannot reset cumulative limits')
@@ -80,6 +85,19 @@ def prepare(adapter,request,dry_run):
     value={'operation_id':op,'phase':'prepared','revision_id':'citation-'+op,'plan_ref':path.relative_to(service.vault).as_posix(),
            'plan_sha256':hashlib.sha256(_json_bytes(frozen)).hexdigest(),'steps':{},'downstream_nodes':[]}
     ledger.setdefault('limits',{})[lineage]=limits
+    audit_root=service.vault/f'_system/ledgers/ingest-workflows/{wid}'
+    call_evidence=[]
+    for folder in ('semantic-calls','call-failures'):
+        for p in (audit_root/folder).glob('*.json'):
+            data=_load_json(p)
+            if folder=='call-failures' or selection['task_id'] in data.get('task_identities',{}).values():
+                call_evidence.append({'ref':p.relative_to(service.vault).as_posix(),
+                                      'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),
+                                      'state':data.get('state','native_response_recorded'),
+                                      'session_id':data.get('session_id',data.get('model',{}).get('session_id'))})
+    ledger.setdefault('baselines',{}).setdefault(lineage,{'original_journal_prefixes':histories,
+        'native_and_unknown_call_evidence':call_evidence,'unknown_usage_preserved':True,
+        'limits_are_explicit_additional_authority':True,'complete_historical_usage_known':False})
     if current:
         _write_atomic(base/current['operation_id']/'completed-state.json',_json_bytes(current))
     transaction(service.vault,wid,[row(service.vault,path,frozen),row(service.vault,base/'budgets.json',ledger),
@@ -162,6 +180,14 @@ def recover(adapter,request,*,dry_run=False):
             return prepare(adapter,request,dry_run)
         if not value or value['operation_id']!=request['recovery_id']:fail('continue the same durable amendment operation')
         if dry_run:return {'ok':True,'phase':value['phase'],'applied':False,'resumed':False}
+        action_key=action if action!='authorize-call' else action+':'+fingerprint({k:request.get(k) for k in ('logical_work','supersedes_attempt_sha256')})
+        previous=value.get('action_requests',{}).get(action_key)
+        if previous!=request:
+            service._mutation(request)
+            ignored={'expected_revision','input_digest','target_contract_sha256'}
+            if previous and {k:v for k,v in previous.items() if k not in ignored}!={k:v for k,v in request.items() if k not in ignored}:
+                fail('same durable action cannot change its authority or evidence')
+            value.setdefault('action_requests',{})[action_key]=dict(request);save(service.vault,wid,value)
         if action=='start':return start(adapter,request)
         if action=='accept-successor':return accept_successor(adapter,request)
         if action=='authorize-call':

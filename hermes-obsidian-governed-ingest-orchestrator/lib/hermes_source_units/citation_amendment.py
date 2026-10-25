@@ -21,7 +21,12 @@ def state(vault,wid):
 def plan(vault,value):
     path=_vault_path(vault,value['plan_ref'])
     if hashlib.sha256(path.read_bytes()).hexdigest()!=value['plan_sha256']:fail('amendment plan changed')
-    return _load_json(path)
+    frozen=_load_json(path)
+    for b in frozen.get('basis',[]):
+        if hashlib.sha256(_vault_path(vault,b['ref']).read_bytes()).hexdigest()!=b['sha256']:fail('pinned amendment cause changed')
+    if frozen.get('old_pass_ref') and hashlib.sha256(_vault_path(vault,frozen['old_pass_ref']).read_bytes()).hexdigest()!=frozen['old_pass_sha256']:
+        fail('immutable citation predecessor changed')
+    return frozen
 
 def transaction(vault,wid,writes,identity):
     """Persist all intents first. Partial control writes always fence consumers."""
@@ -98,6 +103,9 @@ def check_successor(knowledge,revision,prior,body):
     if revision['revision_id']!=current['revision_id']:fail('stale citation revision executor')
     from .citation_revision_impact import successor_delta
     successor_delta(prior,body,frozen['selection']['candidate_ids'])
+    sources={r['unit_ref']['resource_id'] for r in knowledge._task(body['task_id'])['target_refs']}
+    if any(r['unit_ref']['resource_id'] not in sources for c in body['candidates'] for r in c['support_refs']):
+        fail('native citation expanded the original source authority')
     from citation_amendment_calls import verify_pending_submission
     verify_pending_submission(knowledge.vault,context['workflow_id'],body)
 

@@ -62,6 +62,56 @@ def test_old_and_build_workers_are_fenced_before_new_evidence_can_commit(tmp_pat
     value['phase']='prepared';core.save(tmp_path,wid,value)
     with pytest.raises(ContractError,match='fenced'):core.guard(tmp_path,wid,'pass-slice:old')
 
+def test_reserved_unknown_is_not_resent_after_worker_replacement(tmp_path,monkeypatch):
+    wid,_=wallet(tmp_path);monkeypatch.setattr(calls,'native_home',lambda:tmp_path/'absent-native-home')
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path),worker_check=lambda _:None)
+    binding={'workflow_id':wid,'node':'pass-slice:s','task_id':'old','template_hash':'a'*64}
+    view={'tasks':[{'task':'t1','materials':[],'candidate':{'revision_review':True,'sequence':1,
+          'candidates':[],'inspections':[],'empty_reason':''}}],'texts':{},'headings':[]}
+    sent=[]
+    def unknown():
+        sent.append(1);calls.note_session('unresolved')
+        raise ContractError('NATIVE_COMPLETION_UNKNOWN','$','stream ended without a final response')
+    with pytest.raises(ContractError,match='NATIVE_COMPLETION_UNKNOWN'):
+        calls.invoke(adapter,binding,'citation',view,None,30000,None,unknown)
+    with pytest.raises(ContractError,match='do not resend'):
+        calls.invoke(adapter,{**binding,'task_id':'replacement'},'citation',view,None,30000,None,unknown)
+    assert len(sent)==1
+    record=core.pending_calls(tmp_path,wid)['jobs']['citation:original-task']['attempts'][0]
+    assert record['state']=='reserved' and record['session_id']=='unresolved'
+
+def test_saved_native_session_reconciles_after_crash_without_a_second_request(tmp_path,monkeypatch):
+    import json,sqlite3
+    import fixed_semantic as semantic
+    import fixed_semantic_recovery as recovery
+    from fixed_semantic_schema import slot_schema
+    wid,_=wallet(tmp_path);home=tmp_path/'native';home.mkdir()
+    monkeypatch.setenv('HERMES_KANBAN_RUN_ID','1');monkeypatch.setattr(calls,'native_home',lambda:home)
+    real=recovery.transcript_reply
+    monkeypatch.setattr(recovery,'transcript_reply',lambda a,wire,**kw:real(a,wire,home=home))
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,status=lambda _:{'kanban':{'board_id':'isolated'}}),
+        kanban=SimpleNamespace(task_snapshot=lambda *_:{'task':{},'runs':[{'id':1,'ended_at':2}]}),worker_check=lambda _:None)
+    binding={'workflow_id':wid,'node':'pass-slice:s','task_id':'old','template_hash':'a'*64}
+    view={'tasks':[{'task':'t1','materials':[],'candidate':{'revision_review':True,'sequence':1,
+          'candidates':[],'inspections':[],'empty_reason':''}}],'texts':{},'headings':[]}
+    schema=slot_schema('citation',view['tasks']);wire=semantic.prepare_request_projection('citation',view,schema,[])['wire']
+    raw=json.dumps({'results':{'t1':{'decision':'revised','candidates':[],'removed_candidate_ids':[],
+                                  'inspections':[],'empty_reason':'','review_note':'Isolated protocol response'}}})
+    sent=[]
+    def completed_then_crashed():
+        sent.append(1);calls.note_session('persisted-native')
+        with sqlite3.connect(home/'state.db') as db:
+            db.executescript('CREATE TABLE sessions(id TEXT,source TEXT);CREATE TABLE messages(session_id TEXT,role TEXT,content TEXT,tool_calls TEXT);')
+            db.execute('INSERT INTO sessions VALUES (?,?)',('persisted-native','kanban'))
+            db.executemany('INSERT INTO messages VALUES (?,?,?,?)',[('persisted-native','user',wire['user'],None),('persisted-native','assistant',raw,None)])
+        raise RuntimeError('power loss before audit persistence')
+    with pytest.raises(RuntimeError):calls.invoke(adapter,binding,'citation',view,None,30000,None,completed_then_crashed)
+    result,ref=calls.invoke(adapter,{**binding,'task_id':'replacement'},'citation',view,None,30000,None,completed_then_crashed)
+    assert len(sent)==1 and result['reviews'][0]['decision']=='revised'
+    assert ref.startswith('_system/ledgers/ingest-workflows/isolated/semantic-calls/reconciled-')
+    record=core.pending_calls(tmp_path,wid)['jobs']['citation:original-task']['attempts'][0]
+    assert record['reconciliation']['prior_state']=='reserved' and record['state']=='received'
+
 def view(task='t1',handle='c1',text='x1',heading='1'):
     return {'identity':{'kind':'fact','identity_key':'same'},'path':'30_Cards/same.md','existing_page':None,
             'candidates':[{'candidate':handle,'finding':'same claim','conditions':[],

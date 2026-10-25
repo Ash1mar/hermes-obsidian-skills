@@ -2,6 +2,7 @@
 import copy
 import json
 import sqlite3
+import os
 from pathlib import Path
 from contextvars import ContextVar
 from contextlib import contextmanager
@@ -88,6 +89,13 @@ def invoke(adapter,binding,phase,view,caller,limit,correction,callback):
     value=state(adapter.workflow.vault,binding['workflow_id'])
     if not value or value['phase']=='complete':return callback()
     frozen=plan(adapter.workflow.vault,value)
+    if value['phase'] in ('citation','downstream'):
+        live=binding
+        workspace=os.environ.get('HERMES_KANBAN_WORKSPACE')
+        if binding['node'].startswith('pass-slice:') and workspace and (Path(workspace)/'worker-request.json').exists():
+            live=_load_json(Path(workspace)/'worker-request.json')
+            if live['task_id']!=binding['task_id'] or live['node']!=binding['node']:fail('native request workspace changed owner')
+        adapter.worker_check(live)  # Reject old executors before they can charge the ledger.
     logical=JOB.get()
     if phase=='citation' and value['phase']=='citation':
         if len(view.get('tasks',[]))!=1:fail('citation amendment owns one exact native task')
@@ -130,10 +138,11 @@ def invoke(adapter,binding,phase,view,caller,limit,correction,callback):
         return result
     finally:CALL.reset(token)
 
-def authenticate(adapter,wid,phase):
+def authenticate(adapter,wid,phase,*,required_refs=None):
     value=state(adapter.workflow.vault,wid);found=[]
     for key,job_record in pending_calls(adapter.workflow.vault,wid)['jobs'].items():
         records=[r for r in job_record['attempts'] if r['operation_id']==value['operation_id'] and r['phase']==phase]
+        if required_refs is not None and (not records or records[-1].get('audit_ref') not in required_refs):continue
         for record in records[:-1]:
             if not any(g['supersedes_attempt_sha256']==fingerprint(record) for g in value.get('retry_grants',{}).get(key,[])):
                 fail('an older logical call has no explicit supersession; do not discard it')

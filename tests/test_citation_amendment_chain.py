@@ -19,7 +19,7 @@ import fixed_semantic as semantic
 import citation_amendment_control as control
 import citation_amendment_calls as calls
 
-def fixture(vault,monkeypatch):
+def fixture(vault,monkeypatch,mode='condition'):
     import test_reduce_execution_recovery as recovery_fixture
     original=recovery_fixture.prepare_layered_reduce_batch
     monkeypatch.setattr(recovery_fixture,'prepare_layered_reduce_batch',lambda v,b:original(v,b,initialize_slices=True,extra_candidate=True))
@@ -100,7 +100,7 @@ def fixture(vault,monkeypatch):
         target_contract_sha256=control.contract_hash(),reason='Correct only the selected fixture condition.',
         selections=[{'task_id':tid,'pass_id':pid,'candidate_ids':[prior['candidates'][0]['candidate_id']]}],
         basis=[{'ref':evidence.relative_to(vault).as_posix(),'sha256':hashlib.sha256(evidence.read_bytes()).hexdigest()}],
-        budgets={'citation':1,'source':1,'plan':1,'body':1},cumulative_limits={'citation':2,'source':2,'plan':2,'body':4})
+        budgets={'citation':1,'source':1,'plan':1,'body':2 if mode=='shared_qa' else 1},cumulative_limits={'citation':2,'source':2,'plan':2,'body':4})
     home=vault/'native-transcript-fixture';home.mkdir()
     with sqlite3.connect(home/'state.db') as db:
         db.executescript('CREATE TABLE sessions(id TEXT,source TEXT);CREATE TABLE messages(session_id TEXT,role TEXT,content TEXT,tool_calls TEXT);')
@@ -117,13 +117,17 @@ def command(a,request,action,**fields):
 
 class NativeFixtureCaller:
     """Actual request/response hashes in an isolated Kanban-shaped transcript DB."""
-    def __init__(self,home):self.home=home;self.calls=[]
+    def __init__(self,home,mode='condition'):self.home=home;self.calls=[];self.mode=mode
     def __call__(self,phase,view,schema,correction):
         self.calls.append(phase)
         if phase=='citation':
             t=view['tasks'][0];c=copy.deepcopy(t['candidate']['candidates'][0]);c['conditions']=['Corrected bounded fixture condition']
-            draft={'results':{t['task']:{'decision':'revised','candidates':[c],'removed_candidate_ids':[],
-                                      'inspections':[],'empty_reason':'','review_note':'Checked original fixture material'}}}
+            inspections=[]
+            if self.mode=='shared_qa':
+                inspection=copy.deepcopy(t['candidate']['inspections'][0]);inspection['qa_note']='New shared limitation verified in the original.'
+                inspections=[inspection]
+            draft={'results':{t['task']:{'decision':'revised','candidates':[c] if self.mode in ('condition','body_defer') else [],'removed_candidate_ids':[],
+                                      'inspections':inspections,'empty_reason':'','review_note':'Checked original fixture material'}}}
         elif phase=='resource-reduce':
             draft={'proposals':[{'candidate_refs':[c['candidate'] for c in view['candidates']],
                                  'summary':'Corrected local fixture grouping','identity_hints':[],'path_hints':[]}],
@@ -134,7 +138,8 @@ class NativeFixtureCaller:
                              'candidate_refs':[h for h in p['candidate_refs'] if h in handles]}
                             for p in view['coordination']['planned_pages']],
                    'omitted_candidate_refs':[],'reason':'Retain exact fixture page scope'}
-        elif phase=='page-write':draft={'content':'# Corrected fixture\n\nCorrected bounded fixture condition.\n'}
+        elif phase=='page-write':draft=({'blocked_reason':'Fixture necessary condition still cannot be expressed safely'} if self.mode=='body_defer'
+                                      else {'content':'# Corrected fixture\n\nCorrected bounded fixture condition.\n'})
         else:raise AssertionError(phase)
         raw=json.dumps(draft);wire=semantic.prepare_request_projection(phase,view,schema,[],correction)['wire']
         sid='isolated-'+str(len(self.calls));semantic.note_session(sid) if hasattr(semantic,'note_session') else __import__('semantic_output').note_session(sid)
@@ -143,11 +148,15 @@ class NativeFixtureCaller:
             db.executemany('INSERT INTO messages VALUES (?,?,?,?)',[(sid,'user',wire['user'],None),(sid,'assistant',raw,None)])
         return raw,{'origin':'hermes_native_model','session_id':sid,'response_sha256':fingerprint(raw)}
 
-def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,monkeypatch,tmp_path):
-    a,w,request,prior,old,pages,home=fixture(vault,monkeypatch)
+@pytest.mark.parametrize('mode',['condition','shared_qa','identity','body_defer'])
+def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,monkeypatch,tmp_path,mode):
+    a,w,request,prior,old,pages,home=fixture(vault,monkeypatch,mode)
     original={(vault/p['draft_ref']): (vault/p['draft_ref']).read_bytes() for p in pages}
     assert a.recover_reduce_execution(request)['phase']=='prepared'
     assert a.recover_reduce_execution(command(a,request,'start'))['phase']=='citation'
+    with pytest.raises(ContractError,match='fenced'):
+        with worker_binding(old['binding']),workflow_write_guard(vault,kinds=('global-reduce',)):
+            raise AssertionError('late old worker must never enter a domain mutation')
     current=a.workflow.status(w['workflow_id']);a.resume(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
     current=sync(a,w['workflow_id']);card=next(c for c in current['kanban']['task_map'] if c['node'].startswith('pass-slice:'))
     begun=a.worker_begin({'workflow_id':w['workflow_id'],'node':card['node'],'task_id':card['task_id'],'worker_id':'native-citation'})
@@ -158,7 +167,7 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
     packet_path,packet=verified_packet(vault,begun['model_input'],a.worker_check(bound))
     capture_context(vault,bound,packet_path,packet)
     task=packet['tasks'][0];view=semantic.subset(packet,[task],'citation')
-    caller=NativeFixtureCaller(home)
+    caller=NativeFixtureCaller(home,mode)
     response,audit=semantic.model_call(a,bound,'citation',view,caller,30000,attempt_limit=1)
     authored,_,_=semantic.prepare_pass_items(a,response,packet,[task],'citation')
     item=authored[0];k=a.workflow.knowledge;mapping=k.model_input(prior['task_id'],json.loads((vault/f'_system/knowledge-builds/task-{prior["task_id"]}/readings/{prior["reading_package_id"]}.json').read_text()),persist=False)['mapping']
@@ -169,6 +178,9 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
     draft.update(expected_revision=k._task(prior['task_id'])['revision'],registry_revision=1,sequence=prior['sequence']+1,
                  pass_kind='citation',candidates=candidates,inspections=inspections,empty_reason='')
     with worker_binding(bound),workflow_write_guard(vault,kinds=('pass-slice',)):
+        bad=copy.deepcopy(draft);bad['candidates'][1]['finding']='Unselected unauthorized mutation'
+        rejected=k.record_pass_batch({'batch_id':w['batch_id'],'passes':[bad]})
+        assert not rejected['ok'] and len(k._pass_index([prior['task_id']])[1][prior['task_id']])==2
         result=k.record_pass_batch({'batch_id':w['batch_id'],'passes':[draft]});assert result['ok'],result
     assert a.worker_complete(bound)['ok'];a.kanban.ended.add(bound['task_id']);current=sync(a,w['workflow_id'])
     assert current['pass_revision']['state']=='awaiting_review'
@@ -186,14 +198,23 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
     a.execution_failure(gb,'WORKFLOW_STOPPED','Local native revision finished')
     current=a.workflow.status(w['workflow_id']);a.cancel(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
     amendment=state(vault,w['workflow_id']);work=json.loads((vault/amendment['work_ref']).read_text())
-    assert len(work['reuse_proofs'])==len(pages)-1
-    assert caller.calls==['citation','resource-reduce','global-detail','page-write']
+    assert amendment['manifest_sha256']!=plan(vault,amendment)['scope']['ref']['manifest_sha256']
+    expected=['citation']+([] if mode=='identity' else ['resource-reduce','global-detail']+['page-write']*(2 if mode=='shared_qa' else 1))
+    assert len(work['reuse_proofs'])==len(pages)-(0 if mode=='identity' else 2 if mode=='shared_qa' else 1)
+    assert len(work['held'])==int(mode=='body_defer')
+    assert caller.calls==expected
     assert all(p.read_bytes()==raw for p,raw in original.items())
     approval={'workflow_id':w['workflow_id'],'actor':'agent','manifest_sha256':amendment['manifest_sha256'],
               'accept_necessary_coverage_gaps':True,'stop_after':'checkpoint_1','new_model_calls_granted':0}
     approval_path=root(vault,w['workflow_id'])/'approval.json';_write_atomic(approval_path,_json_bytes(approval))
-    assert a.recover_reduce_execution(command(a,request,'admit',approval_ref=approval_path.relative_to(vault).as_posix(),
-        approval_sha256=hashlib.sha256(approval_path.read_bytes()).hexdigest()))['ok']
+    admission=command(a,request,'admit',approval_ref=approval_path.relative_to(vault).as_posix(),
+                      approval_sha256=hashlib.sha256(approval_path.read_bytes()).hexdigest())
+    work_path=vault/amendment['work_ref'];sealed_work=work_path.read_bytes()
+    work_path.write_bytes(sealed_work+b' ')
+    with pytest.raises(ContractError,match='pinned coverage evidence changed'):
+        a.recover_reduce_execution(admission)
+    work_path.write_bytes(sealed_work)
+    assert a.recover_reduce_execution(admission)['ok']
     current=a.workflow.status(w['workflow_id']);a.resume(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
     current=sync(a,w['workflow_id']);card=next(c for c in current['kanban']['task_map'] if c['node']=='global-reduce')
     gb=json.loads(Path(a.kanban.by_id[card['task_id']]['body']['worker_binding']).read_text())
@@ -205,5 +226,5 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
     a.kanban.ended.add(card['task_id']);current=sync(a,w['workflow_id'])
     assert a.workflow.pending_pause(current)=='checkpoint_1'
     assert a.recover_reduce_execution(command(a,request,'finish'))['phase']=='complete'
-    assert caller.calls==['citation','resource-reduce','global-detail','page-write']
+    assert caller.calls==expected
     assert not any(p['boundary']=='checkpoint_1' for p in current['pause_control']['history'])

@@ -50,9 +50,13 @@ def verify(adapter,workflow,node,binding,entry):
     source=pinned(adapter.workflow.vault,selected['source_snapshot_ref'],selected['source_snapshot_sha256'])
     current=fixed_reduce.preview_snapshot(adapter,binding)
     if any(source[k]!=current[k] for k in ('contract','view','backend')):fail('amended source authority changed')
-    work=_load_json(_vault_path(adapter.workflow.vault,value['work_ref']))
+    work=pinned(adapter.workflow.vault,value['work_ref'],value['work_sha256'])
     # All fresh domain products are authenticated against actual native requests.
-    authenticated={phase:authenticate(adapter,workflow['workflow_id'],phase) for phase in ('citation','source','plan','body')}
+    reuse_paths={r['path'] for r in work['reuse_proofs']}
+    required_bodies={p['audit_ref'] for p in selected['allowed_pages'] if p['path'] not in reuse_paths}
+    authenticated={phase:authenticate(adapter,workflow['workflow_id'],phase,required_refs=required_bodies if phase=='body' else None)
+                   for phase in ('citation','source','plan','body')}
+    if selected['gaps']!=work['held']:fail('new manifest must preserve actual held status and failure evidence')
     from citation_amendment_control import accept_successor
     # The stored successor was checked before acceptance; recheck both its raw
     # immutable bytes and the actual native citation body at final admission.
@@ -86,6 +90,8 @@ def verify(adapter,workflow,node,binding,entry):
         if hashlib.sha256(raw).hexdigest()!=row['draft_sha256']:fail('native draft bytes changed')
         if row['path'] in reuse:
             old=reuse[row['path']]['origin']
+            original=next((p for p in frozen['scope']['manifest']['allowed_pages'] if p['path']==row['path']),None)
+            if old!=original:fail('reuse origin is not the exact previously admitted native page')
             expected=page_proof(frozen['old_source'],current,old,p,adapter)
             if expected!=reuse[row['path']]['proof'] or row['audit_ref']!=old['audit_ref'] or row['draft_sha256']!=old['draft_sha256']:
                 fail('local reuse proof or native origin changed')
@@ -128,6 +134,13 @@ def verify(adapter,workflow,node,binding,entry):
         native_planning_calls_authenticated=frozen['scope']['proof']['native_planning_calls_authenticated']+len(authenticated['plan']),
         finite_journal_seals=seals,gaps_completed=False,source_snapshot_sha256=selected['source_snapshot_sha256'],
         local_amendment_proofs_ref=value['work_ref'])
+    proof['extra_control_seals']=[{'ref':value['work_ref'],'sha256':value['work_sha256']},
+                                  {'ref':value['plan_ref'],'sha256':value['plan_sha256']}]
+    for ref in value.get('source_intents',{}).values():
+        proof['extra_control_seals'].append({'ref':ref,'sha256':hashlib.sha256(_vault_path(adapter.workflow.vault,ref).read_bytes()).hexdigest()})
+    proof['local_revision']={'operation_id':value['operation_id'],'predecessor_pass_id':frozen['selection']['pass_id'],
+                             'successor_pass_id':value['successor']['pass_id'],'delta':value['delta'],
+                             'source_intents':value.get('source_intents',{}),'no_global_retry_budget_reset':True}
     proof.update(task_partition(adapter.workflow.knowledge,current['backend']['tasks'],rows))
     return {'coverage_admission':proof,'original_calls_preserved':True}
 
