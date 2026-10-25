@@ -61,6 +61,8 @@ def rebind_view(adapter, workflow, binding, snapshot):
     entry = next(entries(workflow, adapter.workflow.vault, binding['node']), None)
     if entry is None:
         return snapshot
+    from citation_amendment_compat import source_rebind
+    if source_rebind(adapter,workflow,binding,snapshot,entry):return snapshot
     old = original(adapter.workflow.vault, entry)
     if source_identity(snapshot) != entry['source_identity'] or source_identity(old) != entry['source_identity']:
         fail('source tasks, candidates, evidence, QA or source exclusions changed')

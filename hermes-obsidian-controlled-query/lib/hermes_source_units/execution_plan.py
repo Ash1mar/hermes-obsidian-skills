@@ -42,6 +42,27 @@ def authenticated_call_recovery(entry):
             for r in rows))
 
 
+def authenticated_local_amendment_recovery(request,entry):
+    """Recognize a hash-sealed, operator-admitted local repair, never new quota."""
+    proof=entry.get('local_amendment_execution',{})
+    rows=request.get('entries',[]);basis=request.get('basis',[])
+    limits=proof.get('same_lineage_limits',{})
+    return (request.get('amendment_id')==proof.get('operation_id') and isinstance(proof.get('operation_id'),str)
+        and bool(proof['operation_id']) and request.get('recovery_scope')=='reduce-cancel/v1'
+        and entry.get('failure',{}).get('error_code')=='RECOVERY_NOT_ALLOWED'
+        and entry.get('node','').partition(':')[0] in ('resource-reduce','global-reduce')
+        and bool(entry.get('ended_run_ids')) and all(isinstance(r,str) and r for r in entry['ended_run_ids'])
+        and proof.get('new_model_calls_granted')==0 and proof.get('unknowns_preserved') is True
+        and type(proof.get('original_reservation_count')) is int and proof['original_reservation_count']>=1
+        and set(limits)=={'citation','source','plan','body'} and all(type(n) is int and n>0 for n in limits.values())
+        and all(isinstance(proof.get(k),str) and len(proof[k])==64 for k in ('current_input_sha256','successor_pass_id'))
+        and len(rows)==1 and rows[0].get('node')==entry['node'] and rows[0].get('task_id')==entry.get('previous_task_id')
+        and rows[0].get('failure_sha256')==entry.get('failure_sha256')
+        and 1<=len(basis)<=8 and all(isinstance(b,dict) and isinstance(b.get('ref'),str)
+            and isinstance(b.get('sha256'),str) and len(b['sha256'])==64 for b in basis)
+        and isinstance(request.get('target_contract_sha256'),str) and len(request['target_contract_sha256'])==64)
+
+
 PACKET_CAUSES={
     'ACCESS_DENIED':'ACCESS_DENIED at $: ACCESS_DENIED at $: typed submission requires a bounded model slice',
     'STALE_INPUT':'STALE_INPUT at $: STALE_INPUT at $: reviewed candidate identity changed'}
@@ -172,7 +193,7 @@ class ExecutionPlanMixin:
                     cause=entry.get('previous_task_id')
                     if (not isinstance(cause,str) or not cause or (entry.get('failure',{}).get('error_code')
                             not in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED')
-                            and not authenticated_call_recovery(entry))):
+                            and not authenticated_call_recovery(entry) and not authenticated_local_amendment_recovery(request,entry))):
                         fail('STALE_INPUT','Reduce cancellation recovery lacks its exact ended native identity')
                 if scope=='semantic-output/v1' and (not entry.get('previous_task_id') or not (entry.get('output_seed') or entry.get('uncalled_reservation') or entry.get('exhausted_continuation') or entry.get('uncalled_packet'))):
                     fail('STALE_INPUT','shared output recovery lacks its authenticated attempt evidence')
