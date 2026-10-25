@@ -146,3 +146,11 @@ entry returns the exact logical work and unmet certification instead of
 accepting recovery and hoping a later resume succeeds. Controlled regeneration
 requires separate explicit authority within the cumulative limit; an exhausted
 limit remains a stop condition, not an implicit grant or a new operation ID.
+
+If a user explicitly approves an additional call beyond that ceiling,
+`authorize-call` also accepts `cumulative_limit`: exactly one above the current
+limit, bounded by citation/source/plan=2 and body=4. The original plan, initial
+limits and every old attempt remain unchanged. The extension and exact retry
+grant commit in one recoverable transaction; repeating the same action grants
+zero additional calls. Omit this field to retain the existing ceiling. It must
+never be supplied merely because an unknown call exhausted the initial budget.

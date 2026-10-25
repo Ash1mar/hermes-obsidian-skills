@@ -12,6 +12,21 @@ PHASES=('prepared','citation','successor_verified','downstream','awaiting_accept
 def fail(message):raise ContractError('CITATION_AMENDMENT_HELD','$',message)
 def basis_key(items):return fingerprint(sorted({b['sha256'] for b in items}))
 
+
+def lineage_limits(ledger,lineage,initial):
+    """Explicit append-only extensions never erase the initial finite limits."""
+    limits=copy.deepcopy(ledger.get('limits',{}).get(lineage,initial))
+    caps={'citation':2,'source':2,'plan':2,'body':4}
+    for extension in ledger.get('limit_extensions',[]):
+        if extension['lineage']!=lineage:continue
+        phase=extension['phase'];new=extension['cumulative_limit']
+        if (extension['previous_limit']!=limits[phase] or type(new) is not int
+                or new!=limits[phase]+1 or new>caps[phase] or extension.get('additional_calls')!=1
+                or not extension.get('basis') or not extension.get('reason')):
+            fail('cumulative extension is not a finite explicit successor')
+        limits[phase]=new
+    return limits
+
 def root(vault,wid):return _vault_path(vault,f'_system/ledgers/ingest-workflows/{wid}/citation-amendments')
 def state(vault,wid):
     base=root(vault,wid)
@@ -145,7 +160,7 @@ def reserve(vault,wid,logical,wire,schema,binding,images=None):
         # Grant lineage is tied to original task, never to a changing Pass hash.
         lineage=frozen['selection']['task_id']
         cumulative=sum(a['lineage']==lineage and a['phase']==phase for j in ledger['jobs'].values() for a in j['attempts'])
-        if cumulative>=frozen['cumulative_limits'][phase]:fail('cumulative amendment lineage budget exhausted')
+        if cumulative>=lineage_limits(ledger,lineage,frozen['cumulative_limits'])[phase]:fail('cumulative amendment lineage budget exhausted')
         attempt={'operation_id':value['operation_id'],'lineage':lineage,'phase':phase,
                  'wire_sha256':digest,'schema_sha256':fingerprint(schema),'wire':wire,'schema':schema,
                  'binding':dict(binding),'state':'reserved','audit_ref':None,'session_id':None}

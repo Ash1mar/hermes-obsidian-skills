@@ -93,6 +93,7 @@ def test_append_events_retain_history_and_do_not_multiply_a_request(tmp_path,mon
 
 def test_dispatch_uses_the_same_projection_instead_of_reconstructing(tmp_path,monkeypatch):
     wid,binding,adapter,view,p=setup(tmp_path,monkeypatch)
+    binding={**binding,'node':'resource-reduce:r'}
     monkeypatch.setattr('reduce_coverage.current',lambda *_:None)
     seen=[]
     def invoke(a,b,phase,v,caller,limit,correction,callback,*,prepared):
@@ -106,3 +107,42 @@ def test_dispatch_uses_the_same_projection_instead_of_reconstructing(tmp_path,mo
     monkeypatch.setattr(semantic,'_dispatch_model_call',dispatch)
     result=semantic.model_call(adapter,binding,'citation',view,None,30000)
     assert result[0]=='fixed request' and len(seen)==1
+
+
+def test_explicit_one_call_extension_is_atomic_idempotent_and_keeps_unknown_charged(tmp_path,monkeypatch):
+    import hashlib
+    from hermes_source_units.source_units import _write_atomic,_json_bytes,_load_json
+    import citation_amendment_control as control
+    wid,binding,adapter,view,p=setup(tmp_path,monkeypatch)
+    value=core.state(tmp_path,wid);frozen=core.plan(tmp_path,value)
+    frozen['cumulative_limits']['citation']=1;frozen['basis']=[{'ref':'old','sha256':'a'*64}]
+    path=tmp_path/value['plan_ref'];_write_atomic(path,_json_bytes(frozen))
+    value['plan_sha256']=hashlib.sha256(path.read_bytes()).hexdigest();core.save(tmp_path,wid,value)
+    reservation=core.reserve(tmp_path,wid,'citation:original-task',p['wire'],p['identity']['output_schema'],binding)
+    ledger=core.pending_calls(tmp_path,wid);ledger['limits']={'original-task':frozen['cumulative_limits']}
+    del ledger['jobs']['citation:original-task']['attempts'][0]['events']
+    _write_atomic(reservation[0],_json_bytes(ledger))
+    old=ledger['jobs']['citation:original-task']['attempts'][0]
+    w={'workflow_id':wid,'actor':'agent','revision':1,'kanban':{'board_id':'isolated'}}
+    adapter.workflow.status=lambda _:w;adapter.workflow._mutation=lambda _:w
+    monkeypatch.setattr(control,'drained',lambda *_:None)
+    evidence=tmp_path/'fixed.json';_write_atomic(evidence,_json_bytes({'cause':'distinct corrected program cause'}))
+    req={'workflow_id':wid,'actor':'agent','expected_revision':1,'recovery_id':value['operation_id'],
+        'action':'authorize-call','target_contract_sha256':control.contract_hash(),'logical_work':'citation:original-task',
+        'supersedes_attempt_sha256':fingerprint(old),'reason':'Explicit isolated one-call authorization.',
+        'basis':[{'ref':'fixed.json','sha256':hashlib.sha256(evidence.read_bytes()).hexdigest()}],
+        'cumulative_limit':2}
+    result=control.recover(adapter,req);assert result['additional_calls']==1
+    before=reservation[0].read_bytes()
+    result=control.recover(adapter,req);assert result['replayed'] and result['additional_calls']==0
+    assert reservation[0].read_bytes()==before
+    status=calls.execution_admission(adapter,wid,binding['node'])
+    assert status[0]['state']=='controlled_regeneration_authorized'
+    assert status[0]['prior_execution_state']=='completion_unknown'
+    core.reserve(tmp_path,wid,'citation:original-task',p['wire'],p['identity']['output_schema'],{**binding,'task_id':'new'})
+    final=core.pending_calls(tmp_path,wid)
+    assert final['limits']['original-task']['citation']==1
+    assert core.lineage_limits(final,'original-task',frozen['cumulative_limits'])['citation']==2
+    assert final['jobs']['citation:original-task']['attempts'][0]==old
+    assert len(final['jobs']['citation:original-task']['attempts'])==2
+    assert not (core.root(tmp_path,wid)/'pending.json').exists()

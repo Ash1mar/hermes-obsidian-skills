@@ -70,7 +70,17 @@ def execution_status(adapter,wid,node):
                     not any(e.get('state')=='dispatch_claimed' for e in raw['events']) else 'completion_unknown')
         if status=='result_requires_authentication':
             proof(adapter,r['binding'],r,require_stopped=True);status='authenticated_result'
+        original_state=status
+        grants=value.get('retry_grants',{}).get(logical,[])
+        if not running and grants and grants[-1]['supersedes_attempt_sha256']==fingerprint(raw):
+            from hermes_source_units.citation_amendment import plan,lineage_limits
+            frozen=plan(adapter.workflow.vault,value);ledger=pending_calls(adapter.workflow.vault,wid)
+            limits=lineage_limits(ledger,frozen['selection']['task_id'],frozen['cumulative_limits'])
+            spent=sum(x['lineage']==raw['lineage'] and x['phase']==raw['phase']
+                      for j in ledger['jobs'].values() for x in j['attempts'])
+            if spent<limits[raw['phase']]:status='controlled_regeneration_authorized'
         rows.append({'logical_work':logical,'ordinal':index,'state':status,'reservation_sha256':fingerprint(raw),
+                     'prior_execution_state':original_state,
                      'ended_run_ids':[str(x['id']) for x in snap['runs'] if x.get('ended_at')],
                      'wire_sha256':raw['wire_sha256'],'schema_sha256':raw['schema_sha256'],
                      'charged':True,'additional_calls':0})
@@ -79,7 +89,7 @@ def execution_status(adapter,wid,node):
 
 def execution_admission(adapter,wid,node):
     rows=execution_status(adapter,wid,node)
-    blocked=[r for r in rows if r['state'] not in ('authenticated_result','reserved_not_dispatched')]
+    blocked=[r for r in rows if r['state'] not in ('authenticated_result','reserved_not_dispatched','controlled_regeneration_authorized')]
     if blocked:
         fail('execution admission unmet: '+json.dumps(blocked,sort_keys=True)+
              '; need authenticated native result or certified pre-dispatch reservation; unknown remains charged, no resend')

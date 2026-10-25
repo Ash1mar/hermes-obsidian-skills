@@ -1,6 +1,6 @@
 """Supersede stale source replay grants only inside a certified local amendment."""
 import hashlib
-from hermes_source_units.citation_amendment import state,plan,fail,pending_calls
+from hermes_source_units.citation_amendment import state,plan,fail,pending_calls,lineage_limits
 from hermes_source_units.source_units import _vault_path
 from hermes_source_units.validation import fingerprint
 
@@ -59,6 +59,7 @@ def verify_execution_recovery(adapter,workflow,request,binding):
     import fixed_reduce
     current=fixed_reduce.preview_snapshot(adapter,binding)
     return {'local_amendment_execution':{'operation_id':value['operation_id'],'current_input_sha256':current['input_id'],
-        'successor_pass_id':value['successor']['pass_id'],'same_lineage_limits':frozen['cumulative_limits'],
+        'successor_pass_id':value['successor']['pass_id'],'same_lineage_limits':lineage_limits(
+            pending_calls(adapter.workflow.vault,workflow['workflow_id']),frozen['selection']['task_id'],frozen['cumulative_limits']),
         'original_reservation_count':sum(len(j['attempts']) for j in pending_calls(adapter.workflow.vault,workflow['workflow_id'])['jobs'].values()),
         'new_model_calls_granted':0,'unknowns_preserved':True,'reservation_admission':admission}}

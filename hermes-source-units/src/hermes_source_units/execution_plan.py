@@ -52,7 +52,7 @@ def authenticated_local_amendment_recovery(request,entry):
         and (entry.get('failure',{}).get('error_code')=='RECOVERY_NOT_ALLOWED' or
              (entry.get('failure',{}).get('error_code')=='CITATION_AMENDMENT_HELD' and
               bool(proof.get('reservation_admission')) and all(
-                  r.get('state') in ('authenticated_result','reserved_not_dispatched') and r.get('charged') is True
+                  r.get('state') in ('authenticated_result','reserved_not_dispatched','controlled_regeneration_authorized') and r.get('charged') is True
                   and r.get('additional_calls')==0 and bool(r.get('ended_run_ids'))
                   and isinstance(r.get('reservation_sha256'),str) and len(r['reservation_sha256'])==64
                   for r in proof['reservation_admission'])))
