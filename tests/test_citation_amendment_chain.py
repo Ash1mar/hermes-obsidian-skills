@@ -68,10 +68,12 @@ def fixture(vault,monkeypatch):
          'document_registry_revision':1,'coverage_scope':scope['ref'],
          'decisions':[{**p,'action':'create','content':(vault/pages[i]['draft_ref']).read_text()}
                       for i,p in enumerate(rows)],'reason':'Already accepted isolated scope'}
+    k.resume_cancelled_batch(b['batch_id'],w['actor'],k._batch(b['batch_id'])['revision'])
     with worker_binding(binding):
         assert k.reduce_global({'batch_id':b['batch_id'],'actor':w['actor'],'runs':[run],
                                'resource_reduction_ids':b['resource_reduction_ids'],'omitted_candidate_refs':[],
                                'coverage_scope':scope['ref']})['ok']
+    k.cancel_batch(b['batch_id'],w['actor'],k._batch(b['batch_id'])['revision'])
     # Explicitly fixture an already reached checkpoint; new acceptance below
     # uses the real deterministic validator instead of a fabricated final result.
     w=a.workflow.status(w['workflow_id']);w.update(current_stage='checkpoint_1',resume_stage='checkpoint_1')

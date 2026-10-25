@@ -112,6 +112,12 @@ def reserve(vault,wid,logical,wire,schema,binding):
         job=ledger['jobs'].setdefault(logical,{'attempts':[]})
         owned=[a for a in job['attempts'] if a['operation_id']==value['operation_id']]
         digest=fingerprint(wire);grants=value.get('retry_grants',{}).get(logical,[])
+        for grant in grants:
+            for item in grant['basis']:
+                if hashlib.sha256(_vault_path(vault,item['ref']).read_bytes()).hexdigest()!=item['sha256']:
+                    fail('retry cause changed after authorization')
+        if owned and (owned[-1]['wire_sha256']!=digest or owned[-1]['schema_sha256']!=fingerprint(schema)):
+            fail('an input/version change cannot create another automatic logical allowance')
         may_append=bool(owned and len(owned)==len(grants) and
                         grants[-1]['supersedes_attempt_sha256']==fingerprint(owned[-1]))
         if owned and not may_append:

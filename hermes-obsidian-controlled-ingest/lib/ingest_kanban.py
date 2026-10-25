@@ -1838,6 +1838,8 @@ class IngestKanbanAdapter:
         if not self.enable_workers:
             _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
         workflow = self.workflow.status(workflow_id)
+        from hermes_source_units.citation_amendment import guard
+        guard(self.workflow.vault,workflow_id,node_name)
         self.workflow.assert_execution_ready(workflow)
         if not self.workflow.revision_allows(workflow, node_name):
             self.workflow.assert_not_paused(workflow)
@@ -1948,6 +1950,8 @@ class IngestKanbanAdapter:
         if not self.enable_workers:
             _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
         workflow = self.workflow.status(str(request["workflow_id"]))
+        from hermes_source_units.citation_amendment import guard
+        guard(self.workflow.vault,workflow['workflow_id'],str(request['node']))
         if not completing:
             self.workflow.assert_not_paused(workflow)
         self.workflow.pinned_templates(workflow)
