@@ -50,6 +50,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
     if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', rid):
         fail('INVALID_SCHEMA', 'invalid recovery ID')
     scope=request.get('recovery_scope')
+    if scope == 'reduce-citation-revision/v1':
+        from citation_amendment_control import recover
+        return recover(adapter,request,dry_run=dry_run)
     if scope == 'reduce-citation-impact/v1':
         from citation_revision_preview import inspect
         return inspect(adapter, request, dry_run=dry_run)

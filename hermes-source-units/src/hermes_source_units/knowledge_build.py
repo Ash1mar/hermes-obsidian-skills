@@ -1726,6 +1726,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         from .runtime_telemetry import span
         with span('pass_record_schema'):
             validate_record("knowledge_pass", body)
+        if revision:
+            from .citation_amendment import check_successor
+            check_successor(self,revision,prior,body)
         pass_root = _vault_path(self.vault, f"{BUILD_ROOT}/task-{task_id}/passes")
         path = pass_root / f"{body['sequence']:04d}-{body['pass_id']}.json"
         existing_sequence = list(pass_root.glob(f"{body['sequence']:04d}-*.json")) if pass_root.exists() else []

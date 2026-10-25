@@ -118,6 +118,9 @@ def verify_pages(adapter,binding,value,manifest,prove):
 
 
 def verify(adapter,workflow,node,binding,entry,failure,runs):
+    if entry.get('amendment_id'):
+        from citation_amendment_admission import verify as local_verify
+        return local_verify(adapter,workflow,node,binding,entry)
     import fixed_reduce
     from reduce_disposition import planning_state
     from fixed_semantic_recovery import permitted_tasks
