@@ -1,13 +1,52 @@
 """Native calls charged to stable logical lineages before dispatch."""
 import copy
+import json
+import sqlite3
+from pathlib import Path
 from contextvars import ContextVar
 from contextlib import contextmanager
 from hermes_source_units.citation_amendment import state,plan,reserve,update_call,pending_calls,fail
-from hermes_source_units.source_units import _load_json,_vault_path
+from hermes_source_units.source_units import _load_json,_vault_path,_write_atomic,_json_bytes
 from hermes_source_units.validation import fingerprint
 
 JOB=ContextVar('citation_amendment_job',default=None)
 CALL=ContextVar('citation_amendment_call',default=None)
+
+def native_home():return Path.home()/'.hermes'
+
+def reconcile(adapter,binding,record,reservation):
+    """Recover audit persistence from a completed native session, never resend."""
+    sid=record.get('session_id');run=record.get('native_run_id')
+    if not sid or not run:return None
+    home=native_home()
+    if not (home/'state.db').is_file():return None
+    with sqlite3.connect('file:'+str(home/'state.db')+'?mode=ro',uri=True) as db:
+        if db.execute('SELECT source FROM sessions WHERE id=?',(sid,)).fetchone()!=('kanban',):return None
+        rows=list(db.execute('SELECT role,content,tool_calls FROM messages WHERE session_id=?',(sid,)))
+    answers=[c for role,c,_ in rows if role=='assistant']
+    if len(answers)!=1 or any(t and t!='[]' for _,_,t in rows):return None
+    from fixed_semantic_recovery import _request_text,transcript_reply
+    phase=json.loads(_request_text(record['wire']['user']))['phase']
+    old=record['binding'];snap=adapter.kanban.task_snapshot(adapter.workflow.status(binding['workflow_id'])['kanban']['board_id'],old['task_id'])
+    if old['task_id']!=binding['task_id'] and (snap['task'].get('worker_pid') or not any(str(r['id'])==str(run) and r.get('ended_at') for r in snap['runs'])):
+        fail('old native executor is not stopped for reconciliation')
+    audit={'contract':'hermes-fixed-semantic-call/v1','workflow_id':binding['workflow_id'],
+           'node':old['node'],'native_task_id':old['task_id'],'native_run_id':run,'template_hash':old['template_hash'],
+           'phase':phase,'input_sha256':record['wire_sha256'],'user_sha256':fingerprint(record['wire']['user']),
+           'schema_sha256':record['schema_sha256'],'response_sha256':fingerprint(answers[0]),
+           'model':{'origin':'hermes_native_model','session_id':sid,'response_sha256':fingerprint(answers[0])},
+           'image_inputs':record.get('images',[]),'receipt_refs':[],
+           'reconciled_from_native_session':True,'usage_unknown':True}
+    if phase=='citation':
+        value=state(adapter.workflow.vault,binding['workflow_id']);frozen=plan(adapter.workflow.vault,value)
+        request=json.loads(_request_text(record['wire']['user']))
+        if len(request['input']['tasks'])!=1:return None
+        audit['task_identities']={request['input']['tasks'][0]['task']:frozen['selection']['task_id']}
+    if transcript_reply(audit,record['wire'],home=home) is None:return None
+    ref=f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}/semantic-calls/reconciled-{fingerprint(audit)}.json'
+    _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(audit))
+    update_call(reservation,audit_ref=ref,state='received',reconciliation={'prior_state':record['state'],'native_session_id':sid})
+    return {**record,'audit_ref':ref,'state':'received'}
 
 @contextmanager
 def job(logical):
@@ -53,6 +92,8 @@ def invoke(adapter,binding,phase,view,caller,limit,correction,callback):
     if phase=='citation' and value['phase']=='citation':
         if len(view.get('tasks',[]))!=1:fail('citation amendment owns one exact native task')
         logical='citation:'+frozen['selection']['task_id']
+    elif value['phase'] not in ('downstream','awaiting_acceptance'):
+        fail('only the selected native citation is executable in this amendment phase')
     if not logical or logical.partition(':')[0] not in frozen['budgets']:
         fail('fresh call is outside the explicit local amendment work; no batch-wide fallback')
     if correction:fail('amendment grants one reserved call, without automatic correction')
@@ -67,10 +108,15 @@ def invoke(adapter,binding,phase,view,caller,limit,correction,callback):
         images=select_images(original.get('tasks',[]),catalog)
     prepared=prepare_request_projection(phase,view,schema,images,correction)
     if prepared['input_size']>limit:fail('complete local request exceeds its bound')
-    reservation=reserve(adapter.workflow.vault,binding['workflow_id'],logical,prepared['wire'],schema,binding)
+    expected={'citation':'citation','resource-reduce':'source','global-detail':'plan','page-write':'body'}
+    if expected.get(phase)!=logical.partition(':')[0]:fail('logical budget does not own this native phase')
+    reservation=reserve(adapter.workflow.vault,binding['workflow_id'],logical,prepared['wire'],schema,binding,
+                        [{k:v for k,v in image.items() if k!='url'} for image in images])
     _,ledger,key,index,replayed=reservation;record=ledger['jobs'][key]['attempts'][index]
     if replayed:
-        if not record.get('audit_ref'):fail('reserved/unknown native completion remains charged; do not resend')
+        if not record.get('audit_ref'):
+            record=reconcile(adapter,binding,record,reservation)
+            if not record:fail('reserved/unknown native completion remains charged; do not resend')
         found=proof(adapter,binding,record)
         from fixed_semantic_schema import slot_results,validate
         if phase=='citation':return slot_results(phase,found['body'],view['tasks']),found['audit_ref']

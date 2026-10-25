@@ -1,5 +1,6 @@
 """Durable fencing and cumulative budgets for one bounded citation amendment."""
 import copy
+import os
 import hashlib
 from pathlib import Path
 from .source_units import _load_json,_vault_path,_write_atomic,_json_bytes,_exclusive_lock
@@ -100,7 +101,7 @@ def check_successor(knowledge,revision,prior,body):
     from citation_amendment_calls import verify_pending_submission
     verify_pending_submission(knowledge.vault,context['workflow_id'],body)
 
-def reserve(vault,wid,logical,wire,schema,binding):
+def reserve(vault,wid,logical,wire,schema,binding,images=None):
     """One durable reservation spans input hashes, versions and operation IDs."""
     base=root(vault,wid)
     with _exclusive_lock(base/'budget.lock'):
@@ -136,6 +137,7 @@ def reserve(vault,wid,logical,wire,schema,binding):
         attempt={'operation_id':value['operation_id'],'lineage':lineage,'phase':phase,
                  'wire_sha256':digest,'schema_sha256':fingerprint(schema),'wire':wire,'schema':schema,
                  'binding':dict(binding),'state':'reserved','audit_ref':None,'session_id':None}
+        attempt.update(native_run_id=os.environ.get('HERMES_KANBAN_RUN_ID'),images=images or [])
         job['attempts'].append(attempt);_write_atomic(path,_json_bytes(ledger))
         return path,ledger,logical,len(job['attempts'])-1,False
 

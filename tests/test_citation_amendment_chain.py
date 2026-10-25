@@ -22,7 +22,7 @@ import citation_amendment_calls as calls
 def fixture(vault,monkeypatch):
     import test_reduce_execution_recovery as recovery_fixture
     original=recovery_fixture.prepare_layered_reduce_batch
-    monkeypatch.setattr(recovery_fixture,'prepare_layered_reduce_batch',lambda v,b:original(v,b,initialize_slices=True))
+    monkeypatch.setattr(recovery_fixture,'prepare_layered_reduce_batch',lambda v,b:original(v,b,initialize_slices=True,extra_candidate=True))
     a,w,card,*_=stopped_reducer(vault,monkeypatch,'global-reduce')
     k=a.workflow.knowledge;b=k._batch(w['batch_id']);base=vault/f'_system/ledgers/ingest-workflows/{w["workflow_id"]}'
     binding=json.loads(Path(a.kanban.by_id[card['task_id']]['body']['worker_binding']).read_text())
@@ -90,7 +90,8 @@ def fixture(vault,monkeypatch):
     if not any(c['node']=='checkpoint-1-validate' for c in w['kanban']['task_map']):
         w['kanban']['task_map'].append({**card,'node':'checkpoint-1-validate'})
     a.workflow._write(w)
-    pid=old['backend']['mapping'][pages[0]['candidate_refs'][0]][0]['pass_id']
+    selected_refs=next(refs for refs in old['backend']['mapping'].values() if refs[0]['candidate_id']=='pump-1')
+    pid=selected_refs[0]['pass_id']
     tid=next(r['task_id'] for rid in b['resource_reduction_ids'] for r in k._resource_reduction(b['batch_id'],rid)['pass_refs'] if r['pass_id']==pid)
     prior=max(k._pass_index([tid])[1][tid],key=lambda p:p['sequence'])
     evidence=base/'confirmed-cause.json';_write_atomic(evidence,_json_bytes({'cause':'Isolated selected candidate condition requires correction'}))
@@ -128,9 +129,10 @@ class NativeFixtureCaller:
                                  'summary':'Corrected local fixture grouping','identity_hints':[],'path_hints':[]}],
                    'omitted_candidate_refs':[],'reason':'Native bounded source fixture'}
         elif phase=='global-detail':
-            p=view['coordination']['planned_pages'][0]
             handles=[r[0] for r in view['candidates']]
-            draft={'pages':[{'identity':p['identity'],'path':p['path'],'candidate_refs':handles}],
+            draft={'pages':[{'identity':p['identity'],'path':p['path'],
+                             'candidate_refs':[h for h in p['candidate_refs'] if h in handles]}
+                            for p in view['coordination']['planned_pages']],
                    'omitted_candidate_refs':[],'reason':'Retain exact fixture page scope'}
         elif phase=='page-write':draft={'content':'# Corrected fixture\n\nCorrected bounded fixture condition.\n'}
         else:raise AssertionError(phase)
@@ -152,6 +154,9 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
     bound=begun['worker_request'];workspace=tmp_path/'native-worker';workspace.mkdir();_write_atomic(workspace/'worker-request.json',_json_bytes(bound))
     monkeypatch.setenv('HERMES_KANBAN_WORKSPACE',str(workspace));monkeypatch.setenv('HERMES_KANBAN_RUN_ID','1')
     packet=json.loads((vault/begun['model_input']['path']).read_text())
+    from native_pass_identity import capture_context,verified_packet
+    packet_path,packet=verified_packet(vault,begun['model_input'],a.worker_check(bound))
+    capture_context(vault,bound,packet_path,packet)
     task=packet['tasks'][0];view=semantic.subset(packet,[task],'citation')
     caller=NativeFixtureCaller(home)
     response,audit=semantic.model_call(a,bound,'citation',view,caller,30000,attempt_limit=1)

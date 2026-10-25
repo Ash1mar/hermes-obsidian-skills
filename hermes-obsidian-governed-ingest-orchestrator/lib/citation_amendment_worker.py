@@ -144,13 +144,17 @@ def global_execute(adapter,binding,caller,input_ref,value,frozen,amendment):
     for page in planned['pages']:
         raw_view=fixed_reduce.page_view(adapter,value,page)
         old=old_allowed.get(page['path'])
-        if page['path'] not in affected_paths and old:
-            cert=page_proof(frozen['old_source'],value,old,page,adapter)
-            raw=_vault_path(adapter.workflow.vault,old['draft_ref']).read_bytes()
-            if hashlib.sha256(raw).hexdigest()!=old['draft_sha256']:fail('old native body changed')
-            written.append({**page,'content':raw.decode(),'draft_ref':old['draft_ref'],'audit_ref':old['audit_ref'],
-                            'input_sha256':fingerprint(raw_view)})
-            reuse.append({'path':page['path'],'origin':old,'proof':cert});continue
+        if old:
+            from hermes_source_units import ContractError
+            try:cert=page_proof(frozen['old_source'],value,old,page,adapter)
+            except ContractError:
+                if page['path'] not in affected_paths:raise  # Never expand a failed proof into an automatic rewrite.
+            else:
+                raw=_vault_path(adapter.workflow.vault,old['draft_ref']).read_bytes()
+                if hashlib.sha256(raw).hexdigest()!=old['draft_sha256']:fail('old native body changed')
+                written.append({**page,'content':raw.decode(),'draft_ref':old['draft_ref'],'audit_ref':old['audit_ref'],
+                                'input_sha256':fingerprint(raw_view)})
+                reuse.append({'path':page['path'],'origin':old,'proof':cert});continue
         if page['path'] not in affected_paths and page['path'] in old_gaps:
             held.append({**page,'reason':old_gaps[page['path']].get('reason','Prior necessary coverage remains deferred')});continue
         # A new/split page must be composed exclusively of the selected local
