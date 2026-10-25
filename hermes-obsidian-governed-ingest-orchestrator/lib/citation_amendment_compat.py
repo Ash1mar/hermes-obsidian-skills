@@ -4,6 +4,15 @@ from hermes_source_units.citation_amendment import state,plan,fail,pending_calls
 from hermes_source_units.source_units import _vault_path
 from hermes_source_units.validation import fingerprint
 
+def source_job_supersedes_legacy_framing(adapter,binding):
+    """A certified local source job owns its exact wire, not old retry prose."""
+    value=state(adapter.workflow.vault,binding['workflow_id'])
+    if (not value or value['phase']!='downstream' or binding['node'] not in value.get('downstream_nodes',[])
+            or not binding['node'].startswith('resource-reduce:')):return False
+    frozen=plan(adapter.workflow.vault,value)
+    from citation_amendment_calls import JOB
+    return JOB.get()=='source:'+frozen['selection']['task_id']+':'+binding['node'].partition(':')[2]
+
 def source_rebind(adapter,workflow,binding,snapshot,entry):
     value=state(adapter.workflow.vault,workflow['workflow_id'])
     if not value or value['phase'] not in ('downstream','awaiting_acceptance') or binding['node'] not in value.get('downstream_nodes',[]):return False
