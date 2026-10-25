@@ -39,3 +39,23 @@ def test_source_rebind_retains_all_unrelated_authority(tmp_path,monkeypatch,chan
     else:
         assert compat.source_rebind(adapter,w,binding,snapshot,entry)==(changed=='none')
         assert ('superseded_source_replay' in snapshot['backend'])==(changed=='none')
+
+@pytest.mark.parametrize('change',['none','extra_quota','no_ended_run','wrong_operation','wrong_native','unknown_lost','no_cause','semantic'])
+def test_local_recovery_readiness_recognizes_only_its_original_sealed_authority(change):
+    from hermes_source_units.execution_plan import authenticated_local_amendment_recovery
+    entry={'node':'resource-reduce:r','previous_task_id':'native','ended_run_ids':['1'],'failure_sha256':'a'*64,
+       'failure':{'error_code':'RECOVERY_NOT_ALLOWED'},'local_amendment_execution':{
+         'operation_id':'local','current_input_sha256':'b'*64,'successor_pass_id':'c'*64,
+         'same_lineage_limits':{'citation':1,'source':1,'plan':1,'body':2},'original_reservation_count':1,
+         'new_model_calls_granted':0,'unknowns_preserved':True}}
+    request={'amendment_id':'local','recovery_scope':'reduce-cancel/v1','target_contract_sha256':'d'*64,
+        'entries':[{'node':entry['node'],'task_id':'native','failure_sha256':'a'*64}],
+        'basis':[{'ref':'repair.json','sha256':'e'*64}]}
+    if change=='extra_quota':entry['local_amendment_execution']['new_model_calls_granted']=1
+    if change=='no_ended_run':entry['ended_run_ids']=[]
+    if change=='wrong_operation':request['amendment_id']='foreign'
+    if change=='wrong_native':request['entries'][0]['task_id']='foreign'
+    if change=='unknown_lost':entry['local_amendment_execution']['unknowns_preserved']=False
+    if change=='no_cause':request['basis']=[]
+    if change=='semantic':entry['failure']['error_code']='SEMANTIC_REVIEW_REQUIRED'
+    assert bool(authenticated_local_amendment_recovery(request,entry))==(change=='none')
