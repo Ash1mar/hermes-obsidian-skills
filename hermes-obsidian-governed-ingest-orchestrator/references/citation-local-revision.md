@@ -123,3 +123,26 @@ limits. Historical source replay authorizations remain immutable: only this
 accepted successor's source can supersede an obsolete same-input replay, after
 checking the exact old/new candidate mapping, unchanged complete originals and
 every unrelated task. Other sources retain the original identity guard.
+
+## Fixed request and reservation recovery
+
+Material assembly and all prompt framing finish before the amendment reserves a
+call. The dispatcher consumes that same prepared request, with a live owner and
+wire/schema check immediately before a durable dispatch claim. Claim, session and
+response changes append events to the charged ordinal. A repeat cannot claim it
+again, change its final request or obtain a fresh allowance.
+
+`recover-native-execution` checks the same reservation admission used by the
+downstream recovery validator, before recording a successful recovery. An
+authenticated result is replayed. A live original executor is observed, not
+replaced. A stopped, certified reservation with no dispatch claim can continue
+the same ordinal under a current recovery contract; the old binding remains in
+history and only the replacement canonical worker can claim it. An interrupted
+claim remains uncertain even if it has no session yet.
+
+Legacy reservations without dispatch certification remain unknown. Missing
+session/audit metadata or a diagnostic trace cannot refund their budget. The
+entry returns the exact logical work and unmet certification instead of
+accepting recovery and hoping a later resume succeeds. Controlled regeneration
+requires separate explicit authority within the cumulative limit; an exhausted
+limit remains a stop condition, not an implicit grant or a new operation ID.

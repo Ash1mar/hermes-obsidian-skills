@@ -365,9 +365,8 @@ def prepare_request_projection(phase,view,output_schema,images=(),correction=Non
 
 @measured('semantic_call', lambda adapter, binding, phase, view, caller, limit, correction=None, **kwargs: {'vault':adapter.workflow.vault,'binding':binding,'phase':phase})
 def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2):
-    from citation_amendment_calls import invoke
-    return invoke(adapter,binding,phase,view,caller,limit,correction,
-        lambda:_model_call(adapter,binding,phase,view,caller,limit,correction,policy=policy,attempt_limit=attempt_limit))
+    return _model_call(adapter,binding,phase,view,caller,limit,correction,
+                       policy=policy,attempt_limit=attempt_limit)
 
 
 def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2):
@@ -419,7 +418,9 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
         control=getattr(adapter,'worker_control_check',None)
         prepared['live_control_check']=(lambda:control(binding,checked=checked)) if control else lambda:adapter.worker_check(binding)
     if isinstance(caller,HermesCaller): caller.input_limit=limit
-    if isinstance(caller,HermesCaller) and not correction:
+    from citation_amendment_calls import active as amendment_active
+    local_amendment=amendment_active(adapter,binding)
+    if isinstance(caller,HermesCaller) and not correction and not local_amendment:
         from fixed_semantic_recovery import recover_reduce
         options={}
         if page_entry:options['entry_checked']=True
@@ -443,6 +444,19 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
             if clarified is not view:
                 prepared['closed']=True
                 return model_call(adapter,binding,phase,clarified,caller,limit,policy=policy,attempt_limit=attempt_limit)
+    # All material assembly, legacy framing and authority checks are finished.
+    # The amendment owns this exact projection through reserve, send and proof.
+    from citation_amendment_calls import invoke
+    return invoke(adapter,binding,phase,view,caller,limit,correction,
+        lambda:_dispatch_model_call(adapter,binding,phase,view,caller,limit,correction,
+            policy=policy,attempt_limit=attempt_limit,prepared=prepared),prepared=prepared)
+
+
+def _dispatch_model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2,prepared):
+    output_schema=prepared['identity']['output_schema'];images=prepared['images']
+    wire=prepared['wire'];schema_size=prepared['schema_size'];size=prepared['input_size']
+    from citation_amendment_calls import check_dispatch
+    check_dispatch(adapter,binding,phase,view,prepared)
     started=time.monotonic()
     input_sha256=fingerprint(wire)
     with span('model_call',phase=phase,input_sha256=input_sha256) as model_trace:

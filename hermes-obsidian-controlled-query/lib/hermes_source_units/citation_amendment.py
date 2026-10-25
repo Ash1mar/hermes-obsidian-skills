@@ -149,14 +149,61 @@ def reserve(vault,wid,logical,wire,schema,binding,images=None):
         attempt={'operation_id':value['operation_id'],'lineage':lineage,'phase':phase,
                  'wire_sha256':digest,'schema_sha256':fingerprint(schema),'wire':wire,'schema':schema,
                  'binding':dict(binding),'state':'reserved','audit_ref':None,'session_id':None}
-        attempt.update(native_run_id=os.environ.get('HERMES_KANBAN_RUN_ID'),images=images or [])
+        attempt.update(native_run_id=os.environ.get('HERMES_KANBAN_RUN_ID'),images=images or [],
+                       events=[{'state':'reserved','wire_sha256':digest,'schema_sha256':fingerprint(schema)}])
         job['attempts'].append(attempt);_write_atomic(path,_json_bytes(ledger))
         return path,ledger,logical,len(job['attempts'])-1,False
 
 def update_call(reservation,**fields):
     path,_,logical,index,_=reservation
     with _exclusive_lock(path.parent/'budget.lock'):
-        ledger=_load_json(path);ledger['jobs'][logical]['attempts'][index].update(fields)
+        ledger=_load_json(path);record=ledger['jobs'][logical]['attempts'][index]
+        if set(fields)&{'wire','wire_sha256','schema','schema_sha256','binding','native_run_id','operation_id','lineage','phase','events'}:
+            fail('reservation identity and final request are immutable')
+        if all(record.get(k)==v for k,v in fields.items()):return
+        previous=fingerprint(record)
+        record.setdefault('events',[]).append({'previous_sha256':previous,'previous_state':record['state'],
+                                               'changes':fields})
+        record.update(fields)
+        _write_atomic(path,_json_bytes(ledger))
+
+
+def claim_call(reservation,wire,schema,binding,run_id):
+    """A durable claim precedes any SDK work; uncertainty never refunds it."""
+    path,_,logical,index,_=reservation
+    with _exclusive_lock(path.parent/'budget.lock'):
+        ledger=_load_json(path);record=ledger['jobs'][logical]['attempts'][index]
+        continued=record.get('continuation',{})
+        owner_matches=(record['binding']==binding and str(record.get('native_run_id'))==str(run_id))
+        if continued:
+            from citation_amendment_control import contract_hash
+            owner_matches=(continued['contract_sha256']==contract_hash() and record['binding']['node']==binding['node']
+                and record['binding']['workflow_id']==binding['workflow_id'] and record['binding']['task_id']!=binding['task_id'])
+        if (record['wire_sha256']!=fingerprint(wire) or record['schema_sha256']!=fingerprint(schema) or not owner_matches):
+            fail('dispatch identity differs from its fixed reservation')
+        if record['state']!='reserved' or record.get('session_id') or record.get('audit_ref'):
+            fail('reservation already claimed; observe or authenticate the original execution')
+        if not record.get('events'):fail('legacy reservation has no dispatch certification')
+        record['events'].append({'previous_sha256':fingerprint(record),'previous_state':record['state'],
+                                 'state':'dispatch_claimed','binding':dict(binding),'native_run_id':run_id})
+        record['state']='dispatch_claimed'
+        record['execution_binding']=dict(binding);record['execution_run_id']=run_id
+        _write_atomic(path,_json_bytes(ledger))
+
+
+def continue_call(reservation,contract_sha256,ended_run_ids):
+    """Continue a certified untouched reservation, retaining its charged ordinal."""
+    path,_,logical,index,_=reservation
+    with _exclusive_lock(path.parent/'budget.lock'):
+        ledger=_load_json(path);record=ledger['jobs'][logical]['attempts'][index]
+        if (record['state']!='reserved' or record.get('session_id') or record.get('audit_ref')
+                or not record.get('events') or any(e.get('state')=='dispatch_claimed' for e in record['events'])):
+            fail('reservation is unknown or dispatched; continuation cannot refund or regenerate it')
+        continuation={'contract_sha256':contract_sha256,'ended_run_ids':ended_run_ids,'additional_calls':0}
+        if record.get('continuation')==continuation:return
+        if record.get('continuation'):fail('continue the existing reservation authority')
+        record['events'].append({'previous_sha256':fingerprint(record),'continuation':continuation})
+        record['continuation']=continuation
         _write_atomic(path,_json_bytes(ledger))
 
 def pending_calls(vault,wid):

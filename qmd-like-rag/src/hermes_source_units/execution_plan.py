@@ -49,7 +49,13 @@ def authenticated_local_amendment_recovery(request,entry):
     limits=proof.get('same_lineage_limits',{})
     return (request.get('amendment_id')==proof.get('operation_id') and isinstance(proof.get('operation_id'),str)
         and bool(proof['operation_id']) and request.get('recovery_scope')=='reduce-cancel/v1'
-        and entry.get('failure',{}).get('error_code')=='RECOVERY_NOT_ALLOWED'
+        and (entry.get('failure',{}).get('error_code')=='RECOVERY_NOT_ALLOWED' or
+             (entry.get('failure',{}).get('error_code')=='CITATION_AMENDMENT_HELD' and
+              bool(proof.get('reservation_admission')) and all(
+                  r.get('state') in ('authenticated_result','reserved_not_dispatched') and r.get('charged') is True
+                  and r.get('additional_calls')==0 and bool(r.get('ended_run_ids'))
+                  and isinstance(r.get('reservation_sha256'),str) and len(r['reservation_sha256'])==64
+                  for r in proof['reservation_admission'])))
         and entry.get('node','').partition(':')[0] in ('resource-reduce','global-reduce')
         and bool(entry.get('ended_run_ids')) and all(isinstance(r,str) and r for r in entry['ended_run_ids'])
         and proof.get('new_model_calls_granted')==0 and proof.get('unknowns_preserved') is True

@@ -6,12 +6,34 @@ import os
 from pathlib import Path
 from contextvars import ContextVar
 from contextlib import contextmanager
-from hermes_source_units.citation_amendment import state,plan,reserve,update_call,pending_calls,fail
+from hermes_source_units.citation_amendment import state,plan,reserve,update_call,pending_calls,fail,claim_call
 from hermes_source_units.source_units import _load_json,_vault_path,_write_atomic,_json_bytes
 from hermes_source_units.validation import fingerprint
 
 JOB=ContextVar('citation_amendment_job',default=None)
 CALL=ContextVar('citation_amendment_call',default=None)
+
+
+def active(adapter,binding):
+    value=state(adapter.workflow.vault,binding['workflow_id'])
+    return bool(value and value['phase']!='complete')
+
+
+def check_dispatch(adapter,binding,phase,view,prepared):
+    """Check the actual consumed projection, not a second reconstruction."""
+    reservation=CALL.get()
+    if not reservation:
+        if active(adapter,binding):fail('active amendment has no logical request reservation')
+        return
+    identity=prepared['identity']
+    if identity['phase']!=phase or identity['view']!=view or prepared['closed'] or prepared['consumed']:
+        fail('reserved final request changed before dispatch')
+    from fixed_semantic import _normalized_request_content
+    if ({**prepared['prompt'],'user':_normalized_request_content(prepared['content'])[0]}!=prepared['wire']):
+        fail('actual request content differs from the reserved final request')
+    adapter.worker_check(binding)
+    claim_call(reservation,prepared['wire'],identity['output_schema'],binding,
+               os.environ.get('HERMES_KANBAN_RUN_ID'))
 
 def guidance_equivalent(old,new,guidance):
     """Only expressly authorized review guidance may differ; no new evidence."""
@@ -25,6 +47,43 @@ def guidance_equivalent(old,new,guidance):
     return left==right
 
 def native_home():return Path.home()/'.hermes'
+
+
+def execution_record(record):
+    if not record.get('execution_binding'):return record
+    return {**record,'binding':record['execution_binding'],'native_run_id':record['execution_run_id']}
+
+
+def execution_status(adapter,wid,node):
+    """Read-only admission shared by operator recovery and execution validation."""
+    value=state(adapter.workflow.vault,wid);rows=[]
+    for logical,job_record in pending_calls(adapter.workflow.vault,wid)['jobs'].items():
+        owned=[(i,r) for i,r in enumerate(job_record['attempts']) if r['operation_id']==value['operation_id']
+               and r['binding']['node']==node]
+        if not owned:continue
+        index,raw=owned[-1];r=execution_record(raw)
+        snap=adapter.kanban.task_snapshot(adapter.workflow.status(wid)['kanban']['board_id'],r['binding']['task_id'])
+        running=bool(snap['task'].get('worker_pid') or any(not x.get('ended_at') for x in snap['runs']))
+        status=('original_execution_active' if running else 'result_requires_authentication' if r.get('audit_ref') else
+                'session_requires_reconciliation' if r.get('session_id') else
+                'reserved_not_dispatched' if r['state']=='reserved' and raw.get('events') and
+                    not any(e.get('state')=='dispatch_claimed' for e in raw['events']) else 'completion_unknown')
+        if status=='result_requires_authentication':
+            proof(adapter,r['binding'],r,require_stopped=True);status='authenticated_result'
+        rows.append({'logical_work':logical,'ordinal':index,'state':status,'reservation_sha256':fingerprint(raw),
+                     'ended_run_ids':[str(x['id']) for x in snap['runs'] if x.get('ended_at')],
+                     'wire_sha256':raw['wire_sha256'],'schema_sha256':raw['schema_sha256'],
+                     'charged':True,'additional_calls':0})
+    return rows
+
+
+def execution_admission(adapter,wid,node):
+    rows=execution_status(adapter,wid,node)
+    blocked=[r for r in rows if r['state'] not in ('authenticated_result','reserved_not_dispatched')]
+    if blocked:
+        fail('execution admission unmet: '+json.dumps(blocked,sort_keys=True)+
+             '; need authenticated native result or certified pre-dispatch reservation; unknown remains charged, no resend')
+    return rows
 
 def reconcile(adapter,binding,record,reservation):
     """Recover audit persistence from a completed native session, never resend."""
@@ -77,6 +136,7 @@ def note_audit(ref):
     if CALL.get():update_call(CALL.get(),audit_ref=ref,state='received')
 
 def proof(adapter,binding,record,*,require_stopped=False):
+    record=execution_record(record)
     from fixed_semantic_recovery import native_proof
     path=_vault_path(adapter.workflow.vault,record['audit_ref'])
     old=record['binding']
@@ -108,7 +168,7 @@ def proof(adapter,binding,record,*,require_stopped=False):
     return {'audit_ref':record['audit_ref'],'audit':audit,'wire':record['wire'],'body':body,
             'raw_body':raw_body,'logical_binding':old}
 
-def invoke(adapter,binding,phase,view,caller,limit,correction,callback):
+def invoke(adapter,binding,phase,view,caller,limit,correction,callback,*,prepared=None):
     value=state(adapter.workflow.vault,binding['workflow_id'])
     if not value or value['phase']=='complete':return callback()
     frozen=plan(adapter.workflow.vault,value)
@@ -137,7 +197,10 @@ def invoke(adapter,binding,phase,view,caller,limit,correction,callback):
         original=view.get('original_evidence',view)
         catalog=image_catalog(adapter,original) if 'original_evidence' in view else getattr(caller,'image_catalog',{})
         images=select_images(original.get('tasks',[]),catalog)
-    prepared=prepare_request_projection(phase,view,schema,images,correction)
+    if prepared is None:
+        prepared=prepare_request_projection(phase,view,schema,images,correction)
+    elif prepared['identity']!={'phase':phase,'view':view,'output_schema':schema,'correction':correction,'images':images}:
+        fail('final request projection differs from reservation input')
     if prepared['input_size']>limit:fail('complete local request exceeds its bound')
     expected={'citation':'citation','resource-reduce':'source','global-detail':'plan','page-write':'body'}
     if expected.get(phase)!=logical.partition(':')[0]:fail('logical budget does not own this native phase')
@@ -146,18 +209,23 @@ def invoke(adapter,binding,phase,view,caller,limit,correction,callback):
     _,ledger,key,index,replayed=reservation;record=ledger['jobs'][key]['attempts'][index]
     if replayed:
         if not record.get('audit_ref'):
-            record=reconcile(adapter,binding,record,reservation)
-            if not record:fail('reserved/unknown native completion remains charged; do not resend')
-        found=proof(adapter,binding,record)
-        from fixed_semantic_schema import slot_results,validate
-        if phase=='citation':return slot_results(phase,found['raw_body'],view['tasks']),found['audit_ref']
-        validate(phase,found['body'])
-        return found['body'],found['audit_ref']
+            if record.get('continuation') and record['state']=='reserved':
+                pass  # The same charged ordinal; check_dispatch claims it atomically.
+            else:
+                record=reconcile(adapter,binding,execution_record(record),reservation)
+                if not record:fail('reserved/unknown native completion remains charged; do not resend')
+        if record.get('audit_ref'):
+            found=proof(adapter,binding,record)
+            from fixed_semantic_schema import slot_results,validate
+            if phase=='citation':return slot_results(phase,found['raw_body'],view['tasks']),found['audit_ref']
+            validate(phase,found['body'])
+            return found['body'],found['audit_ref']
     token=CALL.set(reservation)
     try:
         result=callback();update_call(reservation,audit_ref=result[1],state='received')
         # Prove a genuine native response before a successor/domain commit.
-        record={**record,'audit_ref':result[1]};proof(adapter,binding,record)
+        record=pending_calls(adapter.workflow.vault,binding['workflow_id'])['jobs'][key]['attempts'][index]
+        proof(adapter,binding,record)
         return result
     finally:CALL.reset(token)
 

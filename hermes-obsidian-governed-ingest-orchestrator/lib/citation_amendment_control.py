@@ -232,11 +232,17 @@ def recover(adapter,request,*,dry_run=False):
                 return {'ok':True,'replayed':True,'phase':value['phase'],'resumed':False}
             return prepare(adapter,request,dry_run)
         if not value or value['operation_id']!=request['recovery_id']:fail('continue the same durable amendment operation')
+        if action=='recover-native-execution' and value['phase']=='downstream':
+            node=request.get('node')
+            if node not in value['downstream_nodes']:fail('recover one exact affected local node')
+            from citation_amendment_calls import execution_admission
+            readiness=execution_admission(adapter,wid,node)
+            if dry_run:return {'ok':True,'phase':value['phase'],'applied':False,'resumed':False,'execution_admission':readiness}
         if dry_run:return {'ok':True,'phase':value['phase'],'applied':False,'resumed':False}
         action_key=action+':'+str(value.get('generation',0))
         if action=='authorize-call':action_key=action+':'+fingerprint({k:request.get(k) for k in ('logical_work','supersedes_attempt_sha256')})
         if action=='reopen-downstream':action_key=action+':'+fingerprint({k:request.get(k) for k in ('target_paths','basis','clarification')})
-        if action=='recover-native-execution':action_key=action+':'+value['phase']+':'+str(request.get('node','citation'))
+        if action=='recover-native-execution':action_key=action+':'+value['phase']+':'+str(request.get('node','citation'))+':'+contract_hash()
         previous=value.get('action_requests',{}).get(action_key)
         if previous!=request:
             service._mutation(request)
@@ -254,8 +260,16 @@ def recover(adapter,request,*,dry_run=False):
                 if node not in value['downstream_nodes']:fail('recover one exact affected local node')
                 card=next(c for c in w['kanban']['task_map'] if c['node']==node)
                 failure=_vault_path(service.vault,f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint(node)[:16]}.json')
-                local=stored_step(service,wid,value,'local_execution_recovery:'+card['task_id'],lambda:mutation(w,
-                    recovery_id='local-execution-'+fingerprint({'op':value['operation_id'],'task':card['task_id']})[:40],
+                # Certification never guesses legacy dispatch state. It can
+                # continue only a journal with a durable no-claim record.
+                from hermes_source_units.citation_amendment import continue_call
+                for status in readiness:
+                    if status['state']=='reserved_not_dispatched':
+                        ledger=pending_calls(service.vault,wid)
+                        continue_call((root(service.vault,wid)/'budgets.json',ledger,status['logical_work'],status['ordinal'],True),
+                                      contract_hash(),status['ended_run_ids'])
+                local=stored_step(service,wid,value,'local_execution_recovery:'+card['task_id']+':'+contract_hash(),lambda:mutation(w,
+                    recovery_id='local-execution-'+fingerprint({'op':value['operation_id'],'task':card['task_id'],'contract':contract_hash()})[:40],
                     recovery_scope='reduce-cancel/v1',amendment_id=value['operation_id'],target_contract_sha256=contract_hash(),
                     reason=request.get('reason',''),basis=request.get('basis',[]),
                     entries=[{'node':node,'task_id':card['task_id'],'failure_sha256':hashlib.sha256(failure.read_bytes()).hexdigest()}]))
