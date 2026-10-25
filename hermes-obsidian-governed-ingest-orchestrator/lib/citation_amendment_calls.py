@@ -73,6 +73,10 @@ def execution_status(adapter,wid,node):
         original_state=status
         grants=value.get('retry_grants',{}).get(logical,[])
         if not running and grants and grants[-1]['supersedes_attempt_sha256']==fingerprint(raw):
+            import hashlib
+            for b in grants[-1]['basis']:
+                if hashlib.sha256(_vault_path(adapter.workflow.vault,b['ref']).read_bytes()).hexdigest()!=b['sha256']:
+                    fail('retry cause changed before execution admission')
             from hermes_source_units.citation_amendment import plan,lineage_limits
             frozen=plan(adapter.workflow.vault,value);ledger=pending_calls(adapter.workflow.vault,wid)
             limits=lineage_limits(ledger,frozen['selection']['task_id'],frozen['cumulative_limits'])
@@ -226,6 +230,7 @@ def invoke(adapter,binding,phase,view,caller,limit,correction,callback,*,prepare
                 if not record:fail('reserved/unknown native completion remains charged; do not resend')
         if record.get('audit_ref'):
             found=proof(adapter,binding,record)
+            prepared['closed']=True
             from fixed_semantic_schema import slot_results,validate
             if phase=='citation':return slot_results(phase,found['raw_body'],view['tasks']),found['audit_ref']
             validate(phase,found['body'])
