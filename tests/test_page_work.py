@@ -117,6 +117,7 @@ def test_changed_evidence_authority_stops_instead_of_becoming_local_deferral(tmp
 
 def test_later_independent_page_review_still_runs_after_a_local_rejection(tmp_path,monkeypatch):
  import fixed_review,semantic_output
+ monkeypatch.setattr(fixed_review,'policy_enabled',lambda *_:False)
  b={'workflow_id':'fixture','node':'build-finalize','task_id':'review'}
  a=NS(worker_begin=lambda *_:None,workflow=NS(vault=tmp_path))
  value={'input_id':'b'*64,'views':[{'page':'e1'},{'page':'e2'}]}

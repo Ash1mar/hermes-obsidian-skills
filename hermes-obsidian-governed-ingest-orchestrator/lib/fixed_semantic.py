@@ -313,6 +313,9 @@ def wire_prompt(phase,view,output_schema,correction=None):
         body['required_result_slots']=[t['task'] for t in view.get('tasks',[])]
     if correction: body['correction'] = _stable_objects(correction)
     system=COMMON+'\n'+RULES[phase]
+    if phase=='page-review' and view.get('review_scope'):
+        from reduce_disposition import PAGE_RULE
+        system+=' '+PAGE_RULE+' Review only the explicit review_scope risks and affected claims. Existing citation review is reusable; do not repeat discovery or treat unrelated original-package material as page coverage. Preserve QA and report concrete defects; a program risk is not proof of an error.'
     if phase=='page-write' and view.get('page_scope_contract')=='assigned-candidates/v1':
         from reduce_disposition import PAGE_RULE
         system+=' '+PAGE_RULE

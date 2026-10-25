@@ -1,15 +1,23 @@
 # build-finalize
 
 <!-- hermes-fixed-semantic/v1 -->
+<!-- hermes-program-build-acceptance/v1 -->
 
-The native fixed semantic executor owns input preparation, hashes, requests and
-completion. Each model session reviews one bounded page against citation facts,
-conditions, exceptions, QA and its checked parent. Return only the closed semantic
-decision and an actual review note. No Skill lookup, search tools, command assembly,
-identity copying, heartbeat, retry choice or workflow control is a model task.
+The native executor owns program acceptance, input/hash/coverage checks and
+completion. Reuse current citation and Reduce evidence. Pages with no named risk
+receive program acceptance with independent_review=not_performed; this is never
+a fabricated model approval. Trigger a bounded page-local semantic review only
+for cross-source merges, distinct applicability, same-name claim variants,
+revised citations, synthesized analysis or removed/rewritten parent content.
+Missing/stale evidence, unknown calls and required coverage gaps remain held;
+known QA/conversion limitations retain their status without automatic correction.
 
-The program submits only genuinely approved reviews after current input/hash,
-ownership, source permission and checkpoint checks. Failed review or stale input
-holds affected work; it never auto-approves or regenerates valid products.
+For a triggered review return only the closed decision and an actual review note
+on the named risks, using assigned candidates, full necessary original evidence
+and the checked parent. No prose rewrite, discovery, cosmetic review or workflow
+control. Exact valid native reviews are reused through the existing finite journal;
+refusals/unknown reservations stay held and budgets do not reset. The program
+records acceptance mode, current evidence digest, risk reasons and native review
+reference where applicable. Failed review still holds unified submission.
 Trusted reconciliation and durable pauses remain unchanged. Publication,
 Provider synchronization and pause continuation require separate authorization.

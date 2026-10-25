@@ -2516,6 +2516,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         registry_changed = False
         for page in run["page_revisions"]:
             review = by_page[page["page_id"]]
+            validate_record("build_review", review)
+            from .build_acceptance import validate_acceptance
+            validate_acceptance(self, run, page, review)
             draft = _vault_path(self.vault, f"{BUILD_ROOT}/{run_id}/pages/{page['page_id']}.md")
             content = draft.read_bytes()
             if _sha(content) != page["authored_sha256"] or review["authored_sha256"] != page["authored_sha256"]:
@@ -2568,7 +2571,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             if not target.exists() or _sha(target.read_bytes()) != page["authored_sha256"]:
                 page_writes.append((target, content))
             committed = {**page, "state": "committed",
-                         "review": {"actor": review["actor"], "note": review["note"]}}
+                         "review": {k: copy.deepcopy(review[k]) for k in ("actor", "note", "acceptance") if k in review}}
             validate_record("page_revision", committed)
             committed_pages.append(committed)
             revision_path = _vault_path(self.vault, f"{BUILD_ROOT}/page-revisions/{page['page_id']}/{page['revision_id']}.json")
@@ -2616,10 +2619,10 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             support_refs, actor, self._document_registry_revision()) if support_refs else []
         validate_references("build_run", completed_run, support_units)
 
-        for target, content in page_writes:
-            _write_atomic(target, content)
         for revision_path, committed in revision_writes:
             _write_atomic(revision_path, _json_bytes(committed))
+        for target, content in page_writes:
+            _write_atomic(target, content)
         if registry_changed:
             _write_atomic(_vault_path(self.vault, IDENTITY_PATH), _json_bytes(proposed_registry))
         for task_path, task in proposed_tasks:

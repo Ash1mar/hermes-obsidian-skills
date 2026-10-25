@@ -238,3 +238,12 @@ YAML copies of the same budgets. `source`, `reading`, and `retrieval` are loaded
 validated together. Explicit complete bootstrap configuration wins over packaged
 defaults; subsequent reads use the Vault copy and verify its fingerprint. Updating
 configurations requires a future controlled update operation, not silent edits.
+
+## Build acceptance policy
+
+The additive program-build-acceptance/v1 metadata on build reviews and page revision
+sidecars records independent_review=not_performed for no-risk pages. Named risks
+require an approved bounded page-local review. build_acceptance.py recomputes risks
+and evidence under the ordinary commit lock. Legacy/manual records remain readable.
+QA, draft/unassessed, source/coverage, release and Provider gates do not change.
+See the Orchestrator references/fixed-semantic.md for template compatibility.

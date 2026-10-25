@@ -1,4 +1,4 @@
-"""Bounded semantic page reviews; program owns Finalize identities and writes."""
+"""Program Build acceptance with explicit page-local risks; legacy pins stay valid."""
 import hashlib
 
 from hermes_source_units import ContractError
@@ -12,11 +12,18 @@ def fail(code,message):
     raise ContractError(code,'$',message)
 
 
-def snapshot(adapter,binding):
+def policy_enabled(adapter,binding):
+    workflow=adapter.workflow.status(binding['workflow_id'])
+    return '<!-- hermes-program-build-acceptance/v1 -->' in adapter.workflow.pinned_templates(workflow)['build-finalize']
+
+
+def snapshot(adapter,binding,program=False):
     checked=adapter.worker_check(binding); service=adapter.workflow.knowledge
     batch=service._batch(checked['batch_id']); workflow=adapter.workflow.status(binding['workflow_id'])
     registry=service.list_identities(); subjects={s['subject_id']:s for s in registry['subjects']}
     candidates,passes=service._pass_index(batch['task_ids'])
+    if program and workflow['checkpoints']['checkpoint_1']['state']!='approved':
+        fail('CHECKPOINT_BLOCKED','program acceptance requires the current approved checkpoint')
     backend={'batch_id':batch['batch_id'],'actor':batch['actor'],'run_ids':batch['run_ids'],
         'checkpoint':workflow['checkpoints']['checkpoint_1'],'registry':registry,
         'passes':[fingerprint(p) for tid in sorted(passes) for p in passes[tid]],'runs':[],'pages':{}}
@@ -24,6 +31,7 @@ def snapshot(adapter,binding):
     for run_id in batch['run_ids']:
         run=_load_json(service._run_path(run_id)); validate_record('build_run',run)
         if run['state']=='completed': continue
+        if program:service.validate_run(run_id)
         backend['runs'].append(run)
         decisions={d['page_id']:d for d in run['decisions']}
         for page in run['page_revisions']:
@@ -59,6 +67,10 @@ def snapshot(adapter,binding):
             for item,(record,candidate) in zip(evidence,selected):
                 item['source_evidence']=[fixed_evidence.support(service,record,candidate,readings)]
             backend['pages'][alias]={'run_id':run_id,'page':page,'parent_hash':parent_hash}
+            if program:
+                from hermes_source_units.build_acceptance import assess
+                backend['pages'][alias]['assessment']=assess(service,run,page,selected=selected,
+                    parent_content=parent['content'] if parent else None)
             views.append({'page':alias,'identity':{k:v for k,v in decision['identity'].items() if k!='subject_id'},
                 'path':page['path'],'content':raw.decode('utf-8'),'existing_page':parent,
                 'qa_status':page['qa_status'],'business_status':page['business_status'],
@@ -69,16 +81,31 @@ def snapshot(adapter,binding):
 
 
 def execute(adapter,binding,caller,model_call,attach_receipt):
-    adapter.worker_begin(binding); value=snapshot(adapter,binding)
+    adapter.worker_begin(binding); program=policy_enabled(adapter,binding)
+    value=snapshot(adapter,binding,True) if program else snapshot(adapter,binding)
     ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-inputs/review-{value['input_id']}.json"
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(value))
-    reviews={}; call_refs=[]; held=[]
+    reviews={}; acceptances={}; call_refs=[]; held=[]
     for view in value['views']:
         from fixed_semantic import HermesCaller,prepare_request_projection
         if isinstance(caller,HermesCaller):
             from fixed_page_evidence import select
             view=select(adapter,binding,'page-review',view,prepare_request_projection)
-        from semantic_output import execute as checked_output,check
+        from semantic_output import execute as checked_output,check,path_for
+        assessment=value['backend']['pages'][view['page']]['assessment'] if program else None
+        # Exact old journals, including refusals and unknown reservations, take
+        # precedence. A policy change never erases a consumed review allowance.
+        if program:
+            from hermes_source_units.build_acceptance import record
+            legacy_journal=path_for(adapter,binding,'page-review',view)
+            if not legacy_journal.exists():
+                if not assessment['risk_reasons']:
+                    reviews[view['page']]='Program acceptance; no independent page review performed. Citation/Reduce evidence reused; no semantic or publication approval inferred.'
+                    acceptances[view['page']]=record(assessment)
+                    continue
+                view={**view,'review_scope':{'policy':assessment['policy'],
+                    'risk_reasons':assessment['risk_reasons'],
+                    'instruction':'Review only the named page risks against its assigned candidates, originals and parent. Do not repeat candidate discovery or review unrelated reading-package coverage.'}}
         try:
             result,call_ref,_=checked_output(adapter,binding,'page-review',view,caller,model_call,
                 lambda d:check('page-review',None,None,None,d))
@@ -88,6 +115,13 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
             if exc.code not in LOCAL:raise
             held.append({'page':view['page'],'code':exc.code,'reason':str(exc)});continue
         reviews[view['page']]=result['review_note']; call_refs.append(call_ref)
+        if program:acceptances[view['page']]=record(assessment,review_audit_ref=call_ref)
+    if program:
+        report=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/reports/build-acceptance-{value['input_id']}.json"
+        _write_atomic(_vault_path(adapter.workflow.vault,report),_json_bytes({
+            'contract':'program-build-acceptance-report/v1','input_id':value['input_id'],
+            'acceptances':acceptances,'held':held,'committed':False,
+            'limitations':'Program acceptance does not prove semantic correctness; QA, coverage, business and release gates remain separate.'}))
     if held:
         report=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/reports/page-review-held-{value['input_id']}.json"
         _write_atomic(_vault_path(adapter.workflow.vault,report),_json_bytes({'held':held,'accepted_review_calls':call_refs,'finalized':False}))
@@ -96,11 +130,13 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
     for run in backend['runs']:
         finalizations.append({'run_id':run['run_id'],'actor':backend['actor'],'expected_revision':run['revision'],
             'reviews':[{'page_id':p['page']['page_id'],'authored_sha256':p['page']['authored_sha256'],
-                'parent_authored_sha256':p['parent_hash'],'actor':backend['actor'],'note':reviews[alias]}
+                'parent_authored_sha256':p['parent_hash'],'actor':backend['actor'],'note':reviews[alias],
+                **({'acceptance':acceptances[alias]} if program else {})}
                 for alias,p in backend['pages'].items() if p['run_id']==run['run_id']]})
     if finalizations:
         with worker_binding(binding),workflow_write_guard(adapter.workflow.vault,kinds=('build-finalize',),actor=backend['actor']):
-            if snapshot(adapter,binding)['input_id']!=value['input_id']:
+            fresh=snapshot(adapter,binding,True) if program else snapshot(adapter,binding)
+            if fresh['input_id']!=value['input_id']:
                 fail('STALE_INPUT','reviewed input changed; no automatic approval or rebind')
             result=adapter.workflow.knowledge.finalize_batch({'batch_id':backend['batch_id'],
                 'actor':backend['actor'],'finalizations':finalizations})
