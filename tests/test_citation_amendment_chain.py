@@ -79,8 +79,8 @@ def fixture(vault,monkeypatch):
     w=a.workflow.status(w['workflow_id']);w.update(current_stage='checkpoint_1',resume_stage='checkpoint_1')
     _write_atomic(base/'old-pause.json',_json_bytes({'fixture':'prior accepted pause'}))
     _write_atomic(base/'old-decision.json',_json_bytes({'fixture':'prior accepted decision'}))
-    w['pause_control'].update(boundary='checkpoint_1',evidence_digest='sha256:'+'1'*64,
-                             report_ref=(base/'old-pause.json').relative_to(vault).as_posix())
+    w['pause_control']={'boundary':'checkpoint_1','evidence_digest':'sha256:'+'1'*64,
+                       'report_ref':(base/'old-pause.json').relative_to(vault).as_posix(),'history':[]}
     w['checkpoints']['checkpoint_1']={'state':'approved','approval_digest':'sha256:'+'1'*64,'approved_by':'agent',
         'decision_ref':(base/'old-decision.json').relative_to(vault).as_posix(),
         'decision_sha256':hashlib.sha256((base/'old-decision.json').read_bytes()).hexdigest()}

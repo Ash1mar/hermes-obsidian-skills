@@ -16,6 +16,12 @@ def page_input(view):
     if set(view)-{'identity','path','candidates','original_evidence','existing_page','coverage_limitations'}:
         fail('unrecognized writer input cannot be normalized for reuse')
     packet=view['original_evidence']
+    if set(packet)-{'tasks','texts','headings','qa','qa_rule'}:fail('unknown original input pool cannot be ignored for reuse')
+    materials=[m for t in packet['tasks'] for m in t.get('materials',[])]
+    if (set(packet.get('texts',{}))!={m['text_ref'] for m in materials if m.get('text_ref')}
+            or set(packet.get('qa',{}))!={m['qa_ref'] for m in materials if m.get('qa_ref')}
+            or set(packet.get('headings',{}))!={str(m['heading']) for m in materials if m.get('heading') is not None}):
+        fail('unreferenced original evidence pool cannot be silently excluded from comparison')
     return {**{k:copy.deepcopy(v) for k,v in view.items() if k not in ('candidates','original_evidence')},
             'candidates':sorted([candidate(view,c) for c in view['candidates']],key=fingerprint),
             'complete_original_tasks':sorted(task_content(packet,t) for t in packet['tasks']),

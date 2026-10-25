@@ -86,8 +86,12 @@ def invoke(adapter,binding,phase,view,caller,limit,correction,callback):
 
 def authenticate(adapter,wid,phase):
     value=state(adapter.workflow.vault,wid);found=[]
-    for job_record in pending_calls(adapter.workflow.vault,wid)['jobs'].values():
-        for record in job_record['attempts']:
+    for key,job_record in pending_calls(adapter.workflow.vault,wid)['jobs'].items():
+        records=[r for r in job_record['attempts'] if r['operation_id']==value['operation_id'] and r['phase']==phase]
+        for record in records[:-1]:
+            if not any(g['supersedes_attempt_sha256']==fingerprint(record) for g in value.get('retry_grants',{}).get(key,[])):
+                fail('an older logical call has no explicit supersession; do not discard it')
+        for record in records[-1:]:
             if record['operation_id']==value['operation_id'] and record['phase']==phase:
                 if not record.get('audit_ref'):fail('unknown/reserved native call cannot be treated as uncalled')
                 found.append(proof(adapter,record['binding'],record,require_stopped=True))
@@ -105,9 +109,9 @@ def verify_pending_submission(vault,wid,body):
     for stored in pending_calls(vault,wid)['jobs'].values():
         records.extend(r for r in stored['attempts'] if r['operation_id']==value['operation_id']
                        and r['phase']=='citation' and r['binding']['task_id']==binding['task_id'])
-    if len(records)!=1 or not records[0].get('audit_ref'):fail('successor cannot commit without its reserved native response')
+    if not records or not records[-1].get('audit_ref'):fail('successor cannot commit without its reserved native response')
     adapter=verification_adapter(vault)
-    call=proof(adapter,binding,records[0])
+    call=proof(adapter,binding,records[-1])
     verify_citation_body(adapter,frozen,body,call)
 
 def verify_citation_body(adapter,frozen,successor,call):
