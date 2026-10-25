@@ -114,12 +114,16 @@ def stop_at_output_boundary(adapter,binding,phase,view):
 
 
 def note_session(session):
+    from citation_amendment_calls import note_session as amendment_session
+    amendment_session(session)
     active=ACTIVE.get()
     if active:
         path,record,index=active;record['attempts'][index]['session_id']=session;write(path,record)
 
 
 def note_audit(ref):
+    from citation_amendment_calls import note_audit as amendment_audit
+    amendment_audit(ref)
     active=ACTIVE.get()
     if active:
         path,record,index=active;record['attempts'][index]['audit_ref']=ref;write(path,record)

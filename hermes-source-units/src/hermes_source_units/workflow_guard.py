@@ -83,6 +83,8 @@ def workflow_write_guard(vault, *, kinds=("source-prepare",), actor=None,
         workflow_id = matches[0]
     def validate_live():
         value = service.status(workflow_id)
+        from .citation_amendment import guard
+        guard(vault,workflow_id,binding['node'] if binding else next((c['node'] for c in value['kanban']['task_map'] if c['task_id']==task_id),None),domain=True)
         if value["cancel_requested"] or value["state"] in TERMINAL:
             _fail("WORKFLOW_STOPPED", "domain write rejected: workflow is stopped")
         if not (binding is not None and service.revision_allows(value, binding['node'])):

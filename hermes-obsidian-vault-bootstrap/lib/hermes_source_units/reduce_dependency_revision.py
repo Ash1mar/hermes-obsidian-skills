@@ -80,6 +80,10 @@ def authorize(service,value,request):
     if not selected or not selected.issubset(set(batch['task_ids'])-service.skipped_pass_tasks(value)):
         fail('INVALID_SCOPE','select only existing non-skipped citation tasks')
     assert_unconsumed_resources(service,value,selected)
+    if request.get('amendment_id'):
+        from .citation_amendment import revision_authority
+        revision_authority(service,value,request)
+        return snapshot(service,value)
     failures=request.get('reduce_failures',[])
     resources=set()
     for item in failures:

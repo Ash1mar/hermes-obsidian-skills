@@ -502,7 +502,7 @@ def plan_sliced_batch(vault: Path, count: int, batch_id: str = "slice-batch") ->
     return service
 
 
-def prepare_layered_reduce_batch(vault: Path, batch_id: str = "layered-reduce") -> tuple[
+def prepare_layered_reduce_batch(vault: Path, batch_id: str = "layered-reduce", *, initialize_slices=False, extra_candidate=False) -> tuple[
         FileKnowledgeBuildService, list[dict], dict[str, str], list[dict]]:
     refs = publish_sources(vault, [
         "# Pump X\nPump X transfers coolant.\n",
@@ -516,6 +516,8 @@ def prepare_layered_reduce_batch(vault: Path, batch_id: str = "layered-reduce") 
                   for index, ref in enumerate(refs, 1)],
     })
     prepared = service.prepare_batch(batch_id, "agent", 1)
+    if initialize_slices:
+        service._ensure_slices(service._batch(batch_id),{'slice_max_tasks':1})
     packages = {item["task_id"]: item["reading_package_id"] for item in prepared["results"]}
     citation_ids = {}
     for index, ref in enumerate(refs, 1):
@@ -532,6 +534,9 @@ def prepare_layered_reduce_batch(vault: Path, batch_id: str = "layered-reduce") 
                             "conditions": [], "exceptions": [], "support_refs": [ref]}],
             "empty_reason": "",
         }
+        if extra_candidate and index == 1:
+            common['candidates'].append({**common['candidates'][0],'candidate_id':'pump-sibling',
+                                         'finding':'Independent sibling fact in the same inspected original.'})
         candidate = service.record_pass_batch({
             "batch_id": batch_id,
             "passes": [{**common, "pass_kind": "candidate", "sequence": 0}],

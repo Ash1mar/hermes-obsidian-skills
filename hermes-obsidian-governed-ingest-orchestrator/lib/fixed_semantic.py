@@ -365,6 +365,12 @@ def prepare_request_projection(phase,view,output_schema,images=(),correction=Non
 
 @measured('semantic_call', lambda adapter, binding, phase, view, caller, limit, correction=None, **kwargs: {'vault':adapter.workflow.vault,'binding':binding,'phase':phase})
 def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2):
+    from citation_amendment_calls import invoke
+    return invoke(adapter,binding,phase,view,caller,limit,correction,
+        lambda:_model_call(adapter,binding,phase,view,caller,limit,correction,policy=policy,attempt_limit=attempt_limit))
+
+
+def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2):
     from reduce_coverage import current
     if current(adapter,binding):
         raise ContractError('COVERAGE_SCOPE_INVALID','$','approved limited scope permits native reuse only; no fresh semantic calls')
@@ -864,6 +870,9 @@ def run_pass(adapter,binding,caller):
             correction=None
             recovery_checked=False;attempt=0
             attempt_limit=group_usage(packet,tasks,phase,limit,images,policy)['semantic_attempt_limit'] if policy else 2
+            from hermes_source_units.citation_amendment import state as amendment_state
+            amendment=amendment_state(adapter.workflow.vault,binding['workflow_id'])
+            if amendment and amendment['phase']=='citation':attempt_limit=1
             if phase=='citation' and any(checked_ids[t['task']] in correction_tasks for t in tasks):
                 attempt=attempt_limit-1  # Continue the recorded unused correction, not a fresh two-call budget.
                 correction={'failures':[{'task':t['task'],'code':'INCOMPLETE_COVERAGE',
@@ -950,6 +959,11 @@ def execute(adapter,binding_path,caller=None):
 
 def run_reduce(adapter,binding,caller):
     ref,input_value=fixed_reduce.prepare(adapter,binding)
+    from hermes_source_units.citation_amendment import state as amendment_state
+    amendment=amendment_state(adapter.workflow.vault,binding['workflow_id'])
+    if amendment and amendment['phase'] in ('downstream','awaiting_acceptance'):
+        from citation_amendment_worker import execute
+        return execute(adapter,binding,caller,ref,input_value)
     kind=input_value['backend']['kind']; correction=None
     if kind=='resource-reduce':
         from fixed_reduce_packets import plan, merge, validate_packet, CONTRACT

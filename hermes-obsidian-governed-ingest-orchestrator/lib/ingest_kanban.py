@@ -1097,6 +1097,18 @@ class IngestKanbanAdapter:
                 **interruption_status(self,value['workflow_id'])}
 
     def resume(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from hermes_source_units.citation_amendment import state as amendment_state,fail as amendment_fail
+        amendment=amendment_state(self.workflow.vault,request['workflow_id'])
+        if amendment and amendment['phase'] in ('prepared','successor_verified'):
+            amendment_fail('complete the current durable control step before resuming workers')
+        if amendment and amendment['phase']=='citation':
+            revision=self.workflow.status(request['workflow_id']).get('pass_revision',{})
+            if revision.get('state')!='running' or revision.get('revision_id')!=amendment['revision_id']:
+                amendment_fail('finish the native revision authorization before resuming')
+        if amendment and amendment['phase']=='awaiting_acceptance':
+            from hermes_source_units.reduce_coverage import active
+            if not active(self.workflow.vault,self.workflow.status(request['workflow_id'])):
+                amendment_fail('explicitly admit the new limited manifest before resuming')
         value = self.workflow.resume(request)
         if value["batch_id"]:
             batch = self.workflow.knowledge._batch(value["batch_id"])
@@ -1830,6 +1842,8 @@ class IngestKanbanAdapter:
         if not self.enable_workers:
             _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
         workflow = self.workflow.status(workflow_id)
+        from hermes_source_units.citation_amendment import guard
+        guard(self.workflow.vault,workflow_id,node_name)
         self.workflow.assert_execution_ready(workflow)
         if not self.workflow.revision_allows(workflow, node_name):
             self.workflow.assert_not_paused(workflow)
@@ -1940,6 +1954,8 @@ class IngestKanbanAdapter:
         if not self.enable_workers:
             _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
         workflow = self.workflow.status(str(request["workflow_id"]))
+        from hermes_source_units.citation_amendment import guard
+        guard(self.workflow.vault,workflow['workflow_id'],str(request['node']))
         if not completing:
             self.workflow.assert_not_paused(workflow)
         self.workflow.pinned_templates(workflow)
@@ -2274,6 +2290,8 @@ class IngestKanbanAdapter:
     @record_validation_scope()
     @measured('worker_authority_check', lambda self, request, **kwargs: {'vault':self.workflow.vault,'binding':request})
     def worker_check(self, request: Mapping[str, Any], *, verify_inputs: bool = True) -> dict[str, Any]:
+        from hermes_source_units.citation_amendment import guard
+        guard(self.workflow.vault,request['workflow_id'],request['node'])
         self.validate_worker_request(request)
         if str(request["node"]).startswith("source-prepare:") or request["node"] == "exact-plan":
             workflow, node, source = self._pre_worker(request)
@@ -2309,6 +2327,8 @@ class IngestKanbanAdapter:
     def worker_control_check(self, request: Mapping[str, Any], *, checked: Mapping[str, Any]) -> None:
         """Additional send-time stop/binding check; never replaces full evidence authority."""
         self.validate_worker_request(request)
+        from hermes_source_units.citation_amendment import guard
+        guard(self.workflow.vault,request['workflow_id'],request['node'])
         if not self.enable_workers or request['node']!='global-reduce':
             _fail('ACCESS_DENIED','live page control requires a fully checked global reducer')
         workflow=self.workflow.status(request['workflow_id'])

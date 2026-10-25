@@ -30,7 +30,8 @@ def test_inspection_pins_real_consumption_and_cannot_mutate_or_grant(vault,monke
     assert result['new_model_calls_granted']==0 and not result['resumed']
     assert sum(s['requires_revalidation'] for s in impact['sources'])==1
     assert len(impact['proposals'])==1 and impact['proposals'][0]['selected_candidate_dependency']
-    assert not impact['reuse_approved'] and not impact['consumed_revision_execution_supported']
+    assert not impact['reuse_approved'] and impact['consumed_revision_execution_supported']
+    assert impact['execution_contract']=='reduce-citation-revision/v1' and impact['execution_requires_explicit_bounded_plan']
     assert any('/passes/' in p for p in impact['pins'])
     assert before=={p:p.read_bytes() for p in vault.rglob('*') if p.is_file()}
     with pytest.raises(ContractError,match='read-only'):a.recover_reduce_execution(req)

@@ -34,6 +34,13 @@ class PassRevisionMixin:
                            for i in prior['inspections']],
             'candidates':[{**c,'support_refs':[self.knowledge._model_handle(r,projection['mapping']) for r in c['support_refs']]}
                           for c in prior['candidates']],'empty_reason':prior['empty_reason']}}
+        from .citation_amendment import state as amendment_state,plan as amendment_plan
+        amendment=amendment_state(self.vault,value['workflow_id'])
+        if amendment and amendment['phase']=='citation' and amendment['revision_id']==revision['revision_id']:
+            frozen=amendment_plan(self.vault,amendment)
+            projection['view']['continuation']['candidate']['local_revision_scope']={
+                'selected_candidate_ids':frozen['selection']['candidate_ids'],
+                'rule':'Revise only the selected candidate IDs. Preserve every other candidate exactly, retain all members and original source authority. Return actual inspection/limitation changes explicitly; shared QA changes require downstream revalidation.'}
         return projection
 
     def revision_allows(self, value, node):

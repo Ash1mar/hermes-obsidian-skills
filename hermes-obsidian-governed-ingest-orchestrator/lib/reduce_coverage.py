@@ -46,6 +46,8 @@ def reuse_pages(adapter,value,scope):
     from fixed_destinations import routes,compile_content
     manifest=scope['manifest'];vault=adapter.workflow.vault
     if scope['proof'].get('native_bodies_authenticated')!=len(manifest['allowed_pages']):fail('incomplete admitted native proof')
+    for seal in scope['proof'].get('extra_control_seals',[]):
+        pinned(vault,seal['ref'],seal['sha256'])
     source=pinned(vault,manifest['source_snapshot_ref'],manifest['source_snapshot_sha256'])
     if any(source[k]!=value[k] for k in ('contract','view','backend')):fail('admitted source authority changed')
     for seal in scope['proof'].get('finite_journal_seals',[]):
@@ -118,6 +120,9 @@ def verify_pages(adapter,binding,value,manifest,prove):
 
 
 def verify(adapter,workflow,node,binding,entry,failure,runs):
+    if entry.get('amendment_id'):
+        from citation_amendment_admission import verify as local_verify
+        return local_verify(adapter,workflow,node,binding,entry)
     import fixed_reduce
     from reduce_disposition import planning_state
     from fixed_semantic_recovery import permitted_tasks
