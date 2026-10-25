@@ -28,8 +28,10 @@ unselected candidates. Changed shared inspections/limitations affect the whole
 Pass; even unchanged facts acquire a new Pass identity. This comparison does not
 authenticate native provenance or create a successor.
 
-Execution of consumed amendments remains blocked by the original consumption
-guard. Completing that path requires all of the following together:
+The original consumption guard remains active. The separate supported
+[bounded local revision chain](citation-local-revision.md) supplies a strict
+exception only after durable withdrawal and dependency retirement. Its connected
+execution path performs all of the following together:
 
 1. Explicitly withdraw affected acceptance before changing any upstream record.
 2. Authenticate the native successor and its bounded delta with cumulative call
@@ -41,5 +43,5 @@ guard. Completing that path requires all of the following together:
    report as that proof or silently grant every changed journal a fresh budget.
 5. Reaccept the exact allowed subset and retained gaps, then pause at checkpoint_1.
 
-The existing limited-scope reopen is a separate supported operation. It does not
-perform steps 2–4 and must not be advertised as consumed citation recovery.
+The existing limited-scope reopen by itself does not perform steps 2–4. Use the
+bounded revision contract, not inspection or reopen alone, for consumed recovery.

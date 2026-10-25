@@ -253,6 +253,7 @@ def test_bounded_native_successor_local_updates_reuse_and_new_checkpoint(vault,m
         current=a.workflow.status(w['workflow_id']);a.cancel(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision']))
         updated=state(vault,w['workflow_id']);new_manifest=json.loads((vault/updated['manifest_ref']).read_text())
         assert not new_manifest['gaps'] and caller.calls==expected+['page-write']
+        approval_path=root(vault,w['workflow_id'])/'approval-restored.json'
         approval.update(manifest_sha256=updated['manifest_sha256']);_write_atomic(approval_path,_json_bytes(approval))
         assert a.recover_reduce_execution(command(a,request,'admit',approval_ref=approval_path.relative_to(vault).as_posix(),
             approval_sha256=hashlib.sha256(approval_path.read_bytes()).hexdigest()))['ok']

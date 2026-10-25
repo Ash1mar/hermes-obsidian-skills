@@ -12,7 +12,7 @@
   "chunk_engine/tokenization.py": "da8c87116a3a627b7b970679ed67c503b6e18efc401fd7a0e116d422f2dbdba4",
   "chunk_engine/validation.py": "35d6ab342f838fac18eb175f2ebdf45a70d04c63e9e0c94731928347f4cf8d36",
   "citation_amendment.py": "6acc0eadf3ecf3ec3fe888b2ae48700841345341da61cf74e3d607f2846f2f2e",
-  "citation_revision_impact.py": "daa008e3f2b19db0e49e31bb75eca2df2cba4ce5e72211430fc32d946e55cd52",
+  "citation_revision_impact.py": "9ec272069f32c16633dfb99e2ecbe079654479d5d9c3496b24db7bb91b61a17b",
   "defaults/config.json": "1bf63565930370259243430afee19f89f26776ace4b055c728826b2e3aa024dd",
   "exact_duplicates.py": "d4b6096bd8ad6dff879359bd4d2a33cf1eacd3961efeb9b3883d48e0362a8b4e",
   "exact_planning.py": "e32d24f4b5b860835d04ba35d2dcc656cd48c3ef256be63a3fe507ae6a5f972d",

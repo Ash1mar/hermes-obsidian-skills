@@ -40,6 +40,10 @@ def reconcile(adapter,binding,record,reservation):
     from fixed_semantic_recovery import _request_text,transcript_reply
     phase=json.loads(_request_text(record['wire']['user']))['phase']
     old=record['binding'];snap=adapter.kanban.task_snapshot(adapter.workflow.status(binding['workflow_id'])['kanban']['board_id'],old['task_id'])
+    owner=json.loads(snap['task'].get('body','{}'))
+    if (snap['task'].get('created_by')!='ingest-workflow' or owner.get('workflow_id')!=binding['workflow_id']
+            or owner.get('node')!=old['node'] or owner.get('vault')!=str(adapter.workflow.vault)):
+        fail('native card owner, node or Vault differs from its reserved provenance')
     if old['task_id']!=binding['task_id'] and (snap['task'].get('worker_pid') or not any(str(r['id'])==str(run) and r.get('ended_at') for r in snap['runs'])):
         fail('old native executor is not stopped for reconciliation')
     audit={'contract':'hermes-fixed-semantic-call/v1','workflow_id':binding['workflow_id'],
@@ -76,6 +80,10 @@ def proof(adapter,binding,record,*,require_stopped=False):
     from fixed_semantic_recovery import native_proof
     path=_vault_path(adapter.workflow.vault,record['audit_ref'])
     old=record['binding'];snap=adapter.kanban.task_snapshot(adapter.workflow.status(binding['workflow_id'])['kanban']['board_id'],old['task_id'])
+    owner=json.loads(snap['task'].get('body','{}'))
+    if (snap['task'].get('created_by')!='ingest-workflow' or owner.get('workflow_id')!=binding['workflow_id']
+            or owner.get('node')!=old['node'] or owner.get('vault')!=str(adapter.workflow.vault)):
+        fail('native card owner, node or Vault differs from its reserved provenance')
     current=old['task_id']==binding['task_id']
     runs=[str(r['id']) for r in snap['runs'] if r.get('ended_at')]
     if (require_stopped or not current) and (snap['task'].get('worker_pid') or not runs or any(not r.get('ended_at') for r in snap['runs'])):

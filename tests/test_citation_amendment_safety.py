@@ -80,6 +80,25 @@ def test_reserved_unknown_is_not_resent_after_worker_replacement(tmp_path,monkey
     record=core.pending_calls(tmp_path,wid)['jobs']['citation:original-task']['attempts'][0]
     assert record['state']=='reserved' and record['session_id']=='unresolved'
 
+def test_stale_worker_cannot_consume_a_new_reservation(tmp_path):
+    wid,_=wallet(tmp_path)
+    def denied(_):raise ContractError('ACCESS_DENIED','$','old native card')
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path),worker_check=denied)
+    binding={'workflow_id':wid,'node':'pass-slice:s','task_id':'old','template_hash':'a'*64}
+    with pytest.raises(ContractError,match='old native card'):
+        calls.invoke(adapter,binding,'citation',{'tasks':[{'task':'t1'}]},None,30000,None,
+                     lambda:(_ for _ in ()).throw(AssertionError('must never dispatch')))
+    assert core.pending_calls(tmp_path,wid)['jobs']=={}
+
+def test_native_card_must_belong_to_the_same_workflow_and_vault(tmp_path):
+    import json
+    adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,status=lambda _:{'kanban':{'board_id':'isolated'}}),
+        kanban=SimpleNamespace(task_snapshot=lambda *_:{'task':{'created_by':'ingest-workflow',
+            'body':json.dumps({'workflow_id':'foreign','node':'pass-slice:s','vault':'/another-vault'})},'runs':[]}))
+    binding={'workflow_id':'isolated','node':'pass-slice:s','task_id':'old','template_hash':'a'*64}
+    with pytest.raises(ContractError,match='owner, node or Vault'):
+        calls.proof(adapter,binding,{'binding':binding,'audit_ref':'unread.json'})
+
 def test_saved_native_session_reconciles_after_crash_without_a_second_request(tmp_path,monkeypatch):
     import json,sqlite3
     import fixed_semantic as semantic
@@ -90,7 +109,9 @@ def test_saved_native_session_reconciles_after_crash_without_a_second_request(tm
     real=recovery.transcript_reply
     monkeypatch.setattr(recovery,'transcript_reply',lambda a,wire,**kw:real(a,wire,home=home))
     adapter=SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path,status=lambda _:{'kanban':{'board_id':'isolated'}}),
-        kanban=SimpleNamespace(task_snapshot=lambda *_:{'task':{},'runs':[{'id':1,'ended_at':2}]}),worker_check=lambda _:None)
+        kanban=SimpleNamespace(task_snapshot=lambda *_:{'task':{'created_by':'ingest-workflow',
+            'body':json.dumps({'workflow_id':wid,'node':'pass-slice:s','vault':str(tmp_path)})},
+            'runs':[{'id':1,'ended_at':2}]}),worker_check=lambda _:None)
     binding={'workflow_id':wid,'node':'pass-slice:s','task_id':'old','template_hash':'a'*64}
     view={'tasks':[{'task':'t1','materials':[],'candidate':{'revision_review':True,'sequence':1,
           'candidates':[],'inspections':[],'empty_reason':''}}],'texts':{},'headings':[]}

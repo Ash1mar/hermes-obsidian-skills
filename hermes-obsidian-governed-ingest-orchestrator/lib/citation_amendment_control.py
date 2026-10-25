@@ -92,7 +92,7 @@ def prepare(adapter,request,dry_run):
         'impact':impact,'original_call_history':histories,'original_pause':w['pause_control'],
         'previous_operation_id':current['operation_id'] if current else None,'request':request}
     if dry_run:return {'ok':True,'applied':False,'resumed':False,'impact':impact,'budgets':budgets}
-    value={'operation_id':op,'phase':'prepared','revision_id':'citation-'+op,'plan_ref':path.relative_to(service.vault).as_posix(),
+    value={'operation_id':op,'phase':'prepared','revision_id':'citation-'+fingerprint({'operation':op,'workflow':wid})[:40],'plan_ref':path.relative_to(service.vault).as_posix(),
            'plan_sha256':hashlib.sha256(_json_bytes(frozen)).hexdigest(),'steps':{},'downstream_nodes':[]}
     ledger.setdefault('limits',{})[lineage]=limits
     ledger.setdefault('causes',{}).setdefault(lineage,[]).append(cause)
@@ -126,7 +126,7 @@ def start(adapter,request):
     if value['phase'] not in ('prepared','citation'):fail('start requires the prepared citation amendment')
     from reduce_coverage_reopen import recover
     from reduce_coverage import contract_hash as coverage_hash
-    reopen=stored_step(service,wid,value,'reopen',lambda:mutation(w,recovery_id=value['operation_id']+'-withdraw',
+    reopen=stored_step(service,wid,value,'reopen',lambda:mutation(w,recovery_id='withdraw-'+fingerprint(value['operation_id'])[:40],
         recovery_scope='reduce-coverage-reopen/v1',target_contract_sha256=coverage_hash(),
         coverage_scope=frozen['scope']['ref'],basis=frozen['basis'],reason=frozen['reason']))
     recover(adapter,reopen)
