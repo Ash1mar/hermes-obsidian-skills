@@ -133,18 +133,40 @@ bodies or repeat candidate findings. Full necessary original evidence remains av
 Global coordination starts from those proposals and preserves compatible groups by default.
 It resolves cross-proposal equivalence, conflict, scope and identity differences, including
 packets from the same source. When splitting, merging or omitting a proposal, the existing
-`reason` names the affected pN handles and concrete grounds. Page writing and the one later
-substantive page review retain their existing evidence and coverage contracts. There is no
+`reason` names the affected pN handles and concrete grounds. Page writing retains complete evidence and coverage; later Build acceptance uses
+the pinned policy described below. There is no
 new schema, routing layer or automatic semantic approval; program coverage validation does
 not prove the model's grouping reasons correct.
 
-Build Finalize now reviews one owned draft page per fixed call against citation
-facts/QA and its verified parent. The model returns only a semantic decision and
-actual review note. The program binds all page/run hashes and rechecks the entire
-observed input before serial finalization. Rejected or stale reviews cannot count
-as approval. Checkpoints and release gates still apply.
+Build Finalize uses program-build-acceptance/v1 when its immutable worker template
+contains hermes-program-build-acceptance/v1. Current citation/Reduce evidence,
+source permissions, exact coverage, checkpoint approval, page/parent hashes and
+identity/path ownership remain mandatory. A no-risk page receives program
+acceptance with independent_review=not_performed. This reduces independent
+assurance; it is not semantic approval, business approval or publication.
 
-第四步仅收紧这一次独立页面审阅的拒绝标准：事实、精确数值及单位、AND/OR、范围、条件、例外、冲突、必要覆盖和既有内容保留。拒绝说明具体受影响的主张或遗漏要求；措辞偏好、排版和可选润色不构成拒绝、重写或再审理由。模型仍只返回decision/review_note，不写正文。合法的实质拒绝继续持有，不由通用输出纠正机制强迫通过；只有JSON/schema等机械输出合同错误才适用共同的一次纠正额度。保留原有先逐页审阅、再统一提交及哈希复核边界，不增加专门页面审阅缓存。共用原生调用账本的严格重验复用不等于事实批准，也不提前发布页面。
+The small explicit-page-risks/v1 policy requests a bounded page-local review for
+cross-source merges, distinct nonempty applicability, differing same-name claims,
+actually changed citation candidates/shared inspections, synthesized analysis, or
+parent content removed/rewritten after ignoring Markdown decoration/whitespace.
+Different scope text is a conservative trigger, not proof of incompatibility.
+The model checks named risks using assigned candidates, complete necessary
+originals and the pinned parent. Unrelated reading-package material and cosmetic
+preferences do not add coverage or correction obligations. Missing/stale evidence
+and unknown calls remain holds. QA alone retains QA without a new model call.
+
+Existing finite journals authenticate exact saved reviews. Refusals and unknown
+reservations are not discarded and allowances do not reset. Successful risk
+reviews survive another page's hold. Unified submission still waits for all
+required acceptances. No new review cache or scheduling layer is introduced.
+The domain commit recomputes risks and evidence under the existing lock; run and
+page review records retain mode, evidence digest, risks and native review reference.
+Draft/unassessed/QA, coverage, release and Provider gates remain unchanged.
+
+Old pinned templates retain their original all-page review behavior. Installation
+does not replace snapshots or migrate bindings. Existing workflows need a
+supported explicit operator action to adopt a different contract; an unavailable
+migration remains blocked. This maintenance adds or invokes no migration API.
 
 Each model invocation is a one-turn native Hermes session with no tools, Skill
 lookup, context files, memory or fallback agent. Its instructions, JSON schema,

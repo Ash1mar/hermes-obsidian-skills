@@ -477,7 +477,11 @@ def test_fixed_reducers_expand_handles_and_recheck_snapshot(vault,monkeypatch):
         assert any('filtered fluid' in t for t in view['original_evidence']['texts'].values())
         assert all(c['source_evidence'] for c in view['citation_evidence'])
         assert not {'run_id','page_id','authored_sha256','expected_revision'} & set(view)
-        return fixture_response({'decision':'approved','review_note':'Isolated semantic review preserved both source conditions.'})
+        raw,metadata=fixture_response({'decision':'approved','review_note':'Isolated semantic review preserved both source conditions.'})
+        # Simulate the authenticated native provenance at this isolated boundary;
+        # the fixture is never a real native acceptance or a production result.
+        metadata['origin']='hermes_native_model'
+        return raw,metadata
     assert fixed.execute(adapter,binding_path('build-finalize'),reviewer)['ok']; sync()
     current=adapter.workflow.status(value['workflow_id'])
     assert current['pause_control']['boundary']=='build_finalize'

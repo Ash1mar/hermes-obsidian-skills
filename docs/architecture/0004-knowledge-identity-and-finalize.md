@@ -49,3 +49,9 @@ controlled-ingest 继续负责来源准备、Unit 发布、阅读任务、候选
 2026-09-21 Pass 幂等与失败分类补充：批量 Pass 以 batch/task/sequence、经重算验证的 reading-package fingerprint 和 slice 模板 hash 形成幂等键；同键同内容复用，同键异内容冲突，旧 revision/input 在新写入前停止。调度错误由 Python 分类：临时错误指数退避，429 设置批次冷却，无效 JSON 留存原始输出且最多重试两次，输入漂移进入 reconcile，budget 漂移仅允许一次重测重分片，whole-asset、合同与 provenance 错误永久 blocked，人工检查点进入 awaiting approval。领域 Pass 先持久化、slice 后完成，因此 worker 在二者之间退出时可安全重放而不复制 Pass。
 
 2026-09-21 分层 Reduce 补充：每个 resource reducer 仅消费本 resource 的 task revision 与 Pass/candidate 引用，输出带模板 hash、输入/输出 fingerprint 和幂等键的局部 proposal；默认可并发 2。全局 coordinator 固定并发 1，只消费完整 resource proposal 集并统一裁决 stable identity、输出路径和 draft-run 归属，不把全部 reading package 重新装入模型上下文。全局层强制每个 eligible task 恰好属于一个 run、每个 citation candidate 只有一个决策归属、每个 identity/path 只有一个 run 所有者；最终仍生成既有 `hermes-knowledge-build-run/v1`，因此验证、人工检查点和 Build Finalize 契约不变。
+
+2026-10-25 Build Finalize 简化：新固定模板采用程序验收和明确风险触发的局部复核。
+复用有效 citation、Reduce 及原生审阅证据；无风险页记录 independent_review=not_performed，
+不伪造 approved，不宣称与逐页独立审阅等价。跨来源、不同适用范围、同名主张差异、实际变更的
+citation/共享检查、分析性综合及旧页内容改写触发局部复核。程序在提交锁内重算风险与证据。
+来源、必要覆盖、QA、累计预算、业务与发布资格不变。旧快照保留原合同；部署不迁移既有流程。

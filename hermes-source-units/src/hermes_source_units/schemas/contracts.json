@@ -1503,6 +1503,7 @@
               "type": "object",
               "properties": {
                 "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+                "acceptance": {"$ref": "#/$defs/build_acceptance"},
                 "note": {"type": "string", "minLength": 1, "pattern": "\\S"}
               },
               "required": ["actor", "note"],
@@ -1538,6 +1539,61 @@
       "required": ["task_id", "revision"],
       "additionalProperties": false
     },
+    "build_acceptance": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "program-build-acceptance/v1"
+        },
+        "policy": {
+          "const": "explicit-page-risks/v1"
+        },
+        "independent_review": {
+          "enum": [
+            "not_performed",
+            "approved"
+          ]
+        },
+        "risk_reasons": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "cross_source_merge",
+              "different_applicability",
+              "claim_variants",
+              "revised_citation",
+              "synthesized_analysis",
+              "parent_content_rewritten"
+            ]
+          },
+          "uniqueItems": true
+        },
+        "evidence_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "review_audit_ref": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ]
+        }
+      },
+      "required": [
+        "contract",
+        "policy",
+        "independent_review",
+        "risk_reasons",
+        "evidence_sha256",
+        "review_audit_ref"
+      ],
+      "additionalProperties": false
+    },
     "build_review": {
       "type": "object",
       "properties": {
@@ -1545,6 +1601,7 @@
         "authored_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "parent_authored_sha256": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
         "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
+        "acceptance": {"$ref": "#/$defs/build_acceptance"},
         "note": {"type": "string", "minLength": 1, "pattern": "\\S"}
       },
       "required": ["page_id", "authored_sha256", "parent_authored_sha256", "actor", "note"],
