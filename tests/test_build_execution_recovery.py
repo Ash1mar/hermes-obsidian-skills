@@ -73,6 +73,7 @@ def grant(request,jp,journal,vault):
 
 def test_default_admission_preserves_unknown_and_does_not_resume(stopped,vault):
     a,w,b,req,jp,journal,view=stopped;before=files(vault)
+    prior={n.name:n.input_fingerprint for n in desired_graph(a.workflow,w)}
     preview=a.recover_build_execution(req,dry_run=True)
     assert not preview['applied'] and files(vault)==before
     result=a.recover_build_execution(req);current=a.workflow.status(w['workflow_id'])
@@ -80,6 +81,10 @@ def test_default_admission_preserves_unknown_and_does_not_resume(stopped,vault):
     assert json.loads(jp.read_text())==journal
     assert a.recover_build_execution(req)['replayed']
     a.workflow.assert_execution_ready(current)
+    fresh={n.name:n for n in desired_graph(a.workflow,current)}
+    assert fresh['build-finalize'].input_fingerprint!=prior['build-finalize']
+    assert all(n.input_fingerprint==prior[name] for name,n in fresh.items() if name in prior and name.startswith(('pass-slice:','resource-reduce:','global-reduce','checkpoint-1-')))
+    assert not a._execution_blocked(w['workflow_id'],fresh['build-finalize'])
     permit=recovery.review_permit(a,b,jp,journal)
     assert permit['additional_calls']==0
     with pytest.raises(ContractError,match='no new call authorized'):
