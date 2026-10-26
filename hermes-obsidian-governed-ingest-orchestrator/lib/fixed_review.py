@@ -18,7 +18,12 @@ def policy_enabled(adapter,binding):
 
 
 def snapshot(adapter,binding,program=False):
-    checked=adapter.worker_check(binding); service=adapter.workflow.knowledge
+    return read_snapshot(adapter,binding,adapter.worker_check(binding),program)
+
+
+def read_snapshot(adapter,binding,checked,program=False):
+    """Pure current materials; recovery authenticates its stopped binding first."""
+    service=adapter.workflow.knowledge
     batch=service._batch(checked['batch_id']); workflow=adapter.workflow.status(binding['workflow_id'])
     registry=service.list_identities(); subjects={s['subject_id']:s for s in registry['subjects']}
     candidates,passes=service._pass_index(batch['task_ids'])

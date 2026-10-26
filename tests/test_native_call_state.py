@@ -86,6 +86,35 @@ def test_failure_evidence_does_not_change_ordinal_or_turn_into_output(tmp_path):
     report=json.loads((root/saved['attempts'][1]['call_outcome']['report_ref']).read_text())
     assert report['completed_output'] is False and report['extra_calls_granted']==0
 
+@pytest.mark.parametrize('guard_failure',[False,True])
+def test_background_codex_signal_reaches_owner_without_masking_or_retry(sdk,monkeypatch,guard_failure):
+    import threading
+    agent=guarded_agent(sdk);base=type(agent).__mro__[1];calls_seen=[];thread_errors=[]
+    def backend(_self,request):
+        calls_seen.append(1);raise ConnectionError('isolated TLS EOF')
+    monkeypatch.setattr(base,'_run_codex_stream',backend,raising=False)
+    def parent(_self,request):
+        result={'response':None,'error':None}
+        def worker():
+            try:result['response']=agent._run_codex_stream(request)
+            except Exception as exc:result['error']=exc
+        t=threading.Thread(target=worker);t.start();t.join()
+        if result['error']:raise result['error']
+        return result['response']
+    monkeypatch.setattr(base,'_interruptible_api_call',parent)
+    monkeypatch.setattr(threading,'excepthook',lambda e:thread_errors.append(e))
+    request=api_request(agent,form='responses')
+    if guard_failure:
+        original=agent._fixed_preflight
+        def check(request,**kw):
+            if not kw.get('apply',True):raise calls.StopNativeCall({'state':'request_rejected','retryable':False,'error':{'message':'isolated worker guard'}})
+            return original(request,**kw)
+        monkeypatch.setattr(agent,'_fixed_preflight',check)
+    with pytest.raises(calls.StopNativeCall) as exc:agent._interruptible_api_call(request)
+    assert not thread_errors and len(calls_seen)==(0 if guard_failure else 1)
+    assert exc.value.outcome['error']['message']==('isolated worker guard' if guard_failure else 'isolated TLS EOF')
+    assert exc.value.outcome.get('source')!='native_response_validation'
+
 
 @pytest.mark.parametrize('change',[None,'wire','no-structured-error','actual-output','active-run'])
 def test_recovery_authenticates_legacy_backend_rejection_and_preserves_reserved_attempt(tmp_path,monkeypatch,change):

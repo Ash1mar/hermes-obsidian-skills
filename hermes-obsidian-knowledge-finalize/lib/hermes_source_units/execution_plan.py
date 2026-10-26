@@ -22,7 +22,7 @@ def fail(code, message):
 
 def execution_recovery_key(scope,entry):
     """Shared admission/replay identity; journals separately enforce call budget."""
-    cause=(entry.get('previous_task_id') if scope in ('reduce-cancel/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1','reduce-validation/v1')
+    cause=(entry.get('previous_task_id') if scope in ('build-native/v1','reduce-cancel/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1','reduce-validation/v1')
            else packet_recovery_cause(entry.get('failure',{})) if scope=='revision-citation-packet/v1' else None)
     return entry['node'],scope,cause
 
@@ -203,6 +203,14 @@ class ExecutionPlanMixin:
                             not in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED')
                             and not authenticated_call_recovery(entry) and not authenticated_local_amendment_recovery(request,entry))):
                         fail('STALE_INPUT','Reduce cancellation recovery lacks its exact ended native identity')
+                if scope=='build-native/v1':
+                    proof=entry.get('build_review_recovery',{})
+                    if (entry['node']!='build-finalize' or not entry.get('previous_task_id') or not entry.get('ended_run_ids')
+                            or proof.get('contract')!='build-native/v1' or proof.get('original_attempts_preserved') is not True
+                            or proof.get('snapshot_sha256')!=next((e.get('snapshot_sha256') for e in request['entries'] if e['node']==entry['node']),None)
+                            or proof.get('additional_calls_granted')!=len(next((e.get('retry_unknowns',[]) for e in request['entries'] if e['node']==entry['node']),[]))
+                            or not isinstance(proof.get('reviews'),list)):
+                        fail('STALE_INPUT','Build recovery lacks its sealed input and explicit finite call authority')
                 if scope=='semantic-output/v1' and (not entry.get('previous_task_id') or not (entry.get('output_seed') or entry.get('uncalled_reservation') or entry.get('exhausted_continuation') or entry.get('uncalled_packet'))):
                     fail('STALE_INPUT','shared output recovery lacks its authenticated attempt evidence')
                 if scope=='semantic-output/v1' and entry.get('uncalled_packet'):

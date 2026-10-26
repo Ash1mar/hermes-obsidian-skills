@@ -1194,6 +1194,10 @@ class IngestKanbanAdapter:
         from reduce_execution_recovery import recover_reduce_execution
         return recover_reduce_execution(self, request, dry_run=dry_run)
 
+    def recover_build_execution(self, request, *, dry_run=False):
+        from build_execution_recovery import recover
+        return recover(self, request, dry_run=dry_run)
+
     def migrate_reduce_execution(self, request, *, dry_run=False):
         from reduce_execution_migration import migrate_reduce_execution
         return migrate_reduce_execution(self, request, dry_run=dry_run)

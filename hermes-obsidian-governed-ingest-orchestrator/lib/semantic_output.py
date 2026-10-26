@@ -313,6 +313,11 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
                 if entry['node']==binding['node'] and seed.get('journal_name')==path.name:record=copy.deepcopy(seed['record'])
         record=record or {'contract':CONTRACT,'phase':phase,'input_sha256':fingerprint(view),'schema_sha256':fingerprint(output_schema),'attempts':[]}
     if record['schema_sha256']!=fingerprint(output_schema):held('schema changed; previous allowance is not reset')
+    if phase=='page-review':
+        from build_execution_recovery import review_permit,execute_review
+        build_permit=review_permit(adapter,binding,path,record)
+        if build_permit:
+            return execute_review(adapter,binding,view,caller,model_call,validator,path,record,build_permit)
     from reduce_disposition import output_permit, execute_output
     disposition=output_permit(adapter,binding,path,record)
     if disposition:

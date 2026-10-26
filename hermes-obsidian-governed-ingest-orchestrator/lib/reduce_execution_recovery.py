@@ -56,7 +56,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
     if scope == 'reduce-citation-impact/v1':
         from citation_revision_preview import inspect
         return inspect(adapter, request, dry_run=dry_run)
-    if scope not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1','reduce-validation/v1'):
+    if scope not in ('build-native/v1','reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1','reduce-validation/v1'):
         fail('INVALID_SCHEMA', 'Reduce recovery requires a supported explicit correction scope')
     if scope in ('reduce-coverage/v1','reduce-coverage-reopen/v1','reduce-validation/v1'):
         from reduce_coverage import contract_hash
@@ -106,7 +106,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     'revision': value['revision'], 'report_ref': prior['report_ref'], 'nodes': prior['nodes']}
         value = service._mutation(request)
         if (value['state'] != 'cancelled' or not value['cancel_requested'] or not value['batch_id']
-                or value['current_stage'] != 'reducing' or service.pending_pause(value)
+                or value['current_stage'] != ('build_finalizing' if scope=='build-native/v1' else 'reducing') or service.pending_pause(value)
                 or value['dispatch_policy']['mode'] != 'full'):
             fail('INVALID_TRANSITION', 'requires a cancelled Reduce stage with its Pass pause already released')
         from native_stop_inventory import verify_cancel_drain
@@ -128,7 +128,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
             for entry in entries:
                 name = entry.get('node')
                 node = nodes.get(name)
-                permitted_kinds=('checkpoint-1-validate',) if scope=='reduce-validation/v1' else ('resource-reduce','global-reduce')
+                permitted_kinds=('build-finalize',) if scope=='build-native/v1' else ('checkpoint-1-validate',) if scope=='reduce-validation/v1' else ('resource-reduce','global-reduce')
                 if not node or node.kind not in permitted_kinds:
                     fail('INVALID_TRANSITION', 'only interrupted resource/global Reduce can recover')
                 if domain_completed(service, value, node) and not review:
@@ -160,13 +160,14 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                         or report.get('idempotency_key') != key):
                     fail('STALE_INPUT', 'failure evidence or binding changed')
                 projection=scope=='reduce-cancel/v1' and report.get('error_code')=='DISPATCH_ARTIFACT_CHANGED'
-                call_failure=scope=='reduce-cancel/v1' and report.get('error_code') in ('NATIVE_REQUEST_REJECTED','NATIVE_COMPLETION_UNKNOWN','PROGRAM_EXECUTION_FAILED')
+                call_failure=scope in ('reduce-cancel/v1','build-native/v1') and report.get('error_code') in ('NATIVE_REQUEST_REJECTED','NATIVE_COMPLETION_UNKNOWN','PROGRAM_EXECUTION_FAILED')
                 allowed=(('SEMANTIC_REVIEW_REQUIRED','SEMANTIC_OUTPUT_HELD','INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','NATIVE_COMPLETION_UNKNOWN','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED') if scope in ('reduce-disposition/v1','reduce-coverage/v1') else ('INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','INVALID_TRANSITION','READING_WINDOW_OVERSIZE') if scope=='semantic-output/v1' else ('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
                     ('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED'))
                 if scope=='reduce-coverage/v1':allowed=(*allowed,'REDUCTION_FAILED')
                 local_amendment=scope=='reduce-cancel/v1' and bool(request.get('amendment_id'))
                 if local_amendment:allowed=(*allowed,'RECOVERY_NOT_ALLOWED','CITATION_AMENDMENT_HELD')
                 if scope=='reduce-validation/v1':allowed=('COVERAGE_SCOPE_INVALID','VALIDATION_FAILED','PROGRAM_EXECUTION_FAILED','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED')
+                if scope=='build-native/v1':allowed=('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','SEMANTIC_REVIEW_REQUIRED')
                 if not review and ((report.get('error_code') not in allowed and not call_failure) or (scope in ('source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3') and node.kind!='resource-reduce')):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
                 snap = adapter.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
@@ -217,6 +218,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 if call_failure:
                     from native_call_state import recovery_evidence
                     audited[-1].update(recovery_evidence(adapter,value,binding,runs))
+                if scope=='build-native/v1':
+                    from build_execution_recovery import verify
+                    audited[-1].update(verify(adapter,value,node,binding,entry,runs))
                 if scope=='semantic-output/v1':
                     from semantic_output_recovery import verify
                     audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))

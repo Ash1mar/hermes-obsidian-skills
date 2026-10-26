@@ -77,6 +77,8 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any], *, dry
         result = adapter.recover_pass_execution(request, dry_run=dry_run)
     elif command == 'recover-reduce-execution':
         result = adapter.recover_reduce_execution(request, dry_run=dry_run)
+    elif command == 'recover-build-execution':
+        result = adapter.recover_build_execution(request, dry_run=dry_run)
     elif command == 'migrate-reduce-execution':
         result = adapter.migrate_reduce_execution(request, dry_run=dry_run)
     elif command == 'adopt-build-acceptance':
