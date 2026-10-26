@@ -52,11 +52,26 @@ def verify(adapter,w,node,binding,entry,runs):
         fail('explicit unknown-call grants need unique exact attempts and reasons')
     requested={g['attempt_ref']:g for g in grants};used=set();reviews=[];accounted=set();journals=set()
     permitted=permitted_tasks(adapter,binding);permitted[binding['task_id']]={'ended_run_ids':[str(r['id']) for r in runs]}
+    root=path.parent.parent
+    by_input={}
+    for jp in (root/'output-attempts').glob('*.json'):
+        j=_load_json(jp)
+        if j.get('phase')=='page-review':by_input.setdefault(j['input_sha256'],[]).append((jp,j))
     for original in current['views']:
         assessment=current['backend']['pages'][original['page']]['assessment']
-        view=view_for(adapter,binding,original,assessment);jp=path_for(adapter,binding,'page-review',view)
-        if not jp.exists():continue
-        journal=_load_json(jp);schema=schema_for('page-review',view)
+        # Reconstruct only consumed variants. Untouched pages have no native
+        # output to authenticate; admission need not pack a new model request.
+        from fixed_page_evidence import MARKER,CONTRACT
+        variants=[original,{**original,MARKER:CONTRACT}]
+        if assessment['risk_reasons']:
+            variants.extend({**v,'review_scope':{'policy':assessment['policy'],
+                'risk_reasons':assessment['risk_reasons'],
+                'instruction':'Review only the named page risks against its assigned candidates, originals and parent. Do not repeat candidate discovery or review unrelated reading-package coverage.'}} for v in list(variants))
+        matches=[(v,*pair) for v in variants for pair in by_input.get(fingerprint(v),[])]
+        if not matches:continue
+        if len(matches)!=1:fail('multiple consumed representations of one review remain held')
+        view,jp,journal=matches[0];schema=schema_for('page-review',view)
+        if path_for(adapter,binding,'page-review',view)!=jp:fail('review journal path differs from its input identity')
         if (journal.get('contract')!='finite-semantic-output/v1' or journal.get('phase')!='page-review'
                 or journal.get('input_sha256')!=fingerprint(view) or journal.get('schema_sha256')!=fingerprint(schema)):
             fail('review journal differs from current exact input/schema')
@@ -99,7 +114,6 @@ def verify(adapter,w,node,binding,entry,runs):
             'prior_attempts_sha256':fingerprint(attempts),'decision':decision,'unknown':unknown,
             'additional_calls':1 if grant else 0})
     if used!=set(requested):fail('unknown-call grant does not match this Build snapshot')
-    root=path.parent.parent
     for jp in (root/'output-attempts').glob('*.json'):
         j=_load_json(jp)
         if any(a.get('task_id')==binding['task_id'] for a in j.get('attempts',[])) and jp.name not in journals:
