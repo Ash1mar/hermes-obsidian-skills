@@ -125,8 +125,17 @@ class HermesCaller:
 
             def _run_codex_stream(self,api_kwargs,*args,**kwargs):
                 # This hook receives the final Responses payload after SDK conversion.
-                self._fixed_preflight(api_kwargs,apply=False)
-                return self._fixed_api(super()._run_codex_stream,api_kwargs,*args,**kwargs)
+                from native_call_state import StopNativeCall
+                try:
+                    self._fixed_preflight(api_kwargs,apply=False)
+                    return self._fixed_api(super()._run_codex_stream,api_kwargs,*args,**kwargs)
+                except StopNativeCall as exc:
+                    # Hermes' request thread catches Exception, while this signal
+                    # must bypass the conversation's Exception retry loop. Carry
+                    # it on this one agent until the owning thread rejoins.
+                    if threading.get_ident()==self.fixed_owner_thread:raise
+                    self.fixed_thread_stop=exc
+                    return None
 
             def _fixed_preflight(self,api_kwargs,*,apply=True):
                 from native_call_state import StopNativeCall
@@ -143,7 +152,11 @@ class HermesCaller:
                 from native_call_state import classify,StopNativeCall,request_identity,checked_response
                 self.fixed_final_request_sha256=request_identity(api_kwargs)
                 self.fixed_final_output_format=copy.deepcopy(api_kwargs.get('text',{}).get('format',api_kwargs.get('response_format')))
-                try:return checked_response(self,call(api_kwargs,*args,**kwargs))
+                try:
+                    response=call(api_kwargs,*args,**kwargs)
+                    pending=getattr(self,'fixed_thread_stop',None)
+                    if pending is not None:raise pending
+                    return checked_response(self,response)
                 except Exception as exc:
                     outcome=classify(exc)
                     if outcome['retryable']:raise
@@ -176,6 +189,7 @@ class HermesCaller:
             raise RuntimeError('fixed semantic session unexpectedly exposes tools')
         agent.fixed_request_checks=0; agent.fixed_limit=self.input_limit
         agent.fixed_structured_requests=0
+        agent.fixed_owner_thread=threading.get_ident()
         return agent
 
     @contextmanager

@@ -178,4 +178,15 @@ latched checkpoint_1 with no Build execution or downstream binding, preserves
 domain results and old evidence, and rebases only the held pause's Build template
 dependency. It never resumes, dispatches, approves content or releases the pause.
 
+For an explicitly authorized stopped Build failure use `recover-build-execution`
+with `build-native/v1`, following references/operations.md. It requires supported
+cancellation, ended native consumers, the exact failure/binding and a hash-pinned
+Build input snapshot. It authenticates genuine review responses against current
+drafts, parents and original evidence. Approved and revision-required responses
+are reused unchanged; unknown reservations stay held by default while untouched
+pages retain their original first-call allowance. Only an explicitly authorized,
+exactly hashed `retry_unknowns` entry permits one appended call for that unknown;
+the original ordinal, outcome and native evidence remain intact. No semantic
+repair, budget reset, resume or pause continuation is implied by admission.
+
 New workflows use native program workers for deterministic nodes; read `references/program-execution.md`. Pass, resource/global Reduce and triggered page review use fixed semantic phases described in `references/fixed-semantic.md`: the program owns materials, schema, identity expansion and lifecycle; native model sessions only produce semantic JSON. Normal fixed tasks require no search tools, full Skill reads, long digest copying, request assembly or model-directed retries. Legacy workflows retain their pinned contracts; installation does not silently migrate them.

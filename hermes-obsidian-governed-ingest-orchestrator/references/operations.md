@@ -38,6 +38,7 @@ All examples use `python3 "<skill-dir>/scripts/<script>.py" --vault "<vault>" <c
 | Cancel | `dispatch_ingest_workflow.py cancel` | Persists cancellation and parks projected cards in scheduled until explicit resume |
 | Recover board | `manage_ingest_workflow.py rebuild-kanban`, then `dispatch_ingest_workflow.py sync` | Rebuilds projection from Vault |
 | Recover reconciler | `watch_ingest_workflow.py --workflow-id <id>` from a trusted non-worker terminal | Continues Kanban acknowledgement and successor dispatch from Vault outcomes |
+| Recover stopped Build | `dispatch_ingest_workflow.py recover-build-execution --request <file> [--dry-run]` | Seals exact native review reuse; unknowns held unless separately granted one call |
 
 Before any mutation inspect current status and compute a fresh digest with `manage_ingest_workflow.py digest`. Gateway/dispatcher failure after start is a recoverable result: `workflow_created: true`, `state: dispatcher_unavailable`, `background_dispatch: false`. Do not fall back to a long conversational run. In `auto_full`, each checkpoint worker validates the exact Vault state, writes a result report, and calls `worker-complete`; the adapter writes a hashed decision and the workflow service independently verifies it. Passing decisions automatically advance the gate. Failed validation leaves the card blocked and exposes report and blocking codes. Manual mode still accepts explicit human approval.
 
@@ -115,6 +116,45 @@ and task coverage remains in the Vault. Later segments add their cards on contin
 unopened phases are not mistaken for missing domain results or completed native work.
 
 ## Workflow lock recovery
+
+### Stopped Build execution recovery
+
+Use the trusted `recover-build-execution` command only after the supported cancel
+operation has drained workers, the reconciler, runnable cards and leases. The
+workflow must retain `current_stage=build_finalizing`, an approved checkpoint_1,
+its released history and an unfinished Build. This is a generic Vault/node
+operation; do not edit a binding, snapshot, failure, journal or pause to recover.
+
+Save one request with the ordinary workflow_id/actor/expected_revision/input_digest,
+stable recovery_id, recovery_scope=`build-native/v1`, reason, and current
+`build_execution_recovery.contract_hash()` as target_contract_sha256. Its entries
+select node=`build-finalize`, task_id, failure_sha256, snapshot_ref and
+snapshot_sha256 from the ended native Build. Run dry-run, then apply the identical
+request. Admission does not resume or release a pause. It reuses the existing
+execution-recovery history and fresh native identity mechanism.
+
+The operator rechecks original sources, full reading evidence, task measurements,
+draft/parent/registry hashes, pinned template, native owner/run, exact request and
+response hashes, and finite journals. Both approved and revision_required native
+responses remain original evidence; a revision request is never converted into
+approval. Default `retry_unknowns: []` preserves unknown reservations as held and
+continues only untouched pages under their existing first-call allowance. Any
+held review still prevents unified Build submission and all dependent release.
+
+Only a separate explicit user grant may populate retry_unknowns with
+`{attempt_ref, attempt_sha256, reason}`. attempt_sha256 fingerprints the complete
+original unknown attempt object, not a rewritten classification. A grant permits
+one appended ordinal with no automatic correction; it cannot target semantic
+refusals, a successful result, changed evidence or an already consumed extra
+attempt. Replays authenticate its actual native response and never call again.
+The unknown record and historical charges remain unchanged. Another unknown or
+an exhausted grant requires diagnosis, not a new operation ID to gain allowance.
+
+Fixed Codex calls bridge StopNativeCall from the SDK request thread to its owning
+thread before validating the returned frame. This preserves the original
+transport/guard outcome without entering the conversation retry loop. Provider
+connection retries beneath that boundary may still happen; logical review
+attempts and low-level connection attempts must be reported separately.
 
 Pass workers preflight each semantic draft with the bound `batch-pass --validate-only`
 command. It checks the same schema, task revision, reading window and live references
