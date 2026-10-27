@@ -13,7 +13,7 @@ import uuid
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _vault_path, _write_atomic, _json_bytes
 from hermes_source_units.validation import fingerprint, validate_record, record_validation_scope
-from hermes_source_units.runtime_telemetry import measured, span
+from hermes_source_units.runtime_telemetry import measured, span, clock_sample
 from native_ingest import worker_action, read_pass_input
 from native_pass_identity import visible_packet, load_context
 from program_worker import canonical_binding
@@ -127,18 +127,24 @@ class HermesCaller:
             def _run_codex_stream(self,api_kwargs,*args,**kwargs):
                 # This hook receives the final Responses payload after SDK conversion.
                 from native_call_state import StopNativeCall
-                row={'native_stream_entry_at_ms':int(round(time.time()*1000))}
+                row={}
+                def stamp(name):
+                    sample=clock_sample()
+                    row[name+'_at_ms']=(sample['wall_time_ns']+500_000)//1_000_000
+                    row[name+'_monotonic_ns']=sample['monotonic_ns']
+                    row.setdefault('clock_domain',sample['clock_domain'])
+                stamp('native_stream_entry')
                 self.fixed_stream_timing.append(row)
                 positional=list(args)
                 original=positional[1] if len(positional)>1 else kwargs.get('on_first_delta')
                 def first_delta(*values,**named):
-                    row.setdefault('first_delta_at_ms',int(round(time.time()*1000)))
+                    if 'first_delta_monotonic_ns' not in row:stamp('first_delta')
                     if original is not None:return original(*values,**named)
                 if len(positional)>1:positional[1]=first_delta
                 else:kwargs={**kwargs,'on_first_delta':first_delta}
                 try:
                     self._fixed_preflight(api_kwargs,apply=False)
-                    row['live_guard_finished_at_ms']=int(round(time.time()*1000))
+                    stamp('live_guard_finished')
                     return self._fixed_api(super()._run_codex_stream,api_kwargs,*positional,**kwargs)
                 except StopNativeCall as exc:
                     # Hermes' request thread catches Exception, while this signal
@@ -148,9 +154,12 @@ class HermesCaller:
                     self.fixed_thread_stop=exc
                     return None
                 finally:
-                    row['native_stream_return_at_ms']=int(round(time.time()*1000))
+                    stamp('native_stream_return')
                     first=getattr(self,'_last_api_first_chunk_at',None)
                     row['first_event_at_ms']=int(round(first*1000)) if first is not None else None
+                    # The SDK exposes a wall timestamp only. Do not fabricate
+                    # a monotonic first event by subtracting a later clock offset.
+                    row['first_event_monotonic_ns']=None
 
             def _fixed_preflight(self,api_kwargs,*,apply=True):
                 from native_call_state import StopNativeCall
@@ -273,6 +282,10 @@ class HermesCaller:
             from native_call_state import StopNativeCall,record
             try:
                 with span('sdk_model_request',phase=phase,session_id=agent.session_id):
+                    # One host marker per native call, before the existing SDK
+                    # invocation; observers need not infer its start from DB wall time.
+                    with span('sdk_request_start',phase=phase,session_id=agent.session_id,event='point'):
+                        pass
                     result=agent.run_conversation(content,system_message=prompt['system'])
             except StopNativeCall as exc:
                 record(exc.outcome,prepared,agent.session_id,request_sha256=getattr(agent,'fixed_final_request_sha256',None),
@@ -284,6 +297,7 @@ class HermesCaller:
             raw=result.get('final_response','')
             if not agent.fixed_request_checks:
                 raise RuntimeError('native SDK bypassed the fixed request boundary')
+            completed=clock_sample()
             return raw,{'origin':'hermes_native_model','session_id':agent.session_id,
                 'model':agent.model,'provider':agent.provider,
                 'api_calls':result.get('api_calls'),'response_sha256':fingerprint(raw),
@@ -293,8 +307,12 @@ class HermesCaller:
                 'system_codepoints':len(prompt['system']),'extra_context_codepoints':0,
                 'wire_contract':WIRE_CONTRACT,
                 'sdk_timing':{'streams':copy.deepcopy(agent.fixed_stream_timing),
-                    'complete_at_ms':int(round(time.time()*1000)),'physical_attempts':None,'backend_revision':None,
-                    'scope':'native stream entry/return and SDK callbacks; not physical HTTP send or retry timing'},
+                    'version':2,'clock_domain':completed['clock_domain'],
+                    'complete_at_ms':(completed['wall_time_ns']+500_000)//1_000_000,
+                    'complete_monotonic_ns':completed['monotonic_ns'],
+                    'first_event_clock':'SDK wall only; monotonic unavailable',
+                    'physical_attempts':None,'backend_revision':None,
+                    'scope':'paired clocks at native entry/guard/delta/return; SDK first event is wall only; not physical HTTP timing'},
                 'request_construction':copy.deepcopy(prepared['construction_counts'])}
         finally:
             try:

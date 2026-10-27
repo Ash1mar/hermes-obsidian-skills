@@ -12,6 +12,31 @@ import time
 import uuid
 
 _TRACE = ContextVar('ingest_runtime_trace', default={})
+try:
+    _CLOCK_DOMAIN = 'linux-boot:'+Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+except OSError:
+    _CLOCK_DOMAIN = f'process:{os.getpid()}:{uuid.uuid4().hex}'
+
+
+def clock_sample():
+    """Paired host clocks; wall timestamps identify events, monotonic measures time."""
+    return {'wall_time_ns':time.time_ns(),'monotonic_ns':time.monotonic_ns(),
+            'clock_domain':_CLOCK_DOMAIN}
+
+
+def monotonic_deadline(start, seconds):
+    """An observer deadline never extends because the wall clock moves."""
+    if type(seconds) is not int or seconds<=0:
+        raise ValueError('observation seconds must be a positive integer')
+    return {**start,'deadline_monotonic_ns':start['monotonic_ns']+seconds*1_000_000_000,
+            'seconds':seconds}
+
+
+def remaining_ns(deadline, current=None):
+    current=clock_sample() if current is None else current
+    if current['clock_domain']!=deadline['clock_domain']:
+        raise ValueError('observation clock domain changed; stop rather than reset deadline')
+    return max(0,deadline['deadline_monotonic_ns']-current['monotonic_ns'])
 
 
 def runtime_directory(vault, workflow_id):
@@ -33,9 +58,11 @@ def span(name, *, vault=None, workflow_id=None, binding=None, **fields):
         native_run_id=os.environ.get('HERMES_KANBAN_RUN_ID'))
     if identity.get('node','') and identity['node'].startswith('pass-slice:'):
         identity['slice_id']=identity['node'].partition(':')[2]
+    started = clock_sample()
     trace = {**identity, 'span_id':uuid.uuid4().hex, 'parent_span_id':parent.get('span_id'),
-             'name':name, 'started_at':time.time(), 'pid':os.getpid(), **fields}
-    started = time.monotonic()
+             'name':name, 'started_at':started['wall_time_ns']/1_000_000_000,
+             'started_monotonic_ns':started['monotonic_ns'],
+             'clock_domain':started['clock_domain'], 'pid':os.getpid(), **fields}
     token = _TRACE.set(trace)
     error = None
     try:
@@ -47,8 +74,10 @@ def span(name, *, vault=None, workflow_id=None, binding=None, **fields):
         _TRACE.reset(token)
         try:
             if trace['workflow_id'] and trace['vault']:
-                row = {**trace, 'finished_at':time.time(),
-                       'elapsed_ms':round((time.monotonic()-started)*1000,3), 'error':error}
+                finished = clock_sample()
+                row = {**trace, 'finished_at':finished['wall_time_ns']/1_000_000_000,
+                       'finished_monotonic_ns':finished['monotonic_ns'],
+                       'elapsed_ms':round((finished['monotonic_ns']-started['monotonic_ns'])/1_000_000,3), 'error':error}
                 root = runtime_directory(trace['vault'],trace['workflow_id'])
                 root.mkdir(parents=True,exist_ok=True)
                 with (root/f'{os.getpid()}.jsonl').open('a',encoding='utf-8') as stream:

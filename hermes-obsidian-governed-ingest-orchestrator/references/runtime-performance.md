@@ -440,3 +440,20 @@ fresh measurements. Compare actual scans/bytes per valid saved native body,
 request timing and total failed/recovered usage. A larger SDK peak alone does
 not establish throughput or cost improvement. Reuse valid historical returns;
 never replay them or resend unknown attempts to manufacture parallel load.
+
+## Paired observation clocks
+
+Runtime spans retain wall timestamps and also record monotonic nanoseconds and
+a clock domain. Match SDK/live-check spans by session and parent identity, not
+wall interval containment. Use monotonic endpoints in the same domain for
+durations, gaps and observer deadlines; retain wall discontinuities as evidence.
+A clock-domain change stops an observer instead of restarting its allowance.
+
+The fixed native caller emits one `sdk_request_start` host marker before its
+existing SDK invocation. It records paired clocks at stream entry, final live
+check completion, the existing first-delta callback and stream return. Callback
+arguments, return/exception propagation, requests, checks and retry paths are
+unchanged. The SDK first-event timestamp remains wall-only; its monotonic value
+is explicitly unavailable, never reconstructed from a later clock offset.
+These observations do not establish physical HTTP sends, retries or backend
+revision. Historical audits and their identities are not rewritten.
