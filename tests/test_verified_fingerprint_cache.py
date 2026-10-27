@@ -32,12 +32,14 @@ def test_canonical_builds_follow_fresh_content_versions_not_check_count(tmp_path
 
 
 def test_snapshot_fields_selectors_and_mutable_materialization_cannot_poison_canonical(tmp_path):
-    path=tmp_path/'state.json';value={'kanban':{'task_map':[{'node':'n','task_id':'t','idempotency_key':'same'}]},'values':[1,2]}
+    path=tmp_path/'state.json';value={'kanban':{'task_map':[{'node':'n','task_id':'t','idempotency_key':'same'},
+        {'node':'n','task_id':'t','idempotency_key':'same'}]},'values':[1,2]}
     path.write_text(json.dumps(value));cache=VerifiedJsonReads()
     s=cache.read(path,readonly=True,origin='fixture');expected=s.canonical_fingerprint
     with pytest.raises(TypeError):s['values']=[999]
     returned=s['values'];returned.append(999)
-    cards=_matching_cards(s,'n','t');cards[0]['idempotency_key']='mutated'
+    cards=_matching_cards(s,'n','t');assert len(cards)==2
+    cards[0]['idempotency_key']='mutated'
     assert _matching_cards(s,'n','t')[0]['idempotency_key']=='same'
     assert s['values']==[1,2] and s.canonical_fingerprint==expected
     def mutate_internal(data):data['values'][0]=999
