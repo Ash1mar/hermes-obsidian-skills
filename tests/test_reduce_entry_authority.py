@@ -15,7 +15,7 @@ def test_page_entry_checks_overlap_without_shared_action_lock(tmp_path,capacity)
     def check(_):
         assert not fixed.ACTION_LOCK._is_owned()
         barrier.wait(timeout=5)
-    adapter=NS(workflow=NS(vault=tmp_path),worker_check=check)
+    adapter=NS(workflow=NS(vault=tmp_path,status=lambda _:{'workflow_id':'fixture'}),worker_check=check)
     binding={'workflow_id':'fixture','node':'global-reduce','task_id':'owner'}
     def call(n):
         return fixed.model_call(adapter,binding,'page-write',{'fixture':n},

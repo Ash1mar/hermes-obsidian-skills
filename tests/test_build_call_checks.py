@@ -91,3 +91,24 @@ def test_cancel_before_reservation_creates_no_journal_or_call(tmp_path):
         output.execute(adapter,b,'page-review',v,object.__new__(fixed.HermesCaller),
             lambda *_a,**_k:pytest.fail('cancelled call'),lambda x:x)
     assert not output.path_for(adapter,b,'page-review',v).exists()
+
+
+def test_build_model_entry_keeps_guard_until_actual_send(tmp_path,monkeypatch):
+    checks=[];cancelled=False
+    def control(*_a,**_k):
+        checks.append(1)
+        if cancelled:raise ContractError('WORKFLOW_STOPPED','$','stop after construction')
+    adapter=NS(workflow=NS(vault=tmp_path),worker_control_check=control,
+        worker_check=lambda _:pytest.fail('duplicate full authority check'))
+    binding={'workflow_id':'fixture','node':'build-finalize','task_id':'owner'}
+    caller=object.__new__(fixed.HermesCaller)
+    def dispatch(*_a,prepared,**_k):
+        nonlocal cancelled
+        cancelled=True
+        prepared['live_control_check']()
+        pytest.fail('cancelled SDK dispatch')
+    monkeypatch.setattr(fixed,'_dispatch_model_call',dispatch)
+    with pytest.raises(ContractError,match='stop after construction'):
+        fixed.model_call(adapter,binding,'page-review',{'page':'e1'},caller,30000,
+            _checked={'fixture':'adjacent proof'})
+    assert len(checks)==2
