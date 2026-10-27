@@ -2317,6 +2317,14 @@ class IngestKanbanAdapter:
             checked = {"ok": True, "node": node.name, "batch_id": workflow["batch_id"],
                     "release_id": workflow.get("release_id"),
                     "input_fingerprint": node.input_fingerprint}
+            if node.name == 'build-finalize':
+                # Ephemeral result for one adjacent review request, never a
+                # persisted permission or a substitute for commit validation.
+                checked['control_fingerprint'] = fingerprint(workflow)
+                from ingest_graph_reuse import checked_dependencies
+                proof=checked_dependencies(self.workflow,workflow)
+                if proof is not None:
+                    checked['dependency_proof']=proof
             if node.name == 'global-reduce':
                 # A shared pure graph never grants a cohort consumer permission.
                 self.worker_control_check(request, checked=checked)
@@ -2344,8 +2352,8 @@ class IngestKanbanAdapter:
         self.validate_worker_request(request)
         from hermes_source_units.citation_amendment import guard
         guard(self.workflow.vault,request['workflow_id'],request['node'])
-        if not self.enable_workers or request['node']!='global-reduce':
-            _fail('ACCESS_DENIED','live page control requires a fully checked global reducer')
+        if not self.enable_workers or request['node'] not in ('global-reduce','build-finalize'):
+            _fail('ACCESS_DENIED','live page control requires a fully checked reducer or Build worker')
         workflow=self.workflow.status(request['workflow_id'])
         self.workflow.assert_not_paused(workflow)
         self.workflow.pinned_templates(workflow)
@@ -2353,9 +2361,19 @@ class IngestKanbanAdapter:
                 or workflow['scope'].get('execution_mode')!='auto_full'
                 or workflow['dispatch_policy']['mode']!='full'):
             _fail('WORKFLOW_STOPPED','automatic page work is no longer active')
-        key=f"ingest:{workflow['workflow_id']}:global-reduce:{checked['input_fingerprint']}"
+        kind=request['node']
+        if kind == 'build-finalize' and (checked.get('node') != kind
+                or workflow['current_stage'] != 'build_finalizing'
+                or fingerprint(workflow) != checked.get('control_fingerprint')):
+            _fail('STALE_INPUT','Build control changed after the adjacent full check')
+        if kind == 'build-finalize':
+            from ingest_graph_reuse import recheck_dependencies
+            if not checked.get('dependency_proof'):
+                _fail('STALE_INPUT','Build live check lacks its adjacent graph byte proof')
+            recheck_dependencies(self.workflow,checked['dependency_proof'])
+        key=f"ingest:{workflow['workflow_id']}:{kind}:{checked['input_fingerprint']}"
         matching=[c for c in workflow['kanban']['task_map'] if c['node']==request['node'] and c.get('task_id')==request['task_id']]
-        pin=next(p for p in workflow['template_pins'] if p['kind']=='global-reduce')
+        pin=next(p for p in workflow['template_pins'] if p['kind']==kind)
         if len(matching)!=1 or matching[0]['idempotency_key']!=key or request['template_hash']!=pin['template_hash']:
             _fail('STALE_INPUT','page task binding or template changed after full check')
         path=_vault_path(self.workflow.vault,f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/reports/failed-{fingerprint(request['node'])[:16]}.json")

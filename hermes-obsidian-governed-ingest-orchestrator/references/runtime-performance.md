@@ -1,5 +1,25 @@
 # Runtime timing and incremental projection
 
+## Build adjacent-call verification (2026-10-27)
+
+For a fresh first page-review attempt only, reuse the full authority check's
+actual dependency byte/member proof within that adjacent synchronous call.
+Before reservation, model entry and actual SDK send, freshly validate the native
+binding, cancellation, durable pause, templates, failure record, complete workflow
+fingerprint, dependency directory membership, schema and every dependency byte
+hash. This avoids repeated graph construction, record decoding and parent scans;
+it never substitutes revision, timestamps or a persisted authorization for bytes.
+Without a captured proof use the ordinary full check. Corrections, explicit
+unknown retries, saved native-response authentication and locked final submission
+retain their existing full checks. Each next page starts a fresh full check.
+
+Keep page materials, request construction, schemas, risk policy, finite journals,
+snapshot identities and all saved results unchanged. Material assembly and pure
+packet rendering optimizations are deferred. Record build_dependency_recheck
+separately from full worker_authority_check; compare new first-attempt calls,
+saved-response replay, startup and cancellation drain separately. A five-minute
+window is a bounded observation, not Build acceptance or release authorization.
+
 ## Current Reduce capacity observation
 
 The user explicitly raised independent Reduce page-body concurrency to a fixed

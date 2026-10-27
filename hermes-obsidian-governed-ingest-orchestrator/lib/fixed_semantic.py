@@ -381,7 +381,7 @@ def prepare_request_projection(phase,view,output_schema,images=(),correction=Non
 
 
 @measured('semantic_call', lambda adapter, binding, phase, view, caller, limit, correction=None, **kwargs: {'vault':adapter.workflow.vault,'binding':binding,'phase':phase})
-def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2):
+def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2,_checked=None):
     from citation_amendment_calls import proof_only,invoke
     if proof_only(adapter,binding):
         # Checkpoint admission authenticates saved results while workers are
@@ -390,10 +390,10 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
             raise ContractError('CITATION_AMENDMENT_HELD','$','acceptance may authenticate existing native results only')
         return invoke(adapter,binding,phase,view,caller,limit,correction,no_fresh_call)
     return _model_call(adapter,binding,phase,view,caller,limit,correction,
-                       policy=policy,attempt_limit=attempt_limit)
+                       policy=policy,attempt_limit=attempt_limit,_checked=_checked)
 
 
-def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2):
+def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2,_checked=None):
     from reduce_coverage import current
     if current(adapter,binding):
         raise ContractError('COVERAGE_SCOPE_INVALID','$','approved limited scope permits native reuse only; no fresh semantic calls')
@@ -425,9 +425,14 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
                 return model_call(adapter,binding,phase,clarified,caller,limit,policy=policy,attempt_limit=attempt_limit)
         raise ContractError('READING_WINDOW_OVERSIZE','$','fixed task instructions/schema/materials exceed the bound; no truncation or model call')
     page_entry=phase=='page-write' and binding['node']=='global-reduce'
+    build_entry=(phase=='page-review' and binding['node']=='build-finalize'
+        and _checked is not None and correction is None and isinstance(caller,HermesCaller))
     with span('semantic_entry_authority',vault=adapter.workflow.vault,binding=binding,phase=phase,
-              lock_policy='isolated_page_reader' if page_entry else 'action_lock'):
-        if page_entry:
+              lock_policy='adjacent_build_proof' if build_entry else 'isolated_page_reader' if page_entry else 'action_lock'):
+        if build_entry:
+            adapter.worker_control_check(binding,checked=_checked)
+            checked=_checked
+        elif page_entry:
             checked=adapter.worker_check(binding)
         else:
             with span('semantic_action_lock_wait',phase=phase):ACTION_LOCK.acquire()
@@ -438,7 +443,7 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
                         adapter.worker_check(live)
                     else:adapter.worker_check(binding)
             finally:ACTION_LOCK.release()
-    if page_entry and isinstance(caller,HermesCaller):
+    if (page_entry or build_entry) and isinstance(caller,HermesCaller):
         control=getattr(adapter,'worker_control_check',None)
         prepared['live_control_check']=(lambda:control(binding,checked=checked)) if control else lambda:adapter.worker_check(binding)
     if isinstance(caller,HermesCaller): caller.input_limit=limit
