@@ -460,6 +460,9 @@ revision. Historical audits and their identities are not rewritten.
 
 ## Pure work inside the existing checks
 
+Edit the canonical ingest adapters in `hermes-obsidian-controlled-ingest/lib`;
+the runtime sync tool generates their orchestrator copies.
+
 `status_fields` is an internal projection: it reads the same complete current
 workflow bytes, hashes them, validates the full record and checks its workflow
 identity at the original read. Only selected fields are deep-copied out of the
