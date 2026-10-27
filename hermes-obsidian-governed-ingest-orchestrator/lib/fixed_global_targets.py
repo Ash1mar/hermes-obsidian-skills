@@ -25,13 +25,11 @@ def has_legacy_history(adapter,binding,phase,view):
     has_old=old.exists()
     if not has_old:
         # Explicit legacy seeds are also consumed history, even before materialization.
-        from hermes_source_units.source_units import _load_json,_vault_path
-        for pointer in adapter.workflow.status(binding['workflow_id']).get('execution_recovery_history',[]):
-            report_path=_vault_path(adapter.workflow.vault,pointer['report_ref'])
-            if __import__('hashlib').sha256(report_path.read_bytes()).hexdigest()!=pointer['report_sha256']:
-                raise ContractError('STALE_INPUT','$','recovery evidence changed')
-            report=_load_json(report_path)
-            if any(e['node']==binding['node'] and e.get('output_seed',{}).get('journal_name')==old.name for e in report['entries']):
+        from fixed_history import entries
+        for _,entry in entries(adapter,binding,select=lambda e:e.get('output_seed')
+                if e.get('output_seed',{}).get('journal_name')==old.name else None,
+                query=('legacy_seed',old.name)):
+            if entry:
                 has_old=True;break
     return has_old
 

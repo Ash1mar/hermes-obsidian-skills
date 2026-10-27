@@ -1,5 +1,34 @@
 # Runtime timing and incremental projection
 
+## Build workflow/history parsing reuse (2026-10-27)
+
+Within a fixed executor, trusted recovery or sync invocation, freshly read each
+workflow/report file and its SHA on every lookup. Reuse only same-byte JSON
+parsing, pure record validation and scope/node lookup projections, bound to the
+resolved path, validator and current schema bytes. Caller-visible values are
+deep copies. Changed bytes are revalidated; schema drift fails closed. This
+bounded in-memory cache expires on operation exit and is shared with that
+invocation's joined SDK threads. No permission or stop decision is cached.
+
+Keep every historical native proof, full per-page entry/exit check, current
+pause/cancel/binding check, finite ordinal check and locked commit validation.
+Recovery queries still hash all examined current pointers, preserve original
+order and validate each permit against its original journal. No unsealed report
+is introduced by the shared history helper. Material assembly, model wire,
+schema, risk policy and historical journal identities remain unchanged.
+
+SDK preflight checks and the transport call chain are retained. Passive timing
+records native stream entry, completed live guard, first delta callback, the
+SDK's first parsed-event timestamp and return. It does not record physical HTTP
+send/reconnect timing or prove a backend revision; those fields remain unknown.
+Callback arguments and provider responses are passed through unchanged.
+
+The risk shadow audit found no conservative format-only applicability exemption
+and at most four remaining inspection-only candidates for possible exemption,
+with dependency independence still unproven. Do not switch this consumed batch's
+policy, erase holds, or create migration infrastructure for that upper bound.
+Future rule changes require separate evidence and supported compatibility.
+
 ## Build adjacent-call verification (2026-10-27)
 
 For a fresh first page-review attempt only, reuse the full authority check's

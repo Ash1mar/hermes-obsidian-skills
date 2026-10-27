@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import copy
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 import os
 from pathlib import Path
@@ -95,11 +95,34 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
         return _vault_path(self.vault, f"{WORKFLOW_ROOT}/.locks/{workflow_id}.lock")
 
     def _load(self, workflow_id: str) -> dict[str, Any]:
-        value = _load_json(self._path(workflow_id))
-        validate_record("ingest_workflow", value)
+        cache=getattr(self,'_verified_json_reads',None)
+        from .record_snapshot import snapshot_json
+        path=self._path(workflow_id)
+        captured,value=snapshot_json(path)
+        if captured or cache is None:
+            if not captured:value=_load_json(path)
+            validate_record("ingest_workflow", value)
+        else:
+            value=cache.read(path,kind='ingest_workflow',validator=validate_record)
         if value["workflow_id"] != workflow_id:
             _fail("INVALID_SCHEMA", "workflow file identity mismatch")
         return value
+
+    @contextmanager
+    def read_projection(self):
+        """Fresh byte hashes, shared pure parsing only; never cached authority."""
+        if getattr(self,'_verified_json_reads',None) is not None:
+            yield
+            return
+        from .verified_json import VerifiedJsonReads
+        from .runtime_telemetry import span
+        cache=VerifiedJsonReads();self._verified_json_reads=cache
+        try:
+            with span('workflow_read_projection',vault=self.vault) as trace:
+                try:yield
+                finally:trace.update(cache.stats)
+        finally:
+            self._verified_json_reads=None
 
     def _write(self, value: Mapping[str, Any]) -> None:
         validate_record("ingest_workflow", value)

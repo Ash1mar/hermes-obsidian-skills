@@ -449,3 +449,29 @@ def test_live_control_cancel_after_construction_prevents_sdk_request(sdk):
     with pytest.raises(StopNativeCall,match='cancelled after full evidence check'):
         agent._interruptible_api_call(api_request(agent))
     assert not sdk.requests
+
+
+def test_passive_stream_timing_preserves_request_callback_and_live_guard(sdk,monkeypatch):
+    import time
+    agent=guarded_agent(sdk);parent=type(agent).__mro__[1];seen=[];checks=[];deltas=[]
+    def stream(self,request,client=None,on_first_delta=None):
+        seen.append(copy.deepcopy(request));self._last_api_first_chunk_at=time.time()
+        on_first_delta('unchanged delta');return request
+    monkeypatch.setattr(parent,'_run_codex_stream',stream,raising=False)
+    request=api_request(agent,form='responses');agent._apply_fixed_format(request)
+    expected=copy.deepcopy(request);agent.fixed_live_control_check=lambda:checks.append(1)
+    agent._run_codex_stream(request,on_first_delta=lambda text:deltas.append(text))
+    assert request==expected and seen==[expected] and checks==[1] and deltas==['unchanged delta']
+    row=agent.fixed_stream_timing[0]
+    assert row['native_stream_entry_at']<=row['live_guard_finished_at']<=row['first_delta_at']<=row['native_stream_return_at']
+    assert row['first_event_at']==agent._last_api_first_chunk_at
+
+
+def test_passive_timing_does_not_bypass_stopped_final_guard(sdk,monkeypatch):
+    agent=guarded_agent(sdk);parent=type(agent).__mro__[1]
+    monkeypatch.setattr(parent,'_run_codex_stream',lambda *_a,**_k:pytest.fail('stopped send'),raising=False)
+    def stop():raise ContractError('WORKFLOW_STOPPED','$','stopped before final SDK boundary')
+    agent.fixed_live_control_check=stop
+    request=api_request(agent,form='responses');agent._apply_fixed_format(request)
+    with pytest.raises(StopNativeCall):agent._run_codex_stream(request)
+    assert len(agent.fixed_stream_timing)==1 and not sdk.requests

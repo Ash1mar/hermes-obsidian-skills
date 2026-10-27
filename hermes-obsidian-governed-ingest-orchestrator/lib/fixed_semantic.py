@@ -23,6 +23,7 @@ import fixed_reduce
 import fixed_review
 from fixed_semantic_media import image_catalog, select_images, images_fit, image_usage, message_content, normalize_content, require_images_fit
 from ingest_graph_reuse import graph_scope
+from hermes_source_units.verified_json import workflow_read_scope
 from fixed_semantic_recovery import proof_scope
 
 RULES = {
@@ -126,9 +127,19 @@ class HermesCaller:
             def _run_codex_stream(self,api_kwargs,*args,**kwargs):
                 # This hook receives the final Responses payload after SDK conversion.
                 from native_call_state import StopNativeCall
+                row={'native_stream_entry_at':time.time()}
+                self.fixed_stream_timing.append(row)
+                positional=list(args)
+                original=positional[1] if len(positional)>1 else kwargs.get('on_first_delta')
+                def first_delta(*values,**named):
+                    row.setdefault('first_delta_at',time.time())
+                    if original is not None:return original(*values,**named)
+                if len(positional)>1:positional[1]=first_delta
+                else:kwargs={**kwargs,'on_first_delta':first_delta}
                 try:
                     self._fixed_preflight(api_kwargs,apply=False)
-                    return self._fixed_api(super()._run_codex_stream,api_kwargs,*args,**kwargs)
+                    row['live_guard_finished_at']=time.time()
+                    return self._fixed_api(super()._run_codex_stream,api_kwargs,*positional,**kwargs)
                 except StopNativeCall as exc:
                     # Hermes' request thread catches Exception, while this signal
                     # must bypass the conversation's Exception retry loop. Carry
@@ -136,6 +147,9 @@ class HermesCaller:
                     if threading.get_ident()==self.fixed_owner_thread:raise
                     self.fixed_thread_stop=exc
                     return None
+                finally:
+                    row['native_stream_return_at']=time.time()
+                    row['first_event_at']=getattr(self,'_last_api_first_chunk_at',None)
 
             def _fixed_preflight(self,api_kwargs,*,apply=True):
                 from native_call_state import StopNativeCall
@@ -189,6 +203,7 @@ class HermesCaller:
             raise RuntimeError('fixed semantic session unexpectedly exposes tools')
         agent.fixed_request_checks=0; agent.fixed_limit=self.input_limit
         agent.fixed_structured_requests=0
+        agent.fixed_stream_timing=[]
         agent.fixed_owner_thread=threading.get_ident()
         return agent
 
@@ -276,6 +291,9 @@ class HermesCaller:
                 'image_count':len(prepared['images']),'image_bytes':sum(i['bytes'] for i in prepared['images']),
                 'system_codepoints':len(prompt['system']),'extra_context_codepoints':0,
                 'wire_contract':WIRE_CONTRACT,
+                'sdk_timing':{'streams':copy.deepcopy(agent.fixed_stream_timing),
+                    'complete_at':time.time(),'physical_attempts':None,'backend_revision':None,
+                    'scope':'native stream entry/return and SDK callbacks; not physical HTTP send or retry timing'},
                 'request_construction':copy.deepcopy(prepared['construction_counts'])}
         finally:
             try:
@@ -287,7 +305,7 @@ class HermesCaller:
                 # No request, schema or construction scope survives this SDK session.
                 for name in ('fixed_request','fixed_text_request','fixed_expected_request',
                              'fixed_images','fixed_output_schema','fixed_transport_schema',
-                             'fixed_construction_counts','fixed_live_control_check'):
+                             'fixed_construction_counts','fixed_live_control_check','fixed_stream_timing'):
                     if hasattr(agent,name): delattr(agent,name)
 
 
@@ -988,6 +1006,7 @@ def run_pass(adapter,binding,caller):
 @record_validation_scope()
 @graph_scope()
 @proof_scope()
+@workflow_read_scope
 def execute(adapter,binding_path,caller=None):
     binding,_=canonical_binding(adapter,binding_path,executor='semantic-v1')
     caller=caller or HermesCaller()

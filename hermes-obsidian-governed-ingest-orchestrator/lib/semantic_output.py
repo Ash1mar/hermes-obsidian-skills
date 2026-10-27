@@ -232,18 +232,14 @@ def diagnosis(phase,packet,draft,error,*,state=None):
 def continuation_permit(adapter,binding,path,record):
     """One explicit operator-authorized extra call, never a new automatic budget."""
     matches=[]
-    for pointer in adapter.workflow.status(binding['workflow_id']).get('execution_recovery_history',[]):
-        rp=_vault_path(adapter.workflow.vault,pointer['report_ref'])
-        if __import__('hashlib').sha256(rp.read_bytes()).hexdigest()!=pointer['report_sha256']:held('recovery evidence changed')
-        report=_load_json(rp)
-        if report['request'].get('recovery_scope')!=SCOPE:continue
-        for entry in report['entries']:
-            permit=entry.get('exhausted_continuation')
-            if entry['node']==binding['node'] and permit and permit['journal_name']==path.name:
-                if (permit['prior_attempts_sha256']!=fingerprint(record['attempts'][:2])
-                    or permit['input_sha256']!=record['input_sha256'] or permit['schema_sha256']!=record['schema_sha256']
-                    or permit['attempt_ordinal']!=3):held('authorized continuation differs from its exact prior attempts')
-                matches.append({**permit,'authorization_ref':pointer['report_ref']})
+    from fixed_history import entries
+    for pointer,entry in entries(adapter,binding,scopes=(SCOPE,),code='SEMANTIC_OUTPUT_HELD'):
+        permit=entry.get('exhausted_continuation')
+        if permit and permit['journal_name']==path.name:
+            if (permit['prior_attempts_sha256']!=fingerprint(record['attempts'][:2])
+                or permit['input_sha256']!=record['input_sha256'] or permit['schema_sha256']!=record['schema_sha256']
+                or permit['attempt_ordinal']!=3):held('authorized continuation differs from its exact prior attempts')
+            matches.append({**permit,'authorization_ref':pointer['report_ref']})
     if len(matches)>1:held('duplicate continuation authority')
     return matches[0] if matches else None
 
@@ -303,14 +299,10 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
     output_schema=schema_for(phase,view)
     record=_load_json(path) if path.exists() else None
     if record is None:
-        for pointer in adapter.workflow.status(binding['workflow_id']).get('execution_recovery_history',[]):
-            rp=_vault_path(adapter.workflow.vault,pointer['report_ref'])
-            if __import__('hashlib').sha256(rp.read_bytes()).hexdigest()!=pointer['report_sha256']:held('recovery evidence changed')
-            report=_load_json(rp)
-            if report['request'].get('recovery_scope')!=SCOPE:continue
-            for entry in report['entries']:
-                seed=entry.get('output_seed',{})
-                if entry['node']==binding['node'] and seed.get('journal_name')==path.name:record=copy.deepcopy(seed['record'])
+        from fixed_history import entries
+        for _,entry in entries(adapter,binding,scopes=(SCOPE,),code='SEMANTIC_OUTPUT_HELD'):
+            seed=entry.get('output_seed',{})
+            if seed.get('journal_name')==path.name:record=copy.deepcopy(seed['record'])
         record=record or {'contract':CONTRACT,'phase':phase,'input_sha256':fingerprint(view),'schema_sha256':fingerprint(output_schema),'attempts':[]}
     if record['schema_sha256']!=fingerprint(output_schema):held('schema changed; previous allowance is not reset')
     if phase=='page-review':
