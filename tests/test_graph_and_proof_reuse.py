@@ -25,6 +25,22 @@ def test_graph_reuse_tracks_contents_memberships_and_control_with_same_revision(
     with graph_scope():assert derive(service,w,build)==[5]
 
 
+def test_adjacent_fingerprint_reuse_keeps_canonical_identity_and_later_mutation_check(tmp_path,monkeypatch):
+    import ingest_graph_reuse as reuse
+    service,w,_,_=graph_fixture(tmp_path);calls=[];real=reuse.fingerprint
+    def counted(value):calls.append(1);return real(value)
+    monkeypatch.setattr(reuse,'fingerprint',counted)
+    with graph_scope() as scope:
+        assert derive(service,w,lambda:['node'])==['node']
+        control=reuse.workflow_fingerprint(w)
+        proof=reuse.checked_dependencies(service,w,canonical=control)
+        assert proof and control==fingerprint(w) and len(calls)==2
+        assert scope['fingerprint_reuses']==2
+        w['cancel_requested']=True
+        assert reuse.checked_dependencies(service,w) is None
+        assert len(calls)==3
+
+
 def graph_fixture(tmp_path):
     from hermes_source_units.source_units import _load_json
     batch=tmp_path/'batch.json';batch.write_text('{"task_ids":["t"]}')
@@ -140,7 +156,7 @@ def test_transcript_proof_reuses_connection_but_detects_database_update(tmp_path
 
 def test_batch_replay_checks_exit_authority_before_results_can_be_used(tmp_path,monkeypatch):
     checks=[];a=NS(worker_check=lambda _:checks.append(1))
-    monkeypatch.setattr(recovery,'permitted_tasks',lambda *_:{})
+    monkeypatch.setattr(recovery,'permitted_tasks',lambda *_a,**_kw:{})
     with recovery.authenticated_replay(a,{}):assert len(checks)==1
     assert len(checks)==2
     def changed(_):

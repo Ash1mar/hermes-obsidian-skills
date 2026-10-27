@@ -86,3 +86,71 @@ def test_new_report_pointer_is_not_hidden_by_existing_index(tmp_path):
     path.write_text('{"request":{"recovery_scope":"s"},"entries":[{"node":"build-finalize","value":1}]}')
     pointers.append({'report_ref':path.name,'report_sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
     assert list(fixed_history.entries(adapter,binding))[0][1]['value']==1
+
+
+def test_narrow_fields_keep_full_shape_identity_fresh_bytes_and_copy_isolation(tmp_path,monkeypatch):
+    wid='ingest-fixture';checks=[]
+    def validate(_kind,value):
+        checks.append(1)
+        if value.get('bad'):raise ContractError('INVALID_SCHEMA','$','excluded field still checked')
+    monkeypatch.setattr(workflow,'validate_record',validate)
+    service=object.__new__(FileIngestWorkflowService);service.vault=tmp_path
+    path=service._path(wid);path.parent.mkdir(parents=True)
+    value={'workflow_id':wid,'revision':1,'cancel_requested':False,
+        'execution_recovery_history':[{'report_ref':'a'}],'large':'x'*10000}
+    path.write_text(json.dumps(value));stamp=path.stat().st_mtime_ns
+    with service.read_projection():
+        first=service.status_fields(wid,('execution_recovery_history',))
+        assert set(first)=={'workflow_id','execution_recovery_history'}
+        first['execution_recovery_history'][0]['report_ref']='mutated'
+        assert service.status_fields(wid,('execution_recovery_history',))['execution_recovery_history'][0]['report_ref']=='a'
+        value['cancel_requested']=True;path.write_text(json.dumps(value));os.utime(path,ns=(stamp,stamp))
+        assert service.status_fields(wid,('cancel_requested',))['cancel_requested'] is True
+        value['bad']=True;path.write_text(json.dumps(value))
+        with pytest.raises(ContractError,match='excluded field'):service.status_fields(wid,('execution_recovery_history',))
+        value.pop('bad');value['workflow_id']='ingest-other';path.write_text(json.dumps(value))
+        with pytest.raises(ContractError,match='identity mismatch'):service.status_fields(wid,('execution_recovery_history',))
+    assert len(checks)==4
+
+
+def test_journal_index_keeps_duplicate_order_isolation_and_unrelated_hash_checks(tmp_path):
+    pointers=[]
+    for n in range(2):
+        path=tmp_path/f'jr-{n}.json'
+        path.write_text(json.dumps({'request':{'recovery_scope':'s'},'entries':[{'node':'n','output_dispositions':[
+            {'journal_name':'wanted','value':n},{'journal_name':'other','large':'x'*10000},
+            {'journal_name':'wanted','value':n+10}]}]}))
+        pointers.append({'report_ref':path.name,'report_sha256':hashlib.sha256(path.read_bytes()).hexdigest()})
+    cache=VerifiedJsonReads();service=NS(vault=tmp_path,_verified_json_reads=cache,
+        status=lambda _:{'execution_recovery_history':copy.deepcopy(pointers)})
+    adapter=NS(workflow=service);binding={'workflow_id':'fixture','node':'n'}
+    query=lambda **kw:fixed_history.journal_rows(adapter,binding,'wanted','output_dispositions',scopes=('s',),**kw)
+    rows=list(query());assert [r['value'] for _,r in rows]==[0,10,1,11]
+    rows[0][1]['value']=999
+    assert [r['value'] for _,r in query(reverse=True)]==[1,11,0,10]
+    assert cache.stats['index_builds']==2 and cache.stats['parses']==2 and cache.stats['reads']==4
+    (tmp_path/'jr-0.json').write_text('{}')
+    with pytest.raises(ContractError):list(fixed_history.journal_rows(adapter,binding,'absent','output_dispositions',scopes=('unrelated',)))
+
+
+def test_journal_index_preserves_lazy_failure_after_early_return(tmp_path):
+    path=tmp_path/'bad-later.json';path.write_text(json.dumps({'request':{'recovery_scope':'s'},'entries':[
+        {'node':'n','build_review_recovery':{'reviews':[{'journal_name':'wanted','unknown':True},{}]}}]}))
+    service=NS(vault=tmp_path,_verified_json_reads=VerifiedJsonReads(),status=lambda _:{'execution_recovery_history':[
+        {'report_ref':path.name,'report_sha256':hashlib.sha256(path.read_bytes()).hexdigest()}]})
+    def query():return fixed_history.journal_rows(NS(workflow=service),{'workflow_id':'fixture','node':'n'},'wanted','build_review')
+    assert next(query())[1]['unknown'] is True
+    with pytest.raises(KeyError):list(query())
+
+
+def test_compact_native_owners_do_not_copy_review_payload(tmp_path):
+    import fixed_semantic_recovery as recovery
+    path=tmp_path/'owners.json';path.write_text(json.dumps({'request':{'recovery_scope':'build-native/v1'},'entries':[
+        {'node':'n','previous_task_id':'old','ended_run_ids':['1'],'build_review_recovery':{'reviews':['large']}}]}))
+    service=NS(vault=tmp_path,_verified_json_reads=VerifiedJsonReads(),status=lambda _:{'execution_recovery_history':[
+        {'report_ref':path.name,'report_sha256':hashlib.sha256(path.read_bytes()).hexdigest()}]})
+    binding={'workflow_id':'fixture','node':'n','task_id':'current'};adapter=NS(workflow=service)
+    owners=recovery.permitted_tasks(adapter,binding,compact=True)
+    assert owners['old']=={'previous_task_id':'old','ended_run_ids':['1']}
+    owners['old']['ended_run_ids'].append('pollution')
+    assert recovery.permitted_tasks(adapter,binding,compact=True)['old']['ended_run_ids']==['1']

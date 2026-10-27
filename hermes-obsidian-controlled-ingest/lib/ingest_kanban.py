@@ -25,7 +25,7 @@ from hermes_source_units.validation import fingerprint, validate_record, record_
 from hermes_source_units.ingest_workflow import SOURCE_FAILURE_CODES
 from hermes_source_units.workflow_guard import workflow_write_guard, worker_binding, WORKER_LOCK_TIMEOUT
 from hermes_source_units.runtime_telemetry import measured, span
-from ingest_graph_reuse import derive as derive_graph,graph_scope
+from ingest_graph_reuse import derive as derive_graph,graph_scope,workflow_fingerprint
 from ingest_completion import completed as completion_proof,completion_scope,resource_record,failure_record
 from hermes_source_units.verified_json import workflow_read_scope
 
@@ -2322,9 +2322,9 @@ class IngestKanbanAdapter:
             if node.name == 'build-finalize':
                 # Ephemeral result for one adjacent review request, never a
                 # persisted permission or a substitute for commit validation.
-                checked['control_fingerprint'] = fingerprint(workflow)
+                checked['control_fingerprint'] = workflow_fingerprint(workflow)
                 from ingest_graph_reuse import checked_dependencies
-                proof=checked_dependencies(self.workflow,workflow)
+                proof=checked_dependencies(self.workflow,workflow,canonical=checked['control_fingerprint'])
                 if proof is not None:
                     checked['dependency_proof']=proof
             if node.name == 'global-reduce':
@@ -2366,7 +2366,7 @@ class IngestKanbanAdapter:
         kind=request['node']
         if kind == 'build-finalize' and (checked.get('node') != kind
                 or workflow['current_stage'] != 'build_finalizing'
-                or fingerprint(workflow) != checked.get('control_fingerprint')):
+                or workflow_fingerprint(workflow) != checked.get('control_fingerprint')):
             _fail('STALE_INPUT','Build control changed after the adjacent full check')
         if kind == 'build-finalize':
             from ingest_graph_reuse import recheck_dependencies

@@ -20,20 +20,33 @@ _PROOF=ContextVar('ingest_graph_proof',default=None)
 def graph_scope():
     if _SCOPE.get() is not None:
         yield _SCOPE.get();return
-    scope={'condition':threading.Condition(),'lanes':{},'lookups':0,'hits':0,'builds':0,'cohorts':0}
+    scope={'condition':threading.Condition(),'lanes':{},'lookups':0,'hits':0,'builds':0,'cohorts':0,
+           'fingerprint_calls':0,'fingerprint_ns':0,'fingerprint_reuses':0,'proof_copy_ns':0}
     token=_SCOPE.set(scope)
     proof_token=_PROOF.set(None)
     try:yield scope
     finally:
+        with span('graph_reuse_summary',**{k:scope[k] for k in ('lookups','hits','builds','cohorts',
+                'fingerprint_calls','fingerprint_ns','fingerprint_reuses','proof_copy_ns')}):pass
         _PROOF.reset(proof_token)
         _SCOPE.reset(token)
+
+
+def workflow_fingerprint(workflow):
+    """Same canonical identity, computed anew at each original boundary."""
+    started=time.monotonic_ns();value=fingerprint(workflow);scope=_SCOPE.get()
+    if scope is not None:
+        with scope['condition']:
+            scope['fingerprint_calls']+=1;scope['fingerprint_ns']+=time.monotonic_ns()-started
+    return value
 
 
 def dependencies(service,workflow,**fields):
     """Enumerate and hash current bytes, retaining them for the pure build."""
     with span('graph_dependency_scan',vault=service.vault,workflow_id=workflow.get('workflow_id'),
               trigger='desired_graph',**fields) as trace:
-        k=service.knowledge;bid=workflow['batch_id'];batch_path=k._batch_path(bid)
+        k=service.knowledge;bid=workflow['batch_id'];started=time.monotonic_ns();batch_path=k._batch_path(bid)
+        path_ns=time.monotonic_ns()-started;batch_ns=directory_ns=0
         records={};h=hashlib.sha256();read_seconds=hash_seconds=byte_count=0
         def read(path):
             nonlocal read_seconds,hash_seconds,byte_count
@@ -47,27 +60,36 @@ def dependencies(service,workflow,**fields):
         read(batch_path)
         directories={}
         with span('graph_dependency_enumeration'):
+            started=time.monotonic_ns()
             with record_snapshot(records):batch=k._batch(bid)
+            batch_ns=time.monotonic_ns()-started
             def members(directory):
+                nonlocal directory_ns
+                started=time.monotonic_ns()
                 found=tuple(directory.glob('*.json'))
                 directories[str(directory)]=sorted(str(p) for p in found)
+                directory_ns+=time.monotonic_ns()-started
                 return found
-            paths={batch_path,*members(k._slice_root(bid))}
+            started=time.monotonic_ns();slice_root=k._slice_root(bid);path_ns+=time.monotonic_ns()-started
+            paths={batch_path,*members(slice_root)}
             for tid in batch['task_ids']:
-                paths.add(k._task_path(tid))
-                paths.update(members(service.vault/f'_system/knowledge-builds/task-{tid}/passes'))
+                started=time.monotonic_ns();task=k._task_path(tid)
+                directory=service.vault/f'_system/knowledge-builds/task-{tid}/passes'
+                path_ns+=time.monotonic_ns()-started;paths.add(task)
+                paths.update(members(directory))
         for path in sorted(paths):
             if path not in records:read(path)
             started=time.monotonic();name=str(path).encode()
             h.update(len(name).to_bytes(8,'big'));h.update(name);h.update(records[path][1])
             hash_seconds+=time.monotonic()-started
         trace.update(files=len(paths),bytes=byte_count,read_ms=round(read_seconds*1000,3),
-                     hash_ms=round(hash_seconds*1000,3))
+                     hash_ms=round(hash_seconds*1000,3),batch_parse_validate_ns=batch_ns,
+                     directory_enumeration_ns=directory_ns,path_construct_resolve_ns=path_ns)
         return {'digest':h.digest(),'records':records,'files':len(paths),'bytes':byte_count,
                 'directories':directories}
 
 
-def _calculate(service,workflow,build,lane,scope,cohort,size):
+def _calculate(service,workflow,build,lane,scope,cohort,size,canonical):
     meta={'cohort_id':cohort,'shared_callers':size}
     before=dependencies(service,workflow,scan_role='lookup',**meta)
     # Installed code cannot change under active consumers. Include actual schema
@@ -76,7 +98,9 @@ def _calculate(service,workflow,build,lane,scope,cohort,size):
     contract=hashlib.sha256(schema.read_bytes()).digest()
     lane['proof']={'files':{str(p):digest.hex() for p,(_,digest) in before['records'].items()},
         'directories':before['directories'],'schema_sha256':contract.hex()}
-    key=(fingerprint(workflow),contract,before['digest'])
+    # This owned workflow snapshot is read-only throughout the pure calculation.
+    # Reuse its canonical value, never dictionary identity or raw-file SHA.
+    key=(canonical,contract,before['digest']);scope['fingerprint_reuses']+=1
     with span('graph_cache_lookup',**meta) as trace:
         scope['lookups']+=1
         old=lane.get('key')
@@ -97,15 +121,19 @@ def _calculate(service,workflow,build,lane,scope,cohort,size):
         return nodes
 
 
-def checked_dependencies(service,workflow):
+def checked_dependencies(service,workflow,*,canonical=None):
     """Copy the graph's actual byte/member proof for one adjacent Build call."""
     scope=_SCOPE.get()
     captured=_PROOF.get()
-    if scope is None or captured is None or captured[:2]!=(str(service.vault),fingerprint(workflow)):
+    if scope is None or captured is None:return None
+    current=workflow_fingerprint(workflow) if canonical is None else canonical
+    if canonical is not None:scope['fingerprint_reuses']+=1
+    if captured[:2]!=(str(service.vault),current):
         # Standalone worker checks may not own a graph_scope. Do not offer the
         # optimized path without an actual captured graph proof.
         return None
-    return copy.deepcopy(captured[2])
+    started=time.monotonic_ns();proof=copy.deepcopy(captured[2]);scope['proof_copy_ns']+=time.monotonic_ns()-started
+    return proof
 
 
 def recheck_dependencies(service,proof):
@@ -131,7 +159,7 @@ def derive(service,workflow,build):
             not all(hasattr(knowledge,n) for n in ('_batch_path','_slice_root','_task_path'))):return build()
     # Separate workflow/control identities never share. Scope is only this native
     # invocation, including copied thread contexts, never a cross-run disk cache.
-    identity=(str(service.vault),fingerprint(workflow))
+    identity=(str(service.vault),workflow_fingerprint(workflow))
     condition=scope['condition'];ticket={};leader=False
     with span('graph_dependency_share',vault=service.vault,workflow_id=workflow.get('workflow_id')) as trace:
         with condition:
@@ -147,7 +175,7 @@ def derive(service,workflow,build):
                 condition.wait()
         if leader:
             try:
-                nodes=_calculate(service,workflow,build,lane,scope,cohort,len(members))
+                nodes=_calculate(service,workflow,build,lane,scope,cohort,len(members),identity[1])
                 result={'nodes':nodes,'proof':copy.deepcopy(lane['proof']),
                     'cohort_id':cohort,'shared_callers':len(members)}
             except BaseException as exc:

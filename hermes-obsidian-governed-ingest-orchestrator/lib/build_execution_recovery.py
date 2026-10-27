@@ -143,16 +143,15 @@ def verify(adapter,w,node,binding,entry,runs):
 
 def review_permit(adapter,binding,path,record):
     """Read current sealed admission; caller separately checks live worker authority."""
-    from fixed_history import entries
-    for _,entry in entries(adapter,binding,scopes=(SCOPE,),reverse=True,
+    from fixed_history import journal_rows
+    for _,review in journal_rows(adapter,binding,path.name,'build_review',scopes=(SCOPE,),reverse=True,
             code='RECOVERY_NOT_ALLOWED',message='Build recovery report changed'):
-        for review in entry['build_review_recovery']['reviews']:
-            if review['journal_name']!=path.name or not review['unknown']:continue
-            count=review['preserved_attempt_count']
-            if (record['input_sha256']!=review['input_sha256'] or record['schema_sha256']!=review['schema_sha256']
-                    or fingerprint(record['attempts'][:count])!=review['prior_attempts_sha256']
-                    or len(record['attempts'])>count+review['additional_calls']):fail('original unknown review or finite grant changed')
-            return review
+        if not review['unknown']:continue
+        count=review['preserved_attempt_count']
+        if (record['input_sha256']!=review['input_sha256'] or record['schema_sha256']!=review['schema_sha256']
+                or fingerprint(record['attempts'][:count])!=review['prior_attempts_sha256']
+                or len(record['attempts'])>count+review['additional_calls']):fail('original unknown review or finite grant changed')
+        return review
     return None
 
 def execute_review(adapter,binding,view,caller,model_call,validator,path,record,permit):

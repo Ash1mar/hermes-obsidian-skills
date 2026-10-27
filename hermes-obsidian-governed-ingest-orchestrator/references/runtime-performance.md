@@ -457,3 +457,37 @@ unchanged. The SDK first-event timestamp remains wall-only; its monotonic value
 is explicitly unavailable, never reconstructed from a later clock offset.
 These observations do not establish physical HTTP sends, retries or backend
 revision. Historical audits and their identities are not rewritten.
+
+## Pure work inside the existing checks
+
+Edit the canonical ingest adapters in `hermes-obsidian-controlled-ingest/lib`;
+the runtime sync tool generates their orchestrator copies.
+
+`status_fields` is an internal projection: it reads the same complete current
+workflow bytes, hashes them, validates the full record and checks its workflow
+identity at the original read. Only selected fields are deep-copied out of the
+verified parse cache. Ordinary `status` remains unchanged; no internal mutable
+cache value is returned. Full raw reads and hashes are not reduced by this work.
+
+The graph's owned, read-only workflow snapshot supplies its canonical fingerprint
+to its adjacent cache-key calculation. The later Build control fingerprint is
+still computed separately and passed directly to proof matching. Live controls
+compute their own current canonical fingerprints at each original boundary.
+This is neither raw-file SHA substitution nor caching by mutable dictionary ID.
+
+Hash-verified history reports have operation-local journal projections. Lists
+retain duplicate rows, entry/chain order, reverse lookup and early-return rules;
+they store source data, never a live authorization judgment. Every pointer that
+the original iterator visits still resolves and hashes its whole report before
+selection, including unrelated reports. Malformed shapes fall back to original
+lazy entry/row iteration so an unreachable later error is not raised early.
+Native response authentication may request only old task/run identity fields;
+native transcript proof, current budgets and all admission/submit gates remain.
+
+Read/hash, parsing, validation, projection/index and deep-copy nanoseconds and
+logical copied JSON value nodes aggregate in memory per operation. Logical nodes
+are not byte I/O. Canonical fingerprint/proof-copy costs have one graph summary;
+existing scan events separately measure batch parsing/validation, directory
+enumeration and path construction/resolution. Directory membership, per-file
+bytes/hashes and post-build confirmation scans are unchanged. These measurements
+do not authorize altering the read-reuse boundary, risk policy or task identities.

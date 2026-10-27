@@ -81,8 +81,9 @@ def verify_stop_boundary(adapter,workflow_id,node,entry):
 def output_boundary(adapter,binding):
     """The latest recovery of this node owns its execution limit."""
     import hashlib
+    from fixed_history import history_state
     selected=None;pointer=None
-    for p in adapter.workflow.status(binding['workflow_id']).get('execution_recovery_history',[]):
+    for p in history_state(adapter.workflow,binding['workflow_id']).get('execution_recovery_history',[]):
         rp=_vault_path(adapter.workflow.vault,p['report_ref'])
         if hashlib.sha256(rp.read_bytes()).hexdigest()!=p['report_sha256']:held('recovery evidence changed')
         report=_load_json(rp)
@@ -232,14 +233,12 @@ def diagnosis(phase,packet,draft,error,*,state=None):
 def continuation_permit(adapter,binding,path,record):
     """One explicit operator-authorized extra call, never a new automatic budget."""
     matches=[]
-    from fixed_history import entries
-    for pointer,entry in entries(adapter,binding,scopes=(SCOPE,),code='SEMANTIC_OUTPUT_HELD'):
-        permit=entry.get('exhausted_continuation')
-        if permit and permit['journal_name']==path.name:
-            if (permit['prior_attempts_sha256']!=fingerprint(record['attempts'][:2])
-                or permit['input_sha256']!=record['input_sha256'] or permit['schema_sha256']!=record['schema_sha256']
-                or permit['attempt_ordinal']!=3):held('authorized continuation differs from its exact prior attempts')
-            matches.append({**permit,'authorization_ref':pointer['report_ref']})
+    from fixed_history import journal_rows
+    for pointer,permit in journal_rows(adapter,binding,path.name,'exhausted_continuation',scopes=(SCOPE,),code='SEMANTIC_OUTPUT_HELD'):
+        if (permit['prior_attempts_sha256']!=fingerprint(record['attempts'][:2])
+            or permit['input_sha256']!=record['input_sha256'] or permit['schema_sha256']!=record['schema_sha256']
+            or permit['attempt_ordinal']!=3):held('authorized continuation differs from its exact prior attempts')
+        matches.append({**permit,'authorization_ref':pointer['report_ref']})
     if len(matches)>1:held('duplicate continuation authority')
     return matches[0] if matches else None
 
@@ -299,10 +298,9 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
     output_schema=schema_for(phase,view)
     record=_load_json(path) if path.exists() else None
     if record is None:
-        from fixed_history import entries
-        for _,entry in entries(adapter,binding,scopes=(SCOPE,),code='SEMANTIC_OUTPUT_HELD'):
-            seed=entry.get('output_seed',{})
-            if seed.get('journal_name')==path.name:record=copy.deepcopy(seed['record'])
+        from fixed_history import journal_rows
+        for _,seed in journal_rows(adapter,binding,path.name,'output_seed',scopes=(SCOPE,),code='SEMANTIC_OUTPUT_HELD'):
+            record=copy.deepcopy(seed['record'])
         record=record or {'contract':CONTRACT,'phase':phase,'input_sha256':fingerprint(view),'schema_sha256':fingerprint(output_schema),'attempts':[]}
     if record['schema_sha256']!=fingerprint(output_schema):held('schema changed; previous allowance is not reset')
     if phase=='page-review':
@@ -334,7 +332,8 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
                 matches=[p for p in root.glob('*.json') if _load_json(p).get('output_attempt_id')==attempt['attempt_id']]
                 if len(matches)==1:ref=matches[0].relative_to(adapter.workflow.vault).as_posix();attempt['audit_ref']=ref;write(path,record)
             if not ref and not attempt.get('session_id'):
-                for pointer in adapter.workflow.status(binding['workflow_id']).get('execution_recovery_history',[]):
+                from fixed_history import history_state
+                for pointer in history_state(adapter.workflow,binding['workflow_id']).get('execution_recovery_history',[]):
                     rp=_vault_path(adapter.workflow.vault,pointer['report_ref'])
                     if __import__('hashlib').sha256(rp.read_bytes()).hexdigest()!=pointer['report_sha256']:held('recovery evidence changed')
                     report=_load_json(rp)

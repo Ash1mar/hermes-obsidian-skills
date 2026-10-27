@@ -94,19 +94,28 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
         self._path(workflow_id)
         return _vault_path(self.vault, f"{WORKFLOW_ROOT}/.locks/{workflow_id}.lock")
 
-    def _load(self, workflow_id: str) -> dict[str, Any]:
+    def _load(self, workflow_id: str, *, fields=None) -> dict[str, Any]:
         cache=getattr(self,'_verified_json_reads',None)
         from .record_snapshot import snapshot_json
         path=self._path(workflow_id)
         captured,value=snapshot_json(path)
+        selected=None if fields is None else tuple(dict.fromkeys(('workflow_id',*fields)))
+        def project(record):return {name:record[name] for name in selected if name in record}
         if captured or cache is None:
             if not captured:value=_load_json(path)
             validate_record("ingest_workflow", value)
         else:
-            value=cache.read(path,kind='ingest_workflow',validator=validate_record)
+            value=cache.read(path,kind='ingest_workflow',validator=validate_record,
+                project=project if selected is not None else None,
+                projection_key=('workflow_fields',workflow_id,selected) if selected is not None else None)
         if value["workflow_id"] != workflow_id:
             _fail("INVALID_SCHEMA", "workflow file identity mismatch")
+        if selected is not None and (captured or cache is None):return copy.deepcopy(project(value))
         return value
+
+    def status_fields(self, workflow_id: str, fields) -> dict[str, Any]:
+        """Internal pure projection after the same fresh bytes/schema/identity check."""
+        return self._load(workflow_id,fields=tuple(fields))
 
     @contextmanager
     def read_projection(self):
