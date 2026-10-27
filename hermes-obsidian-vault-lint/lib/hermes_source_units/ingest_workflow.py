@@ -142,7 +142,7 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                         trace.update(cache.stats)
                         trace['copy_origins']=copy.deepcopy(cache.copy_origins)
                         trace['snapshot_origins']=dict(cache.snapshot_origins)
-                        trace['snapshot_versions']=sorted(cache.snapshot_versions)
+                        trace['snapshot_versions']=sorted(cache.snapshot_versions,key=repr)
         finally:
             self._verified_json_reads=None
 
