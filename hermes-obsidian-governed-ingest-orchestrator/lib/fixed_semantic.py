@@ -127,18 +127,18 @@ class HermesCaller:
             def _run_codex_stream(self,api_kwargs,*args,**kwargs):
                 # This hook receives the final Responses payload after SDK conversion.
                 from native_call_state import StopNativeCall
-                row={'native_stream_entry_at':time.time()}
+                row={'native_stream_entry_at_ms':int(round(time.time()*1000))}
                 self.fixed_stream_timing.append(row)
                 positional=list(args)
                 original=positional[1] if len(positional)>1 else kwargs.get('on_first_delta')
                 def first_delta(*values,**named):
-                    row.setdefault('first_delta_at',time.time())
+                    row.setdefault('first_delta_at_ms',int(round(time.time()*1000)))
                     if original is not None:return original(*values,**named)
                 if len(positional)>1:positional[1]=first_delta
                 else:kwargs={**kwargs,'on_first_delta':first_delta}
                 try:
                     self._fixed_preflight(api_kwargs,apply=False)
-                    row['live_guard_finished_at']=time.time()
+                    row['live_guard_finished_at_ms']=int(round(time.time()*1000))
                     return self._fixed_api(super()._run_codex_stream,api_kwargs,*positional,**kwargs)
                 except StopNativeCall as exc:
                     # Hermes' request thread catches Exception, while this signal
@@ -148,8 +148,9 @@ class HermesCaller:
                     self.fixed_thread_stop=exc
                     return None
                 finally:
-                    row['native_stream_return_at']=time.time()
-                    row['first_event_at']=getattr(self,'_last_api_first_chunk_at',None)
+                    row['native_stream_return_at_ms']=int(round(time.time()*1000))
+                    first=getattr(self,'_last_api_first_chunk_at',None)
+                    row['first_event_at_ms']=int(round(first*1000)) if first is not None else None
 
             def _fixed_preflight(self,api_kwargs,*,apply=True):
                 from native_call_state import StopNativeCall
@@ -292,7 +293,7 @@ class HermesCaller:
                 'system_codepoints':len(prompt['system']),'extra_context_codepoints':0,
                 'wire_contract':WIRE_CONTRACT,
                 'sdk_timing':{'streams':copy.deepcopy(agent.fixed_stream_timing),
-                    'complete_at':time.time(),'physical_attempts':None,'backend_revision':None,
+                    'complete_at_ms':int(round(time.time()*1000)),'physical_attempts':None,'backend_revision':None,
                     'scope':'native stream entry/return and SDK callbacks; not physical HTTP send or retry timing'},
                 'request_construction':copy.deepcopy(prepared['construction_counts'])}
         finally:

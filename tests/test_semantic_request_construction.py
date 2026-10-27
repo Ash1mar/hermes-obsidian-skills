@@ -463,8 +463,9 @@ def test_passive_stream_timing_preserves_request_callback_and_live_guard(sdk,mon
     agent._run_codex_stream(request,on_first_delta=lambda text:deltas.append(text))
     assert request==expected and seen==[expected] and checks==[1] and deltas==['unchanged delta']
     row=agent.fixed_stream_timing[0]
-    assert row['native_stream_entry_at']<=row['live_guard_finished_at']<=row['first_delta_at']<=row['native_stream_return_at']
-    assert row['first_event_at']==agent._last_api_first_chunk_at
+    assert row['native_stream_entry_at_ms']<=row['live_guard_finished_at_ms']<=row['first_delta_at_ms']<=row['native_stream_return_at_ms']
+    assert row['first_event_at_ms']==int(round(agent._last_api_first_chunk_at*1000))
+    assert all(type(v) is int for v in row.values())
 
 
 def test_passive_timing_does_not_bypass_stopped_final_guard(sdk,monkeypatch):
