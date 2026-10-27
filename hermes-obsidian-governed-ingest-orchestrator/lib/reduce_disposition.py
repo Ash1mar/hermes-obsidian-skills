@@ -46,14 +46,14 @@ def reports(adapter, binding):
 
 def output_permit(adapter, binding, path, record):
     found = []
-    for pointer, entry in reports(adapter, binding):
-        for row in entry.get('output_dispositions', []):
-            if row['journal_name'] == path.name:
-                n = row['preserved_attempt_count']
-                if (row['input_sha256'] != record['input_sha256'] or row['schema_sha256'] != record['schema_sha256']
-                        or fingerprint(record['attempts'][:n]) != row['prior_attempts_sha256']):
-                    fail('sealed original attempts changed')
-                found.append({**row, 'authorization_ref': pointer['report_ref']})
+    from fixed_history import journal_rows
+    for pointer,row in journal_rows(adapter,binding,path.name,'output_dispositions',scopes=(SCOPE,),
+            code='RECOVERY_NOT_ALLOWED',message='recovery report changed'):
+        n = row['preserved_attempt_count']
+        if (row['input_sha256'] != record['input_sha256'] or row['schema_sha256'] != record['schema_sha256']
+                or fingerprint(record['attempts'][:n]) != row['prior_attempts_sha256']):
+            fail('sealed original attempts changed')
+        found.append({**row, 'authorization_ref': pointer['report_ref']})
     previous = None
     for row in found:
         expected = predecessor(previous) if previous else None

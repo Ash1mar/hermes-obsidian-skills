@@ -26,18 +26,20 @@ def proof_scope():
         for db in scope['dbs'].values():db.close()
 
 
-def permitted_tasks(adapter,binding):
+def permitted_tasks(adapter,binding,*,compact=False):
     """Fresh report bytes/index; no remembered permission decision."""
-    w=adapter.workflow.status(binding['workflow_id']);permitted={binding['task_id']:None};scope=_PROOFS.get()
+    from fixed_history import history_state
+    w=history_state(adapter.workflow,binding['workflow_id']);permitted={binding['task_id']:None};scope=_PROOFS.get()
     cache=getattr(adapter.workflow,'_verified_json_reads',None)
     allowed=('build-native/v1','reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1')
     for pointer in w.get('execution_recovery_history',[]):
         if cache is not None and pointer.get('report_sha256'):
             rp=_vault_path(adapter.workflow.vault,pointer['report_ref'])
             def selected(report):
-                return [e for e in report['entries'] if e['node']==binding['node']] if report['request'].get('recovery_scope') in allowed else []
+                found=[e for e in report['entries'] if e['node']==binding['node']] if report['request'].get('recovery_scope') in allowed else []
+                return [{k:e[k] for k in ('previous_task_id','ended_run_ids') if k in e} for e in found] if compact else found
             selected_entries=cache.read(rp,expected=pointer['report_sha256'],project=selected,
-                projection_key=('native_permitted',binding['node']))
+                projection_key=('native_permitted',binding['node'],compact))
             for entry in selected_entries:permitted[entry['previous_task_id']]=entry
             continue
         rp=_vault_path(adapter.workflow.vault,pointer['report_ref']);data=rp.read_bytes();digest=hashlib.sha256(data).hexdigest()
@@ -50,7 +52,8 @@ def permitted_tasks(adapter,binding):
             if scope is not None:scope['reports'][key]=report
         if report['request'].get('recovery_scope') not in allowed:continue
         for entry in report['entries']:
-            if entry['node']==binding['node']:permitted[entry['previous_task_id']]=entry
+            if entry['node']==binding['node']:
+                permitted[entry['previous_task_id']]=(copy.deepcopy({k:entry[k] for k in ('previous_task_id','ended_run_ids') if k in entry}) if compact else entry)
     return permitted
 
 
@@ -87,7 +90,7 @@ def native_reply(adapter,binding,path,wire,output_schema,images,*,home=None,seen
     # semantic_output has just checked this invocation before its pure request
     # construction. Other callers retain the ordinary two-sided check.
     if not entry_checked:adapter.worker_check(binding)
-    try:return native_proof(adapter,binding,path,wire,output_schema,images,permitted_tasks(adapter,binding),home=home,seen=seen)
+    try:return native_proof(adapter,binding,path,wire,output_schema,images,permitted_tasks(adapter,binding,compact=True),home=home,seen=seen)
     finally:adapter.worker_check(binding)
 
 
@@ -96,7 +99,7 @@ def authenticated_replay(adapter,binding):
     """Authenticate a bounded saved set before installing it; check both sides."""
     adapter.worker_check(binding)
     try:
-        permitted=permitted_tasks(adapter,binding)
+        permitted=permitted_tasks(adapter,binding,compact=True)
         yield lambda path,wire,schema,images:native_proof(adapter,binding,path,wire,schema,images,permitted)
     finally:adapter.worker_check(binding)
 
