@@ -28,7 +28,8 @@ def test_adjacent_proof_rejects_drift_without_metadata_shortcuts(tmp_path,change
 
 
 @pytest.mark.parametrize('change',['none','cancel','pause','binding','template','failure','same_revision_control','missing_proof'])
-def test_build_send_control_rechecks_current_identity_and_proof(tmp_path,monkeypatch,change):
+@pytest.mark.parametrize('read_kind',['mutable','snapshot'])
+def test_build_send_control_rechecks_current_identity_and_proof(tmp_path,monkeypatch,change,read_kind):
     service,w,_,_=graph_fixture(tmp_path)
     with graph_scope():
         derive(service,w,lambda:[1]);proof=checked_dependencies(service,w)
@@ -45,6 +46,12 @@ def test_build_send_control_rechecks_current_identity_and_proof(tmp_path,monkeyp
         if change=='pause':raise ContractError('WORKFLOW_PAUSED','$','isolated pause')
     adapter=NS(enable_workers=True,validate_worker_request=lambda _:None,
         workflow=NS(vault=tmp_path,status=lambda _:copy.deepcopy(state),assert_not_paused=pause,pinned_templates=lambda _:None))
+    if read_kind=='snapshot':
+        from hermes_source_units.verified_json import VerifiedJsonReads
+        cache=VerifiedJsonReads();state_path=tmp_path/'live-state.json';state_path.write_text(json.dumps(state))
+        cache.read(state_path,readonly=True)  # Old same-revision value is warm.
+        stamp=state_path.stat().st_mtime_ns
+        adapter.workflow.status_snapshot=lambda _wid,origin:cache.read(state_path,readonly=True,origin=origin)
     monkeypatch.setattr(kanban,'desired_graph',lambda *_:pytest.fail('duplicate full graph'))
     if change=='cancel':state['cancel_requested']=True
     elif change=='binding':state['kanban']['task_map'][0]['task_id']='other'
@@ -54,9 +61,13 @@ def test_build_send_control_rechecks_current_identity_and_proof(tmp_path,monkeyp
     elif change=='failure':
         p=tmp_path/f'_system/ledgers/ingest-workflows/fixture/reports/failed-{fingerprint("build-finalize")[:16]}.json'
         p.parent.mkdir(parents=True);p.write_text(json.dumps({'task_id':'owner','idempotency_key':key,'error_code':'SOURCE_CHANGED'}))
+    if read_kind=='snapshot':
+        state_path.write_text(json.dumps(state));os.utime(state_path,ns=(stamp,stamp))
     if change=='none':kanban.IngestKanbanAdapter.worker_control_check(adapter,request,checked=checked)
     else:
         with pytest.raises(ContractError):kanban.IngestKanbanAdapter.worker_control_check(adapter,request,checked=checked)
+    if read_kind=='snapshot' and change in ('cancel','pause'):
+        assert cache.stats['canonical_builds']==0  # earlier stop/pause still wins
 
 
 def test_fresh_build_preserves_exact_request_and_replays_without_more_calls(tmp_path,monkeypatch):

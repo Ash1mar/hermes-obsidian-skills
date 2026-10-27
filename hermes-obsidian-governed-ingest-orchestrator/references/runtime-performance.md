@@ -491,3 +491,35 @@ existing scan events separately measure batch parsing/validation, directory
 enumeration and path construction/resolution. Directory membership, per-file
 bytes/hashes and post-build confirmation scans are unchanged. These measurements
 do not authorize altering the read-reuse boundary, risk policy or task identities.
+
+## Fresh-byte canonical memo and full-copy acceptance
+
+The previous adjacent reuse did not remove the full canonical computations at
+each check. Build's read-only `_batch_worker` and send-control paths now request
+`status_snapshot` at the original read positions. Each request still reads and
+hashes the complete current file, checks the current schema bytes, validates its
+full record and verifies workflow identity. The returned Mapping owns only a
+recursively immutable source; field/selector results are detached ordinary JSON.
+The ordinary mutable `status`, begin/complete paths and full write-lock checks
+remain available and unchanged in purpose.
+
+Canonical memo keys include resolved path, current raw byte SHA, schema SHA and
+`hermes-canonical-json/v1`. The unchanged canonical function executes lazily at
+the original fingerprint condition, not before pause/stop checks. Unchanged
+immutable versions reuse that scalar; mutable dictionaries always recalculate.
+The raw SHA never substitutes for the canonical fingerprint. Failed derivations
+are not cached, and no permission, pause, budget or native-proof verdict is memoized.
+Matching-card selectors retain all duplicate rows; caller conditions still run
+on every check. Reads, template bytes, dependency membership/hash checks and
+post-build confirmation scans retain their prior positions and frequency.
+
+Acceptance separates fingerprint requests, actual builds, immutable version keys,
+cache hits and mutable fallbacks. On these snapshot paths actual successful
+canonical builds must follow content/schema/rule versions rather than check count.
+Copy counters separately report full/field nanoseconds and logical value nodes,
+plus per-origin full copies, field copies and snapshot reads. A one-time canonical
+materialization is counted as a full copy. Reduction of the old 707 full copies
+must be supported by these origins and total copy time, not merely renaming a
+large copy as a projection. Negative cases cover same-mtime/no-revision changes,
+schema/rule/path binding, returned-object mutation, duplicate cards, and unchanged
+pause/cancel/error precedence. Log only operation aggregates, never one event per read.

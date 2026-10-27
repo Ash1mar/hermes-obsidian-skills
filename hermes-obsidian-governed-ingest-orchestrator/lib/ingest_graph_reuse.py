@@ -10,6 +10,7 @@ from hermes_source_units import ContractError
 from hermes_source_units.record_snapshot import record_snapshot
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.runtime_telemetry import span
+from hermes_source_units.verified_snapshot import VerifiedSnapshot
 import hermes_source_units.validation as contracts
 
 _SCOPE=ContextVar('ingest_graph_reuse',default=None)
@@ -21,23 +22,33 @@ def graph_scope():
     if _SCOPE.get() is not None:
         yield _SCOPE.get();return
     scope={'condition':threading.Condition(),'lanes':{},'lookups':0,'hits':0,'builds':0,'cohorts':0,
-           'fingerprint_calls':0,'fingerprint_ns':0,'fingerprint_reuses':0,'proof_copy_ns':0}
+           'fingerprint_calls':0,'fingerprint_ns':0,'fingerprint_reuses':0,'proof_copy_ns':0,
+           'fingerprint_requests':0,'fingerprint_cache_hits':0,'fingerprint_fallback_calls':0}
     token=_SCOPE.set(scope)
     proof_token=_PROOF.set(None)
     try:yield scope
     finally:
         with span('graph_reuse_summary',**{k:scope[k] for k in ('lookups','hits','builds','cohorts',
-                'fingerprint_calls','fingerprint_ns','fingerprint_reuses','proof_copy_ns')}):pass
+                'fingerprint_calls','fingerprint_ns','fingerprint_reuses','proof_copy_ns',
+                'fingerprint_requests','fingerprint_cache_hits','fingerprint_fallback_calls')}):pass
         _PROOF.reset(proof_token)
         _SCOPE.reset(token)
 
 
 def workflow_fingerprint(workflow):
-    """Same canonical identity, computed anew at each original boundary."""
-    started=time.monotonic_ns();value=fingerprint(workflow);scope=_SCOPE.get()
+    """Same canonical identity; only immutable fresh-read snapshots can memoize."""
+    if isinstance(workflow,VerifiedSnapshot):
+        value,built,elapsed=workflow.canonical_result();fallback=False
+    else:
+        started=time.monotonic_ns();value=fingerprint(workflow)
+        built=True;elapsed=time.monotonic_ns()-started;fallback=True
+    scope=_SCOPE.get()
     if scope is not None:
         with scope['condition']:
-            scope['fingerprint_calls']+=1;scope['fingerprint_ns']+=time.monotonic_ns()-started
+            scope['fingerprint_requests']+=1
+            scope['fingerprint_calls']+=int(built);scope['fingerprint_ns']+=elapsed
+            scope['fingerprint_cache_hits']+=int(not built)
+            scope['fingerprint_fallback_calls']+=int(fallback)
     return value
 
 
