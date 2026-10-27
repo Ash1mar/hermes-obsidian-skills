@@ -465,7 +465,9 @@ def test_passive_stream_timing_preserves_request_callback_and_live_guard(sdk,mon
     row=agent.fixed_stream_timing[0]
     assert row['native_stream_entry_at_ms']<=row['live_guard_finished_at_ms']<=row['first_delta_at_ms']<=row['native_stream_return_at_ms']
     assert row['first_event_at_ms']==int(round(agent._last_api_first_chunk_at*1000))
-    assert all(type(v) is int for v in row.values())
+    assert row['native_stream_entry_monotonic_ns']<=row['live_guard_finished_monotonic_ns']<=row['first_delta_monotonic_ns']<=row['native_stream_return_monotonic_ns']
+    assert row['first_event_monotonic_ns'] is None and isinstance(row['clock_domain'],str)
+    assert all(type(v) is int for k,v in row.items() if k.endswith('_at_ms') or (k.endswith('_monotonic_ns') and v is not None))
 
 
 def test_passive_timing_does_not_bypass_stopped_final_guard(sdk,monkeypatch):
@@ -476,3 +478,29 @@ def test_passive_timing_does_not_bypass_stopped_final_guard(sdk,monkeypatch):
     request=api_request(agent,form='responses');agent._apply_fixed_format(request)
     with pytest.raises(StopNativeCall):agent._run_codex_stream(request)
     assert len(agent.fixed_stream_timing)==1 and not sdk.requests
+
+
+@pytest.mark.parametrize('positional',[False,True])
+def test_dual_clock_survives_wall_jump_and_preserves_callback_exception(sdk,monkeypatch,positional):
+    agent=guarded_agent(sdk);parent=type(agent).__mro__[1];checks=[];seen=[]
+    samples=iter({'wall_time_ns':wall*1_000_000_000,'monotonic_ns':mono*1_000_000_000,'clock_domain':'isolated'}
+        for wall,mono in ((100,1),(99,2),(98,3),(97,4)))
+    monkeypatch.setattr(fixed,'clock_sample',lambda:next(samples))
+    failure=ValueError('original callback failure')
+    def callback(*args,**kwargs):
+        seen.append((args,kwargs));raise failure
+    def stream(self,request,client=None,on_first_delta=None):
+        self._last_api_first_chunk_at=98.5
+        on_first_delta('same',key='same')
+    monkeypatch.setattr(parent,'_run_codex_stream',stream,raising=False)
+    request=api_request(agent,form='responses');agent._apply_fixed_format(request)
+    expected=copy.deepcopy(request);agent.fixed_live_control_check=lambda:checks.append(1)
+    with pytest.raises(StopNativeCall) as caught:
+        if positional:agent._run_codex_stream(request,None,callback)
+        else:agent._run_codex_stream(request,on_first_delta=callback)
+    assert caught.value.__cause__ is failure and checks==[1] and request==expected
+    assert seen==[(('same',),{'key':'same'})]
+    row=agent.fixed_stream_timing[0]
+    assert row['native_stream_return_at_ms']<row['native_stream_entry_at_ms']
+    assert row['native_stream_return_monotonic_ns']-row['native_stream_entry_monotonic_ns']==3_000_000_000
+    assert row['first_event_monotonic_ns'] is None and row['first_event_at_ms']==98500
