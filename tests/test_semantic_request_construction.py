@@ -495,10 +495,10 @@ def test_dual_clock_survives_wall_jump_and_preserves_callback_exception(sdk,monk
     monkeypatch.setattr(parent,'_run_codex_stream',stream,raising=False)
     request=api_request(agent,form='responses');agent._apply_fixed_format(request)
     expected=copy.deepcopy(request);agent.fixed_live_control_check=lambda:checks.append(1)
-    with pytest.raises(ValueError) as caught:
+    with pytest.raises(StopNativeCall) as caught:
         if positional:agent._run_codex_stream(request,None,callback)
         else:agent._run_codex_stream(request,on_first_delta=callback)
-    assert caught.value is failure and checks==[1] and request==expected
+    assert caught.value.__cause__ is failure and checks==[1] and request==expected
     assert seen==[(('same',),{'key':'same'})]
     row=agent.fixed_stream_timing[0]
     assert row['native_stream_return_at_ms']<row['native_stream_entry_at_ms']
