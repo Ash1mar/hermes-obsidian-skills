@@ -27,6 +27,7 @@ from hermes_source_units.workflow_guard import workflow_write_guard, worker_bind
 from hermes_source_units.runtime_telemetry import measured, span
 from ingest_graph_reuse import derive as derive_graph,graph_scope
 from ingest_completion import completed as completion_proof,completion_scope,resource_record,failure_record
+from hermes_source_units.verified_json import workflow_read_scope
 
 
 def _fail(code: str, message: str) -> None:
@@ -1430,6 +1431,7 @@ class IngestKanbanAdapter:
 
     @measured('reconciliation', lambda self, request, **kwargs: {'vault':self.workflow.vault, 'workflow_id':request['workflow_id']})
     @graph_scope()
+    @workflow_read_scope
     def sync(self, request: Mapping[str, Any], *, yield_requested=None) -> dict[str, Any]:
         if (os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
                 or os.environ.get("HERMES_KANBAN_TASK")):

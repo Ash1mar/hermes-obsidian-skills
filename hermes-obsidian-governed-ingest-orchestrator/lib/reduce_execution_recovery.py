@@ -7,6 +7,7 @@ import re
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _vault_path, _write_atomic
 from hermes_source_units.validation import fingerprint, record_validation_scope
+from hermes_source_units.verified_json import workflow_read_scope
 
 
 def fail(code, message):
@@ -41,6 +42,7 @@ def cancelled_projection_binding(adapter,value,node,card,report,binding,path,cur
     return original
 
 
+@workflow_read_scope
 def recover_reduce_execution(adapter, request, *, dry_run=False):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         fail('ACCESS_DENIED', 'Reduce recovery requires a trusted operator')

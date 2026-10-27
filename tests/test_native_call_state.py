@@ -90,7 +90,7 @@ def test_failure_evidence_does_not_change_ordinal_or_turn_into_output(tmp_path):
 def test_background_codex_signal_reaches_owner_without_masking_or_retry(sdk,monkeypatch,guard_failure):
     import threading
     agent=guarded_agent(sdk);base=type(agent).__mro__[1];calls_seen=[];thread_errors=[]
-    def backend(_self,request):
+    def backend(_self,request,**kwargs):
         calls_seen.append(1);raise ConnectionError('isolated TLS EOF')
     monkeypatch.setattr(base,'_run_codex_stream',backend,raising=False)
     def parent(_self,request):

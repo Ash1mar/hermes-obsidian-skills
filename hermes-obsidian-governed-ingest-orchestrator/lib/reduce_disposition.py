@@ -40,15 +40,8 @@ def contract_hash():
 
 
 def reports(adapter, binding):
-    for pointer in adapter.workflow.status(binding['workflow_id']).get('execution_recovery_history', []):
-        path = _vault_path(adapter.workflow.vault, pointer['report_ref'])
-        if hashlib.sha256(path.read_bytes()).hexdigest() != pointer['report_sha256']:
-            fail('recovery report changed')
-        report = _load_json(path)
-        if report['request'].get('recovery_scope') == SCOPE:
-            for entry in report['entries']:
-                if entry['node'] == binding['node']:
-                    yield pointer, entry
+    from fixed_history import entries
+    yield from entries(adapter,binding,scopes=(SCOPE,),code='RECOVERY_NOT_ALLOWED',message='recovery report changed')
 
 
 def output_permit(adapter, binding, path, record):

@@ -143,21 +143,16 @@ def verify(adapter,w,node,binding,entry,runs):
 
 def review_permit(adapter,binding,path,record):
     """Read current sealed admission; caller separately checks live worker authority."""
-    w=adapter.workflow.status(binding['workflow_id'])
-    for pointer in reversed(w.get('execution_recovery_history',[])):
-        rp=_vault_path(adapter.workflow.vault,pointer['report_ref']);raw=rp.read_bytes()
-        if hashlib.sha256(raw).hexdigest()!=pointer['report_sha256']:fail('Build recovery report changed')
-        report=json.loads(raw)
-        if report['request'].get('recovery_scope')!=SCOPE:continue
-        for entry in report['entries']:
-            if entry['node']!=binding['node']:continue
-            for review in entry['build_review_recovery']['reviews']:
-                if review['journal_name']!=path.name or not review['unknown']:continue
-                count=review['preserved_attempt_count']
-                if (record['input_sha256']!=review['input_sha256'] or record['schema_sha256']!=review['schema_sha256']
-                        or fingerprint(record['attempts'][:count])!=review['prior_attempts_sha256']
-                        or len(record['attempts'])>count+review['additional_calls']):fail('original unknown review or finite grant changed')
-                return review
+    from fixed_history import entries
+    for _,entry in entries(adapter,binding,scopes=(SCOPE,),reverse=True,
+            code='RECOVERY_NOT_ALLOWED',message='Build recovery report changed'):
+        for review in entry['build_review_recovery']['reviews']:
+            if review['journal_name']!=path.name or not review['unknown']:continue
+            count=review['preserved_attempt_count']
+            if (record['input_sha256']!=review['input_sha256'] or record['schema_sha256']!=review['schema_sha256']
+                    or fingerprint(record['attempts'][:count])!=review['prior_attempts_sha256']
+                    or len(record['attempts'])>count+review['additional_calls']):fail('original unknown review or finite grant changed')
+            return review
     return None
 
 def execute_review(adapter,binding,view,caller,model_call,validator,path,record,permit):
