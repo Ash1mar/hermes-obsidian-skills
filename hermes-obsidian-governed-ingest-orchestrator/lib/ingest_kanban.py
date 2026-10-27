@@ -26,8 +26,21 @@ from hermes_source_units.ingest_workflow import SOURCE_FAILURE_CODES
 from hermes_source_units.workflow_guard import workflow_write_guard, worker_binding, WORKER_LOCK_TIMEOUT
 from hermes_source_units.runtime_telemetry import measured, span
 from ingest_graph_reuse import derive as derive_graph,graph_scope,workflow_fingerprint
+from hermes_source_units.verified_snapshot import VerifiedSnapshot
 from ingest_completion import completed as completion_proof,completion_scope,resource_record,failure_record
 from hermes_source_units.verified_json import workflow_read_scope
+
+
+def _check_workflow(service,workflow_id,origin):
+    read=getattr(service,'status_snapshot',None)
+    return read(workflow_id,origin=origin) if read else service.status(workflow_id)
+
+
+def _matching_cards(workflow,node,task_id):
+    if isinstance(workflow,VerifiedSnapshot):
+        return workflow.select(('matching_cards',node,task_id),lambda value:[
+            row for row in value['kanban']['task_map'] if row['node']==node and row.get('task_id')==task_id])
+    return [row for row in workflow['kanban']['task_map'] if row['node']==node and row.get('task_id')==task_id]
 
 
 def _fail(code: str, message: str) -> None:
@@ -1967,10 +1980,11 @@ class IngestKanbanAdapter:
         return workflow, node, source_info
 
     def _batch_worker(self, request: Mapping[str, Any], *, beginning: bool = False,
-                      completing: bool = False) -> tuple[dict[str, Any], Node]:
+                      completing: bool = False, readonly: bool = False) -> tuple[dict[str, Any], Node]:
         if not self.enable_workers:
             _fail("WORKER_CONTRACT_UNAVAILABLE", "fixed worker templates are not installed")
-        workflow = self.workflow.status(str(request["workflow_id"]))
+        workflow = (_check_workflow(self.workflow,str(request['workflow_id']),'kanban.batch_check')
+            if readonly else self.workflow.status(str(request["workflow_id"])))
         from hermes_source_units.citation_amendment import guard
         guard(self.workflow.vault,workflow['workflow_id'],str(request['node']))
         if not completing:
@@ -1984,8 +1998,7 @@ class IngestKanbanAdapter:
         node = next((item for item in nodes if item.name == request["node"]), None)
         if node is None or node.kind in ("source-prepare", "exact-plan", "pass-slice") or node.gate:
             _fail("ACCESS_DENIED", "card is not a dispatchable batch worker")
-        matching = [item for item in workflow["kanban"]["task_map"]
-                    if item["node"] == node.name and item.get("task_id") == request["task_id"]]
+        matching = _matching_cards(workflow,node.name,request['task_id'])
         key = f"ingest:{workflow['workflow_id']}:{node.kind}:{node.input_fingerprint}"
         if len(matching) != 1 or matching[0]["idempotency_key"] != key:
             _fail("STALE_INPUT", "batch worker card binding changed")
@@ -2315,7 +2328,7 @@ class IngestKanbanAdapter:
             return {"ok": True, "node": node.name, "source": source,
                     "source_coverage": self.workflow.source_coverage(workflow)}
         if not str(request["node"]).startswith("pass-slice:"):
-            workflow, node = self._batch_worker(request)
+            workflow, node = self._batch_worker(request,readonly=request['node']=='build-finalize')
             checked = {"ok": True, "node": node.name, "batch_id": workflow["batch_id"],
                     "release_id": workflow.get("release_id"),
                     "input_fingerprint": node.input_fingerprint}
@@ -2356,7 +2369,8 @@ class IngestKanbanAdapter:
         guard(self.workflow.vault,request['workflow_id'],request['node'])
         if not self.enable_workers or request['node'] not in ('global-reduce','build-finalize'):
             _fail('ACCESS_DENIED','live page control requires a fully checked reducer or Build worker')
-        workflow=self.workflow.status(request['workflow_id'])
+        workflow=(_check_workflow(self.workflow,request['workflow_id'],'kanban.live_control')
+            if request['node']=='build-finalize' else self.workflow.status(request['workflow_id']))
         self.workflow.assert_not_paused(workflow)
         self.workflow.pinned_templates(workflow)
         if (workflow['cancel_requested'] or workflow['batch_id']!=checked['batch_id']
@@ -2374,7 +2388,7 @@ class IngestKanbanAdapter:
                 _fail('STALE_INPUT','Build live check lacks its adjacent graph byte proof')
             recheck_dependencies(self.workflow,checked['dependency_proof'])
         key=f"ingest:{workflow['workflow_id']}:{kind}:{checked['input_fingerprint']}"
-        matching=[c for c in workflow['kanban']['task_map'] if c['node']==request['node'] and c.get('task_id')==request['task_id']]
+        matching=_matching_cards(workflow,request['node'],request['task_id'])
         pin=next(p for p in workflow['template_pins'] if p['kind']==kind)
         if len(matching)!=1 or matching[0]['idempotency_key']!=key or request['template_hash']!=pin['template_hash']:
             _fail('STALE_INPUT','page task binding or template changed after full check')

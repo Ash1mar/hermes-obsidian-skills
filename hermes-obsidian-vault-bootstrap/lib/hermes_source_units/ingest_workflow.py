@@ -94,8 +94,10 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
         self._path(workflow_id)
         return _vault_path(self.vault, f"{WORKFLOW_ROOT}/.locks/{workflow_id}.lock")
 
-    def _load(self, workflow_id: str, *, fields=None) -> dict[str, Any]:
+    def _load(self, workflow_id: str, *, fields=None, readonly=False, origin=None) -> dict[str, Any]:
         cache=getattr(self,'_verified_json_reads',None)
+        from .verified_json import caller_origin
+        origin=origin or caller_origin()
         from .record_snapshot import snapshot_json
         path=self._path(workflow_id)
         captured,value=snapshot_json(path)
@@ -107,7 +109,8 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
         else:
             value=cache.read(path,kind='ingest_workflow',validator=validate_record,
                 project=project if selected is not None else None,
-                projection_key=('workflow_fields',workflow_id,selected) if selected is not None else None)
+                projection_key=('workflow_fields',workflow_id,selected) if selected is not None else None,
+                readonly=readonly,origin=origin)
         if value["workflow_id"] != workflow_id:
             _fail("INVALID_SCHEMA", "workflow file identity mismatch")
         if selected is not None and (captured or cache is None):return copy.deepcopy(project(value))
@@ -115,7 +118,12 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
 
     def status_fields(self, workflow_id: str, fields) -> dict[str, Any]:
         """Internal pure projection after the same fresh bytes/schema/identity check."""
-        return self._load(workflow_id,fields=tuple(fields))
+        from .verified_json import caller_origin
+        return self._load(workflow_id,fields=tuple(fields),origin='fields:'+caller_origin())
+
+    def status_snapshot(self, workflow_id: str, *, origin):
+        """Read-only check input, with no cached pause/permission/budget verdict."""
+        return self._load(workflow_id,readonly=True,origin=origin)
 
     @contextmanager
     def read_projection(self):
@@ -129,7 +137,12 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
         try:
             with span('workflow_read_projection',vault=self.vault) as trace:
                 try:yield
-                finally:trace.update(cache.stats)
+                finally:
+                    with cache.lock:
+                        trace.update(cache.stats)
+                        trace['copy_origins']=copy.deepcopy(cache.copy_origins)
+                        trace['snapshot_origins']=dict(cache.snapshot_origins)
+                        trace['snapshot_versions']=sorted(cache.snapshot_versions,key=repr)
         finally:
             self._verified_json_reads=None
 
@@ -269,7 +282,8 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
         return value
 
     def status(self, workflow_id: str, compact: bool = False) -> dict[str, Any]:
-        value = self._load(workflow_id)
+        from .verified_json import caller_origin
+        value = self._load(workflow_id,origin='status:'+caller_origin())
         if not compact:
             return value
         result = {key: value[key] for key in ("workflow_id", "revision", "state",

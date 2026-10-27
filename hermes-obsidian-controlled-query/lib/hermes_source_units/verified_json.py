@@ -4,6 +4,8 @@ import hashlib
 import json
 import threading
 import time
+import sys
+from collections.abc import Mapping
 from collections import OrderedDict
 from contextlib import nullcontext
 from functools import wraps
@@ -18,9 +20,16 @@ class VerifiedJsonReads:
         self.schema_sha=None
         self.stats={name:0 for name in ('reads','bytes','parses','validations','hits','projections',
             'read_hash_ns','parse_ns','validation_ns','projection_ns','copy_ns','index_ns',
-            'index_builds','full_copies','projected_copies','copied_value_nodes')}
+            'index_builds','full_copies','projected_copies','copied_value_nodes','full_copy_ns','projected_copy_ns',
+            'full_copy_nodes','projected_copy_nodes','snapshot_reads','freeze_ns','canonical_requests',
+            'canonical_builds','canonical_hits','canonical_ns','immutable_versions')}
+        self.copy_origins={}
+        self.snapshot_origins={}
+        self.snapshot_versions=set()
 
-    def read(self,path,*,expected=None,kind=None,validator=None,project=None,projection_key=None,index=None,index_key=None):
+    def read(self,path,*,expected=None,kind=None,validator=None,project=None,projection_key=None,index=None,index_key=None,
+             readonly=False,canonical_version=None,origin=None):
+        origin=origin or caller_origin()
         path=Path(path)
         started=time.monotonic_ns()
         try:data=path.read_bytes()
@@ -54,11 +63,23 @@ class VerifiedJsonReads:
                     started=time.monotonic_ns()
                     validator(kind,value);self.stats['validations']+=1
                     self.stats['validation_ns']+=time.monotonic_ns()-started
-                cached={'digest':digest,'value':value,'views':{},'indexes':{},'sizes':{},'validator':validator}
+                cached={'digest':digest,'value':value,'views':{},'indexes':{},'sizes':{},'documents':{},'validator':validator}
                 self.entries[key]=cached
             else:self.stats['hits']+=1
             self.entries.move_to_end(key)
             while len(self.entries)>self.limit:self.entries.popitem(last=False)
+            if readonly:
+                if project is not None or index is not None:raise ValueError('readonly snapshot requires the complete verified source')
+                from .verified_snapshot import SnapshotDocument,VerifiedSnapshot,CANONICAL_RULE_VERSION
+                version=CANONICAL_RULE_VERSION if canonical_version is None else canonical_version
+                document_key=(key[0],digest,schema,version)
+                if document_key not in cached['documents']:
+                    started=time.monotonic_ns();cached['documents'][document_key]=SnapshotDocument(cached['value'],self,document_key)
+                    self.stats['freeze_ns']+=time.monotonic_ns()-started
+                    self.stats['immutable_versions']+=1;self.snapshot_versions.add(document_key)
+                self.stats['snapshot_reads']+=1
+                self.snapshot_origins[origin]=self.snapshot_origins.get(origin,0)+1
+                return VerifiedSnapshot(cached['documents'][document_key],origin)
             source=cached['value']
             if index is not None:
                 if index_key is None:raise ValueError('pure index requires an explicit key')
@@ -83,17 +104,28 @@ class VerifiedJsonReads:
                 if view_key not in cached['sizes']:cached['sizes'][view_key]=_value_nodes(result)
                 volume=cached['sizes'][view_key]
             started=time.monotonic_ns();returned=copy.deepcopy(result)
-            self.stats['copy_ns']+=time.monotonic_ns()-started
-            self.stats['projected_copies' if project is not None else 'full_copies']+=1
-            if volume is not None:self.stats['copied_value_nodes']+=volume
+            self.note_copy(origin,project is None,time.monotonic_ns()-started,volume)
             return returned
+
+    def note_copy(self,origin,full,elapsed,nodes):
+        kind='full' if full else 'projected'
+        self.stats['copy_ns']+=elapsed;self.stats[kind+'_copies']+=1;self.stats[kind+'_copy_ns']+=elapsed
+        if nodes is not None:
+            self.stats['copied_value_nodes']+=nodes;self.stats[kind+'_copy_nodes']+=nodes
+        row=self.copy_origins.setdefault(kind+':'+origin,{'calls':0,'ns':0,'value_nodes':0})
+        row['calls']+=1;row['ns']+=elapsed;row['value_nodes']+=nodes or 0
+
+
+def caller_origin():
+    frame=sys._getframe(2)
+    return Path(frame.f_code.co_filename).name+':'+frame.f_code.co_name+':'+str(frame.f_lineno)
 
 
 def _value_nodes(value):
     pending=[value];count=0
     while pending:
         current=pending.pop();count+=1
-        if isinstance(current,dict):pending.extend(current.values())
+        if isinstance(current,Mapping):pending.extend(current.values())
         elif isinstance(current,(list,tuple)):pending.extend(current)
     return count
 
