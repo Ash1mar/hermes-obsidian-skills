@@ -20,6 +20,14 @@ separately from full worker_authority_check; compare new first-attempt calls,
 saved-response replay, startup and cancellation drain separately. A five-minute
 window is a bounded observation, not Build acceptance or release authorization.
 
+Stopped Build admission also preserves an exact single rejected ordinal whose
+WORKFLOW_STOPPED diagnostic has no sealed native outcome. Require its authentic
+ended native owner/run, unchanged full snapshot, request, schema and journal.
+Seal it as an unproven stopped hold, never "not called"; grant no replay or new
+call for that ordinal, including explicitly requested unknown retries. Other
+untouched pages may continue through the same supported recovery entry. Missing
+or different diagnostics, owners, states and sessions retain the existing block.
+
 ## Current Reduce capacity observation
 
 The user explicitly raised independent Reduce page-body concurrency to a fixed
