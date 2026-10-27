@@ -1,4 +1,5 @@
 """Invocation-local graph snapshots and closed scan cohorts, never permission."""
+import copy
 import hashlib
 import threading
 import time
@@ -12,6 +13,7 @@ from hermes_source_units.runtime_telemetry import span
 import hermes_source_units.validation as contracts
 
 _SCOPE=ContextVar('ingest_graph_reuse',default=None)
+_PROOF=ContextVar('ingest_graph_proof',default=None)
 
 
 @contextmanager
@@ -20,8 +22,11 @@ def graph_scope():
         yield _SCOPE.get();return
     scope={'condition':threading.Condition(),'lanes':{},'lookups':0,'hits':0,'builds':0,'cohorts':0}
     token=_SCOPE.set(scope)
+    proof_token=_PROOF.set(None)
     try:yield scope
-    finally:_SCOPE.reset(token)
+    finally:
+        _PROOF.reset(proof_token)
+        _SCOPE.reset(token)
 
 
 def dependencies(service,workflow,**fields):
@@ -40,12 +45,17 @@ def dependencies(service,workflow,**fields):
             digest=hashlib.sha256(data).digest();records[path]=(data,digest)
             hash_seconds+=time.monotonic()-started;byte_count+=len(data)
         read(batch_path)
+        directories={}
         with span('graph_dependency_enumeration'):
             with record_snapshot(records):batch=k._batch(bid)
-            paths={batch_path,*k._slice_root(bid).glob('*.json')}
+            def members(directory):
+                found=tuple(directory.glob('*.json'))
+                directories[str(directory)]=sorted(str(p) for p in found)
+                return found
+            paths={batch_path,*members(k._slice_root(bid))}
             for tid in batch['task_ids']:
                 paths.add(k._task_path(tid))
-                paths.update((service.vault/f'_system/knowledge-builds/task-{tid}/passes').glob('*.json'))
+                paths.update(members(service.vault/f'_system/knowledge-builds/task-{tid}/passes'))
         for path in sorted(paths):
             if path not in records:read(path)
             started=time.monotonic();name=str(path).encode()
@@ -53,7 +63,8 @@ def dependencies(service,workflow,**fields):
             hash_seconds+=time.monotonic()-started
         trace.update(files=len(paths),bytes=byte_count,read_ms=round(read_seconds*1000,3),
                      hash_ms=round(hash_seconds*1000,3))
-        return {'digest':h.digest(),'records':records,'files':len(paths),'bytes':byte_count}
+        return {'digest':h.digest(),'records':records,'files':len(paths),'bytes':byte_count,
+                'directories':directories}
 
 
 def _calculate(service,workflow,build,lane,scope,cohort,size):
@@ -63,6 +74,8 @@ def _calculate(service,workflow,build,lane,scope,cohort,size):
     # bytes independently of workflow revision, file sizes and timestamps too.
     schema=Path(contracts.__file__).with_name('schemas')/'contracts.json'
     contract=hashlib.sha256(schema.read_bytes()).digest()
+    lane['proof']={'files':{str(p):digest.hex() for p,(_,digest) in before['records'].items()},
+        'directories':before['directories'],'schema_sha256':contract.hex()}
     key=(fingerprint(workflow),contract,before['digest'])
     with span('graph_cache_lookup',**meta) as trace:
         scope['lookups']+=1
@@ -82,6 +95,34 @@ def _calculate(service,workflow,build,lane,scope,cohort,size):
             raise ContractError('SOURCE_CHANGED','$','graph dependencies changed during calculation')
         lane.update(key=key,nodes=nodes)
         return nodes
+
+
+def checked_dependencies(service,workflow):
+    """Copy the graph's actual byte/member proof for one adjacent Build call."""
+    scope=_SCOPE.get()
+    captured=_PROOF.get()
+    if scope is None or captured is None or captured[:2]!=(str(service.vault),fingerprint(workflow)):
+        # Standalone worker checks may not own a graph_scope. Do not offer the
+        # optimized path without an actual captured graph proof.
+        return None
+    return copy.deepcopy(captured[2])
+
+
+def recheck_dependencies(service,proof):
+    """Hash current bytes/members; reuse no permission, timestamp or old result."""
+    with span('build_dependency_recheck',vault=service.vault,files=len(proof['files'])):
+        schema=Path(contracts.__file__).with_name('schemas')/'contracts.json'
+        if hashlib.sha256(schema.read_bytes()).hexdigest()!=proof['schema_sha256']:
+            raise ContractError('SOURCE_CHANGED','$','Build schema changed after full check')
+        for name,expected in proof['directories'].items():
+            if sorted(str(p) for p in Path(name).glob('*.json'))!=expected:
+                raise ContractError('SOURCE_CHANGED','$','Build dependency membership changed after full check')
+        for name,expected in proof['files'].items():
+            try:actual=hashlib.sha256(Path(name).read_bytes()).hexdigest()
+            except OSError as exc:
+                raise ContractError('SOURCE_UNAVAILABLE','$','Build dependency unavailable after full check') from exc
+            if actual!=expected:
+                raise ContractError('SOURCE_CHANGED','$','Build dependency bytes changed after full check')
 
 
 def derive(service,workflow,build):
@@ -107,7 +148,8 @@ def derive(service,workflow,build):
         if leader:
             try:
                 nodes=_calculate(service,workflow,build,lane,scope,cohort,len(members))
-                result={'nodes':nodes,'cohort_id':cohort,'shared_callers':len(members)}
+                result={'nodes':nodes,'proof':copy.deepcopy(lane['proof']),
+                    'cohort_id':cohort,'shared_callers':len(members)}
             except BaseException as exc:
                 result={'error':exc,'cohort_id':cohort,'shared_callers':len(members)}
             finally:
@@ -117,4 +159,5 @@ def derive(service,workflow,build):
                     condition.notify_all()
         trace.update(cohort_id=ticket['cohort_id'],shared_callers=ticket['shared_callers'],scan_leader=leader)
         if 'error' in ticket:raise ticket['error']
+        _PROOF.set((*identity,ticket['proof']))
         return list(ticket['nodes'])

@@ -136,3 +136,41 @@ def test_recovery_report_tamper_blocks_readiness(stopped,vault):
     a,w,b,req,*_=stopped;result=a.recover_build_execution(req)
     (vault/result['report_ref']).write_text('{}')
     with pytest.raises(ContractError):a.workflow.assert_execution_ready(a.workflow.status(w['workflow_id']))
+
+
+def cancelled_without_outcome(stopped,vault):
+    a,w,b,req,jp,journal,view=stopped
+    attempt=journal['attempts'][0]
+    attempt.pop('call_outcome');attempt.pop('session_id')
+    attempt.update(diagnostic={'code':'WORKFLOW_STOPPED','reason':'Cancellation after reservation'})
+    jp.write_bytes(_json_bytes(journal))
+    ref=vault/f'_system/ledgers/ingest-workflows/{w["workflow_id"]}/reports/failed-{fingerprint("build-finalize")[:16]}.json'
+    failure=json.loads(ref.read_text());failure['error_code']='WORKFLOW_STOPPED';ref.write_bytes(_json_bytes(failure))
+    req['entries'][0]['failure_sha256']=hashlib.sha256(ref.read_bytes()).hexdigest()
+    req=workflow_request(**{k:v for k,v in req.items() if k!='input_digest'})
+    return a,w,b,req,jp,journal,view
+
+
+def test_stopped_unproven_reservation_is_preserved_as_hold_without_call_grant(stopped,vault):
+    a,w,b,req,jp,journal,view=cancelled_without_outcome(stopped,vault)
+    before=jp.read_bytes();result=a.recover_build_execution(req)
+    audit=json.loads((vault/result['report_ref']).read_text())['entries'][0]['build_review_recovery']
+    assert audit['additional_calls_granted']==0 and audit['reviews'][0]['unproven_stopped_attempt']
+    permit=recovery.review_permit(a,b,jp,journal)
+    assert permit['unknown'] and permit['additional_calls']==0 and jp.read_bytes()==before
+    with pytest.raises(ContractError,match='no new call authorized'):
+        recovery.execute_review(a,b,view,None,lambda *_:pytest.fail('unproven retry'),None,jp,journal,permit)
+    assert jp.read_bytes()==before and a.workflow.status(w['workflow_id'])['state']=='cancelled'
+
+
+@pytest.mark.parametrize('change',['grant','state','session','code','run'])
+def test_unproven_reservation_cannot_become_retry_authority(stopped,vault,change):
+    a,w,b,req,jp,journal,view=cancelled_without_outcome(stopped,vault)
+    if change=='grant':req=grant(req,jp,journal,vault)
+    elif change=='state':journal['attempts'][0]['state']='reserved'
+    elif change=='session':journal['attempts'][0]['session_id']='unsealed-session'
+    elif change=='code':journal['attempts'][0]['diagnostic']['code']='NATIVE_COMPLETION_UNKNOWN'
+    elif change=='run':journal['attempts'][0]['run_id']='unbound-run'
+    jp.write_bytes(_json_bytes(journal));before=files(vault)
+    with pytest.raises(ContractError):a.recover_build_execution(req)
+    assert files(vault)==before

@@ -76,7 +76,7 @@ def verify(adapter,w,node,binding,entry,runs):
                 or journal.get('input_sha256')!=fingerprint(view) or journal.get('schema_sha256')!=fingerprint(schema)):
             fail('review journal differs from current exact input/schema')
         images=select_images(view['original_evidence']['tasks'],image_catalog(adapter,view['original_evidence']))
-        attempts=journal['attempts'];decision=None;unknown=False
+        attempts=journal['attempts'];decision=None;unknown=False;unproven_stop=False
         if not attempts:fail('empty consumed review journal')
         for a in attempts:
             wire=prepare_request_projection('page-review',view,schema,images,a.get('correction'))['wire']
@@ -91,6 +91,19 @@ def verify(adapter,w,node,binding,entry,runs):
                 if a['state']=='valid':decision=answer.get('decision')
             else:
                 pointer=a.get('call_outcome',{});root=jp.parent.parent
+                if not pointer:
+                    # Cancellation may reject an already reserved ordinal before
+                    # a native outcome is sealed. Absence of a session/outcome
+                    # never proves "not called". Preserve this exact single
+                    # ordinal as held, with no replay or additional-call grant.
+                    owner=permitted[a['task_id']]
+                    if (len(attempts)!=1 or a.get('state')!='rejected'
+                            or a.get('correctable') is not False or a.get('session_id')
+                            or a.get('diagnostic',{}).get('code')!='WORKFLOW_STOPPED'
+                            or str(a.get('run_id')) not in owner['ended_run_ids']):
+                        fail('unknown review lacks an immutable native outcome')
+                    unproven_stop=True;unknown=True
+                    continue
                 rp=(root/pointer.get('report_ref','')).resolve()
                 if (rp.parent!=root/'call-failures' or not rp.is_file()
                         or hashlib.sha256(rp.read_bytes()).hexdigest()!=pointer.get('report_sha256')):
@@ -104,7 +117,7 @@ def verify(adapter,w,node,binding,entry,runs):
         unknown=not bool(attempts[-1].get('audit_ref'))
         ref=jp.relative_to(adapter.workflow.vault).as_posix();grant=requested.get(ref)
         if grant:
-            if (not unknown or len(attempts)!=1 or attempts[0].get('state') not in ('reserved','rejected')
+            if (unproven_stop or not unknown or len(attempts)!=1 or attempts[0].get('state') not in ('reserved','rejected')
                     or attempts[0].get('audit_ref') or fingerprint(attempts[0])!=grant['attempt_sha256']):
                 fail('one explicit extra call may target only its original unknown ordinal')
             used.add(ref)
@@ -113,6 +126,8 @@ def verify(adapter,w,node,binding,entry,runs):
             'schema_sha256':fingerprint(schema),'preserved_attempt_count':len(attempts),
             'prior_attempts_sha256':fingerprint(attempts),'decision':decision,'unknown':unknown,
             'additional_calls':1 if grant else 0})
+        if unproven_stop:
+            reviews[-1]['unproven_stopped_attempt']=True
     if used!=set(requested):fail('unknown-call grant does not match this Build snapshot')
     for jp in (root/'output-attempts').glob('*.json'):
         j=_load_json(jp)

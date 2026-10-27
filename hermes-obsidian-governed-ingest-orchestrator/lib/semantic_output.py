@@ -298,7 +298,7 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
     from fixed_semantic import prepare_request_projection,decode_semantic_response,HermesCaller,attach_receipt
     from fixed_semantic_media import image_catalog,select_images
     from fixed_semantic_recovery import native_reply
-    adapter.worker_check(binding)
+    entry_checked=adapter.worker_check(binding)
     path=path_for(adapter,binding,phase,view)
     output_schema=schema_for(phase,view)
     record=_load_json(path) if path.exists() else None
@@ -366,7 +366,16 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
         else:
             # Replay has fresh checks before/after native transcript proof.
             # New calls require fresh authority immediately before reservation.
-            adapter.worker_check(binding)
+            # Pure request construction has not changed the evidence checked at
+            # entry. Build rechecks live control before its original reservation;
+            # corrections after a model call still require a fresh full check.
+            adjacent_build=(phase=='page-review' and binding['node']=='build-finalize'
+                and index==0 and isinstance(caller,HermesCaller)
+                and isinstance(entry_checked,dict) and 'dependency_proof' in entry_checked)
+            if adjacent_build:
+                adapter.worker_control_check(binding,checked=entry_checked)
+            else:
+                adapter.worker_check(binding)
             boundary,_=output_boundary(adapter,binding)
             if boundary and path.name!=boundary['journal_name']:
                 raise ContractError('WORKFLOW_STOPPED','$','bounded resume permits saved replay and only its selected output call')
@@ -381,7 +390,9 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
             write(path,record)
             token=ACTIVE.set((path,record,index));call_ref=None;draft=None;error=None
             try:
-                draft,call_ref=model_call(adapter,binding,phase,view,caller,30000,correction,attempt_limit=2 if correction else 1)
+                options={'_checked':entry_checked} if adjacent_build else {}
+                draft,call_ref=model_call(adapter,binding,phase,view,caller,30000,correction,
+                    attempt_limit=2 if correction else 1,**options)
                 note_audit(call_ref)
             except ContractError as exc:
                 error=exc;call_ref=attempt.get('audit_ref') or getattr(exc,'semantic_audit_ref',None)
