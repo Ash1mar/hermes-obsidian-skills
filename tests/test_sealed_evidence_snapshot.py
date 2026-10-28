@@ -227,5 +227,7 @@ def test_absent_dependency_directory_uses_parent_seal_without_creating_data(snap
         assert str(missing) in view.manifest['absent_directories']
         with view.guard((str(missing),)):pass
         with pytest.raises(PermissionError):missing.mkdir(parents=True)
-        with pytest.raises(PermissionError):missing.symlink_to(s.report)
+        parent=Path(view.manifest['absent_directory_parents'][str(missing)])
+        first_missing=parent/missing.relative_to(parent).parts[0]
+        with pytest.raises(PermissionError):first_missing.symlink_to(s.report)
     assert not missing.exists()
