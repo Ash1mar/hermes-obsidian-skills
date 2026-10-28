@@ -1,10 +1,18 @@
 # Recovery evidence snapshot lifecycle decision
 
-Status: evaluated for the current staged Build batch; cross-authentication reuse
-is not enabled. This is the third batch's feasibility/contract result, not a
-storage migration or a claim that cumulative dependency GB has been removed.
+Status: the initial evaluation below remains the baseline contract. The opt-in
+Linux implementation now supplies kernel write exclusion, constrained consumers
+and a privileged revocation lifecycle; see [sealed evidence reads](sealed-evidence-reads.md).
+Unsealed files still use the original full reads. This does not migrate workflow
+controls or change historical identities.
 
-## Observed authority and writers
+## Baseline evaluation before kernel sealing
+
+The remainder records why the previous ordinary-file design could not reuse
+cross-check evidence. The linked implementation adds the missing isolation only
+for its explicitly sealed scope; the baseline still applies everywhere else.
+
+### Observed authority and writers
 
 `fixed_semantic_recovery.native_reply` checks worker authority on entry where
 required and always on exit. `semantic_output.execute` supplies its adjacent

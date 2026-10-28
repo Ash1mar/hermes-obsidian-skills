@@ -555,3 +555,12 @@ installed between different `entries`/`journal_rows` calls, across a callback,
 between model calls, or between successive native authentications. A raced rewrite
 after capture cannot introduce unverified interpretation; the next query rejects
 the changed hash. The exact finite attempts, grants and request projection remain.
+# Revocable read-volume reduction
+
+The optional [Linux sealed evidence protocol](sealed-evidence-reads.md) replaces
+repeated static evidence content reads only after actual kernel write protection
+and a live protector are verified. Full workflow, batch, budgets and journals stay
+fresh, and domain commits bypass reuse for complete verification. Measure protector
+preparation, consumer first reads, history/report hits, graph/recheck hits, full
+commits, active window and cancellation drain separately. Never infer avoided GB
+from a changed aggregate counter or count a network completion-unknown as valid.
