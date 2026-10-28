@@ -400,13 +400,20 @@ def records_as_strings(records):return {str(p) for p in records}
 def current():return None if _BYPASS.get() else _SESSION.get()
 
 
+def configure_consumer(workflow_id,node):
+    """Only Build opts in; a revoked Build registry cannot poison later stages."""
+    if node=='build-finalize':os.environ['HERMES_EVIDENCE_WORKFLOW']=workflow_id
+    else:os.environ.pop('HERMES_EVIDENCE_WORKFLOW',None)
+
+
 @contextmanager
 def snapshot_scope(service,*,directory=None,restrict=True):
     if _SESSION.get() is not None:yield _SESSION.get();return
     if directory is None:
         if os.name!='posix' or not os.environ.get('HERMES_KANBAN_TASK'):yield None;return
         wid=os.environ.get('HERMES_EVIDENCE_WORKFLOW')
-        roots=[service.vault/ROOT/wid/'state.json'] if wid else list((service.vault/ROOT).glob('*/state.json'))
+        if not wid:yield None;return
+        roots=[service.vault/ROOT/wid/'state.json']
         roots=[p for p in roots if p.exists()]
         active=[p.parent for p in roots if wid or json.loads(p.read_text()).get('state')=='active']
         if not active:yield None;return

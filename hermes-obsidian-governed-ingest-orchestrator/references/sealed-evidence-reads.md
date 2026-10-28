@@ -6,6 +6,10 @@ privileged protector owns revocation. Native consumers irreversibly remove all
 Linux capabilities, their capability bounding set, and set `no_new_privs` before
 using a snapshot. This is a change in the storage/write contract, not ordinary
 time-based caching. Existing task/input/history fingerprints are unchanged.
+The native entry point opts in only for `build-finalize`. Other nodes and later
+stages retain their full-read path even when a revoked Build registry remains as
+audit evidence. A bound Build still fails closed on revocation; it cannot switch
+silently to unsealed reads in the middle of an authenticated invocation.
 
 ## Protected and dynamic data
 
