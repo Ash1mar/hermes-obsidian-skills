@@ -4,6 +4,13 @@ from hermes_source_units.source_units import _vault_path
 from hermes_source_units.verified_json import VerifiedJsonReads
 
 
+def checked_report(service,pointer):
+    """Hash and parse the same captured report, rather than reopen after hashing."""
+    cache=getattr(service,'_verified_json_reads',None) or VerifiedJsonReads()
+    return cache.read(_vault_path(service.vault,pointer['report_ref']),expected=pointer['report_sha256'],
+        origin='fixed_history.checked_report')
+
+
 def history_state(service,workflow_id):
     read=getattr(service,'status_fields',None)
     return read(workflow_id,('execution_recovery_history',)) if read else service.status(workflow_id)

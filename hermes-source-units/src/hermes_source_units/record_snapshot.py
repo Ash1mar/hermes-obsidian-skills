@@ -22,6 +22,8 @@ def snapshot_json(path):
     if scope is None or path not in scope[0]:
         return False, None
     records, parsed = scope
+    from .read_accounting import note_capture
+    note_capture(path)
     data, digest = records[path]
     if digest not in parsed:
         parsed[digest] = json.loads(data.decode('utf-8'))

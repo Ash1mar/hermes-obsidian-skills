@@ -133,9 +133,10 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
             return
         from .verified_json import VerifiedJsonReads
         from .runtime_telemetry import span
+        from .read_accounting import accounting_scope
         cache=VerifiedJsonReads();self._verified_json_reads=cache
         try:
-            with span('workflow_read_projection',vault=self.vault) as trace:
+            with accounting_scope() as ledger,span('workflow_read_projection',vault=self.vault) as trace:
                 try:yield
                 finally:
                     with cache.lock:
@@ -143,6 +144,8 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                         trace['copy_origins']=copy.deepcopy(cache.copy_origins)
                         trace['snapshot_origins']=dict(cache.snapshot_origins)
                         trace['snapshot_versions']=sorted(cache.snapshot_versions,key=repr)
+                        trace['logical_read_sources']=list(ledger.rows.values())
+                        trace['logical_read_boundaries']=list(ledger.boundaries.values())
         finally:
             self._verified_json_reads=None
 

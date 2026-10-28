@@ -9,6 +9,7 @@ from typing import Any, Mapping
 from .source_units import _exclusive_lock, _json_bytes, _load_json, _vault_path, _write_atomic
 from .source_units import UNIT_ROOT
 from .validation import ContractError, fingerprint, validate_record
+from .verified_snapshot import field_projection
 
 PAUSE_BOUNDARIES = ("exact_plan", "canary", "pass", "checkpoint_1",
                     "build_finalize", "checkpoint_2", "release_sync")
@@ -33,7 +34,7 @@ class WorkflowPauseMixin:
 
     def pending_pause(self, value: Mapping[str, Any]) -> str | None:
         """Also detect an unlatched boundary, so worker writes fail closed."""
-        revision=value.get('pass_revision',{})
+        revision=field_projection(value,'pass_revision',('revision_scope','state'),{})
         if revision.get('revision_scope') in ('reduce-dependencies/v1','reduce-review/v1') and revision['state']=='awaiting_review':
             return 'revision_review'
         control = value.get("pause_control", {})

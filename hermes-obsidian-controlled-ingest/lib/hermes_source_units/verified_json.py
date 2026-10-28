@@ -12,6 +12,7 @@ from functools import wraps
 from pathlib import Path
 
 from .validation import ContractError
+from .read_accounting import read_bytes
 
 
 class VerifiedJsonReads:
@@ -32,24 +33,39 @@ class VerifiedJsonReads:
         origin=origin or caller_origin()
         path=Path(path)
         started=time.monotonic_ns()
-        try:data=path.read_bytes()
+        try:data=read_bytes(path,'verified_json:'+origin)
         except OSError as exc:
             raise ContractError('SOURCE_UNAVAILABLE','$',f'cannot read JSON {path}: {exc}') from exc
         digest=hashlib.sha256(data).hexdigest()
         if expected is not None and digest!=expected:
             raise ContractError('SOURCE_CHANGED','$','verified JSON bytes differ from their current pointer')
         read_hash_ns=time.monotonic_ns()-started
+        return self._derive(path,data,digest,kind=kind,validator=validator,project=project,
+            projection_key=projection_key,index=index,index_key=index_key,readonly=readonly,
+            canonical_version=canonical_version,origin=origin,read_hash_ns=read_hash_ns)
+
+    def captured(self,path,data,*,kind,validator,project,projection_key,origin):
+        """Pure derivation of bytes already captured by the caller's current scan."""
+        from .read_accounting import note_capture
+        note_capture(path)
+        return self._derive(Path(path),data,hashlib.sha256(data).hexdigest(),kind=kind,
+            validator=validator,project=project,projection_key=projection_key,origin=origin,captured=True)
+
+    def _derive(self,path,data,digest,*,kind=None,validator=None,project=None,projection_key=None,
+                index=None,index_key=None,readonly=False,canonical_version=None,origin=None,
+                read_hash_ns=0,captured=False):
         schema=None
         if kind is not None:
             from . import validation
-            schema=hashlib.sha256(Path(validation.__file__).with_name('schemas').joinpath('contracts.json').read_bytes()).hexdigest()
+            schema=hashlib.sha256(read_bytes(Path(validation.__file__).with_name('schemas').joinpath('contracts.json'),
+                'verified_json.schema')).hexdigest()
         key=(str(path.resolve()),kind,id(validator),schema)
         with self.lock:
             if schema is not None:
                 if self.schema_sha is not None and schema!=self.schema_sha:
                     raise ContractError('SOURCE_CHANGED','$','schema changed during verified JSON scope')
                 self.schema_sha=schema
-            self.stats['reads']+=1;self.stats['bytes']+=len(data)
+            if not captured:self.stats['reads']+=1;self.stats['bytes']+=len(data)
             self.stats['read_hash_ns']+=read_hash_ns
             cached=self.entries.get(key)
             if cached is None or cached['digest']!=digest:
