@@ -24,10 +24,10 @@ the first version deliberately does not reduce full-workflow reads for pointers.
 Every protected file and enumerated directory receives `FS_IMMUTABLE_FL`. Registry
 state, manifest and its directory are also protected. The ext4 protection includes
 membership operations and ordinary root writes; consumers cannot clear the flag,
-For a dependency directory that is absent and has an empty member set, the
-protector seals its existing parent and verifies continued absence at each gate.
-It creates no replacement Pass directory or task artifact.
-gain capabilities through exec, mount over paths, or regain privileges. Metadata
+gain capabilities through exec, mount over paths, or regain privileges. For an
+absent empty dependency directory the protector seals its nearest existing Vault
+ancestor, including multi-level missing paths, and checks continued absence at
+each gate. It creates no replacement Pass directory or task artifact. Metadata
 checks cover every original path component and sealed inode, detecting path and
 symlink replacement without rereading file contents. This is not permission to
 cache by mtime/size: the kernel seal supplies the write exclusion. The additional

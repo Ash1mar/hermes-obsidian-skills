@@ -32,7 +32,7 @@ def service_for(vault):
 
 def serve(vault,w,absent=False):
     service=service_for(vault);graph=dependencies(service,w)
-    if absent:graph['directories'][str(vault/'inputs/missing-passes')]=[]
+    if absent:graph['directories'][str(vault/('missing-root/deeper/passes' if absent=='deep' else 'inputs/missing-passes'))]=[]
     protector=sealed.Protector(service,w);protector.prepare(graph)
     try:protector.serve()
     except KeyboardInterrupt:pass
@@ -218,13 +218,14 @@ def test_preparing_and_missing_registry_do_not_authorize_reuse(snapshot):
         path.write_text(json.dumps(state))
 
 
-@pytest.mark.parametrize('snapshot',[True],indirect=True)
+@pytest.mark.parametrize('snapshot',[True,'deep'],indirect=True)
 def test_absent_dependency_directory_uses_parent_seal_without_creating_data(snapshot):
-    s=snapshot;missing=s.vault/'inputs/missing-passes'
+    s=snapshot;manifest=json.loads((s.directory/'manifest.json').read_text())
+    missing=Path(manifest['absent_directories'][0])
     assert not missing.exists()
     with sealed.snapshot_scope(s.service,directory=s.directory,restrict=False) as view:
         assert str(missing) in view.manifest['absent_directories']
         with view.guard((str(missing),)):pass
-        with pytest.raises(PermissionError):missing.mkdir()
+        with pytest.raises(PermissionError):missing.mkdir(parents=True)
         with pytest.raises(PermissionError):missing.symlink_to(s.report)
     assert not missing.exists()
