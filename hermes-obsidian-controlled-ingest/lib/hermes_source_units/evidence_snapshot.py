@@ -36,12 +36,14 @@ def fail(message):raise ContractError('EVIDENCE_SNAPSHOT_REVOKED','$',message)
 
 def flags(path,value=None):
     import fcntl
-    with open(path,'rb',buffering=0) as stream:
+    descriptor=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
+    try:
         bits=array.array('L',[0])
-        fcntl.ioctl(stream.fileno(),0x80086601,bits,True)
+        fcntl.ioctl(descriptor,0x80086601,bits,True)
         if value is not None:
-            bits[0]=value;fcntl.ioctl(stream.fileno(),0x40086602,bits,True)
+            bits[0]=value;fcntl.ioctl(descriptor,0x40086602,bits,True)
         return bits[0]
+    finally:os.close(descriptor)
 
 
 def _identity(path,*,content=False):
