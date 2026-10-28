@@ -134,9 +134,10 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
         from .verified_json import VerifiedJsonReads
         from .runtime_telemetry import span
         from .read_accounting import accounting_scope
+        from .evidence_snapshot import snapshot_scope
         cache=VerifiedJsonReads();self._verified_json_reads=cache
         try:
-            with accounting_scope() as ledger,span('workflow_read_projection',vault=self.vault) as trace:
+            with accounting_scope() as ledger,span('workflow_read_projection',vault=self.vault) as trace,snapshot_scope(self):
                 try:yield
                 finally:
                     with cache.lock:

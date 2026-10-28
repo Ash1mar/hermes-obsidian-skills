@@ -35,6 +35,14 @@ def worker_binding(binding):
 @contextmanager
 def workflow_write_guard(vault, *, kinds=("source-prepare",), actor=None,
                          workflow_id=None, task_id=None):
+    from .evidence_snapshot import full_evidence_reads
+    with full_evidence_reads():
+        with _workflow_write_guard(vault,kinds=kinds,actor=actor,workflow_id=workflow_id,task_id=task_id) as value:
+            yield value
+
+
+@contextmanager
+def _workflow_write_guard(vault, *, kinds, actor, workflow_id, task_id):
     # Imports are local because the workflow service itself uses SourceUnits.
     from .ingest_workflow import FileIngestWorkflowService, TERMINAL, WORKFLOW_ROOT
     from .source_units import _exclusive_lock, _load_json, _vault_path

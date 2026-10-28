@@ -33,6 +33,10 @@ def cleanup_diagnostic(message):
 def run(vault, binding):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kc, kanban_db_dispatch as kd
     adapter = IngestKanbanAdapter(vault, enable_workers=True)
+    from hermes_source_units.source_units import _load_json
+    # The canonical binding is still fully authenticated below. This only picks
+    # the protector registry; a revoked generation cannot silently fall back.
+    os.environ['HERMES_EVIDENCE_WORKFLOW']=_load_json(Path(binding))['workflow_id']
     executor = os.environ.get('HERMES_INGEST_EXECUTOR')
     if executor not in ('program-v1','semantic-v1'):
         raise RuntimeError('unsupported native executor grant')

@@ -58,6 +58,15 @@ def note_capture(path):
 
 
 def read_bytes(path,origin):
+    from .evidence_snapshot import current
+    session=current()
+    if session is not None:
+        data=session.read(path,origin)
+        if data is not None:return data
+    return _raw_read_bytes(path,origin)
+
+
+def _raw_read_bytes(path,origin):
     ledger=_LEDGER.get()
     try:data=path.read_bytes()
     except OSError:

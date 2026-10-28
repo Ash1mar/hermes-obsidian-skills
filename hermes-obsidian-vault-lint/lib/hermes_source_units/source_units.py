@@ -70,6 +70,8 @@ def _load_json(path: Path) -> Any:
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
+    from .evidence_snapshot import guard_write
+    guard_write(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
     with temporary.open("xb") as stream:

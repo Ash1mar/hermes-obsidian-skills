@@ -55,6 +55,9 @@ def workflow_fingerprint(workflow):
 
 def dependencies(service,workflow,**fields):
     """Enumerate and hash current bytes, retaining them for the pure build."""
+    from hermes_source_units.evidence_snapshot import current
+    session=current()
+    if session is not None:return session.graph(workflow)
     with span('graph_dependency_scan',vault=service.vault,workflow_id=workflow.get('workflow_id'),
               trigger='desired_graph',**fields) as trace:
         k=service.knowledge;bid=workflow['batch_id'];started=time.monotonic_ns();batch_path=k._batch_path(bid)
@@ -160,6 +163,9 @@ def checked_dependencies(service,workflow,*,canonical=None):
 
 def recheck_dependencies(service,proof):
     """Hash current bytes/members; reuse no permission, timestamp or old result."""
+    from hermes_source_units.evidence_snapshot import current
+    session=current()
+    if session is not None and session.recheck(proof):return
     with span('build_dependency_recheck',vault=service.vault,files=len(proof['files'])) as trace:
         schema=Path(contracts.__file__).with_name('schemas')/'contracts.json'
         if hashlib.sha256(read_bytes(schema,'dependency_recheck.schema')).hexdigest()!=proof['schema_sha256']:
