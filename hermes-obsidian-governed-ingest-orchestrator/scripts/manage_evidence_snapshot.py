@@ -9,7 +9,7 @@ import sys
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
 from ingest_kanban import IngestKanbanAdapter
 from ingest_graph_reuse import dependencies
-from hermes_source_units.evidence_snapshot import Protector,ROOT,rpc,flags,IMMUTABLE,_dump,_lease,_start
+from hermes_source_units.evidence_snapshot import Protector,ROOT,rpc,flags,IMMUTABLE,_dump,_lease,_start,assert_sealable_slices
 
 
 def main():
@@ -44,8 +44,7 @@ def main():
     if w['state']!='cancelled':raise RuntimeError('prepare requires the supported stopped workflow')
     # No worker processes/leases may survive the caller's normal deployment and
     # recovery handoff. Completed slices cannot be frozen while a Pass is active.
-    for slice in service.knowledge._slices(w['batch_id']):
-        if slice['state']!='completed' or slice['lease']['worker_id']:raise RuntimeError('snapshot needs completed unleased slices')
+    assert_sealable_slices(w,service.knowledge._slices(w['batch_id']))
     graph=dependencies(service,w,scan_role='snapshot_preparation')
     protector=Protector(service,w)
     protector.prepare(graph)

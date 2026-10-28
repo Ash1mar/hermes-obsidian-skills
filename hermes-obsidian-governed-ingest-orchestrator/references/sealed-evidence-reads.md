@@ -11,7 +11,11 @@ time-based caching. Existing task/input/history fingerprints are unchanged.
 
 The manifest covers completed task and slice records, Pass files, their enumerated
 directories, and exact recovery reports named by current history pointers. The
-protector refuses uncompleted or leased slices. Originals are not copied. Schema
+protector requires the accepted upstream checkpoint and stopped Build stage. It
+accepts completed slices and terminal cancelled historical amendment descriptors
+with no leases; cancelled descriptors are preserved dependencies, never accepted
+semantic results. Ready, failed, running or leased slices cannot be sealed.
+Originals are not copied. Schema
 and code remain bound by deployment quiescence, reader hash and fresh schema
 checks. Workflow, batch, journals, audits, native transcripts, attempts, allowances
 and quota records stay mutable and use the existing fresh reads. In particular,

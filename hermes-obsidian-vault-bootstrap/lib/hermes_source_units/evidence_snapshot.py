@@ -34,6 +34,17 @@ _BYPASS=ContextVar('sealed_evidence_full_reads',default=False)
 def fail(message):raise ContractError('EVIDENCE_SNAPSHOT_REVOKED','$',message)
 
 
+def assert_sealable_slices(workflow,slices):
+    if (workflow['state']!='cancelled' or workflow['current_stage']!='build_finalizing'
+            or workflow['checkpoints']['checkpoint_1']['state']!='approved'):
+        fail('sealing needs the stopped Build stage and accepted upstream checkpoint')
+    for item in slices:
+        # Cancelled amendment descriptors remain graph dependencies; freezing
+        # their bytes does not treat them as completed semantic work.
+        if item['state'] not in ('completed','cancelled') or item['lease']['worker_id']:
+            fail('cannot seal nonterminal or leased Pass work')
+
+
 def flags(path,value=None):
     import fcntl
     descriptor=os.open(path,os.O_RDONLY|os.O_NOFOLLOW)
