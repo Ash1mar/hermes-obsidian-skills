@@ -104,3 +104,7 @@ uses `full_evidence_reads` and retains content reads. A same-history read-only
 comparison must show identical selection and fingerprint results, with the
 baseline and snapshot bytes independently counted. Network failures remain
 execution observations, never valid conclusions or evidence of a cache defect.
+The legacy JSON-cache `bytes` counter describes bytes presented to its derivation
+path, including protected in-memory inputs. Use `logical_read_sources` for actual
+application reads and the protector/session counters for first reads and avoided
+bytes; never add reused inputs to actual content I/O.

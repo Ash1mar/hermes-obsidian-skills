@@ -87,6 +87,10 @@ def binding(workflow):
     # original fresh workflow checks. This is only the static evidence binding.
     names=('workflow_id','batch_id','scope','profile','pinned_inputs','template_pins',
            'pass_revision','execution_recovery_history')
+    from .verified_snapshot import VerifiedSnapshot,thaw
+    if isinstance(workflow,VerifiedSnapshot):
+        return workflow.select(('sealed_evidence_binding',CONTRACT),
+            lambda value:fingerprint({key:thaw(value.get(key)) for key in names}))
     return fingerprint({key:workflow.get(key) for key in names})
 
 
