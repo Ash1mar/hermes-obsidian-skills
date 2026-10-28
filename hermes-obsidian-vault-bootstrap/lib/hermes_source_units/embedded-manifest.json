@@ -15,7 +15,7 @@
   "citation_amendment.py": "e0cafac51510db52c201efe1830903616cb05436795fc08b2b13e0e21f56c666",
   "citation_revision_impact.py": "9ec272069f32c16633dfb99e2ecbe079654479d5d9c3496b24db7bb91b61a17b",
   "defaults/config.json": "1bf63565930370259243430afee19f89f26776ace4b055c728826b2e3aa024dd",
-  "evidence_snapshot.py": "df832df78dab32cafb40c2cb8dcbd38552fe5bedd388d1fe501d1ac1c3da2e64",
+  "evidence_snapshot.py": "73f72711c6baeab3b0d838f9553e93d058ff8b571fad9baca647be2f3a78e86e",
   "exact_duplicates.py": "d4b6096bd8ad6dff879359bd4d2a33cf1eacd3961efeb9b3883d48e0362a8b4e",
   "exact_planning.py": "e32d24f4b5b860835d04ba35d2dcc656cd48c3ef256be63a3fe507ae6a5f972d",
   "execution_plan.py": "632fe060abfe559eae8594bef7ca490e650cb6b724cdaef9404456e18d033192",

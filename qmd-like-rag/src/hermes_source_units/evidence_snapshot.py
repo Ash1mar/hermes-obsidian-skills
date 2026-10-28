@@ -157,7 +157,13 @@ class Protector:
             files[path]=digest
         # A directory seal protects enumeration, not just existing file bytes.
         directories=graph['directories']
-        sealed=[Path(p) for p in sorted({*files,*directories})]
+        absent=[name for name in directories if not os.path.lexists(name)]
+        if any(directories[name] for name in absent):fail('missing directory has expected members')
+        # Empty absent Pass directories are common for retired tasks. Seal the
+        # existing parent so mkdir/symlink cannot create members behind a cache.
+        # Do not create a Vault directory merely to make a snapshot possible.
+        sealed=[Path(p) for p in sorted({*files,*(name for name in directories if name not in absent),
+                                       *(str(Path(name).parent) for name in absent)})]
         for path in sealed:
             if path.is_symlink() or not path.exists():fail('unsealable dependency: '+str(path))
             self.original[str(path)]=flags(path)
@@ -168,6 +174,7 @@ class Protector:
                 ancestors.add(parent)
         self.manifest={'contract':CONTRACT,'generation':self.state['generation'],
             'binding':binding(self.workflow),'files':files,'directories':directories,
+            'absent_directories':absent,
             'task_ids':json.loads(graph['records'][Path(batch)][0])['task_ids'],
             'reports':reports,'batch':batch,'original_flags':self.original,
             'path_identity':{},'content_identity':{},
@@ -230,7 +237,7 @@ class Protector:
                     threading.Thread(target=self.server.shutdown,daemon=True).start()
                 elif request.get('operation')=='write':
                     path=str(Path(request['path']).absolute())
-                    covered=path in protector.original or str(Path(path).parent) in protector.manifest['directories']
+                    covered=path in protector.original or str(Path(path).parent) in protector.original
                     if covered:
                         # A writer might hold a domain lease: reply and let it
                         # fail before the background revoke waits for that lease.
@@ -295,14 +302,17 @@ class EvidenceSession:
     def _check_metadata(self,paths):
         all_paths=set()
         for name in paths:
-            for path in (Path(name),*Path(name).parents):
+            target=Path(name)
+            if name in self.manifest.get('absent_directories',[]):
+                if os.path.lexists(target):fail('previously absent dependency directory appeared')
+                target=target.parent
+            for path in (target,*target.parents):
                 if str(path) not in self.manifest['path_identity']:break
                 all_paths.add(str(path))
         for name in all_paths:
             self.stats['metadata_checks']+=1
             if _identity(Path(name))!=self.manifest['path_identity'][name]:fail('evidence path was replaced')
-        for name in paths:
-            if _identity(Path(name),content=True)!=self.manifest['content_identity'][name]:fail('sealed evidence metadata changed')
+            if name in self.manifest['content_identity'] and _identity(Path(name),content=True)!=self.manifest['content_identity'][name]:fail('sealed evidence metadata changed')
 
     @contextmanager
     def guard(self,paths=()):

@@ -30,8 +30,9 @@ def service_for(vault):
     return NS(vault=vault,knowledge=k)
 
 
-def serve(vault,w):
+def serve(vault,w,absent=False):
     service=service_for(vault);graph=dependencies(service,w)
+    if absent:graph['directories'][str(vault/'inputs/missing-passes')]=[]
     protector=sealed.Protector(service,w);protector.prepare(graph)
     try:protector.serve()
     except KeyboardInterrupt:pass
@@ -46,7 +47,7 @@ def wait(predicate):
 
 
 @pytest.fixture
-def snapshot(tmp_path):
+def snapshot(tmp_path,request):
     (tmp_path/'inputs/slices').mkdir(parents=True)
     (tmp_path/'_system/knowledge-builds/task-t/passes').mkdir(parents=True)
     (tmp_path/'inputs/slices/s.json').write_text('{}')
@@ -63,7 +64,7 @@ def snapshot(tmp_path):
        'cancel_requested':False,'revision':1}
     workflow=tmp_path/'workflow.json';workflow.write_text(json.dumps(w))
     inherited_fd=os.open(report,os.O_RDWR)
-    process=multiprocessing.get_context('fork').Process(target=serve,args=(tmp_path,w));process.start()
+    process=multiprocessing.get_context('fork').Process(target=serve,args=(tmp_path,w,getattr(request,'param',False)));process.start()
     directory=tmp_path/sealed.ROOT/'fixture'
     def active():
         try:return json.loads((directory/'state.json').read_text())['state']=='active'
@@ -215,3 +216,15 @@ def test_preparing_and_missing_registry_do_not_authorize_reuse(snapshot):
         path.unlink()
         with pytest.raises(ContractError):read_bytes(s.report,'fixture')
         path.write_text(json.dumps(state))
+
+
+@pytest.mark.parametrize('snapshot',[True],indirect=True)
+def test_absent_dependency_directory_uses_parent_seal_without_creating_data(snapshot):
+    s=snapshot;missing=s.vault/'inputs/missing-passes'
+    assert not missing.exists()
+    with sealed.snapshot_scope(s.service,directory=s.directory,restrict=False) as view:
+        assert str(missing) in view.manifest['absent_directories']
+        with view.guard((str(missing),)):pass
+        with pytest.raises(PermissionError):missing.mkdir()
+        with pytest.raises(PermissionError):missing.symlink_to(s.report)
+    assert not missing.exists()

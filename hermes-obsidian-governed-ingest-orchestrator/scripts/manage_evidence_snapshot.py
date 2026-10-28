@@ -30,7 +30,7 @@ def main():
         state=json.loads((path/'state.json').read_text())
         if _start(state['pid'])==state['process_start']:raise RuntimeError('live protector must revoke its own generation')
         # Operator must quiesce consumers first. Do not trust a stale active flag.
-        value=json.loads((path/'manifest.json').read_text())
+        value=json.loads((path/'manifest.json').read_text()) if (path/'manifest.json').exists() else {'original_flags':{}}
         with _lease(path,True):
             flags(path,flags(path)&~IMMUTABLE);flags(path/'state.json',flags(path/'state.json')&~IMMUTABLE)
             state.update(state='revoked',reason=args.reason);_dump(path/'state.json',state)
@@ -38,7 +38,8 @@ def main():
                 target=Path(name)
                 if not target.is_relative_to(service.vault):raise RuntimeError('release path outside Vault')
                 flags(target,bits)
-            for name in ('manifest.json','lease.lock'):flags(path/name,flags(path/name)&~IMMUTABLE)
+            for name in ('manifest.json','lease.lock'):
+                if (path/name).exists():flags(path/name,flags(path/name)&~IMMUTABLE)
         print(json.dumps({'state':'revoked','stale_protector':True}));return
     w=service.status(args.workflow_id)
     if w['state']!='cancelled':raise RuntimeError('prepare requires the supported stopped workflow')
