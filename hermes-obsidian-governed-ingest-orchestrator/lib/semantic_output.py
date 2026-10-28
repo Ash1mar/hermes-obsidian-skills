@@ -80,15 +80,11 @@ def verify_stop_boundary(adapter,workflow_id,node,entry):
 
 def output_boundary(adapter,binding):
     """The latest recovery of this node owns its execution limit."""
-    import hashlib
-    from fixed_history import history_state
+    from fixed_history import entries
     selected=None;pointer=None
-    for p in history_state(adapter.workflow,binding['workflow_id']).get('execution_recovery_history',[]):
-        rp=_vault_path(adapter.workflow.vault,p['report_ref'])
-        if hashlib.sha256(rp.read_bytes()).hexdigest()!=p['report_sha256']:held('recovery evidence changed')
-        report=_load_json(rp)
-        for entry in report['entries']:
-            if entry['node']==binding['node']:selected=entry.get('output_boundary');pointer=p
+    for p,entry in entries(adapter,binding,select=lambda e:{'output_boundary':e.get('output_boundary')},
+            query=('output_boundary',),code='SEMANTIC_OUTPUT_HELD',message='recovery evidence changed'):
+        selected=entry['output_boundary'];pointer=p
     return selected,pointer
 
 
@@ -333,10 +329,13 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
                 if len(matches)==1:ref=matches[0].relative_to(adapter.workflow.vault).as_posix();attempt['audit_ref']=ref;write(path,record)
             if not ref and not attempt.get('session_id'):
                 from fixed_history import history_state
+                from fixed_history import checked_report
                 for pointer in history_state(adapter.workflow,binding['workflow_id']).get('execution_recovery_history',[]):
                     rp=_vault_path(adapter.workflow.vault,pointer['report_ref'])
-                    if __import__('hashlib').sha256(rp.read_bytes()).hexdigest()!=pointer['report_sha256']:held('recovery evidence changed')
-                    report=_load_json(rp)
+                    try:report=checked_report(adapter.workflow,pointer)
+                    except ContractError as exc:
+                        if exc.code=='SOURCE_CHANGED':held('recovery evidence changed')
+                        raise
                     for entry in report['entries']:
                         permit=entry.get('uncalled_reservation',{})
                         if (report['request'].get('recovery_scope')==SCOPE and permit.get('journal_name')==path.name
