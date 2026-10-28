@@ -99,6 +99,10 @@ the protector. Snapshot metadata are audit/control data, not domain acceptance.
 
 ## Verification and measurement
 
+The [pure computation reuse contract](snapshot-computation-reuse.md) describes
+generation-bound metadata plans, exact digest pre-encoding, immutable internal
+proofs and the counters that distinguish construction from fresh observations.
+
 Isolated Linux checks cover blocked writes through normal and existing file
 descriptors, unlink/rename/new members/symlinks, capability regain prevention,
 ordered/duplicate history choices, workflow cancellation without revision change,

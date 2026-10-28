@@ -21,6 +21,8 @@ import stat
 import threading
 import time
 import uuid
+from types import MappingProxyType
+from .dependency_views import FrozenOverlay
 
 from .validation import ContractError, fingerprint
 
@@ -57,8 +59,12 @@ def flags(path,value=None):
     finally:os.close(descriptor)
 
 
-def _identity(path,*,content=False):
-    value=path.lstat()
+def _identity(path,*,content=False,metrics=None):
+    started=time.monotonic_ns() if metrics is not None else 0
+    try:value=path.lstat()
+    finally:
+        if metrics is not None:
+            metrics['lstat_calls']+=1;metrics['lstat_ns']+=time.monotonic_ns()-started
     if stat.S_ISLNK(value.st_mode):fail('evidence path contains a symbolic link: '+str(path))
     fields=[value.st_dev,value.st_ino,stat.S_IFMT(value.st_mode)]
     if content:fields.extend((value.st_size,value.st_ctime_ns))
@@ -277,6 +283,12 @@ class EvidenceSession:
     def __init__(self,service,directory,*,restrict=True):
         self.service=service;self.directory=directory;self.data={};self.lock=threading.RLock()
         self.stats={'hits':0,'avoided_bytes':0,'first_reads':0,'first_bytes':0,'guards':0,'metadata_checks':0}
+        self.costs={key:0 for key in ('plan_builds','plan_hits','plan_build_ns','plan_lookup_ns',
+            'path_objects','static_builds','static_build_ns','payload_builds','payload_build_ns',
+            'digest_calls','digest_ns','metadata_calls','metadata_ns','lstat_calls','lstat_ns',
+            'absence_checks','absence_ns','content_checks','registry_attempts','registry_ns',
+            'lease_acquires','lease_wait_ns','external_graph_copies','external_graph_copy_ns')}
+        self._paths={};self._plans={};self._static_records=None
         self.sources={}
         if restrict:restrict_consumer()
         with _lease(directory):
@@ -285,9 +297,15 @@ class EvidenceSession:
             if hashlib.sha256(data).hexdigest()!=state['manifest_sha256']:fail('snapshot manifest changed')
             self.manifest=json.loads(data);self.generation=state['generation']
             if self.manifest['reader_sha256']!=hashlib.sha256(Path(__file__).read_bytes()).hexdigest():fail('snapshot reader changed')
+            self._prepare_static()
             self._metadata(self.manifest['content_identity'])
 
     def _state(self):
+        started=time.monotonic_ns();self.costs['registry_attempts']+=1
+        try:return self._read_state()
+        finally:self.costs['registry_ns']+=time.monotonic_ns()-started
+
+    def _read_state(self):
         from .read_accounting import _raw_read_bytes
         try:
             raw=_raw_read_bytes(self.directory/'state.json','evidence_snapshot.registry')
@@ -303,29 +321,102 @@ class EvidenceSession:
         except (OSError,ValueError,KeyError,TypeError) as exc:fail('snapshot registry unavailable: '+str(exc))
 
     def _metadata(self,paths):
+        started=time.monotonic_ns();self.costs['metadata_calls']+=1
         try:self._check_metadata(paths)
         except OSError as exc:fail('sealed evidence path unavailable: '+str(exc))
+        finally:self.costs['metadata_ns']+=time.monotonic_ns()-started
+
+    def _path(self,name):
+        if name not in self._paths:
+            self._paths[name]=Path(name);self.costs['path_objects']+=1
+        return self._paths[name]
+
+    def _plan(self,paths):
+        started=time.monotonic_ns();key=paths if isinstance(paths,tuple) else tuple(paths)
+        with self.lock:
+            result=self._plans.get(key)
+            self.costs['plan_lookup_ns']+=time.monotonic_ns()-started
+            if result is not None:self.costs['plan_hits']+=1;return result
+            started=time.monotonic_ns();all_paths=set();absent=[]
+            for name in key:
+                target=self._path(name)
+                if name in self._absent:
+                    absent.append(target);target=self._path(self.manifest['absent_directory_parents'][name])
+                for path in (target,*target.parents):
+                    text=str(path)
+                    if text not in self.manifest['path_identity']:break
+                    all_paths.add(text)
+            # Preserve the old set construction/iteration for this exact ordered
+            # input, including repeated absent paths. No filesystem calls here.
+            result=(tuple(absent),tuple((self._path(name),
+                tuple(self.manifest['path_identity'][name]),
+                tuple(self.manifest['content_identity'][name]) if name in self.manifest['content_identity'] else None)
+                for name in all_paths))
+            self._plans[key]=result;self.costs['plan_builds']+=1
+            self.costs['plan_build_ns']+=time.monotonic_ns()-started
+            return result
 
     def _check_metadata(self,paths):
-        all_paths=set()
-        for name in paths:
-            target=Path(name)
-            if name in self.manifest.get('absent_directories',[]):
-                if os.path.lexists(target):fail('previously absent dependency directory appeared')
-                target=Path(self.manifest['absent_directory_parents'][name])
-            for path in (target,*target.parents):
-                if str(path) not in self.manifest['path_identity']:break
-                all_paths.add(str(path))
-        for name in all_paths:
+        absent,checks=self._plan(paths)
+        for target in absent:
+            started=time.monotonic_ns();self.costs['absence_checks']+=1
+            try:appeared=os.path.lexists(target)
+            finally:self.costs['absence_ns']+=time.monotonic_ns()-started
+            if appeared:fail('previously absent dependency directory appeared')
+        for path,expected,content_expected in checks:
             self.stats['metadata_checks']+=1
-            if _identity(Path(name))!=self.manifest['path_identity'][name]:fail('evidence path was replaced')
-            if name in self.manifest['content_identity'] and _identity(Path(name),content=True)!=self.manifest['content_identity'][name]:fail('sealed evidence metadata changed')
+            if tuple(_identity(path,metrics=self.costs))!=expected:fail('evidence path was replaced')
+            if content_expected is not None:
+                self.costs['content_checks']+=1
+                if tuple(_identity(path,content=True,metrics=self.costs))!=content_expected:fail('sealed evidence metadata changed')
 
     @contextmanager
     def guard(self,paths=()):
+        started=time.monotonic_ns()
         with _lease(self.directory):
+            self.costs['lease_acquires']+=1;self.costs['lease_wait_ns']+=time.monotonic_ns()-started
             self._state();self._metadata(paths)
             yield
+
+    def _prepare_static(self):
+        started=time.monotonic_ns()
+        self._absent=frozenset(self.manifest.get('absent_directories',()))
+        self._static_names=tuple(name for name in self.manifest['files'] if name not in self.manifest['reports'])
+        self._graph_paths=(*self._static_names,*self.manifest['directories'])
+        self._batch_name=self.manifest['batch'];self._batch_path=self._path(self._batch_name)
+        self._static_hash_text=MappingProxyType({name:self.manifest['files'][name] for name in self._static_names})
+        self._static_hash_bytes=MappingProxyType({name:bytes.fromhex(digest) for name,digest in self._static_hash_text.items()})
+        self._directories=MappingProxyType({name:tuple(members) for name,members in self.manifest['directories'].items()})
+        self._static_bytes=sum(self.manifest['content_identity'][name][3] for name in self._static_names)
+        # This is the exact former SHA stream, not a hash of a static hash.
+        # Only its immutable prefix state and suffix bytes are precomputed.
+        prefix=hashlib.sha256();suffix=[];after_batch=False
+        for path in sorted([*(self._path(name) for name in self._static_names),self._batch_path]):
+            encoded=str(path).encode();framing=len(encoded).to_bytes(8,'big')+encoded
+            if path==self._batch_path:
+                self._batch_framing=framing;after_batch=True;continue
+            chunk=framing+self._static_hash_bytes[str(path)]
+            if after_batch:suffix.append(chunk)
+            else:prefix.update(chunk)
+        self._digest_prefix=prefix;self._digest_suffix=b''.join(suffix)
+        self.costs['static_builds']+=1;self.costs['static_build_ns']+=time.monotonic_ns()-started
+
+    def _records(self):
+        from .read_accounting import _LEDGER
+        with self.lock:
+            if self._static_records is None:
+                started=time.monotonic_ns()
+                self._static_records=MappingProxyType({self._path(name):
+                    (self._read(self._path(name),'graph_dependency_scan'),self._static_hash_bytes[name]) for name in self._static_names})
+                self.costs['payload_builds']+=1;self.costs['payload_build_ns']+=time.monotonic_ns()-started
+            else:
+                count=len(self._static_names);self.stats['hits']+=count;self.stats['avoided_bytes']+=self._static_bytes
+                row=self.sources.setdefault('graph_dependency_scan',{'hits':0,'avoided_bytes':0,'first_reads':0,'first_bytes':0})
+                row['hits']+=count;row['avoided_bytes']+=self._static_bytes
+                ledger=_LEDGER.get()
+                if ledger is not None:
+                    ledger.note('sealed-graph-set:'+self.generation,0,'evidence_snapshot:graph_dependency_scan',captured=True,count=count)
+            return self._static_records
 
     def _read(self,path,origin):
         from .read_accounting import _raw_read_bytes,_LEDGER
@@ -348,16 +439,16 @@ class EvidenceSession:
         if name not in self.manifest['files']:return None
         with self.guard((name,)):return self._read(path,origin)
 
-    def graph(self,workflow):
+    def graph(self,workflow,*,internal=False):
         if binding(workflow)!=self.manifest['binding']:fail('snapshot workflow evidence binding changed')
         from .read_accounting import _raw_read_bytes
         from .runtime_telemetry import span
         with span('snapshot_dependency_reuse',vault=self.service.vault,workflow_id=workflow['workflow_id']) as trace:
-            paths=[p for p in self.manifest['files'] if p not in self.manifest['reports']]
-            with self.guard([*paths,*self.manifest['directories']]):
-                records={Path(p):(self._read(Path(p),'graph_dependency_scan'),bytes.fromhex(self.manifest['files'][p])) for p in paths}
-                batch=Path(self.manifest['batch']);data=_raw_read_bytes(batch,'graph_dependency_scan.batch')
-                records[batch]=(data,hashlib.sha256(data).digest())
+            with self.guard(self._graph_paths):
+                static_records=self._records()
+                batch=self._batch_path;data=_raw_read_bytes(batch,'graph_dependency_scan.batch')
+                batch_digest=hashlib.sha256(data).digest()
+                records=FrozenOverlay(static_records,batch,(data,batch_digest))
                 # Batch stays mutable and is freshly interpreted. A changed
                 # dependency set cannot borrow a sealed manifest.
                 from . import validation
@@ -368,27 +459,34 @@ class EvidenceSession:
                     value=cache.captured(batch,data,kind='knowledge_batch',validator=validation.validate_record,
                         project=lambda v:{'task_ids':v['task_ids']},projection_key=('scan_batch_tasks',),origin='graph.batch_tasks')
                 if value['task_ids']!=self.manifest['task_ids']:fail('batch task membership changed')
-                h=hashlib.sha256()
-                for path in sorted(records):
-                    encoded=str(path).encode();h.update(len(encoded).to_bytes(8,'big'));h.update(encoded);h.update(records[path][1])
-                trace.update(files=len(records),mutable_bytes=len(data),static_files=len(paths),generation=self.generation)
-                return {'digest':h.digest(),'records':records,'files':len(records),'bytes':len(data),
-                    'directories':self.manifest['directories'],
-                    'proof_files':{str(p):digest.hex() for p,(_,digest) in records.items()}}
+                started=time.monotonic_ns();h=self._digest_prefix.copy()
+                h.update(self._batch_framing);h.update(batch_digest);h.update(self._digest_suffix)
+                digest=h.digest();self.costs['digest_calls']+=1;self.costs['digest_ns']+=time.monotonic_ns()-started
+                proof_files=FrozenOverlay(self._static_hash_text,self._batch_name,batch_digest.hex())
+                trace.update(files=len(records),mutable_bytes=len(data),static_files=len(self._static_names),generation=self.generation)
+                result={'digest':digest,'records':records,'files':len(records),'bytes':len(data),
+                    'directories':self._directories,'proof_files':proof_files}
+                if internal:result['_sealed_internal']=True
+                if not internal:
+                    started=time.monotonic_ns()
+                    result.update(records=dict(records),directories={k:list(v) for k,v in self._directories.items()},proof_files=dict(proof_files))
+                    self.costs['external_graph_copies']+=1;self.costs['external_graph_copy_ns']+=time.monotonic_ns()-started
+                return result
 
     def recheck(self,proof):
         from .read_accounting import _raw_read_bytes
         from .runtime_telemetry import span
         from . import validation
-        batch=self.manifest['batch'];static=[p for p in proof['files'] if p!=batch]
+        batch=self._batch_name;static=tuple(p for p in proof['files'] if p!=batch)
         if any(p not in self.manifest['files'] for p in static):return False
         with span('snapshot_dependency_recheck',vault=self.service.vault,generation=self.generation) as trace:
-            with self.guard([*static,*self.manifest['directories']]):
+            paths=self._graph_paths if static==self._static_names else (*static,*self.manifest['directories'])
+            with self.guard(paths):
                 if proof['directories']!=self.manifest['directories']:fail('dependency proof membership differs')
                 schema=Path(validation.__file__).with_name('schemas')/'contracts.json'
                 if hashlib.sha256(_raw_read_bytes(schema,'dependency_recheck.schema')).hexdigest()!=proof['schema_sha256']:fail('Build schema changed')
                 for name,digest in proof['files'].items():
-                    actual=hashlib.sha256(_raw_read_bytes(Path(name),'build_dependency_recheck.batch')).hexdigest() if name==batch else self.manifest['files'][name]
+                    actual=hashlib.sha256(_raw_read_bytes(self._batch_path,'build_dependency_recheck.batch')).hexdigest() if name==batch else self.manifest['files'][name]
                     if actual!=digest:fail('dependency proof bytes differ')
                 trace.update(static_files=len(static),avoided_bytes=sum(self.manifest['content_identity'][p][3] for p in static))
         return True
@@ -424,7 +522,7 @@ def snapshot_scope(service,*,directory=None,restrict=True):
     try:yield session
     finally:
         with span('evidence_snapshot_summary',vault=service.vault,generation=session.generation,
-                  **session.stats,sources=session.sources):pass
+                  **session.stats,sources=session.sources,computation_costs=dict(session.costs)):pass
         _SESSION.reset(token)
 
 

@@ -12,6 +12,7 @@ from hermes_source_units.validation import fingerprint
 from hermes_source_units.runtime_telemetry import span
 from hermes_source_units.verified_snapshot import VerifiedSnapshot
 from hermes_source_units.read_accounting import read_bytes
+from hermes_source_units.dependency_views import FrozenProof
 import hermes_source_units.validation as contracts
 
 _SCOPE=ContextVar('ingest_graph_reuse',default=None)
@@ -24,14 +25,18 @@ def graph_scope():
         yield _SCOPE.get();return
     scope={'condition':threading.Condition(),'lanes':{},'lookups':0,'hits':0,'builds':0,'cohorts':0,
            'fingerprint_calls':0,'fingerprint_ns':0,'fingerprint_reuses':0,'proof_copy_ns':0,
-           'fingerprint_requests':0,'fingerprint_cache_hits':0,'fingerprint_fallback_calls':0}
+           'fingerprint_requests':0,'fingerprint_cache_hits':0,'fingerprint_fallback_calls':0,
+           'proof_internal_shares':0,'proof_external_copies':0,'proof_external_fields':0,
+           'proof_envelope_builds':0,'proof_build_ns':0}
     token=_SCOPE.set(scope)
     proof_token=_PROOF.set(None)
     try:yield scope
     finally:
         with span('graph_reuse_summary',**{k:scope[k] for k in ('lookups','hits','builds','cohorts',
                 'fingerprint_calls','fingerprint_ns','fingerprint_reuses','proof_copy_ns',
-                'fingerprint_requests','fingerprint_cache_hits','fingerprint_fallback_calls')}):pass
+                'fingerprint_requests','fingerprint_cache_hits','fingerprint_fallback_calls',
+                'proof_internal_shares','proof_external_copies','proof_external_fields',
+                'proof_envelope_builds','proof_build_ns')}):pass
         _PROOF.reset(proof_token)
         _SCOPE.reset(token)
 
@@ -53,11 +58,11 @@ def workflow_fingerprint(workflow):
     return value
 
 
-def dependencies(service,workflow,**fields):
+def dependencies(service,workflow,*,_internal=False,**fields):
     """Enumerate and hash current bytes, retaining them for the pure build."""
     from hermes_source_units.evidence_snapshot import current
     session=current()
-    if session is not None:return session.graph(workflow)
+    if session is not None:return session.graph(workflow,internal=_internal)
     with span('graph_dependency_scan',vault=service.vault,workflow_id=workflow.get('workflow_id'),
               trigger='desired_graph',**fields) as trace:
         k=service.knowledge;bid=workflow['batch_id'];started=time.monotonic_ns();batch_path=k._batch_path(bid)
@@ -116,13 +121,16 @@ def dependencies(service,workflow,**fields):
 
 def _calculate(service,workflow,build,lane,scope,cohort,size,canonical):
     meta={'cohort_id':cohort,'shared_callers':size}
-    before=dependencies(service,workflow,scan_role='lookup',**meta)
+    before=dependencies(service,workflow,_internal=True,scan_role='lookup',**meta)
     # Installed code cannot change under active consumers. Include actual schema
     # bytes independently of workflow revision, file sizes and timestamps too.
     schema=Path(contracts.__file__).with_name('schemas')/'contracts.json'
     contract=hashlib.sha256(read_bytes(schema,'graph_schema')).digest()
-    lane['proof']={'files':before['proof_files'],
-        'directories':before['directories'],'schema_sha256':contract.hex()}
+    started=time.monotonic_ns()
+    lane['proof']=(FrozenProof(before['proof_files'],before['directories'],contract.hex())
+        if before.get('_sealed_internal') else {'files':before['proof_files'],
+        'directories':before['directories'],'schema_sha256':contract.hex()})
+    scope['proof_envelope_builds']+=1;scope['proof_build_ns']+=time.monotonic_ns()-started
     # This owned workflow snapshot is read-only throughout the pure calculation.
     # Reuse its canonical value, never dictionary identity or raw-file SHA.
     key=(canonical,contract,before['digest']);scope['fingerprint_reuses']+=1
@@ -138,7 +146,7 @@ def _calculate(service,workflow,build,lane,scope,cohort,size,canonical):
         with span('graph_pure_build',**meta),record_snapshot(before['records']):
             nodes=tuple(build())
         # A captured view is input, not proof that the underlying disk stood still.
-        after=dependencies(service,workflow,scan_role='build_confirmation',**meta)
+        after=dependencies(service,workflow,_internal=True,scan_role='build_confirmation',**meta)
         if after['digest']!=before['digest']:
             trace['invalidation_reason']='dependencies_changed_during_build'
             raise ContractError('SOURCE_CHANGED','$','graph dependencies changed during calculation')
@@ -157,7 +165,10 @@ def checked_dependencies(service,workflow,*,canonical=None):
         # Standalone worker checks may not own a graph_scope. Do not offer the
         # optimized path without an actual captured graph proof.
         return None
-    started=time.monotonic_ns();proof=copy.deepcopy(captured[2]);scope['proof_copy_ns']+=time.monotonic_ns()-started
+    started=time.monotonic_ns();value=captured[2]
+    proof=value.detached() if isinstance(value,FrozenProof) else copy.deepcopy(value)
+    scope['proof_copy_ns']+=time.monotonic_ns()-started;scope['proof_external_copies']+=1
+    scope['proof_external_fields']+=len(proof['files'])+len(proof['directories'])
     return proof
 
 
@@ -212,7 +223,9 @@ def derive(service,workflow,build):
         if leader:
             try:
                 nodes=_calculate(service,workflow,build,lane,scope,cohort,len(members),identity[1])
-                result={'nodes':nodes,'proof':copy.deepcopy(lane['proof']),
+                proof=lane['proof']
+                if isinstance(proof,FrozenProof):scope['proof_internal_shares']+=1
+                result={'nodes':nodes,'proof':proof if isinstance(proof,FrozenProof) else copy.deepcopy(proof),
                     'cohort_id':cohort,'shared_callers':len(members)}
             except BaseException as exc:
                 result={'error':exc,'cohort_id':cohort,'shared_callers':len(members)}
