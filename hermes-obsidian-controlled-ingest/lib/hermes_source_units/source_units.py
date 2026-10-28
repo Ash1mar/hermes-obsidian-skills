@@ -62,7 +62,9 @@ def _load_json(path: Path) -> Any:
         captured, value = snapshot_json(path)
         if captured:
             return value
-        return json.loads(path.read_text(encoding="utf-8"))
+        from .read_accounting import read_bytes
+        text=read_bytes(path,'source_units._load_json').decode('utf-8')
+        return json.loads(text.replace('\r\n','\n').replace('\r','\n'))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         _fail("SOURCE_UNAVAILABLE", f"cannot read JSON {path}: {exc}")
 

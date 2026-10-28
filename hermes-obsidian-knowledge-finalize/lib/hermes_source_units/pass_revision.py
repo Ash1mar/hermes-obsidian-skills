@@ -8,6 +8,7 @@ import re
 
 from .source_units import _exclusive_lock, _load_json, _vault_path, _write_atomic, _json_bytes
 from .validation import ContractError, fingerprint, validate_record
+from .verified_snapshot import field_projection
 
 
 def fail(code, message):
@@ -44,7 +45,7 @@ class PassRevisionMixin:
         return projection
 
     def revision_allows(self, value, node):
-        revision = value.get('pass_revision')
+        revision = field_projection(value,'pass_revision',('state','slice_ids','revision_scope','boundary'))
         return bool(revision and revision['state'] == 'running'
                     and node.startswith('pass-slice:')
                     and node.partition(':')[2] in revision['slice_ids']

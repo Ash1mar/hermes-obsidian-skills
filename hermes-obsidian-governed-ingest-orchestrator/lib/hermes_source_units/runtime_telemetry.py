@@ -63,6 +63,11 @@ def span(name, *, vault=None, workflow_id=None, binding=None, **fields):
              'name':name, 'started_at':started['wall_time_ns']/1_000_000_000,
              'started_monotonic_ns':started['monotonic_ns'],
              'clock_domain':started['clock_domain'], 'pid':os.getpid(), **fields}
+    if name in ('worker_authority_check','worker_live_control_check','native_output_authentication'):
+        trace.update(read_boundary_id=trace['span_id'],read_boundary_name=name)
+    else:
+        for key in ('read_boundary_id','read_boundary_name'):
+            if key in parent:trace[key]=parent[key]
     token = _TRACE.set(trace)
     error = None
     try:

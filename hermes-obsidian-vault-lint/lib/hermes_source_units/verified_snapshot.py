@@ -7,6 +7,15 @@ from .validation import fingerprint
 CANONICAL_RULE_VERSION='hermes-canonical-json/v1'
 
 
+def field_projection(value,name,keys,default=None):
+    """Copy only required subfields of immutable data at the original access."""
+    if not isinstance(value,VerifiedSnapshot):return value.get(name,default)
+    def project(record):
+        field=record.get(name,default)
+        return {k:field[k] for k in keys if k in field} if isinstance(field,Mapping) else field
+    return value.select(('field_projection',name,tuple(keys),repr(default)),project)
+
+
 def freeze(value):
     if isinstance(value,MappingProxyType):return value
     if isinstance(value,dict):return MappingProxyType({k:freeze(v) for k,v in value.items()})

@@ -523,3 +523,25 @@ must be supported by these origins and total copy time, not merely renaming a
 large copy as a projection. Negative cases cover same-mtime/no-revision changes,
 schema/rule/path binding, returned-object mutation, duplicate cards, and unchanged
 pause/cancel/error precedence. Log only operation aggregates, never one event per read.
+
+## Logical read cost and bounded capture accounting
+
+Read cost and read elimination are separate acceptance targets. Every graph lookup
+and live dependency recheck continues to enumerate current members and hash every
+current file. Both paths now report independent byte/file counts. JSON, schemas
+and captured JSON are separately attributed by path and calling origin. An
+invocation-local ledger aggregates path/source/boundary-kind totals and per-boundary
+source totals with monotonic timestamps and one-second buckets. It is flushed once
+with the read-projection summary; it writes no per-file log events. Captures are
+counted separately from actual logical reads and never treated as physical disk I/O.
+Broad unbound spans and buckets crossing an observation cutoff must be reported
+explicitly; a telemetry boundary is not permission to share any live reads.
+
+Immutable pause/revision queries copy just state, scope, slice IDs and boundary
+where needed. Each original decision still executes. Directory names and proof
+file names are rendered once per scan; path resolution and directory enumeration
+are repeated at each scan. Batch task IDs are derived from the bytes already
+captured by that scan, with parse/shape reuse keyed by current bytes and schema.
+The fallback batch reader, first-build confirmation, and full dependency sets remain.
+Per-scan cost, captured batch validation and projected copy volume are measured;
+none of these changes promises a large GB reduction.
