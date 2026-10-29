@@ -6,7 +6,7 @@ Consumers drop *all* Linux capabilities and no-new-privs before using a generati
 The registry and protected inodes have FS_IMMUTABLE_FL. Privileged maintenance
 outside this protocol must stop consumers first; it is not an untrusted writer.
 """
-from contextlib import contextmanager
+from contextlib import contextmanager,ExitStack
 from contextvars import ContextVar
 from pathlib import Path
 import array
@@ -31,6 +31,7 @@ ROOT='_system/runtime/evidence-snapshots'
 IMMUTABLE=0x10
 _SESSION=ContextVar('sealed_evidence_session',default=None)
 _BYPASS=ContextVar('sealed_evidence_full_reads',default=False)
+_QUERY=ContextVar('sealed_report_query',default=None)
 
 
 def fail(message):raise ContractError('EVIDENCE_SNAPSHOT_REVOKED','$',message)
@@ -324,7 +325,8 @@ class EvidenceSession:
             'path_objects','static_builds','static_build_ns','payload_builds','payload_build_ns',
             'digest_calls','digest_ns','metadata_calls','metadata_ns','lstat_calls','lstat_ns',
             'absence_checks','absence_ns','content_checks','registry_attempts','registry_ns',
-            'lease_acquires','lease_wait_ns','external_graph_copies','external_graph_copy_ns')}
+            'lease_acquires','lease_wait_ns','external_graph_copies','external_graph_copy_ns',
+            'guard_calls','process_checks','query_steps','query_members','query_ns')}
         self._paths={};self._plans={};self._static_records=None
         self.sources={}
         if restrict:restrict_consumer()
@@ -351,6 +353,7 @@ class EvidenceSession:
         try:
             raw=_raw_read_bytes(self.directory/'state.json','evidence_snapshot.registry')
             state=json.loads(raw)
+            self.costs['process_checks']+=1
             if (state['contract']!=CONTRACT or state['state']!='active'
                     or _start(state['pid'])!=state['process_start']
                     or not flags(self.directory/'state.json')&IMMUTABLE
@@ -413,11 +416,43 @@ class EvidenceSession:
 
     @contextmanager
     def guard(self,paths=()):
+        self.costs['guard_calls']+=1
+        query=_QUERY.get()
+        if (query is not None and query['session'] is self
+                and query['thread']==threading.get_ident() and not _BYPASS.get()
+                and len(paths)==1 and paths[0] in query['reports']):
+            # The shared kernel lease prevents an acknowledged revoke or legal
+            # replacement during this pure step. Liveness and every original
+            # per-report path/content metadata observation remain fresh.
+            if query['state'] is None:
+                started=time.monotonic_ns();query['stack'].enter_context(_lease(self.directory))
+                self.costs['lease_acquires']+=1;self.costs['lease_wait_ns']+=time.monotonic_ns()-started
+                query['state']=self._state();self.costs['query_steps']+=1
+            else:
+                self.costs['process_checks']+=1;state=query['state']
+                if _start(state['pid'])!=state['process_start']:fail('snapshot is not a live sealed generation')
+            self.costs['query_members']+=1
+            self._metadata(paths)
+            yield
+            return
         started=time.monotonic_ns()
         with _lease(self.directory):
             self.costs['lease_acquires']+=1;self.costs['lease_wait_ns']+=time.monotonic_ns()-started
             self._state();self._metadata(paths)
             yield
+
+    @contextmanager
+    def report_query(self,reports):
+        started=time.monotonic_ns()
+        with ExitStack() as stack:
+            # Open lazily at the first original report guard, after its path
+            # validation. This preserves first-error ordering and empty steps.
+            token=_QUERY.set({'session':self,'thread':threading.get_ident(),'reports':reports,
+                'state':None,'stack':stack})
+            try:yield
+            finally:
+                _QUERY.reset(token)
+                self.costs['query_ns']+=time.monotonic_ns()-started
 
     def _prepare_static(self):
         started=time.monotonic_ns()
@@ -559,6 +594,29 @@ def records_as_strings(records):return {str(p) for p in records}
 
 
 def current():return None if _BYPASS.get() else _SESSION.get()
+
+
+@contextmanager
+def history_query(service,pointers):
+    """Internal pure step only: never span caller yield, callback or execution.
+
+    Eligibility is lexical and does not resolve/inspect later report paths.
+    Their original lazy safety, digest and parse checks retain their order.
+    The lease makes revocation linearize after this bounded step; no evidence
+    modification or revocation acknowledgement can happen inside it.
+    """
+    from .read_reuse_policy import query_sharing
+    session=current()
+    if session is None or not query_sharing() or session.service is not service or not 2<len(pointers)<=256:
+        yield;return
+    try:
+        names=tuple(str(service.vault/p['report_ref']) for p in pointers)
+        eligible=(all(name in session.manifest['reports'] for name in names)
+            and sum(session.manifest['content_identity'][name][3] for name in names)<=64*1024*1024)
+    except (KeyError,TypeError):
+        eligible=False
+    if not eligible:yield;return
+    with session.report_query(frozenset(names)):yield
 
 
 def configure_consumer(workflow_id,node):

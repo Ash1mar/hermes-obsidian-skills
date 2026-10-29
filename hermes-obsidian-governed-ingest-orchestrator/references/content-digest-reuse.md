@@ -57,3 +57,39 @@ must stop all code consumers first. `release-stale` is allowed only for Vault
 paths plus the exact installed schema file/schema directory; it cannot restore
 arbitrary host paths from a manifest. An isolated test may pass an explicit temp
 asset descriptor, but the production CLI has no such argument.
+
+## Batch 3: bounded pure history-query steps
+
+Only `journal_rows` iterator advancement and the internal `permitted_tasks`
+report loop share a registry observation. The mutable workflow is read before
+this scope at its original position. `entries` remains on per-report guards:
+its caller-provided selector is arbitrary code and cannot be enclosed safely.
+Unprotected/unknown reports, more than 256 pointers or over 64 MiB of report
+content use the original path. Eligibility never resolves later paths or parses
+later reports, preserving lazy errors and early returns.
+
+The first original report guard acquires the shared kernel lease and checks the
+current registry, generation, immutable flags and protector. Later original
+report guards in that pure step check protector PID/start freshly and perform
+all original path/ancestor/content-metadata checks. Expected digest comparisons,
+ordering, duplicates, reverse queries and parsed-result isolation remain intact.
+Steps with no report access acquire no lease or authority. Metrics distinguish
+`guard_calls`, `process_checks`, `query_members`, actual `registry_attempts` and
+`lease_acquires`; fewer registry reads must not be reported as fewer member or
+execution checks.
+
+Revocation has an explicit linearization point: the existing exclusive lease
+waits for this bounded pure step, then durably revokes and releases protection
+before acknowledging. Legal writes cannot occur during the step. A protector
+death is still noticed at the next original member guard. Privileged maintenance
+must stop consumers; no ordinary writer can modify protected files directly.
+This changes revocation waiting granularity from one report to one pure query
+step; it is not a claim of identical wall-clock observation times.
+
+The iterator releases its lease **before each caller yield**, including early
+return consumers; permission enumeration releases before returning its data.
+No model call, callback, wait, current worker-authority check or entire recovery
+loop is enclosed. Already captured rows keep the original lazy semantics; the
+next report access after acknowledged revoke fails. Full locked-commit reads
+and all current execution gates remain unchanged. Conservative diagnostic mode
+can disable query sharing for fixed-material comparisons.
