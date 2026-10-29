@@ -61,3 +61,28 @@ and establish a fresh generation bound to the new history before resume. Watcher
 reconciliation then admits its own restricted reader. Do not reuse an old graph
 binding for the resumed worker. These are observation handoff operations, not
 authority to migrate storage or retry domain results.
+
+## Remaining coordination costs and comparable measurements
+
+`ingest_completion` now counts its original direct signature/confirmation reads
+with separate origins. It still reads at exactly those positions; the existing
+proof cache and recheck algorithm are not replaced. Older byte totals lack these
+reads: report a matched older-coverage subtotal and the expanded current total.
+Broker-child actual content/registry reads merge into the parent's tally; child
+telemetry summaries must not be summed again. IPC transfer is not disk I/O.
+
+Native CLI spans include the original caller. `task_snapshot` already reuses a
+projection snapshot; `_refresh_projection` retains only unchanged terminal rows.
+Fresh grants and nonterminal refreshes still use the original calls. A task-list
+row lacks run/body/children proof, so it cannot replace `show`. Do not add another
+cache or change wakeups, polling intervals, cancellation, pauses or backoff to
+improve timing numbers. Evaluate further show reuse only with a proven native
+snapshot contract and concrete remaining duplicates.
+
+Use a fixed graph/history/native-list identity for read-only predicate contrasts,
+and keep complete real reconciliation timing separate. Report startup recovery,
+watcher/worker overlap and stop drain independently; concurrent elapsed spans
+cannot be added to worker authentication elapsed time. Per reconciliation include
+actual bytes, full/projected copying, segment hydrate/hash time, broker metadata/
+registry/IPC costs, native CLI calls and final projection. Existing holds/unknown
+results are not retried merely to create SDK samples.

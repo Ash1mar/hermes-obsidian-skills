@@ -374,6 +374,7 @@ class KanbanCLI:
         board_command = len(parts)>3 and parts[:2]==('kanban','--board')
         operation = parts[3] if board_command else ':'.join(parts[1:3]) if parts[:2]==('kanban','boards') else parts[1] if len(parts)>1 else parts[0]
         with span('native_cli', operation=operation,
+                  caller=sys._getframe(1).f_code.co_name,
                   target_task_id=parts[4] if board_command and len(parts)>4 and not parts[4].startswith('--') else None):
             result = self.invoke(["hermes", *parts])
         if result.returncode != 0:
