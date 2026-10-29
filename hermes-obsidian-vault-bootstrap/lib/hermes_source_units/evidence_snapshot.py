@@ -286,7 +286,7 @@ def rpc(path,request):
 
 class EvidenceSession:
     def __init__(self,service,directory,*,restrict=True):
-        self.service=service;self.directory=directory;self.data={};self.lock=threading.RLock()
+        self.service=service;self.directory=directory;self.data={};self.digests={};self.lock=threading.RLock()
         self.stats={'hits':0,'avoided_bytes':0,'first_reads':0,'first_bytes':0,'guards':0,'metadata_checks':0}
         self.costs={key:0 for key in ('plan_builds','plan_hits','plan_build_ns','plan_lookup_ns',
             'path_objects','static_builds','static_build_ns','payload_builds','payload_build_ns',
@@ -430,7 +430,10 @@ class EvidenceSession:
         with self.lock:
             if name not in self.data:
                 data=_raw_read_bytes(path,origin)
-                if hashlib.sha256(data).hexdigest()!=self.manifest['files'][name]:fail('sealed file hash mismatch')
+                from .read_accounting import content_digest
+                digest=content_digest(path,data,'sealed_first:'+origin)
+                if digest!=self.manifest['files'][name]:fail('sealed file hash mismatch')
+                self.digests[name]=digest
                 self.data[name]=data;self.stats['first_reads']+=1;self.stats['first_bytes']+=len(data)
                 row['first_reads']+=1;row['first_bytes']+=len(data)
             else:
@@ -444,6 +447,14 @@ class EvidenceSession:
         name=str(path)
         if name not in self.manifest['files']:return None
         with self.guard((name,)):return self._read(path,origin)
+
+    def read_hashed(self,path,origin):
+        name=str(path)
+        if name not in self.manifest['files']:return None
+        # This guard is the original per-read observation, not a digest lease.
+        with self.guard((name,)):
+            data=self._read(path,origin)
+            return data,self.digests[name]
 
     def graph(self,workflow,*,internal=False):
         if binding(workflow)!=self.manifest['binding']:fail('snapshot workflow evidence binding changed')

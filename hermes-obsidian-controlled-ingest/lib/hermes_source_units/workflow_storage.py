@@ -102,13 +102,13 @@ def segment_paths(path,root):
 
 
 def _segment_value(path,pointer,kind,segments):
-    from .read_accounting import read_bytes
+    from .read_accounting import read_hashed
     vault=path.parent.parent.parent.parent;target=vault/pointer['ref'];expected=pointer['sha256']
     _safe_lexical(target,vault)
     origin='workflow_storage.segment' if kind=='history' else 'workflow_storage.protected_files'
-    try:data=read_bytes(target,origin)
+    try:data,digest=read_hashed(target,origin)
     except OSError as exc:fail('workflow segment unavailable: '+str(exc))
-    if hashlib.sha256(data).hexdigest()!=expected:fail('workflow segment hash changed')
+    if digest!=expected:fail('workflow segment hash changed')
     key=(str(target),expected,kind)
     if segments is not None and key in segments:return segments[key]
     try:value=json.loads(data)

@@ -147,6 +147,7 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                         trace['snapshot_versions']=sorted(cache.snapshot_versions,key=repr)
                         trace['logical_read_sources']=list(ledger.rows.values())
                         trace['logical_read_boundaries']=list(ledger.boundaries.values())
+                        trace['content_hash_sources']=list(ledger.hash_rows.values())
         finally:
             self._verified_json_reads=None
 
