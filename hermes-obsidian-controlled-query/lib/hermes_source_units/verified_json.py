@@ -12,7 +12,7 @@ from functools import wraps
 from pathlib import Path
 
 from .validation import ContractError
-from .read_accounting import read_bytes
+from .read_accounting import read_bytes,read_hashed
 
 
 class VerifiedJsonReads:
@@ -35,10 +35,9 @@ class VerifiedJsonReads:
         origin=origin or caller_origin()
         path=Path(path)
         started=time.monotonic_ns()
-        try:data=read_bytes(path,'verified_json:'+origin)
+        try:data,digest=read_hashed(path,'verified_json:'+origin)
         except OSError as exc:
             raise ContractError('SOURCE_UNAVAILABLE','$',f'cannot read JSON {path}: {exc}') from exc
-        digest=hashlib.sha256(data).hexdigest()
         if expected is not None and digest!=expected:
             raise ContractError('SOURCE_CHANGED','$','verified JSON bytes differ from their current pointer')
         read_hash_ns=time.monotonic_ns()-started
@@ -59,8 +58,8 @@ class VerifiedJsonReads:
         schema=None
         if kind is not None:
             from . import validation
-            schema=hashlib.sha256(read_bytes(Path(validation.__file__).with_name('schemas').joinpath('contracts.json'),
-                'verified_json.schema')).hexdigest()
+            _,schema=read_hashed(Path(validation.__file__).with_name('schemas').joinpath('contracts.json'),
+                'verified_json.schema')
         key=(str(path.resolve()),kind,id(validator),schema)
         with self.lock:
             if schema is not None:

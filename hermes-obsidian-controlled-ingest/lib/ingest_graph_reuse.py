@@ -125,7 +125,8 @@ def _calculate(service,workflow,build,lane,scope,cohort,size,canonical):
     # Installed code cannot change under active consumers. Include actual schema
     # bytes independently of workflow revision, file sizes and timestamps too.
     schema=Path(contracts.__file__).with_name('schemas')/'contracts.json'
-    contract=hashlib.sha256(read_bytes(schema,'graph_schema')).digest()
+    from hermes_source_units.read_accounting import read_hashed
+    contract=bytes.fromhex(read_hashed(schema,'graph_schema')[1])
     started=time.monotonic_ns()
     lane['proof']=(FrozenProof(before['proof_files'],before['directories'],contract.hex())
         if before.get('_sealed_internal') else {'files':before['proof_files'],
@@ -179,7 +180,8 @@ def recheck_dependencies(service,proof):
     if session is not None and session.recheck(proof):return
     with span('build_dependency_recheck',vault=service.vault,files=len(proof['files'])) as trace:
         schema=Path(contracts.__file__).with_name('schemas')/'contracts.json'
-        if hashlib.sha256(read_bytes(schema,'dependency_recheck.schema')).hexdigest()!=proof['schema_sha256']:
+        from hermes_source_units.read_accounting import read_hashed
+        if read_hashed(schema,'dependency_recheck.schema')[1]!=proof['schema_sha256']:
             raise ContractError('SOURCE_CHANGED','$','Build schema changed after full check')
         directory_started=time.monotonic_ns()
         for name,expected in proof['directories'].items():

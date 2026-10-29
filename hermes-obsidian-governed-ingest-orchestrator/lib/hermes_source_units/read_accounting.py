@@ -3,13 +3,23 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import threading
 import time
+import hashlib
 
 _LEDGER=ContextVar('logical_read_ledger',default=None)
 
 
 class ReadLedger:
     def __init__(self):
-        self.rows={};self.boundaries={};self.seen_json={};self.lock=threading.Lock()
+        self.rows={};self.boundaries={};self.seen_json={};self.hash_rows={};self.lock=threading.Lock()
+
+    def note_hash(self,path,origin,*,size=0,elapsed=0,reused=False):
+        from .runtime_telemetry import _TRACE
+        trace=_TRACE.get();key=(str(path),origin,trace.get('read_boundary_name',trace.get('name','unbound')))
+        with self.lock:
+            row=self.hash_rows.setdefault(key,{'path':key[0],'origin':origin,'boundary':key[2],
+                'hash_calls':0,'hash_bytes':0,'hash_ns':0,'digest_reuses':0})
+            if reused:row['digest_reuses']+=1
+            else:row['hash_calls']+=1;row['hash_bytes']+=size;row['hash_ns']+=elapsed
 
     def note(self,path,size,origin,*,captured=False,failed=False,count=1):
         from .runtime_telemetry import _TRACE
@@ -64,6 +74,30 @@ def read_bytes(path,origin):
         data=session.read(path,origin)
         if data is not None:return data
     return _raw_read_bytes(path,origin)
+
+
+def content_digest(path,data,origin):
+    started=time.monotonic_ns();digest=hashlib.sha256(data).hexdigest()
+    ledger=_LEDGER.get()
+    if ledger is not None:ledger.note_hash(path,origin,size=len(data),elapsed=time.monotonic_ns()-started)
+    return digest
+
+
+def read_hashed(path,origin):
+    """Fresh guard plus immutable verified digest, or fresh ordinary bytes/hash."""
+    from .evidence_snapshot import current
+    from .read_reuse_policy import hash_reuse,schema_reuse
+    session=current()
+    if session is not None and str(path) in session.manifest.get('host_files',{}) and not schema_reuse():
+        return session.read_fresh_hashed(path,origin)
+    if session is not None and hash_reuse():
+        result=session.read_hashed(path,origin)
+        if result is not None:
+            ledger=_LEDGER.get()
+            if ledger is not None:ledger.note_hash(path,origin,reused=True)
+            return result
+    data=read_bytes(path,origin)
+    return data,content_digest(path,data,origin)
 
 
 def _raw_read_bytes(path,origin):

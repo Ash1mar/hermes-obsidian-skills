@@ -79,6 +79,17 @@ def journal_rows(adapter,binding,journal,kind,*,scopes=None,reverse=False,
         if allowed is not None and index['scope'] not in allowed:return (False,[])
         return (False,index['rows'].get((binding['node'],journal),[]))
     pointers=workflow.get('execution_recovery_history',[])
+    from hermes_source_units.evidence_snapshot import history_query
+    iterator=_journal_rows_iter(adapter,cache,pointers,journal,kind,allowed,reverse,project,binding,code,message)
+    while True:
+        # Release the lease before returning a row to arbitrary caller code.
+        with history_query(adapter.workflow,pointers):
+            try:row=next(iterator)
+            except StopIteration:return
+        yield row
+
+
+def _journal_rows_iter(adapter,cache,pointers,journal,kind,allowed,reverse,project,binding,code,message):
     for pointer in reversed(pointers) if reverse else pointers:
         path=_vault_path(adapter.workflow.vault,pointer['report_ref'])
         try:
