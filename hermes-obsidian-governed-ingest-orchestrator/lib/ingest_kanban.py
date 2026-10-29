@@ -43,6 +43,33 @@ def _matching_cards(workflow,node,task_id):
     return [row for row in workflow['kanban']['task_map'] if row['node']==node and row.get('task_id')==task_id]
 
 
+def _first_node_card(workflow,node):
+    def first(value):return next((c for c in value['kanban']['task_map'] if c['node']==node),None)
+    return workflow.select(('first_node_card',node),first) if isinstance(workflow,VerifiedSnapshot) else first(workflow)
+
+
+def _revision_coverage(service,workflow,slice_id):
+    from hermes_source_units.reduce_task_skip import revision_slice_covered
+    if not isinstance(workflow,VerifiedSnapshot):
+        return any(r.get('revision_scope')=='reduce-dependencies/v1' and r['state']=='accepted'
+            and slice_id in r['slice_ids'] and revision_slice_covered(service,workflow,r,slice_id)
+            for r in [*workflow.get('pass_revision_history',[]),*([workflow['pass_revision']] if workflow.get('pass_revision') else [])])
+    def revision(value,index):
+        history=value.get('pass_revision_history',[])
+        return history[index] if index<len(history) else value['pass_revision']
+    count=workflow.select(('coverage_revision_count',),lambda v:len(v.get('pass_revision_history',[]))+bool(v.get('pass_revision')))
+    for index in range(count):
+        head=workflow.select(('coverage_revision_header',index),lambda v:{k:r[k] for r in [revision(v,index)]
+            for k in ('revision_scope','state','slice_ids') if k in r})
+        if head.get('revision_scope')!='reduce-dependencies/v1' or head['state']!='accepted' or slice_id not in head['slice_ids']:continue
+        def material(value):
+            r=revision(value,index)
+            return {**{k:r[k] for k in ('revision_id',) if k in r},
+                'tasks':[{k:t[k] for k in ('task_id','pass_id','sequence') if k in t} for t in r['tasks']]}
+        if revision_slice_covered(service,workflow,workflow.select(('coverage_revision_material',index),material),slice_id):return True
+    return False
+
+
 def _fail(code: str, message: str) -> None:
     raise ContractError(code, "$", message)
 
@@ -347,6 +374,7 @@ class KanbanCLI:
         board_command = len(parts)>3 and parts[:2]==('kanban','--board')
         operation = parts[3] if board_command else ':'.join(parts[1:3]) if parts[:2]==('kanban','boards') else parts[1] if len(parts)>1 else parts[0]
         with span('native_cli', operation=operation,
+                  caller=sys._getframe(1).f_code.co_name,
                   target_task_id=parts[4] if board_command and len(parts)>4 and not parts[4].startswith('--') else None):
             result = self.invoke(["hermes", *parts])
         if result.returncode != 0:
@@ -501,10 +529,7 @@ def _domain_completed(service,workflow,node):
     if node.kind == "pass-slice":
         slice_id = node.name.partition(":")[2]
         if service.knowledge._slice(workflow["batch_id"], slice_id)["state"] == "completed":return True
-        from hermes_source_units.reduce_task_skip import revision_slice_covered
-        return any(r.get('revision_scope')=='reduce-dependencies/v1' and r['state']=='accepted'
-            and slice_id in r['slice_ids'] and revision_slice_covered(service,workflow,r,slice_id)
-            for r in [*workflow.get('pass_revision_history',[]),*([workflow['pass_revision']] if workflow.get('pass_revision') else [])])
+        return _revision_coverage(service,workflow,slice_id)
     if node.kind == "resource-reduce":
         from hermes_source_units.resource_amendment import pending
         if pending(service,workflow,node.name):return False
@@ -718,8 +743,8 @@ class IngestKanbanAdapter:
         if report is None:return False
         if report.get('input_fingerprint') != node.input_fingerprint:
             return False
-        value = self.workflow.status(workflow_id)
-        current = next((c for c in value['kanban']['task_map'] if c['node'] == node.name), None)
+        value = _check_workflow(self.workflow,workflow_id,'reconciliation.failed_card')
+        current = _first_node_card(value,node.name)
         return not (node.kind in ('pass-slice','resource-reduce') and domain_completed(self.workflow, value, node)
                     and current and report.get('task_id') != current['task_id'])
 
@@ -790,7 +815,8 @@ class IngestKanbanAdapter:
     def _execution_blocked(self, workflow_id: str, node: Node) -> bool:
         path = _vault_path(self.workflow.vault,
             f"_system/ledgers/ingest-workflows/{workflow_id}/reports/failed-{fingerprint(node.name)[:16]}.json")
-        return ((node.kind!='pass-slice' or not domain_completed(self.workflow,self.workflow.status(workflow_id),node))
+        return ((node.kind!='pass-slice' or not domain_completed(self.workflow,
+                    _check_workflow(self.workflow,workflow_id,'reconciliation.execution_blocked'),node))
                 and self._failed_card(workflow_id, node)
                 and bool(_load_json(path).get('error_code')))
 
@@ -1450,6 +1476,7 @@ class IngestKanbanAdapter:
                 or os.environ.get("HERMES_KANBAN_TASK")):
             _fail("ACCESS_DENIED", "Kanban reconciliation requires a trusted orchestrator process")
         workflow_id = str(request["workflow_id"])
+        from hermes_source_units.protected_reader import coordinator_reads
         with record_validation_scope() as schema, span('full_reconciliation',
                 vault=self.workflow.vault,workflow_id=workflow_id) as trace:
             trace['completed']=False
@@ -1457,7 +1484,7 @@ class IngestKanbanAdapter:
                 self.workflow._check_request(request)
                 lock = _vault_path(self.workflow.vault,
                     f"_system/ledgers/ingest-workflows/.dispatch-locks/{workflow_id}.lock")
-                with _exclusive_lock(lock):
+                with _exclusive_lock(lock),coordinator_reads(self.workflow,workflow_id):
                     board = self.workflow.status(workflow_id)['kanban']['board_id']
                     with self.workflow.execution_projection(), completion_scope() as proofs, self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
                         result=self._sync_locked(request,yield_requested=yield_requested)

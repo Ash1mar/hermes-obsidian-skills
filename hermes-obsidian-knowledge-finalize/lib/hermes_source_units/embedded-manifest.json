@@ -22,7 +22,7 @@
   "execution_plan.py": "632fe060abfe559eae8594bef7ca490e650cb6b724cdaef9404456e18d033192",
   "file_locks.py": "e47b16937ee89215195fb5068921a8ccf8f1eb42c3a6dc12270b35cb1092280f",
   "ingest_pauses.py": "155305e83fe63ba8deafa3bd65d2c315396a58416a9a8e63e7aa79a3711484ce",
-  "ingest_workflow.py": "8ab0d4c1556f98b498e2009e8c4d3ea1016dbd273cd45aa158b189bda4fdfe65",
+  "ingest_workflow.py": "1a096ed8e975d6c4927afe2ba0f196cc52b8e3b196bb4dcc743febd84de0c70a",
   "interfaces.py": "5d824d42fbea30efc0608260bbd21089d8b170816c85b43bb0dc6d45edb36373",
   "knowledge_build.py": "dac0115b351644c94af1cd6cb1e6ba9e130f4ee0a636af1b973767507d85f321",
   "knowledge_destinations.py": "0523796fef89b2acd05035c1de5191a271e0e243e0243829b392f4542723b71d",
@@ -31,8 +31,9 @@
   "model_projection.py": "3ab971cbfc0aa4895cdde9d5c6c855bdbef7f75433c880037f6e54eadc0b98c4",
   "pass_revision.py": "138f5d6e3c9fd589fc508d93b0ab43beb97e2aba81f601310e87d130ebdedbff",
   "pass_skips.py": "67bc652867fb857b9abdade767c090ee05747435e053f47f37213a961f49dbd0",
+  "protected_reader.py": "a19ca4e0d7f683f1935bac25cf268fe52fc02bd4ac587f4bc2b61ac3b7015cb5",
   "py.typed": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-  "read_accounting.py": "cb0d8079ebd382efa933004d1597cb8bc383468340596fee9b8cf073e8f18328",
+  "read_accounting.py": "ae70f9a6248268f04ad891a68aacd8578c4af149cbab62f9e4e5b57cbc6dccf5",
   "read_reuse_policy.py": "aa8df65a292a41ad834623269d56150fbe8c50cf95fcad0af929f85ff716a6ca",
   "reading_dependencies.py": "65a66a583811552c206339f1e6c58f97d94a445a7ab5c92ed98f28a40f7771be",
   "record_snapshot.py": "bd4398fa8829176d8ed4ce78073692ebddcdfcece1b8421261754410957f169f",
@@ -52,5 +53,5 @@
   "verified_json.py": "f04163d5b88c7174a2665e91dafa2e5edb3662fe4e441c71c25bc9ef4306999e",
   "verified_snapshot.py": "3f9b9c42abfa199e91bfcb16e5689ce3873d7a21989eda661abf5520ae789e5c",
   "workflow_guard.py": "8c0aac347d5f1cbe10658c48c635d9ff56306ffdcfd67a1da225d6785b29cb0f",
-  "workflow_storage.py": "18d9f4fd98626428defe4b0094ce510a854eef0cb1ea327b2db78a53feaeb732"
+  "workflow_storage.py": "db7d8232fd7808ba7dd980489d858d83871c3678b63d8d49c10eefbba7da6fbc"
 }

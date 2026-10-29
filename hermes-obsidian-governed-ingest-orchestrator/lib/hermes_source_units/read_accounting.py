@@ -73,6 +73,11 @@ def read_bytes(path,origin):
     if session is not None:
         data=session.read(path,origin)
         if data is not None:return data
+    from .protected_reader import current as coordinated
+    reader=coordinated()
+    if reader is not None:
+        result=reader.read_hashed(path,origin)
+        if result is not None:return result[0]
     return _raw_read_bytes(path,origin)
 
 
@@ -96,6 +101,11 @@ def read_hashed(path,origin):
             ledger=_LEDGER.get()
             if ledger is not None:ledger.note_hash(path,origin,reused=True)
             return result
+    from .protected_reader import current as coordinated
+    reader=coordinated()
+    if reader is not None:
+        result=reader.read_hashed(path,origin)
+        if result is not None:return result
     data=read_bytes(path,origin)
     return data,content_digest(path,data,origin)
 

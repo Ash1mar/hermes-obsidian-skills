@@ -172,7 +172,8 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
 
     def _mutation(self, request: Mapping[str, Any]) -> dict[str, Any]:
         self._check_request(request)
-        value = self._load(str(request["workflow_id"]))
+        from .protected_reader import fresh_content_reads
+        with fresh_content_reads():value = self._load(str(request["workflow_id"]))
         if value["actor"] != request["actor"]:
             _fail("ACTOR_MISMATCH", "workflow actor differs", "$.actor")
         if value["revision"] != request["expected_revision"]:
