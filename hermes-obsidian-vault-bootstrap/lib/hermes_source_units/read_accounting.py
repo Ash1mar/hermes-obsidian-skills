@@ -86,8 +86,10 @@ def content_digest(path,data,origin):
 def read_hashed(path,origin):
     """Fresh guard plus immutable verified digest, or fresh ordinary bytes/hash."""
     from .evidence_snapshot import current
-    from .read_reuse_policy import hash_reuse
+    from .read_reuse_policy import hash_reuse,schema_reuse
     session=current()
+    if session is not None and str(path) in session.manifest.get('host_files',{}) and not schema_reuse():
+        return session.read_fresh_hashed(path,origin)
     if session is not None and hash_reuse():
         result=session.read_hashed(path,origin)
         if result is not None:

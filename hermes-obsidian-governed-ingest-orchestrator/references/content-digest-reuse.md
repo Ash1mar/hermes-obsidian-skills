@@ -27,3 +27,33 @@ Use a fixed set of native response/audit/wire identities and unchanged recovery
 reports. `native_proof` is a pure evidence proof, not current worker admission;
 never substitute a fake worker check to benchmark it. Do not create new model
 requests, task outcomes or retries for samples.
+
+## Batch 2: installed schema is an independent host asset
+
+The privileged protector CLI opts in with `--protect-schema`. It accepts only
+the reader's exact installed `schemas/contracts.json` under
+`/root/.hermes/skills/domain`; callers cannot supply an arbitrary host path.
+The manifest records its separate `hermes-installed-schema/v1` root/path/hash
+contract. It is excluded from the Vault graph digest and all existing identities.
+
+Before sealing, a protector obtains a nonblocking exclusive flock on that schema
+inode and rejects any pre-existing schema/schema-directory immutable flag. This
+prevents overlapping ownership and accidental restoration of another owner's
+flags. A crashed owner's stale seal must be explicitly released from its recorded
+manifest; no new protector silently adopts it. The file and its schema directory
+are kernel immutable; all lexical ancestors are checked at each schema read.
+The consumer loses all Linux capabilities as for Vault evidence.
+
+Every original schema check still executes a current generation/protector/lease/
+metadata guard and uses the original SHA-256 as its validator/proof key. Without
+an opted-in schema manifest, the original full read/hash path remains. Full
+locked commit verification also rereads and hashes it. The diagnostic schema
+reference mode keeps the same current host guard while rereading/rehashing bytes.
+
+Controlled writes request revocation through the owner's existing RPC, then stop
+affected consumers and wait for release before replacing installed code/schema.
+Revoke restores the exact original flags and releases the owner FD. Deployment
+must stop all code consumers first. `release-stale` is allowed only for Vault
+paths plus the exact installed schema file/schema directory; it cannot restore
+arbitrary host paths from a manifest. An isolated test may pass an explicit temp
+asset descriptor, but the production CLI has no such argument.

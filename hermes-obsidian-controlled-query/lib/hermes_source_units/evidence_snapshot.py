@@ -138,15 +138,24 @@ def _lease(directory,exclusive=False):
 
 class Protector:
     """Privileged, separately launched protector; RPC can revoke, never write data."""
-    def __init__(self,service,workflow):
+    def __init__(self,service,workflow,*,schema_asset=None):
         self.service=service;self.vault=service.vault;self.workflow=workflow
         self.directory=self.vault/ROOT/workflow['workflow_id']
         self.state={'contract':CONTRACT,'workflow_id':workflow['workflow_id'],
             'generation':uuid.uuid4().hex,'state':'preparing','pid':os.getpid(),
             'process_start':_start(os.getpid()),'socket':_socket(self.vault,workflow['workflow_id'])}
-        self.original={};self.manifest=None;self.mutex=threading.RLock()
+        self.original={};self.manifest=None;self.mutex=threading.RLock();self.schema_asset=schema_asset;self._schema_owner=None;self._released=False
 
     def prepare(self,graph):
+        try:return self._prepare(graph)
+        except BaseException:
+            self._release_schema_owner();raise
+
+    def _release_schema_owner(self):
+        from .schema_assets import release
+        owned=self._schema_owner;self._schema_owner=None;release(owned)
+
+    def _prepare(self,graph):
         started=time.monotonic();verification_bytes=0
         if self.workflow['current_stage']!='build_finalizing':fail('snapshot is limited to Build Finalize')
         if self.directory.exists():
@@ -155,6 +164,10 @@ class Protector:
         self.directory.mkdir(parents=True,exist_ok=True)
         (self.directory/'lease.lock').touch(exist_ok=True)
         _dump(self.directory/'state.json',self.state)
+        # A failed new preparation must never leave a prior generation's host
+        # restoration plan paired with the new preparing registry.
+        _dump(self.directory/'manifest.json',{'contract':CONTRACT,'generation':self.state['generation'],
+            'original_flags':{},'host_schema':{}})
         batch=str(self.service.knowledge._batch_path(self.workflow['batch_id']))
         files={str(path):digest.hex() for path,(_,digest) in graph['records'].items() if str(path)!=batch}
         reports={str(self.vault/p['report_ref']):p['report_sha256'] for p in self.workflow.get('execution_recovery_history',[])}
@@ -166,6 +179,11 @@ class Protector:
         for path,digest in reports_and_segments.items():
             if path in files and files[path]!=digest:fail('conflicting snapshot hashes')
             files[path]=digest
+        from .schema_assets import describe,acquire
+        self._schema_owner=acquire(self.schema_asset)
+        host_files,host_schema=describe(self.schema_asset)
+        if any(Path(p).is_relative_to(self.vault) for p in host_files):fail('host schema scope must be outside Vault')
+        files.update(host_files)
         # A directory seal protects enumeration, not just existing file bytes.
         directories=graph['directories']
         absent=[name for name in directories if not os.path.lexists(name)]
@@ -180,21 +198,22 @@ class Protector:
         # existing parent so mkdir/symlink cannot create members behind a cache.
         # Do not create a Vault directory merely to make a snapshot possible.
         sealed=[Path(p) for p in sorted({*files,*(name for name in directories if name not in absent),
-                                       *absent_parents.values()})]
+                                       *absent_parents.values(),*(str(Path(p).parent) for p in host_files)})]
         for path in sealed:
             if path.is_symlink() or not path.exists():fail('unsealable dependency: '+str(path))
             self.original[str(path)]=flags(path)
         ancestors=set()
         for path in sealed:
             for parent in (path,*path.parents):
-                if not parent.is_relative_to(self.vault):break
+                if path.is_relative_to(self.vault) and not parent.is_relative_to(self.vault):break
                 ancestors.add(parent)
         self.manifest={'contract':CONTRACT,'generation':self.state['generation'],
             'binding':binding(self.workflow),'files':files,'directories':directories,
             'absent_directories':absent,
             'absent_directory_parents':absent_parents,
             'task_ids':json.loads(graph['records'][Path(batch)][0])['task_ids'],
-            'reports':reports,'workflow_segments':storage_segments,'batch':batch,'original_flags':self.original,
+            'reports':reports,'workflow_segments':storage_segments,'host_files':host_files,'host_schema':host_schema,
+            'batch':batch,'original_flags':self.original,
             'path_identity':{},'content_identity':{},
             'reader_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
         # Persist recovery metadata BEFORE the first seal; a crashed preparing
@@ -202,6 +221,8 @@ class Protector:
         _dump(self.directory/'manifest.json',self.manifest)
         try:
             for path in sealed:flags(path,self.original[str(path)]|IMMUTABLE)
+            from .schema_assets import verify_owner
+            if host_files:verify_owner(self._schema_owner,next(iter(host_files)))
             for name,expected in files.items():
                 data=Path(name).read_bytes()
                 verification_bytes+=len(data)
@@ -215,6 +236,7 @@ class Protector:
             self.state['sealed_files']=len(files);self.state['sealed_directories']=len(directories)
             self.state['preparation_graph_bytes']=graph['bytes']
             self.state['preparation_verification_bytes']=verification_bytes
+            self.state['host_schema_verification_bytes']=sum(self.manifest['content_identity'][p][3] for p in host_files)
             self.state['preparation_seconds']=time.monotonic()-started
             from .runtime_telemetry import span
             with span('evidence_snapshot_prepared',vault=self.vault,workflow_id=self.workflow['workflow_id'],
@@ -231,6 +253,15 @@ class Protector:
             flags(self.directory,flags(self.directory)|IMMUTABLE)
 
     def revoke(self,reason):
+        try:return self._revoke(reason)
+        finally:self._release_schema_owner()
+
+    def _revoke(self,reason):
+        with self.mutex:
+            if self._released:return
+            return self._release_once(reason)
+
+    def _release_once(self,reason):
         # No lease spans a model call. An in-progress short pure read or atomic
         # domain commit finishes before this revocation's linearization point.
         # Acknowledgement is issued only after durable revoke and release.
@@ -243,6 +274,7 @@ class Protector:
                 flags(Path(name),previous)
             for name in ('manifest.json','lease.lock'):
                 path=self.directory/name;flags(path,flags(path)&~IMMUTABLE)
+            self._released=True
 
     def serve(self):
         protector=self
@@ -302,6 +334,10 @@ class EvidenceSession:
             if hashlib.sha256(data).hexdigest()!=state['manifest_sha256']:fail('snapshot manifest changed')
             self.manifest=json.loads(data);self.generation=state['generation']
             if self.manifest['reader_sha256']!=hashlib.sha256(Path(__file__).read_bytes()).hexdigest():fail('snapshot reader changed')
+            if self.manifest.get('host_schema'):
+                from .schema_assets import validate
+                asset=self.manifest['host_schema'];validate(asset)
+                if self.manifest.get('host_files')!={asset['path']:asset['sha256']}:fail('schema asset manifest mismatch')
             self._prepare_static()
             self._metadata(self.manifest['content_identity'])
 
@@ -386,7 +422,7 @@ class EvidenceSession:
     def _prepare_static(self):
         started=time.monotonic_ns()
         self._absent=frozenset(self.manifest.get('absent_directories',()))
-        auxiliary={*self.manifest['reports'],*self.manifest.get('workflow_segments',{})}
+        auxiliary={*self.manifest['reports'],*self.manifest.get('workflow_segments',{}),*self.manifest.get('host_files',{})}
         self._static_names=tuple(name for name in self.manifest['files'] if name not in auxiliary)
         self._graph_paths=(*self._static_names,*self.manifest['directories'])
         self._batch_name=self.manifest['batch'];self._batch_path=self._path(self._batch_name)
@@ -446,7 +482,17 @@ class EvidenceSession:
     def read(self,path,origin):
         name=str(path)
         if name not in self.manifest['files']:return None
+        from .read_reuse_policy import schema_reuse
+        if name in self.manifest.get('host_files',{}) and not schema_reuse():return self.read_fresh_hashed(path,origin)[0]
         with self.guard((name,)):return self._read(path,origin)
+
+    def read_fresh_hashed(self,path,origin):
+        from .read_accounting import _raw_read_bytes,content_digest
+        name=str(path)
+        with self.guard((name,)):
+            data=_raw_read_bytes(path,origin);digest=content_digest(path,data,origin)
+            if digest!=self.manifest['files'][name]:fail('fresh schema bytes differ from protected version')
+            return data,digest
 
     def read_hashed(self,path,origin):
         name=str(path)
@@ -491,7 +537,7 @@ class EvidenceSession:
                 return result
 
     def recheck(self,proof):
-        from .read_accounting import _raw_read_bytes
+        from .read_accounting import _raw_read_bytes,read_hashed
         from .runtime_telemetry import span
         from . import validation
         batch=self._batch_name;static=tuple(p for p in proof['files'] if p!=batch)
@@ -501,7 +547,7 @@ class EvidenceSession:
             with self.guard(paths):
                 if proof['directories']!=self.manifest['directories']:fail('dependency proof membership differs')
                 schema=Path(validation.__file__).with_name('schemas')/'contracts.json'
-                if hashlib.sha256(_raw_read_bytes(schema,'dependency_recheck.schema')).hexdigest()!=proof['schema_sha256']:fail('Build schema changed')
+                if read_hashed(schema,'dependency_recheck.schema')[1]!=proof['schema_sha256']:fail('Build schema changed')
                 for name,digest in proof['files'].items():
                     actual=hashlib.sha256(_raw_read_bytes(self._batch_path,'build_dependency_recheck.batch')).hexdigest() if name==batch else self.manifest['files'][name]
                     if actual!=digest:fail('dependency proof bytes differ')
@@ -562,6 +608,11 @@ def guard_write(path):
     """Known atomic writer requests revoke before attempting a protected write."""
     if os.name!='posix':return
     path=Path(path).absolute()
+    session=_SESSION.get()
+    if session is not None and any(path.is_relative_to(Path(p).parent) for p in session.manifest.get('host_files',{})):
+        state=session._state()
+        result=rpc(state['socket'],{'operation':'write','path':str(path)})
+        if result.get('covered'):fail('schema write requested revocation; stop consumers before controlled retry')
     try:position=path.parts.index('_system')
     except ValueError:return
     vault=Path(*path.parts[:position]);root=vault/ROOT

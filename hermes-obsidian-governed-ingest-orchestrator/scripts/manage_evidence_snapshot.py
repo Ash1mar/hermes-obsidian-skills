@@ -17,6 +17,7 @@ def main():
     p.add_argument('operation',choices=('serve','revoke','release-stale','status'))
     p.add_argument('--vault',required=True);p.add_argument('--workflow-id',required=True)
     p.add_argument('--reason',default='controlled maintenance')
+    p.add_argument('--protect-schema',action='store_true',help='Protect the exact installed reader schema under its separate host asset contract')
     args=p.parse_args();adapter=IngestKanbanAdapter(args.vault);service=adapter.workflow
     path=service.vault/ROOT/args.workflow_id
     if args.operation=='status':print((path/'state.json').read_text());return
@@ -31,12 +32,14 @@ def main():
         if _start(state['pid'])==state['process_start']:raise RuntimeError('live protector must revoke its own generation')
         # Operator must quiesce consumers first. Do not trust a stale active flag.
         value=json.loads((path/'manifest.json').read_text()) if (path/'manifest.json').exists() else {'original_flags':{}}
+        if value.get('generation') not in (None,state['generation']):raise RuntimeError('stale release generation mismatch')
         with _lease(path,True):
             flags(path,flags(path)&~IMMUTABLE);flags(path/'state.json',flags(path/'state.json')&~IMMUTABLE)
             state.update(state='revoked',reason=args.reason);_dump(path/'state.json',state)
             for name,bits in value['original_flags'].items():
                 target=Path(name)
-                if not target.is_relative_to(service.vault):raise RuntimeError('release path outside Vault')
+                from hermes_source_units.schema_assets import release_allowed
+                if not release_allowed(service.vault,target,value):raise RuntimeError('release path outside supported evidence scopes')
                 flags(target,bits)
             for name in ('manifest.json','lease.lock'):
                 if (path/name).exists():flags(path/name,flags(path/name)&~IMMUTABLE)
@@ -47,7 +50,8 @@ def main():
     # recovery handoff. Completed slices cannot be frozen while a Pass is active.
     assert_sealable_slices(w,service.knowledge._slices(w['batch_id']))
     graph=dependencies(service,w,scan_role='snapshot_preparation')
-    protector=Protector(service,w)
+    from hermes_source_units.schema_assets import installed_schema_asset
+    protector=Protector(service,w,schema_asset=installed_schema_asset() if args.protect_schema else None)
     protector.prepare(graph)
     try:protector.serve()
     except KeyboardInterrupt:pass
