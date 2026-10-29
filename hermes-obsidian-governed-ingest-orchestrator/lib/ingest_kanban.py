@@ -1475,6 +1475,7 @@ class IngestKanbanAdapter:
                 or os.environ.get("HERMES_KANBAN_TASK")):
             _fail("ACCESS_DENIED", "Kanban reconciliation requires a trusted orchestrator process")
         workflow_id = str(request["workflow_id"])
+        from hermes_source_units.protected_reader import coordinator_reads
         with record_validation_scope() as schema, span('full_reconciliation',
                 vault=self.workflow.vault,workflow_id=workflow_id) as trace:
             trace['completed']=False
@@ -1482,7 +1483,7 @@ class IngestKanbanAdapter:
                 self.workflow._check_request(request)
                 lock = _vault_path(self.workflow.vault,
                     f"_system/ledgers/ingest-workflows/.dispatch-locks/{workflow_id}.lock")
-                with _exclusive_lock(lock):
+                with _exclusive_lock(lock),coordinator_reads(self.workflow,workflow_id):
                     board = self.workflow.status(workflow_id)['kanban']['board_id']
                     with self.workflow.execution_projection(), completion_scope() as proofs, self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
                         result=self._sync_locked(request,yield_requested=yield_requested)

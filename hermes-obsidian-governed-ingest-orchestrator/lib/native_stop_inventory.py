@@ -14,16 +14,17 @@ def workflow_processes(workflow_id, board_id, *, proc_root=Path('/proc')):
             markers={}
             for value in (proc/'environ').read_bytes().split(b'\0'):
                 key,_,val=value.partition(b'=')
-                if key in (b'HERMES_KANBAN_TASK',b'HERMES_KANBAN_BOARD',b'HERMES_INGEST_WORKFLOW_ID'):
+                if key in (b'HERMES_KANBAN_TASK',b'HERMES_KANBAN_BOARD',b'HERMES_INGEST_WORKFLOW_ID',b'HERMES_PROTECTED_READER_WORKFLOW'):
                     markers[key.decode()]=val.decode(errors='replace')
             native_worker=bool(markers.get('HERMES_KANBAN_TASK')) and (
                 markers.get('HERMES_KANBAN_BOARD')==board_id or
                 markers.get('HERMES_INGEST_WORKFLOW_ID')==workflow_id)
             watcher=any(Path(a).name=='watch_ingest_workflow.py' for a in args) and any(
                 a=='--workflow-id' and args[i+1:i+2]==[workflow_id] for i,a in enumerate(args))
-            if native_worker or watcher:
+            reader=markers.get('HERMES_PROTECTED_READER_WORKFLOW')==workflow_id
+            if native_worker or watcher or reader:
                 rows.append({'pid':int(proc.name),'task_id':markers.get('HERMES_KANBAN_TASK'),
-                    'kind':'native_worker' if native_worker else 'reconciler'})
+                    'kind':'native_worker' if native_worker else 'reconciler' if watcher else 'protected_reader'})
         except FileNotFoundError:
             continue  # Process exit during the scan.
         except PermissionError as exc:

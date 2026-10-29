@@ -201,7 +201,8 @@ def write(path,value):
         refs=_references(path,root)
         if MARKER in root:
             # Current segment verification is not replaced by a cached verdict.
-            hydrate(path,root)
+            from .protected_reader import fresh_content_reads
+            with fresh_content_reads():hydrate(path,root)
             history=value.get('pass_revision_history',[])
             if len(history)<len(refs):fail('cannot remove archived workflow history')
             for item,pointer in zip(history,refs):
