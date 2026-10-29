@@ -30,7 +30,8 @@ def store(tmp_path,monkeypatch):
     path=service._path('ingest-storage');path.parent.mkdir(parents=True)
     state={'workflow_id':path.stem,'actor':'operator','revision':7,'state':'cancelled','cancel_requested':True,
         'batch_id':'batch','current_stage':'build_finalizing','kanban':{'board_id':None,'task_map':[]},
-        'scope':{},'pass_revision':{'state':'accepted','revision_id':'current'},
+        'scope':{},'pass_revision':{'state':'accepted','revision_id':'current','input_digest':'sha256:'+'1'*64,
+            'protected_files':[{'ref':'source/a','sha256':'a'*64},{'ref':'source/a','sha256':'a'*64}]},
         'pass_revision_history':[{'state':'awaiting_review','revision_id':'old','payload':['same']*30},
             {'state':'accepted','revision_id':'older','payload':['other']*30}]}
     path.write_bytes(_json_bytes(state));(tmp_path/'batch.json').write_text('{"task_ids":[]}')
@@ -44,7 +45,7 @@ def store(tmp_path,monkeypatch):
     s.request=request
     yield s
     # Restore isolated inode flags before pytest removes its own temp data.
-    for directory in tmp_path.rglob('pass-history'):
+    for directory in [*tmp_path.rglob('pass-history'),*tmp_path.rglob('pass-protected')]:
         for generation in directory.iterdir():
             if generation.is_dir():
                 sealed.flags(generation,sealed.flags(generation)&~sealed.IMMUTABLE)

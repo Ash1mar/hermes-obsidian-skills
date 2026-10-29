@@ -17,6 +17,8 @@ import re
 from .validation import ContractError,canonical_json,fingerprint,validate_record
 
 CONTRACT='hermes-workflow-storage/v1'
+PROTECTED_CONTRACT='hermes-workflow-storage/v2'
+PROTECTED='pass_revision_protected_files'
 MARKER='_workflow_storage'
 _WRITING=ContextVar('workflow_storage_atomic_writer',default=None)
 
@@ -46,11 +48,12 @@ def _references(path,root):
     if not isinstance(root,dict) or MARKER not in root:return []
     if not is_root(path):fail('storage envelope outside the authoritative workflow root')
     meta=root[MARKER]
-    if (not isinstance(meta,dict) or set(meta)!={'contract','history_prefix'}
-            or meta['contract']!=CONTRACT or not isinstance(meta['history_prefix'],list)
+    if (not isinstance(meta,dict) or meta.get('contract') not in (CONTRACT,PROTECTED_CONTRACT)
+            or set(meta)!=({'contract','history_prefix',PROTECTED} if meta.get('contract')==PROTECTED_CONTRACT else {'contract','history_prefix'})
+            or not isinstance(meta['history_prefix'],list)
             or root.get('workflow_id')!=path.stem):fail('invalid workflow storage envelope')
     references=meta['history_prefix']
-    if not references:fail('empty segmented storage envelope')
+    if not references and meta['contract']==CONTRACT:fail('empty segmented storage envelope')
     for ordinal,pointer in enumerate(references):
         if (not isinstance(pointer,dict) or set(pointer)!={'ref','sha256'}
                 or not isinstance(pointer['sha256'],str) or not re.fullmatch('[0-9a-f]{64}',pointer['sha256'])):
@@ -60,12 +63,61 @@ def _references(path,root):
                 r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}/'+f'{ordinal:06d}-'+pointer['sha256']+r'\.json',pointer['ref'])):
             fail('workflow history pointer escaped its ordered namespace')
     if not isinstance(root.get('pass_revision_history',[]),list):fail('invalid inline history tail')
+    if meta['contract']==PROTECTED_CONTRACT:_protected_reference(path,root)
     return references
+
+
+def _revision_binding(revision):
+    if (not isinstance(revision,dict) or not isinstance(revision.get('revision_id'),str)
+            or not revision['revision_id'] or not isinstance(revision.get('input_digest'),str)
+            or not re.fullmatch(r'sha256:[0-9a-f]{64}',revision['input_digest'])):
+        fail('protected list requires a complete revision identity')
+    return {k:revision[k] for k in ('revision_id','input_digest')}
+
+
+def _protected_reference(path,root):
+    meta=root.get(MARKER,{})
+    if meta.get('contract')!=PROTECTED_CONTRACT:return None
+    pointer=meta.get(PROTECTED)
+    if (not isinstance(pointer,dict) or set(pointer)!={'ref','sha256','revision_id','input_digest'}
+            or not isinstance(pointer['sha256'],str) or not re.fullmatch('[0-9a-f]{64}',pointer['sha256'])):
+        fail('invalid protected list pointer')
+    revision=root.get('pass_revision')
+    identity=_revision_binding(revision)
+    if any(pointer[k]!=v for k,v in identity.items()):fail('protected list belongs to a different revision')
+    if revision.get('protected_files')!=[]:fail('protected list must have only one authoritative representation')
+    prefix=f'_system/ledgers/ingest-workflows/{path.stem}/storage/pass-protected/'
+    if (not isinstance(pointer['ref'],str) or not re.fullmatch(re.escape(prefix)+
+            r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}/'+pointer['sha256']+r'\.json',pointer['ref'])):
+        fail('protected list pointer escaped its namespace')
+    return pointer
 
 
 def segment_paths(path,root):
     vault=Path(path).parent.parent.parent.parent
-    return [(vault/p['ref'],p['sha256']) for p in _references(Path(path),root)]
+    refs=list(_references(Path(path),root))
+    pointer=_protected_reference(Path(path),root) if isinstance(root,dict) else None
+    if pointer is not None:refs.append(pointer)
+    return [(vault/p['ref'],p['sha256']) for p in refs]
+
+
+def _segment_value(path,pointer,kind,segments):
+    from .read_accounting import read_bytes
+    vault=path.parent.parent.parent.parent;target=vault/pointer['ref'];expected=pointer['sha256']
+    _safe_lexical(target,vault)
+    origin='workflow_storage.segment' if kind=='history' else 'workflow_storage.protected_files'
+    try:data=read_bytes(target,origin)
+    except OSError as exc:fail('workflow segment unavailable: '+str(exc))
+    if hashlib.sha256(data).hexdigest()!=expected:fail('workflow segment hash changed')
+    key=(str(target),expected,kind)
+    if segments is not None and key in segments:return segments[key]
+    try:value=json.loads(data)
+    except (ValueError,UnicodeError) as exc:fail('invalid workflow segment JSON: '+str(exc))
+    if kind=='history':
+        if not isinstance(value,dict) or value.get('state')=='running':fail('history segment is not a superseded revision')
+    elif not isinstance(value,list):fail('protected files segment is not a list')
+    if segments is not None:segments[key]=value
+    return value
 
 
 def hydrate(path,root,*,segments=None):
@@ -77,24 +129,15 @@ def hydrate(path,root,*,segments=None):
     """
     path=Path(path)
     if not is_root(path) or not isinstance(root,dict) or MARKER not in root:return root
-    from .read_accounting import read_bytes
-    values=[]
-    for target,expected in segment_paths(path,root):
-        # Keep lexical paths: resolving a new symlink must not hide replacement.
-        _safe_lexical(target,path.parent.parent.parent.parent)
-        try:data=read_bytes(target,'workflow_storage.segment')
-        except OSError as exc:fail('workflow history segment unavailable: '+str(exc))
-        if hashlib.sha256(data).hexdigest()!=expected:fail('workflow history segment hash changed')
-        key=(str(target),expected)
-        if segments is not None and key in segments:value=segments[key]
-        else:
-            try:value=json.loads(data)
-            except (ValueError,UnicodeError) as exc:fail('invalid workflow history JSON: '+str(exc))
-            if not isinstance(value,dict) or value.get('state')=='running':fail('history segment is not a superseded revision')
-            if segments is not None:segments[key]=value
-        values.append(value)
+    refs=_references(path,root)
+    values=[_segment_value(path,p,'history',segments) for p in refs]
     logical={k:v for k,v in root.items() if k!=MARKER}
-    logical['pass_revision_history']=[*values,*root.get('pass_revision_history',[])]
+    if refs or 'pass_revision_history' in root:
+        logical['pass_revision_history']=[*values,*root.get('pass_revision_history',[])]
+    pointer=_protected_reference(path,root)
+    if pointer is not None:
+        logical['pass_revision']={**root['pass_revision'],
+            'protected_files':_segment_value(path,pointer,'protected-files',segments)}
     return logical
 
 
@@ -156,7 +199,7 @@ def write(path,value):
     if path.exists():
         root=json.loads(_raw_read_bytes(path,'workflow_storage.write_current'))
         refs=_references(path,root)
-        if refs:
+        if MARKER in root:
             # Current segment verification is not replaced by a cached verdict.
             hydrate(path,root)
             history=value.get('pass_revision_history',[])
@@ -165,6 +208,19 @@ def write(path,value):
                 if hashlib.sha256(compact(item)).hexdigest()!=pointer['sha256']:
                     fail('cannot modify archived workflow history')
             stored={**value,'pass_revision_history':history[len(refs):],MARKER:copy.deepcopy(root[MARKER])}
+            if not refs and 'pass_revision_history' not in value:stored.pop('pass_revision_history')
+            pointer=_protected_reference(path,root)
+            if pointer is not None:
+                revision=value.get('pass_revision')
+                same_identity=(isinstance(revision,dict) and all(revision.get(k)==pointer[k] for k in ('revision_id','input_digest')))
+                if (same_identity and hashlib.sha256(compact(revision.get('protected_files'))).hexdigest()==pointer['sha256']):
+                    stored['pass_revision']={**revision,'protected_files':[]}
+                else:
+                    # Publish changed content/new identity INLINE in the same
+                    # atomic root. Old immutable objects are never edited and
+                    # cannot authorize the next revision. Re-sealing is explicit.
+                    stored[MARKER]={'contract':CONTRACT,'history_prefix':stored[MARKER]['history_prefix']}
+                    if not refs:stored.pop(MARKER)
     _atomic_root(path,compact(stored))
 
 
@@ -184,9 +240,9 @@ def migrate(service,request):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise ContractError('ACCESS_DENIED','$','workers cannot migrate workflow storage')
     mode=request.get('mode');operation=request.get('operation_id','')
-    if mode not in ('compact','segments','inline') or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}',operation):
+    if mode not in ('compact','segments','inline','protected-files') or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}',operation):
         fail('invalid workflow storage operation')
-    if mode=='segments' and os.name!='posix':fail('segment publication requires Linux kernel write protection')
+    if mode in ('segments','protected-files') and os.name!='posix':fail('segment publication requires Linux kernel write protection')
     path=service._path(request['workflow_id'])
     _safe_lexical(service.vault/f'_system/ledgers/ingest-workflows/{request["workflow_id"]}.json',service.vault)
     record=path.with_suffix('')/'storage-operations'/f'{operation}.json'
@@ -210,8 +266,27 @@ def migrate(service,request):
         root=json.loads(raw)
         if mode=='compact':candidate=root
         elif mode=='inline':candidate=value
+        elif mode=='protected-files':
+            if _protected_reference(path,root) is not None:fail('current protected list is already segmented')
+            identity=_revision_binding(value.get('pass_revision'))
+            if value['pass_revision'].get('state')!='accepted':fail('initial protected list sealing requires accepted current revision')
+            items=value['pass_revision'].get('protected_files')
+            if not isinstance(items,list):fail('current protected files is not a list')
+            directory=path.with_suffix('')/'storage/pass-protected'/operation
+            _safe_lexical(directory,service.vault);directory.mkdir(parents=True,exist_ok=True)
+            data=compact(items);digest=hashlib.sha256(data).hexdigest();target=directory/f'{digest}.json'
+            _safe_lexical(target,service.vault)
+            if target.exists():
+                if target.read_bytes()!=data:fail('existing protected list differs')
+            else:_write_atomic(target,data)
+            flags(target,flags(target)|IMMUTABLE)
+            if target.read_bytes()!=data:fail('protected list changed during sealing')
+            _fsync_directory(directory);flags(directory,flags(directory)|IMMUTABLE);_fsync_directory(directory.parent)
+            pointer={'ref':target.relative_to(service.vault).as_posix(),'sha256':digest,**identity}
+            candidate={**root,'pass_revision':{**root['pass_revision'],'protected_files':[]},
+                MARKER:{'contract':PROTECTED_CONTRACT,'history_prefix':copy.deepcopy(_references(path,root)),PROTECTED:pointer}}
         else:
-            if MARKER in root:fail('already segmented; do not silently re-archive history')
+            if _references(path,root):fail('already segmented; do not silently re-archive history')
             history=value.get('pass_revision_history',[])
             if not history or any(not isinstance(item,dict) or item.get('state')=='running' for item in history):
                 fail('only superseded non-running history can be archived')
@@ -232,12 +307,12 @@ def migrate(service,request):
             _fsync_directory(directory)
             flags(directory,flags(directory)|IMMUTABLE)
             _fsync_directory(directory.parent)
-            candidate={**value,'pass_revision_history':[],MARKER:{'contract':CONTRACT,'history_prefix':refs}}
+            candidate={**root,'pass_revision_history':[],MARKER:{**root.get(MARKER,{'contract':CONTRACT}),'history_prefix':refs}}
         restored=hydrate(path,candidate)
         validate_record('ingest_workflow',restored)
         if fingerprint(restored)!=fingerprint(value):fail('representation changed logical workflow identity')
         data=compact(candidate)
-        prepared={'contract':CONTRACT,'request':dict(request),'source_sha256':physical,
+        prepared={'contract':candidate.get(MARKER,{}).get('contract',CONTRACT),'request':dict(request),'source_sha256':physical,
             'candidate_sha256':hashlib.sha256(data).hexdigest(),'logical_fingerprint':fingerprint(value),
             'candidate_root':candidate,'phase':'prepared','mode':mode,'root_bytes':len(data),'revision':value['revision']}
         if previous and previous!=prepared:fail('prepared storage candidate differs')

@@ -1,10 +1,53 @@
 # Fresh workflow roots and protected historical segments
 
-The supported storage operation has two modes: `compact` changes only the mutable
+The initial storage operations are: `compact` changes only the mutable
 workflow's whitespace; `segments` replaces superseded Pass revision history with
 ordered hash-bound references. Both require a stopped workflow, actor/revision,
 current raw root SHA-256, original logical fingerprint and stable operation ID.
 They never resume, approve or replan work.
+
+`protected-files` is the narrowed third operation. It splits only the current
+accepted revision's `protected_files` list. Current revision state, task binding,
+pause/cancel controls and all other fields remain in the freshly read root.
+The logical revision and task/input/history identities do not change.
+
+## Current protected-file list contract
+
+The root uses `hermes-workflow-storage/v2` with the original ordered
+`history_prefix` and a typed `pass_revision_protected_files` pointer. This pointer
+binds the current `revision_id`, revision `input_digest`, raw list SHA-256 and a
+path under `storage/pass-protected/<operation-id>/`. Its canonical JSON list
+preserves original order and duplicate rows. The physical current revision has
+an empty list placeholder; a simultaneous inline list and pointer is rejected.
+
+Every logical read checks the current revision binding and uses the original
+current segment guard (or fresh full bytes outside a protected generation),
+then restores the original `pass_revision.protected_files`. Parsed-root hits
+cannot skip this observation. The existing protector discovers the typed segment
+as auxiliary evidence; it is excluded from the graph digest. Full locked
+submission verification continues to bypass sealed byte reuse.
+
+The ordinary logical writer retains the pointer only when both revision identity
+and list content match. State-only changes remain fresh in the root. A new
+revision, replacement list or removed current revision is published INLINE in
+the same atomic root write, while retaining the archived history prefix. Old
+immutable files are never edited or used for the new content. Once the current
+revision is accepted and the workflow is stopped, the explicit `protected-files`
+operation may seal its new stable list. This fallback preserves ordinary write
+behavior without silently extending a snapshot lease or adding a new writer.
+
+Protected-list publication uses the same actor/revision/root-hash/logical-hash
+conditions, quiescence checks, protected candidate construction, prepared journal,
+atomic root replacement and crash replay as historical segmentation. `inline`
+reconstructs BOTH historical records and the current list before any old-code
+restore. v1 remains readable; a v1-only reader rejects the v2 envelope, so never
+restore that reader over a v2 root. Maintain stopped inline recovery first.
+
+Verification includes revision binding mismatch, same-mtime control/list changes,
+missing/replaced/symlinked files, new-revision/list fallback, caller mutation,
+interrupted publication and a restricted isolated consumer that can write an
+unprotected probe but cannot overwrite/unlink/unseal/rename protected material.
+Report this list's first reads and captures separately from historical segments.
 
 Run `python3 "<skill-dir>/scripts/manage_ingest_workflow.py" --vault "<vault>"
 migrate-storage --request "<request.json>"`. The request fields are `workflow_id`,
