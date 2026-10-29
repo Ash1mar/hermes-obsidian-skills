@@ -22,7 +22,8 @@ from types import MethodType, SimpleNamespace
 
 
 def load(path):
-    return json.loads(Path(path).read_text(encoding='utf-8'))
+    from hermes_source_units.workflow_storage import decode
+    return decode(Path(path),json.loads(Path(path).read_text(encoding='utf-8')))
 
 
 def write(path, value):

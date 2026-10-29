@@ -101,7 +101,8 @@ def main():
     report.parent.mkdir(parents=True, exist_ok=True)
     original_ledger = original/f'_system/ledgers/ingest-workflows/{args.workflow_id}.json'
     before = original_ledger.read_bytes()
-    old = json.loads(before)
+    from hermes_source_units.workflow_storage import decode
+    old = decode(original_ledger,json.loads(before))
     raw = {p:sha(original/p) for p in old['scope']['source_paths']}
     state = Path(tempfile.mkdtemp(prefix='hermes-canary-state-'))
     home = state/'home'
@@ -184,7 +185,9 @@ def main():
                     shutil.copytree(source.parent, dest.parent, dirs_exist_ok=True)
         ledger = vault/f'_system/ledgers/ingest-workflows/{args.workflow_id}.json'
         ledger.parent.mkdir(parents=True, exist_ok=True)
-        ledger.write_bytes(before)
+        # The isolated copy is a complete logical workflow, not references into
+        # the source Vault's protected history storage.
+        ledger.write_bytes((json.dumps(old,ensure_ascii=False,sort_keys=True,indent=2)+'\n').encode())
         shutil.copytree(original/f'_system/ledgers/ingest-workflows/{args.workflow_id}/templates',
                         vault/f'_system/ledgers/ingest-workflows/{args.workflow_id}/templates')
         if args.measurements_from:

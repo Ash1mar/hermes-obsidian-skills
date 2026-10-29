@@ -28,4 +28,5 @@ def snapshot_json(path):
     if digest not in parsed:
         parsed[digest] = json.loads(data.decode('utf-8'))
     # Repository readers may mutate their return values. Never expose our cache.
-    return True, copy.deepcopy(parsed[digest])
+    from .workflow_storage import decode
+    return True, copy.deepcopy(decode(path,parsed[digest]))
