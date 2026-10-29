@@ -23,10 +23,12 @@ class VerifiedJsonReads:
             'read_hash_ns','parse_ns','validation_ns','projection_ns','copy_ns','index_ns',
             'index_builds','full_copies','projected_copies','copied_value_nodes','full_copy_ns','projected_copy_ns',
             'full_copy_nodes','projected_copy_nodes','snapshot_reads','freeze_ns','canonical_requests',
-            'canonical_builds','canonical_hits','canonical_ns','immutable_versions')}
+            'canonical_builds','canonical_hits','canonical_ns','immutable_versions',
+            'workflow_root_parses','workflow_root_parse_ns','workflow_hydrate_ns')}
         self.copy_origins={}
         self.snapshot_origins={}
         self.snapshot_versions=set()
+        self.workflow_roots={};self.workflow_segments={}
 
     def read(self,path,*,expected=None,kind=None,validator=None,project=None,projection_key=None,index=None,index_key=None,
              readonly=False,canonical_version=None,origin=None):
@@ -68,9 +70,27 @@ class VerifiedJsonReads:
             if not captured:self.stats['reads']+=1;self.stats['bytes']+=len(data)
             self.stats['read_hash_ns']+=read_hash_ns
             cached=self.entries.get(key)
+            logical=None;storage_root=None
+            from .workflow_storage import is_root,hydrate
+            if is_root(path):
+                # Parse reuse is pure. Segment observations still run on EVERY
+                # invocation before a cached schema/projection can be returned.
+                root_key=(str(path),digest)
+                if root_key not in self.workflow_roots:
+                    started=time.monotonic_ns()
+                    try:self.workflow_roots[root_key]=json.loads(data.decode('utf-8'))
+                    except (ValueError,UnicodeError) as exc:
+                        raise ContractError('SOURCE_UNAVAILABLE','$',f'cannot read JSON {path}: {exc}') from exc
+                    self.stats['workflow_root_parses']+=1
+                    self.stats['workflow_root_parse_ns']+=time.monotonic_ns()-started
+                    while len(self.workflow_roots)>self.limit:self.workflow_roots.pop(next(iter(self.workflow_roots)))
+                storage_root=self.workflow_roots[root_key]
+                started=time.monotonic_ns()
+                logical=hydrate(path,storage_root,segments=self.workflow_segments)
+                self.stats['workflow_hydrate_ns']+=time.monotonic_ns()-started
             if cached is None or cached['digest']!=digest:
                 started=time.monotonic_ns()
-                try:value=json.loads(data.decode('utf-8'))
+                try:value=logical if storage_root is not None else json.loads(data.decode('utf-8'))
                 except (UnicodeError,ValueError) as exc:
                     raise ContractError('SOURCE_UNAVAILABLE','$',f'cannot read JSON {path}: {exc}') from exc
                 self.stats['parses']+=1

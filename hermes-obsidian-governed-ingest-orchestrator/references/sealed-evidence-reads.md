@@ -1,5 +1,9 @@
 # Revocable sealed evidence reads
 
+The supported compact root and ordered Pass history segment representation is
+described in [workflow storage](workflow-storage.md). It preserves logical
+workflow identities and adds protected segments as auxiliary evidence.
+
 This opt-in Linux implementation reduces file-content reads across history
 queries, response authentications and Build send checks. A separately launched
 privileged protector owns revocation. Native consumers irreversibly remove all

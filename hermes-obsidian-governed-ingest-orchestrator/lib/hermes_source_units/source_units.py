@@ -64,12 +64,16 @@ def _load_json(path: Path) -> Any:
             return value
         from .read_accounting import read_bytes
         text=read_bytes(path,'source_units._load_json').decode('utf-8')
-        return json.loads(text.replace('\r\n','\n').replace('\r','\n'))
+        value=json.loads(text.replace('\r\n','\n').replace('\r','\n'))
+        from .workflow_storage import decode
+        return decode(path,value)
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         _fail("SOURCE_UNAVAILABLE", f"cannot read JSON {path}: {exc}")
 
 
 def _write_atomic(path: Path, data: bytes) -> None:
+    from .workflow_storage import guard_root_write
+    guard_root_write(path)
     from .evidence_snapshot import guard_write
     guard_write(path)
     path.parent.mkdir(parents=True, exist_ok=True)

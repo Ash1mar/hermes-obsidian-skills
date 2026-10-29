@@ -152,7 +152,13 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
 
     def _write(self, value: Mapping[str, Any]) -> None:
         validate_record("ingest_workflow", value)
-        _write_atomic(self._path(str(value["workflow_id"])), _json_bytes(value))
+        from .workflow_storage import write
+        write(self._path(str(value["workflow_id"])),value)
+
+    def migrate_storage(self, request):
+        """Explicit stopped representation migration; no logical revision or resume."""
+        from .workflow_storage import migrate
+        return migrate(self,request)
 
     @staticmethod
     def _check_request(request: Mapping[str, Any]) -> None:

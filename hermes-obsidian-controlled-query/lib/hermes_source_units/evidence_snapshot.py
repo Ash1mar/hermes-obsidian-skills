@@ -158,7 +158,12 @@ class Protector:
         batch=str(self.service.knowledge._batch_path(self.workflow['batch_id']))
         files={str(path):digest.hex() for path,(_,digest) in graph['records'].items() if str(path)!=batch}
         reports={str(self.vault/p['report_ref']):p['report_sha256'] for p in self.workflow.get('execution_recovery_history',[])}
-        for path,digest in reports.items():
+        from .workflow_storage import segment_paths
+        root_path=self.vault/f"_system/ledgers/ingest-workflows/{self.workflow['workflow_id']}.json"
+        storage_segments=({str(p):digest for p,digest in segment_paths(root_path,json.loads(root_path.read_bytes()))}
+            if root_path.exists() else {})
+        reports_and_segments={**reports,**storage_segments}
+        for path,digest in reports_and_segments.items():
             if path in files and files[path]!=digest:fail('conflicting snapshot hashes')
             files[path]=digest
         # A directory seal protects enumeration, not just existing file bytes.
@@ -189,7 +194,7 @@ class Protector:
             'absent_directories':absent,
             'absent_directory_parents':absent_parents,
             'task_ids':json.loads(graph['records'][Path(batch)][0])['task_ids'],
-            'reports':reports,'batch':batch,'original_flags':self.original,
+            'reports':reports,'workflow_segments':storage_segments,'batch':batch,'original_flags':self.original,
             'path_identity':{},'content_identity':{},
             'reader_sha256':hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
         # Persist recovery metadata BEFORE the first seal; a crashed preparing
@@ -381,7 +386,8 @@ class EvidenceSession:
     def _prepare_static(self):
         started=time.monotonic_ns()
         self._absent=frozenset(self.manifest.get('absent_directories',()))
-        self._static_names=tuple(name for name in self.manifest['files'] if name not in self.manifest['reports'])
+        auxiliary={*self.manifest['reports'],*self.manifest.get('workflow_segments',{})}
+        self._static_names=tuple(name for name in self.manifest['files'] if name not in auxiliary)
         self._graph_paths=(*self._static_names,*self.manifest['directories'])
         self._batch_name=self.manifest['batch'];self._batch_path=self._path(self._batch_name)
         self._static_hash_text=MappingProxyType({name:self.manifest['files'][name] for name in self._static_names})
