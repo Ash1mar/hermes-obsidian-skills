@@ -68,8 +68,11 @@ def storage_interruption(adapter,binding,failure,entry):
         if not {p.relative_to(vault).as_posix() for p in allowed}.issubset(permission.get('storage_prepared',[])):
             fail('mechanical output layout has not been prepared by the stopped operator')
     if not allowed[0].is_file() or not allowed[1].is_dir():fail('mechanical output layout is not present')
-    return {'contract':'build-output-storage-interruption/v1','protector_state':pin(vault,state_ref),
-        'protector_manifest':pin(vault,manifest_ref),'control_head':controls['head'],
+    # The runtime registry is replaced by the next protector generation. Keep
+    # its actual data inside the immutable recovery report, not a stale pin to
+    # that mutable registry path.
+    return {'contract':'build-output-storage-interruption/v1','protector_state':state,
+        'protector_manifest':manifest,'verified_manifest_sha256':state['manifest_sha256'],'control_head':controls['head'],
         'corrected_paths':[p.relative_to(vault).as_posix() for p in allowed],
         'new_domain_calls_granted':0,'source_protection_unchanged':True}
 

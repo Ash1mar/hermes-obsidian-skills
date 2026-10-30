@@ -30,7 +30,7 @@
   "legacy_slice_identity.py": "499c817b008df7620e62b39bf57dcb9b9018548be87862dfc11b31d436e6d964",
   "model_presentation.py": "bfd7b6737207534a6104d867eac6fa5efc42194cb85ad9140aeb03050ab978f0",
   "model_projection.py": "3ab971cbfc0aa4895cdde9d5c6c855bdbef7f75433c880037f6e54eadc0b98c4",
-  "partial_finalize.py": "caf24603d3d54115ccb160ca597edbd77eb953ae825614ffb01421e0dd0354c1",
+  "partial_finalize.py": "7cf95c1ba2b2bcb746f88a23cff324b3789d852c64af553343ef99efe4e2597a",
   "pass_revision.py": "138f5d6e3c9fd589fc508d93b0ab43beb97e2aba81f601310e87d130ebdedbff",
   "pass_skips.py": "67bc652867fb857b9abdade767c090ee05747435e053f47f37213a961f49dbd0",
   "protected_reader.py": "a19ca4e0d7f683f1935bac25cf268fe52fc02bd4ac587f4bc2b61ac3b7015cb5",

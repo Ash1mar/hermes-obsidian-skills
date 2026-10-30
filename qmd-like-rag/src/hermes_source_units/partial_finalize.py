@@ -60,7 +60,9 @@ def prepare_storage(service,workflow):
         fail('Finalize storage preparation requires the stopped operator','ACCESS_DENIED')
     outputs=[_vault_path(service.vault,'_system/knowledge-builds/.finalize.lock'),
              _vault_path(service.vault,'_system/knowledge-builds/page-revisions')]
-    if any(p.is_symlink() for p in outputs):fail('Finalize output container is a symlink','ACCESS_DENIED')
+    raw=[service.vault/'_system/knowledge-builds/.finalize.lock',service.vault/'_system/knowledge-builds/page-revisions']
+    if any(a.absolute()!=b or a.is_symlink() for a,b in zip(raw,outputs)):
+        fail('Finalize output container is a symlink','ACCESS_DENIED')
     outputs[0].parent.mkdir(parents=True,exist_ok=True)
     with outputs[0].open('a',encoding='utf-8'):pass
     outputs[1].mkdir(exist_ok=True)
