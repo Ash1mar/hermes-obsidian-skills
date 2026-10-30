@@ -112,6 +112,49 @@ def contract_hash():
         'hermes_source_units/delivery_scope.py','hermes_source_units/scoped_release.py',
         'finalize_program_repair.py','finalize_delivery_flow.py','fixed_page_evidence.py'))).hexdigest()
 
+def delivery_interruption(adapter,w,binding,entry,old,permitted,runs):
+    """Authenticate a stopped, uncalled scope-close owner before metadata rebind.
+
+    A complete operator-authorized scope is positive authority for native close,
+    not for another semantic attempt. Any current-owner ordinal denies this path.
+    """
+    from hermes_source_units.delivery_scope import active,authorized,pending_reopen
+    service=adapter.workflow.knowledge;vault=service.vault
+    root=vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}"
+    failure_path=root/f'reports/failed-{fingerprint("build-finalize")[:16]}.json'
+    failure=_load_json(failure_path)
+    if (entry.get('retry_unknowns') or failure.get('error_code') not in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED')
+            or failure.get('task_id')!=binding['task_id']
+            or entry['failure_sha256']!=hashlib.sha256(failure_path.read_bytes()).hexdigest()
+            or not runs or any(not r.get('ended_at') for r in runs)):
+        fail('delivery close recovery requires its exact stopped, ended owner and zero new calls')
+    pointers=[active(service,r) for r in old['backend']['runs']]
+    if not pointers or not pointers[0] or any(p!=pointers[0] for p in pointers):
+        fail('stopped close lacks one complete delivery authorization')
+    scope=authorized(service,pointers[0])
+    if (scope['workflow_id']!=w['workflow_id'] or scope['actor']!=binding['actor']
+            or scope['snapshot']!={'ref':entry['snapshot_ref'],'sha256':entry['snapshot_sha256']}
+            or any(pending_reopen(service,r) for r in old['backend']['runs'])):
+        fail('scope close authority or its exact original input changed')
+    prior=old['binding']
+    if (prior['task_id'] not in permitted or prior['task_id']==binding['task_id']
+            or {k:v for k,v in prior.items() if k not in ('task_id','input_fingerprint')}
+               !={k:v for k,v in binding.items() if k not in ('task_id','input_fingerprint')}):
+        fail('scope close ancestor metadata differs beyond its dispatch identity')
+    for path in (root/'output-attempts').glob('*.json'):
+        if any(a.get('task_id')==binding['task_id'] for a in _load_json(path).get('attempts',[])):
+            fail('scope close owner has a consumed or uncertain domain ordinal')
+    for folder in ('semantic-calls','call-failures'):
+        for path in (root/folder).glob('*.json'):
+            value=_load_json(path)
+            if value.get('native_task_id',value.get('task_id'))==binding['task_id']:
+                fail('scope close owner has domain call evidence')
+    if fingerprint({k:v for k,v in old.items() if k!='input_id'})!=old['input_id']:
+        fail('scope input identity changed')
+    return {'contract':'build-delivery-close-interruption/v1','authorization':pointers[0],
+        'ended_run_ids':[str(r['id']) for r in runs],'new_domain_calls_granted':0,
+        'original_review_history_preserved':True,'scope_reused':True}
+
 def recover(adapter,request,*,dry_run=False):
     if request.get('recovery_scope')!=SCOPE or request.get('target_contract_sha256')!=contract_hash():
         fail('Build recovery requires the reviewed current implementation and exact scope')
@@ -142,7 +185,7 @@ def verify(adapter,w,node,binding,entry,runs):
     if hashlib.sha256(raw).hexdigest()!=entry['snapshot_sha256']:
         fail('original Build snapshot changed')
     permitted=permitted_tasks(adapter,binding)
-    graph_proof=entry.get('_verified_graph_interruption')
+    graph_proof=entry.get('_verified_graph_interruption');delivery_proof=None
     if graph_proof:
         # Rebind pure input metadata only, from an authenticated ancestor. All
         # domain bytes, decisions, registry and assessments must be identical.
@@ -156,7 +199,8 @@ def verify(adapter,w,node,binding,entry,runs):
         if fingerprint(original)!=old['input_id']:fail('ancestor Build snapshot identity differs')
         old={**old,'binding':dict(binding)};old.pop('input_id');old['input_id']=fingerprint(old)
     elif old['binding']!=binding:
-        fail('original Build binding changed')
+        delivery_proof=delivery_interruption(adapter,w,binding,entry,old,permitted,runs)
+        old={**old,'binding':dict(binding)};old.pop('input_id');old['input_id']=fingerprint(old)
     current=fixed_review.read_snapshot(adapter,binding,{'batch_id':w['batch_id']},True)
     from hermes_source_units.partial_finalize import equivalent_snapshot
     if current!=old and not equivalent_snapshot(adapter.workflow.knowledge,old,current):
@@ -254,6 +298,7 @@ def verify(adapter,w,node,binding,entry,runs):
         if a.get('native_task_id')==binding['task_id'] and ap.relative_to(adapter.workflow.vault).as_posix() not in accounted:
             fail('native Build call is not accounted for by its exact finite journal')
     return {**({'preexecution_graph_interruption':graph_proof} if graph_proof else {}),
+        **({'delivery_close_interruption':delivery_proof} if delivery_proof else {}),
         'build_review_recovery':{'contract':SCOPE,'snapshot_ref':entry['snapshot_ref'],
         'snapshot_sha256':entry['snapshot_sha256'],'input_id':current['input_id'],
         'original_attempts_preserved':True,'additional_calls_granted':len(grants),'reviews':reviews}}

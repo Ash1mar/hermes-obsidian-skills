@@ -23,6 +23,20 @@ def test_cancel_stops_native_holder_and_finishes_the_identical_request_once():
     assert result['state']=='cancelled' and len(calls)==2 and calls[0] is calls[1] is r
     assert scheduled[0][:3]==('board','native','scheduled')
 
+@pytest.mark.parametrize('authorized',[True,False])
+def test_cancel_yields_exact_authorized_watcher_before_lock_wait(tmp_path,monkeypatch,authorized):
+    from hermes_source_units import runtime_telemetry
+    a,r,w,calls,scheduled=fixture();a.workflow.vault=tmp_path;wakes=[]
+    monkeypatch.setattr(runtime_telemetry,'notify_reconciler',lambda *args:wakes.append(args))
+    if not authorized:r['actor']='other'
+    if authorized:
+        IngestKanbanAdapter.cancel(a,r)
+        assert wakes==[(tmp_path,'fixture'),(tmp_path,'fixture')]
+        assert calls[0] is calls[1] is r
+    else:
+        with pytest.raises(ContractError):IngestKanbanAdapter.cancel(a,r)
+        assert not wakes and not scheduled
+
 @pytest.mark.parametrize('change',['actor','revision','invalid-digest','foreign-error'])
 def test_cancel_timeout_never_stops_workers_for_unbound_requests(change):
     a,r,w,calls,scheduled=fixture()

@@ -168,6 +168,14 @@ The program authenticates the original request, reuses its repair admission and
 cumulative allowances, and records the resumed cycle separately. Existing valid
 native reviews remain reusable; changing the operation never grants extra calls.
 
+If an exact delivery authorization already exists, continuation reuses that
+partition and runs only its missing native closure. It does not repeat program
+repair admission or replace exclusions. An ended close owner interrupted before
+saving its input can use `build-delivery-close-interruption/v1` evidence within
+the existing Build recovery: exact authorized ancestor snapshot, unchanged domain
+evidence, ended native owner, no domain ordinal/audit/outcome for that owner and
+zero additional calls. Consumed or uncertain domain attempts deny this path.
+
 Automatic disposition keeps revision opinions pending attribution, explicit
 refusals distinct, and execution uncertainty independent. Quarantine records the
 ended original native owners, pinned journals and unchanged uncertain ordinals.

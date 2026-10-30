@@ -1113,6 +1113,15 @@ class IngestKanbanAdapter:
         return self.sync(followup)
 
     def cancel(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        # Wake the exact authorized watcher before competing for its lock.
+        # Its cooperative yield also prevents a stopped worker's wake hint
+        # from starting another long reconciliation ahead of cancellation.
+        self.workflow._check_request(request)
+        current=self.workflow.status(str(request['workflow_id']))
+        if (current['actor']==request['actor'] and current['revision']==request['expected_revision']
+                and hasattr(self.workflow,'vault')):
+            from hermes_source_units.runtime_telemetry import notify_reconciler
+            notify_reconciler(self.workflow.vault,current['workflow_id'])
         try:
             value = self.workflow.cancel(request)
         except ContractError as exc:
@@ -1124,6 +1133,9 @@ class IngestKanbanAdapter:
             current=self.workflow.status(str(request['workflow_id']))
             if current['actor']!=request['actor'] or current['revision']!=request['expected_revision']:
                 raise
+            if hasattr(self.workflow,'vault'):
+                from hermes_source_units.runtime_telemetry import notify_reconciler
+                notify_reconciler(self.workflow.vault,current['workflow_id'])
             board=current['kanban']['board_id']
             if not board:raise
             with self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():

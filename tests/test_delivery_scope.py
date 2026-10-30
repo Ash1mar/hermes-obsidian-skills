@@ -15,7 +15,8 @@ def scoped(ready,vault,request):
     k,run,reviews,req=ready
     with writer(k) as binding:k.finalize(req)
     pointer=req['partial_manifest'];original=json.loads((vault/pointer['ref']).read_text())
-    basis={'binding':binding,'backend':{'runs':[run],'registry':k._registry(),'pages':{}},'views':[]}
+    basis={'contract':'fixed-review-input/v1','binding':binding,'backend':{'runs':[run],'registry':k._registry(),'pages':{}},'views':[]}
+    basis['input_id']=fingerprint(basis)
     path=vault/'_system/reports/delivery-basis.json';path.write_bytes(_json_bytes(basis))
     include=run['page_revisions'][0];exclude=run['page_revisions'][1]
     scope={'contract':CONTRACT,'workflow_id':'fixture','actor':'agent','snapshot':pin(vault,path.relative_to(vault).as_posix()),
@@ -109,3 +110,31 @@ def test_automatic_disposition_never_labels_all_revision_opinions_model_errors()
         for i,status in enumerate(('revision_required','explicit_refusal','completion_unknown'))]})
     assert [r['category'] for r in rows]==['unresolved','material_insufficient','unresolved']
     assert all(r['attribution_confirmed'] is False for r in rows)
+
+@pytest.mark.parametrize('change',['none','ordinal','audit','failure','grant','owner'])
+def test_stopped_uncalled_close_reuses_exact_scope_without_domain_allowance(scoped,vault,change):
+    import hashlib
+    from build_execution_recovery import delivery_interruption
+    from finalize_delivery_flow import delivery_authorization
+    k,run,b,old,pointer,req=scoped
+    current={**b,'task_id':'stopped-close'}
+    w={'workflow_id':'fixture','actor':'agent','batch_id':'batch'}
+    adapter=NS(workflow=NS(knowledge=k))
+    root=vault/'_system/ledgers/ingest-workflows/fixture'
+    failure={'task_id':'stopped-close','error_code':'NATIVE_WORKER_STOPPED'}
+    if change=='failure':failure['error_code']='SEMANTIC_REVIEW_REQUIRED'
+    fp=root/f'reports/failed-{fingerprint("build-finalize")[:16]}.json';fp.parent.mkdir(exist_ok=True);fp.write_bytes(_json_bytes(failure))
+    scope=json.loads((vault/pointer['ref']).read_text())
+    entry={'snapshot_ref':scope['snapshot']['ref'],'snapshot_sha256':scope['snapshot']['sha256'],
+        'failure_sha256':hashlib.sha256(fp.read_bytes()).hexdigest(),'retry_unknowns':[]}
+    if change=='grant':entry['retry_unknowns']=[{'attempt_ref':'unknown'}]
+    if change=='owner':current['actor']='other'
+    if change in ('ordinal','audit'):
+        folder=root/('output-attempts' if change=='ordinal' else 'semantic-calls');folder.mkdir(exist_ok=True)
+        row={'attempts':[{'task_id':'stopped-close'}]} if change=='ordinal' else {'native_task_id':'stopped-close'}
+        (folder/'consumed.json').write_bytes(_json_bytes(row))
+    call=lambda:delivery_interruption(adapter,w,current,entry,old,{'native':None},[{'id':1,'ended_at':2}])
+    if change=='none':
+        proof=call();assert proof['scope_reused'] and proof['authorization']==pointer and proof['new_domain_calls_granted']==0
+    else:
+        with pytest.raises(ContractError):call()
