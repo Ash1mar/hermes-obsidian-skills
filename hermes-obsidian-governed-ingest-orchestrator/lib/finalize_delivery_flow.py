@@ -52,7 +52,7 @@ def repair_request(adapter,flow,root,inventory):
             request.update(actor=first['actor'],expected_revision=first['expected_revision'],
                 expected_control_revision=first['expected_control_revision'],inventory=first['inventory'])
             request['input_digest']=mutation_digest(request)
-        if request['input_digest']!=plan['request_digest']:
+        if mutation_digest(request)!=request['input_digest'] or request['input_digest']!=plan['request_digest']:
             fail('saved program-repair request cannot be authenticated','IDEMPOTENCY_CONFLICT')
     if request['workflow_id']!=flow['workflow_id'] or request['actor']!=flow['actor'] or request['operation_id']!=operation:
         fail('saved repair request belongs to another flow','ACCESS_DENIED')
