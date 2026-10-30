@@ -2483,7 +2483,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
 
     def finalize(self, request: Mapping[str, Any]) -> dict[str, Any]:
         lock = _vault_path(self.vault, f"{BUILD_ROOT}/.finalize.lock")
-        with _exclusive_lock(lock):
+        with _exclusive_lock(lock, marker=False):
             return self._finalize_locked(request)
 
     def _finalize_locked(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -2788,7 +2788,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
 
             results, failures = [], []
             finalize_lock = _vault_path(self.vault, f"{BUILD_ROOT}/.finalize.lock")
-            with _exclusive_lock(finalize_lock):
+            with _exclusive_lock(finalize_lock, marker=False):
                 for item in finalizations:
                     run_id = str(item["run_id"])
                     try:
@@ -2835,7 +2835,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                         _fail('DUPLICATE','partial batch repeats a subject or canonical path')
                     selected_subjects.add(page['subject_id']);selected_paths.add(page['path'])
             results=[]
-            with _exclusive_lock(_vault_path(self.vault,f'{BUILD_ROOT}/.finalize.lock')):
+            with _exclusive_lock(_vault_path(self.vault,f'{BUILD_ROOT}/.finalize.lock'), marker=False):
                 for item in requests:
                     results.append(self._finalize_locked({**item,'partial_manifest':request['partial_manifest']}))
             return {'ok':True,'partial':True,'results':results,'coverage_complete':False,

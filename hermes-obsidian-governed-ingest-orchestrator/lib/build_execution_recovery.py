@@ -67,7 +67,7 @@ def storage_interruption(adapter,binding,failure,entry):
         permission=controls['works'].get(work_id(run['run_id'],'*'),{})
         if not {p.relative_to(vault).as_posix() for p in allowed}.issubset(permission.get('storage_prepared',[])):
             fail('mechanical output layout has not been prepared by the stopped operator')
-    if not allowed[0].is_file() or not allowed[1].is_dir():fail('mechanical output layout is not present')
+    if allowed[0].exists() or not allowed[1].is_dir():fail('marker-free mechanical output layout is not present')
     # The runtime registry is replaced by the next protector generation. Keep
     # its actual data inside the immutable recovery report, not a stale pin to
     # that mutable registry path.
@@ -76,13 +76,38 @@ def storage_interruption(adapter,binding,failure,entry):
         'corrected_paths':[p.relative_to(vault).as_posix() for p in allowed],
         'new_domain_calls_granted':0,'source_protection_unchanged':True}
 
+def empty_lock_interruption(adapter,binding,failure,entry):
+    """Only the recorded empty storage-preparation artifact is recoverable."""
+    from hermes_source_units.partial_finalize import pinned
+    from hermes_source_units.finalize_revision_state import load,work_id
+    vault=adapter.workflow.vault;ref='_system/knowledge-builds/.finalize.lock'
+    if (failure.get('error_code')!='LOCK_RECOVERY_REQUIRED' or entry.get('retry_unknowns')
+            or failure.get('reason')!=f'LOCK_RECOVERY_REQUIRED at $: Legacy or foreign-host lock requires supported recovery: {vault/ref}'):
+        fail('lock recovery does not match the exact empty preparation artifact')
+    controls=load(vault,binding['workflow_id'])
+    snapshot=pinned(vault,{'ref':entry['snapshot_ref'],'sha256':entry['snapshot_sha256']})
+    proofs=[]
+    for run in snapshot['backend']['runs']:
+        permission=controls['works'].get(work_id(run['run_id'],'*'),{})
+        proof=permission.get('repaired_empty_lock',{})
+        if (permission.get('state')!='enabled' or proof.get('ref')!=ref
+                or proof.get('sha256')!=hashlib.sha256(b'').hexdigest() or not proof.get('previous_control_head')):
+            fail('empty artifact repair lacks its original authorized preparation proof')
+        proofs.append(proof)
+    if (vault/ref).exists() or not (vault/'_system/knowledge-builds/page-revisions').is_dir():
+        fail('empty marker was not repaired or output storage is missing')
+    return {'contract':'build-empty-lock-interruption/v1','repairs':proofs,'control_head':controls['head'],
+        'new_domain_calls_granted':0,'source_protection_unchanged':True}
+
+
 def contract_hash():
     root=Path(__file__).parent
     return hashlib.sha256(b''.join((root/n).read_bytes() for n in (
         'build_execution_recovery.py','reduce_execution_recovery.py','fixed_review.py',
         'semantic_output.py','fixed_semantic.py','native_call_state.py','build_disposition.py',
         'build_evidence.py','finalize_revision.py','finalize_disposition_control.py',
-        'hermes_source_units/partial_finalize.py','hermes_source_units/finalize_revision_state.py'))).hexdigest()
+        'hermes_source_units/partial_finalize.py','hermes_source_units/finalize_revision_state.py',
+        'hermes_source_units/file_locks.py','hermes_source_units/knowledge_build.py'))).hexdigest()
 
 def recover(adapter,request,*,dry_run=False):
     if request.get('recovery_scope')!=SCOPE or request.get('target_contract_sha256')!=contract_hash():

@@ -125,3 +125,11 @@ with the old revoked protector's exact reason/generation/manifest, restored inod
 flags, a stopped-operator prepared output layout and unchanged complete domain
 evidence. Other revocations/source writes are rejected. No protected-directory
 exemption, capability expansion, source rebind or new domain call is granted.
+
+The global Finalize lock retains its original host kernel-lock identity and
+serialization with marked callers, but creates no Vault owner marker beneath a
+sealed ancestor. Legacy/foreign markers still require explicit recovery. Storage
+preparation creates only the revision container. The prior empty preparation
+artifact may be removed only while stopped, under its kernel lock and an existing
+hash-linked preparation authorization; exact recovery records this proof and
+grants zero domain calls. Other lock failures are rejected.

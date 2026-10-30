@@ -1,5 +1,5 @@
 """Trusted stopped-workflow Finalize controls; never edits model decisions."""
-import copy,json,os,sqlite3
+import copy,json,os,sqlite3,hashlib
 from pathlib import Path
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json,_vault_path,_exclusive_lock
@@ -88,13 +88,17 @@ def apply(adapter,request,*,dry_run=False):
         if run is None:fail('selected run is outside current Build')
         if action in ('enable-partial','prepare-storage'):
             from hermes_source_units.partial_finalize import prepare_storage
+            prior=state['works'].get(work_id(run_id,'*'))
             if action=='prepare-storage':
-                prior=state['works'].get(work_id(run_id,'*'))
                 if not prior or prior['state']!='enabled':fail('storage preparation requires the existing partial authorization')
             work={'work_id':work_id(run_id,'*'),'run_id':run_id,'page_id':'*','state':'enabled',
                 'run_sha256':fingerprint(_load_json(service.knowledge._run_path(run_id))),
                 'basis_inventory':request['inventory'],'checks_sha256':fingerprint(checks),'grants':[]}
-            if not dry_run:work['storage_prepared']=prepare_storage(service.knowledge,w)
+            legacy=service.vault/'_system/knowledge-builds/.finalize.lock'
+            if legacy.exists() and legacy.read_bytes()==b'' and prior and legacy.relative_to(service.vault).as_posix() in prior.get('storage_prepared',[]):
+                work['repaired_empty_lock']={'ref':legacy.relative_to(service.vault).as_posix(),
+                    'sha256':hashlib.sha256(b'').hexdigest(),'previous_control_head':state['head']}
+            if not dry_run:work['storage_prepared']=prepare_storage(service.knowledge,w,prior)
         else:
             item=next((i for i in inventory['items'] if i['issue_id']==request.get('issue_id') and i['logical_work']['run_id']==run_id),None)
             if item is None:fail('exact original Finalize issue required')

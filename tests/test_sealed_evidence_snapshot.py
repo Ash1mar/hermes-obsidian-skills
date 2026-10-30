@@ -24,6 +24,16 @@ import fixed_semantic_recovery
 pytestmark=pytest.mark.skipif(sys.platform!='linux',reason='Linux kernel sealing contract')
 
 
+@pytest.mark.parametrize('snapshot',[True],indirect=True)
+def test_finalize_kernel_lock_never_creates_a_marker_below_sealed_ancestor(snapshot):
+    from hermes_source_units.file_locks import exclusive_lock
+    path=snapshot.vault/'inputs/.finalize.lock'
+    assert sealed.flags(path.parent)&sealed.IMMUTABLE
+    with exclusive_lock(path,marker=False):
+        assert not path.exists()
+    assert json.loads((snapshot.directory/'state.json').read_text())['state']=='active'
+
+
 def service_for(vault):
     k=NS(_batch_path=lambda _:vault/'batch.json',_slice_root=lambda _:vault/'inputs/slices',
          _task_path=lambda _:vault/'inputs/task.json',_batch=lambda _:_load_json(vault/'batch.json'))

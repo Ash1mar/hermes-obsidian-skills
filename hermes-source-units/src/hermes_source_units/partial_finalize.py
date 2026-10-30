@@ -47,7 +47,7 @@ def enabled(service,binding,run):
     permission=load(service.vault,binding['workflow_id'])['works'].get(work_id(run['run_id'],'*'))
     return bool(permission and permission['state']=='enabled' and permission['run_sha256']==fingerprint(_load_json(service._run_path(run['run_id']))))
 
-def prepare_storage(service,workflow):
+def prepare_storage(service,workflow,prior=None):
     """Create mechanical output containers before sealing absent Pass parents.
 
     A sealed parent must keep rejecting new children. Existing unsealed output
@@ -64,7 +64,16 @@ def prepare_storage(service,workflow):
     if any(a.absolute()!=b or a.is_symlink() for a,b in zip(raw,outputs)):
         fail('Finalize output container is a symlink','ACCESS_DENIED')
     outputs[0].parent.mkdir(parents=True,exist_ok=True)
-    with outputs[0].open('a',encoding='utf-8'):pass
+    # The global Finalize kernel-lock identity stays unchanged. No marker is
+    # written beneath its sealed ancestor. Only our recorded empty preparation
+    # artifact may be removed; legacy and foreign owner markers remain held.
+    if outputs[0].exists():
+        from .file_locks import kernel_lock
+        with kernel_lock(outputs[0]):
+            if (not prior or '_system/knowledge-builds/.finalize.lock' not in prior.get('storage_prepared',[])
+                    or outputs[0].read_bytes()!=b''):
+                fail('existing Finalize lock needs identity-bound recovery','LOCK_RECOVERY_REQUIRED')
+            outputs[0].unlink()
     outputs[1].mkdir(exist_ok=True)
     return [p.relative_to(service.vault).as_posix() for p in outputs]
 
