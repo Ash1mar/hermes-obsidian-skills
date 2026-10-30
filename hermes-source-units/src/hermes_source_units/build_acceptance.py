@@ -186,8 +186,8 @@ def assess(service, run, page, *, selected=None, parent_content=None, committed_
             parent_content = raw.decode('utf-8')
         elif parent_content is not None and _sha(parent_content.encode('utf-8')) != parent_sha:
             _fail('reviewed parent differs from the pinned parent revision')
-    content = _vault_path(service.vault,
-        f"_system/knowledge-builds/{run['run_id']}/pages/{page['page_id']}.md").read_bytes()
+    from .finalize_revision_state import content_path
+    content = content_path(service,run,page).read_bytes()
     if _sha(content) != page['authored_sha256']:
         _fail('draft changed before acceptance')
     resources = {r['unit_ref']['resource_id'] for _, c in selected for r in c['support_refs']}
@@ -225,12 +225,23 @@ def record(assessment, *, review_audit_ref=None):
             'review_audit_ref': review_audit_ref}
 
 
-def validate_acceptance(service, run, page, review):
+def validate_acceptance(service, run, page, review, *, selected=None):
     """Recompute risk/evidence under the ordinary Finalize lock before writes."""
     acceptance = review.get('acceptance')
     if acceptance is None:
         return  # Legacy/manual reviews keep their original explicit review contract.
     validate_record('build_acceptance', acceptance)
+    from .finalize_revision_state import active_for_run
+    local=active_for_run(service,run).get(page['page_id'])
+    if local and local.get('grants'):
+        reviewed=local.get('review_audit',{})
+        ordinal=local['grants'][-1]['calls'].get('page-review',{})
+        if (local.get('state')!='revision_reviewed' or local.get('review_result',{}).get('decision')!='approved'
+                or ordinal.get('state')!='valid' or ordinal.get('audit')!=reviewed
+                or ordinal.get('response',{}).get('decision')!='approved'
+                or acceptance['independent_review']!='approved'
+                or acceptance['review_audit_ref']!=reviewed.get('ref')):
+            _fail('controlled local revision requires its actual independent native approval')
     # Sidecars are written before page replacement. Exact committed metadata can
     # finish a partially persisted run without needing the overwritten parent.
     committed_review = None
@@ -243,7 +254,7 @@ def validate_acceptance(service, run, page, review):
         if saved != expected_page:
             _fail('partial committed acceptance differs from this request')
         committed_review = acceptance
-    expected = assess(service, run, page, committed_review=committed_review)
+    expected = assess(service, run, page, selected=selected, committed_review=committed_review)
     if any(acceptance[k] != v for k, v in expected.items()):
         _fail('program acceptance risk or evidence changed')
     ref = acceptance['review_audit_ref']

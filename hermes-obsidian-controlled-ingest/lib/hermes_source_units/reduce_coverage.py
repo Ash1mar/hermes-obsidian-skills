@@ -128,7 +128,9 @@ def check_run(service, run):
     check_decisions(current,run['decisions'],persisted=True)
     if run['tasks']!=current['proof']['run_tasks']:fail('run task isolation differs')
     hashes={p['path']:p['authored_content_sha256'] for p in current['proof']['pages']}
-    if len(run['page_revisions'])!=len(hashes) or any(hashes.get(p['path'])!=p['authored_sha256'] for p in run['page_revisions']):
+    from .finalize_revision_state import original_pages_for_scope
+    original_pages=original_pages_for_scope(service,run)
+    if len(original_pages)!=len(hashes) or any(hashes.get(p['path'])!=p['authored_sha256'] for p in original_pages):
         fail('draft bytes or downstream page set changed')
     return {'outcome':'limited_scope','coverage_complete':False,'coverage_scope':current['ref'],
             'allowed_page_count':len(hashes),'deferred_candidate_occurrences':current['manifest']['deferred_candidate_occurrences'],

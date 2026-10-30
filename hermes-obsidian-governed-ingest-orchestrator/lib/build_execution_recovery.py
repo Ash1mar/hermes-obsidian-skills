@@ -40,11 +40,75 @@ def graph_interruption(adapter,binding,failure,runs):
         'ended_run_ids':[str(r['id']) for r in runs], 'native_outcome':'scheduled_cancellation',
         'new_domain_calls_granted':0,'original_review_history_preserved':True}
 
+def storage_interruption(adapter,binding,failure,entry):
+    """Recover only a positively recorded mechanical-container seal conflict."""
+    if (failure.get('error_code')!='EVIDENCE_SNAPSHOT_REVOKED'
+            or failure.get('reason')!='EVIDENCE_SNAPSHOT_REVOKED at $: protected write requested revocation; stop affected consumers before controlled retry'
+            or entry.get('retry_unknowns')):
+        fail('only the exact protected-output-container interruption can recover without new calls')
+    from hermes_source_units.evidence_snapshot import ROOT,flags
+    from hermes_source_units.partial_finalize import pinned,pin
+    from hermes_source_units.finalize_revision_state import load,work_id
+    vault=adapter.workflow.vault;w=adapter.workflow.status(binding['workflow_id'])
+    state_ref=f"{ROOT}/{binding['workflow_id']}/state.json"
+    state=_load_json(vault/state_ref);manifest_ref=f"{ROOT}/{binding['workflow_id']}/manifest.json"
+    manifest=pinned(vault,{'ref':manifest_ref,'sha256':state['manifest_sha256']})
+    if (state.get('state')!='revoked' or state.get('workflow_id')!=binding['workflow_id']
+            or state.get('generation')!=manifest.get('generation')):fail('old protector interruption evidence differs')
+    prefix='controlled write requested: ';reason=state.get('reason','')
+    if not reason.startswith(prefix):fail('revocation was not caused by a mechanical output-container write')
+    path=Path(reason[len(prefix):]);allowed=[vault/'_system/knowledge-builds/.finalize.lock',vault/'_system/knowledge-builds/page-revisions']
+    if path not in allowed:fail('revocation affected source/evidence, not an authorized mechanical output container')
+    for name,previous in manifest['original_flags'].items():
+        if flags(Path(name))!=previous:fail('old snapshot flags have not been restored')
+    controls=load(vault,binding['workflow_id'])
+    snapshot=_load_json(_vault_path(vault,entry['snapshot_ref']))
+    for run in snapshot['backend']['runs']:
+        permission=controls['works'].get(work_id(run['run_id'],'*'),{})
+        if not {p.relative_to(vault).as_posix() for p in allowed}.issubset(permission.get('storage_prepared',[])):
+            fail('mechanical output layout has not been prepared by the stopped operator')
+    if allowed[0].exists() or not allowed[1].is_dir():fail('marker-free mechanical output layout is not present')
+    # The runtime registry is replaced by the next protector generation. Keep
+    # its actual data inside the immutable recovery report, not a stale pin to
+    # that mutable registry path.
+    return {'contract':'build-output-storage-interruption/v1','protector_state':state,
+        'protector_manifest':manifest,'verified_manifest_sha256':state['manifest_sha256'],'control_head':controls['head'],
+        'corrected_paths':[p.relative_to(vault).as_posix() for p in allowed],
+        'new_domain_calls_granted':0,'source_protection_unchanged':True}
+
+def empty_lock_interruption(adapter,binding,failure,entry):
+    """Only the recorded empty storage-preparation artifact is recoverable."""
+    from hermes_source_units.partial_finalize import pinned
+    from hermes_source_units.finalize_revision_state import load,work_id
+    vault=adapter.workflow.vault;ref='_system/knowledge-builds/.finalize.lock'
+    if (failure.get('error_code')!='LOCK_RECOVERY_REQUIRED' or entry.get('retry_unknowns')
+            or failure.get('reason')!=f'LOCK_RECOVERY_REQUIRED at $: Legacy or foreign-host lock requires supported recovery: {vault/ref}'):
+        fail('lock recovery does not match the exact empty preparation artifact')
+    controls=load(vault,binding['workflow_id'])
+    snapshot=pinned(vault,{'ref':entry['snapshot_ref'],'sha256':entry['snapshot_sha256']})
+    proofs=[]
+    for run in snapshot['backend']['runs']:
+        permission=controls['works'].get(work_id(run['run_id'],'*'),{})
+        proof=permission.get('repaired_empty_lock',{})
+        if (permission.get('state')!='enabled' or proof.get('ref')!=ref
+                or proof.get('sha256')!=hashlib.sha256(b'').hexdigest() or not proof.get('previous_control_head')):
+            fail('empty artifact repair lacks its original authorized preparation proof')
+        proofs.append(proof)
+    if (vault/ref).exists() or not (vault/'_system/knowledge-builds/page-revisions').is_dir():
+        fail('empty marker was not repaired or output storage is missing')
+    return {'contract':'build-empty-lock-interruption/v1','repairs':proofs,'control_head':controls['head'],
+        'new_domain_calls_granted':0,'source_protection_unchanged':True}
+
+
 def contract_hash():
     root=Path(__file__).parent
     return hashlib.sha256(b''.join((root/n).read_bytes() for n in (
         'build_execution_recovery.py','reduce_execution_recovery.py','fixed_review.py',
-        'semantic_output.py','fixed_semantic.py','native_call_state.py','build_disposition.py'))).hexdigest()
+        'semantic_output.py','fixed_semantic.py','native_call_state.py','build_disposition.py',
+        'build_evidence.py','finalize_revision.py','finalize_disposition_control.py',
+        'hermes_source_units/partial_finalize.py','hermes_source_units/finalize_revision_state.py',
+        'hermes_source_units/file_locks.py','hermes_source_units/knowledge_build.py',
+        'hermes_source_units/build_acceptance.py','ingest_kanban.py'))).hexdigest()
 
 def recover(adapter,request,*,dry_run=False):
     if request.get('recovery_scope')!=SCOPE or request.get('target_contract_sha256')!=contract_hash():
@@ -92,7 +156,9 @@ def verify(adapter,w,node,binding,entry,runs):
     elif old['binding']!=binding:
         fail('original Build binding changed')
     current=fixed_review.read_snapshot(adapter,binding,{'batch_id':w['batch_id']},True)
-    if current!=old:fail('current Build evidence, drafts, parents or registry differ')
+    from hermes_source_units.partial_finalize import equivalent_snapshot
+    if current!=old and not equivalent_snapshot(adapter.workflow.knowledge,old,current):
+        fail('current Build evidence, drafts, parents or registry differ beyond authenticated partial commits')
     grants=entry.get('retry_unknowns',[])
     if (not isinstance(grants,list) or len({g.get('attempt_ref') for g in grants})!=len(grants)
             or any(set(g)!= {'attempt_ref','attempt_sha256','reason'} or not str(g['reason']).strip() for g in grants)):
@@ -104,8 +170,8 @@ def verify(adapter,w,node,binding,entry,runs):
     for jp in (root/'output-attempts').glob('*.json'):
         j=_load_json(jp)
         if j.get('phase')=='page-review':by_input.setdefault(j['input_sha256'],[]).append((jp,j))
-    for original in current['views']:
-        assessment=current['backend']['pages'][original['page']]['assessment']
+    for original in old['views']:
+        assessment=old['backend']['pages'][original['page']]['assessment']
         # Reconstruct only consumed variants. Untouched pages have no native
         # output to authenticate; admission need not pack a new model request.
         from fixed_page_evidence import MARKER,CONTRACT
@@ -176,6 +242,9 @@ def verify(adapter,w,node,binding,entry,runs):
         if unproven_stop:
             reviews[-1]['unproven_stopped_attempt']=True
     if used!=set(requested):fail('unknown-call grant does not match this Build snapshot')
+    from finalize_revision import authenticate_history
+    controlled_audits,controlled_journals=authenticate_history(adapter,binding,permitted)
+    accounted.update(controlled_audits);journals.update(controlled_journals)
     for jp in (root/'output-attempts').glob('*.json'):
         j=_load_json(jp)
         if any(a.get('task_id')==binding['task_id'] for a in j.get('attempts',[])) and jp.name not in journals:

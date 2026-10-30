@@ -37,10 +37,14 @@ def read_snapshot(adapter,binding,checked,program=False):
         run=_load_json(service._run_path(run_id)); validate_record('build_run',run)
         if run['state']=='completed': continue
         if program:service.validate_run(run_id)
+        from hermes_source_units.partial_finalize import progress,original_parent
+        partial_state=progress(service,run)
+        from hermes_source_units.finalize_revision_state import effective_run,content_path,active_for_run
+        run=effective_run(service,run);controls=active_for_run(service,run)
         backend['runs'].append(run)
         decisions={d['page_id']:d for d in run['decisions']}
         for page in run['page_revisions']:
-            path=_vault_path(service.vault,f"_system/knowledge-builds/{run_id}/pages/{page['page_id']}.md")
+            path=content_path(service,run,page)
             raw=path.read_bytes()
             if hashlib.sha256(raw).hexdigest()!=page['authored_sha256']:
                 fail('STALE_INPUT','page draft differs from its recorded revision')
@@ -48,16 +52,20 @@ def read_snapshot(adapter,binding,checked,program=False):
             parent=None; parent_hash=None
             if page['parent_revision_id']:
                 subject=subjects.get(page['subject_id'])
-                if not subject or subject['current_revision_id']!=page['parent_revision_id']:
+                saved_parent=original_parent(service,run,page,state=partial_state) if partial_state['entries'] else None
+                if saved_parent:
+                    parent=saved_parent['existing_page'];parent_hash=saved_parent['parent_hash']
+                elif not subject or subject['current_revision_id']!=page['parent_revision_id']:
                     fail('STALE_INPUT','review parent identity changed')
-                parent_record=_load_json(_vault_path(service.vault,
-                    f"_system/knowledge-builds/page-revisions/{page['page_id']}/{page['parent_revision_id']}.json"))
-                validate_record('page_revision',parent_record)
-                prior=_vault_path(service.vault,subject['current_path']).read_bytes()
-                parent_hash=hashlib.sha256(prior).hexdigest()
-                if parent_hash!=parent_record['authored_sha256']:
-                    fail('STALE_INPUT','review parent content changed')
-                parent={'path':subject['current_path'],'content':prior.decode('utf-8')}
+                else:
+                    parent_record=_load_json(_vault_path(service.vault,
+                        f"_system/knowledge-builds/page-revisions/{page['page_id']}/{page['parent_revision_id']}.json"))
+                    validate_record('page_revision',parent_record)
+                    prior=_vault_path(service.vault,subject['current_path']).read_bytes()
+                    parent_hash=hashlib.sha256(prior).hexdigest()
+                    if parent_hash!=parent_record['authored_sha256']:
+                        fail('STALE_INPUT','review parent content changed')
+                    parent={'path':subject['current_path'],'content':prior.decode('utf-8')}
             evidence=[]; selected=[]
             for ref in decision['candidate_refs']:
                 pair=candidates.get((ref['pass_id'],ref['candidate_id']))
@@ -76,10 +84,12 @@ def read_snapshot(adapter,binding,checked,program=False):
                 from hermes_source_units.build_acceptance import assess
                 backend['pages'][alias]['assessment']=assess(service,run,page,selected=selected,
                     parent_content=parent['content'] if parent else None)
-            views.append({'page':alias,'identity':{k:v for k,v in decision['identity'].items() if k!='subject_id'},
+            page_view={'page':alias,'identity':{k:v for k,v in decision['identity'].items() if k!='subject_id'},
                 'path':page['path'],'content':raw.decode('utf-8'),'existing_page':parent,
                 'qa_status':page['qa_status'],'business_status':page['business_status'],
-                'visibility':page['visibility'],'citation_evidence':evidence,'original_evidence':packet})
+                'visibility':page['visibility'],'citation_evidence':evidence,'original_evidence':packet}
+            from finalize_revision import view_with_control
+            views.append(view_with_control(page_view,controls.get(page['page_id'])))
     value={'contract':'fixed-review-input/v1','binding':dict(binding),'backend':backend,'views':views}
     value['input_id']=fingerprint(value)
     return value
@@ -88,12 +98,19 @@ def read_snapshot(adapter,binding,checked,program=False):
 def execute(adapter,binding,caller,model_call,attach_receipt):
     adapter.worker_begin(binding); program=policy_enabled(adapter,binding)
     value=snapshot(adapter,binding,True) if program else snapshot(adapter,binding)
+    if program:
+        from finalize_revision import prepare_revisions
+        if prepare_revisions(adapter,binding,value,caller,model_call):
+            value=snapshot(adapter,binding,True)
     ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-inputs/review-{value['input_id']}.json"
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(value))
     reviews={}; acceptances={}; call_refs=[]; held=[]; dispositions=[]
     for view in value['views']:
         from fixed_semantic import HermesCaller,prepare_request_projection
-        if isinstance(caller,HermesCaller):
+        from finalize_revision import work_for
+        control_work=work_for(adapter,binding,value,view) if program else None
+        controlled_revision=bool(control_work and control_work.get('grants'))
+        if isinstance(caller,HermesCaller) and not controlled_revision:
             from fixed_page_evidence import select
             view=select(adapter,binding,'page-review',view,prepare_request_projection)
         from semantic_output import execute as checked_output,check,path_for
@@ -103,7 +120,7 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
         if program:
             from hermes_source_units.build_acceptance import record
             legacy_journal=path_for(adapter,binding,'page-review',view)
-            if not legacy_journal.exists():
+            if not legacy_journal.exists() and not controlled_revision:
                 if not assessment['risk_reasons']:
                     reviews[view['page']]='Program acceptance; no independent page review performed. Citation/Reduce evidence reused; no semantic or publication approval inferred.'
                     acceptances[view['page']]=record(assessment)
@@ -115,7 +132,9 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
                     'instruction':'Review only the named page risks against its assigned candidates, originals and parent. Do not repeat candidate discovery or review unrelated reading-package coverage.'}}
         result=None;call_ref=None
         try:
-            result,call_ref,_=checked_output(adapter,binding,'page-review',view,caller,model_call,
+            from finalize_revision import controlled_result
+            controlled=controlled_result(adapter,binding,value,view) if program else None
+            result,call_ref,_=controlled or checked_output(adapter,binding,'page-review',view,caller,model_call,
                 lambda d:check('page-review',None,None,None,d))
             if result['decision']!='approved':fail('SEMANTIC_REVIEW_REQUIRED',result['review_note'])
         except ContractError as exc:
@@ -144,24 +163,36 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
         suffix='-disposition-v1' if program else ''
         report=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/reports/page-review-held{suffix}-{value['input_id']}.json"
         _write_atomic(_vault_path(adapter.workflow.vault,report),_json_bytes({'held':held,'accepted_review_calls':call_refs,'finalized':False}))
-        fail('SEMANTIC_REVIEW_REQUIRED','Independent valid reviews preserved; inspect '+report+
-            ('; prepared/deferred evidence: '+disposition_ref if program else ''))
+        if not program:
+            fail('SEMANTIC_REVIEW_REQUIRED','Independent valid reviews preserved; inspect '+report)
     backend=value['backend']; finalizations=[]
     for run in backend['runs']:
+        if held:
+            from hermes_source_units.partial_finalize import enabled
+            if not enabled(adapter.workflow.knowledge,binding,run):continue
+        selected=[(alias,p) for alias,p in backend['pages'].items() if p['run_id']==run['run_id'] and alias in reviews]
+        if not selected:continue
         finalizations.append({'run_id':run['run_id'],'actor':backend['actor'],'expected_revision':run['revision'],
             'reviews':[{'page_id':p['page']['page_id'],'authored_sha256':p['page']['authored_sha256'],
                 'parent_authored_sha256':p['parent_hash'],'actor':backend['actor'],'note':reviews[alias],
                 **({'acceptance':acceptances[alias]} if program else {})}
-                for alias,p in backend['pages'].items() if p['run_id']==run['run_id']]})
+                for alias,p in selected]})
     if finalizations:
         with worker_binding(binding),workflow_write_guard(adapter.workflow.vault,kinds=('build-finalize',),actor=backend['actor']):
             fresh=snapshot(adapter,binding,True) if program else snapshot(adapter,binding)
             if fresh['input_id']!=value['input_id']:
                 fail('STALE_INPUT','reviewed input changed; no automatic approval or rebind')
-            result=adapter.workflow.knowledge.finalize_batch({'batch_id':backend['batch_id'],
-                'actor':backend['actor'],'finalizations':finalizations})
+            request={'batch_id':backend['batch_id'],'actor':backend['actor'],'finalizations':finalizations}
+            if held:
+                from hermes_source_units.partial_finalize import pin
+                result=adapter.workflow.knowledge.finalize_partial_batch({**request,
+                    'partial_manifest':pin(adapter.workflow.vault,disposition_ref)})
+            else:result=adapter.workflow.knowledge.finalize_batch(request)
         receipt_ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/worker-receipts/finalize-{fingerprint(result)}.json"
-        _write_atomic(_vault_path(adapter.workflow.vault,receipt_ref),_json_bytes(result))
-        for call_ref in call_refs: attach_receipt(adapter,call_ref,{'validated':result['ok'],'receipt_ref':receipt_ref})
+        _write_atomic(_vault_path(adapter.workflow.vault,receipt_ref),_json_bytes({'result':result,'authenticated_review_refs':call_refs}))
+        # Partial receipts are append-only. Do not edit historical native audit
+        # records merely to attach a later partial commit observation.
         if not result['ok']: fail('FINALIZATION_FAILED','inspect durable failures; preserve committed valid pages')
+    if held:
+        fail('SEMANTIC_REVIEW_REQUIRED','Ready-page submission progress preserved; deferred/unknown coverage remains held; inspect '+disposition_ref)
     return adapter.worker_complete(binding)

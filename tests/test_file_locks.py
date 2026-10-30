@@ -95,6 +95,23 @@ class KernelLockTest(unittest.TestCase):
                 self.fail("legacy marker was silently bypassed")
         self.assertEqual(self.lock.read_text(), data)
 
+    def test_markerless_lock_keeps_original_kernel_identity_and_legacy_guard(self):
+        with exclusive_lock(self.lock, marker=False):
+            self.assertFalse(self.lock.exists())
+            contender=self.helper()
+            output,error=contender.communicate(timeout=10)
+            self.assertEqual(contender.returncode,3,error)
+            self.assertIn(b'LOCK_BUSY',output)
+        holder=self.helper(hold=True)
+        self.await_ready()
+        with self.assertRaisesRegex(ContractError,'LOCK_BUSY'):
+            with exclusive_lock(self.lock,marker=False):pass
+        holder.terminate();holder.wait()
+        self.lock.write_text('foreign')
+        with self.assertRaisesRegex(ContractError,'LOCK_RECOVERY_REQUIRED'):
+            with exclusive_lock(self.lock,marker=False):pass
+        self.assertEqual(self.lock.read_text(),'foreign')
+
     def test_bounded_wait_acquires_after_owner_exits(self):
         holder = self.helper(hold=True)
         self.await_ready()

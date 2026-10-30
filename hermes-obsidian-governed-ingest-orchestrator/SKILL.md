@@ -191,9 +191,13 @@ repair, budget reset, resume or pause continuation is implied by admission.
 
 New workflows use native program workers for deterministic nodes; read `references/program-execution.md`. Pass, resource/global Reduce and triggered page review use fixed semantic phases described in `references/fixed-semantic.md`: the program owns materials, schema, identity expansion and lifecycle; native model sessions only produce semantic JSON. Normal fixed tasks require no search tools, full Skill reads, long digest copying, request assembly or model-directed retries. Legacy workflows retain their pinned contracts; installation does not silently migrate them.
 
-Build workers emit `build-evidence-disposition/v1`; see
-`references/build-disposition.md`. Keep authenticated ready reviews independently
-from deferred content/material opinions and execution unknowns. Record attribution
-as pending until the earliest evidence-chain divergence is verified. Unchanged
-failures receive zero new retry allowance. Deferral never grants approval,
-completes required coverage, or releases unified submission/publication gates.
+For Finalize evidence checks, issue deferral/reopening, bounded local native
+revision and partial canonical submission, read `references/build-disposition.md`.
+Use `python3 "<skill-dir>/scripts/manage_finalize_disposition.py"` with a hash-bound
+stopped-operator request. Explicit `enable-partial` applies only to the selected
+current run. Native workers commit ready pages with append-only intent/receipt
+recovery while preserving original drafts and unfinished source tasks. Unknowns
+require existing completion proof. Stable page identities and cumulative phase
+reservations prevent task/operation/cosmetic allowance resets. Local native
+revisions retain predecessors. Partial commit never completes required coverage,
+releases the Build pause or authorizes release/Provider synchronization.

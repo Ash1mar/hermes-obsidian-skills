@@ -136,7 +136,7 @@ def kernel_lock(path, *, timeout=0, check=None):
 
 
 @contextmanager
-def exclusive_lock(path, *, timeout=0, check=None):
+def exclusive_lock(path, *, timeout=0, check=None, marker=True):
     path = Path(path).resolve()
     path.parent.mkdir(parents=True, exist_ok=True)
     waiting = time.monotonic()
@@ -154,7 +154,8 @@ def exclusive_lock(path, *, timeout=0, check=None):
         # even when an OOM kill left its marker behind.
         record = owner_record()
         from .source_units import _write_atomic, _json_bytes
-        _write_atomic(path, _json_bytes(record))
+        if marker:
+            _write_atomic(path, _json_bytes(record))
         acquired = time.monotonic()
         lock_diagnostic(path, 'acquired', owner=record, wait_ms=round((acquired-waiting)*1000))
         exit_reason = 'success'
@@ -167,7 +168,7 @@ def exclusive_lock(path, *, timeout=0, check=None):
             lock_diagnostic(path, 'released', owner=record, exit_reason=exit_reason,
                             hold_ms=round((time.monotonic()-acquired)*1000))
             # The kernel inode is separate and remains stable after marker removal.
-            if path.exists():
+            if marker and path.exists():
                 current = json.loads(path.read_text(encoding="utf-8"))
                 if isinstance(current, dict) and current.get("token") == record["token"]:
                     path.unlink()
