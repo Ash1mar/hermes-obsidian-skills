@@ -107,7 +107,31 @@ def recovery_basis(vault,w,inventory):
     if (failure.get('task_id')==card['task_id'] and failure.get('error_code')=='SOURCE_CHANGED'
             and failure.get('reason')==GRAPH_INTERRUPTION):
         return basis # Existing recovery authenticates the exact pre-execution exception.
+    # An interrupted close may end before persisting its current input. The
+    # recovery kernel separately authenticates this scope and proves that the
+    # ended owner consumed no domain ordinal; this pointer alone grants nothing.
+    if failure.get('task_id')==card['task_id'] and failure.get('error_code') in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED'):
+        from hermes_source_units.finalize_revision_state import load,work_id
+        from hermes_source_units.delivery_scope import authorized
+        controls=load(vault,w['workflow_id'])
+        pointers=[controls['works'].get(work_id(r['run_id'],'*'),{}).get('delivery_scope')
+            for r in pinned(vault,basis).get('backend',{}).get('runs',[])]
+        if pointers and pointers[0] and all(p==pointers[0] for p in pointers):
+            return authorized(__import__('types').SimpleNamespace(vault=vault),pointers[0])['snapshot']
     fail('current ended owner has no exact recoverable review snapshot')
+
+def delivery_authorization(adapter,w):
+    from hermes_source_units.delivery_scope import active,authorized,pending_reopen
+    service=adapter.workflow.knowledge;batch=service._batch(w['batch_id'])
+    runs=[_load_json(service._run_path(r)) for r in batch['run_ids']]
+    pointers=[active(service,r) for r in runs]
+    if not any(pointers):return None
+    if not pointers[0] or any(p!=pointers[0] for p in pointers):fail('inconsistent active delivery authorizations')
+    if any(pending_reopen(service,r) for r in runs):fail('a newer issue reopening requires a new verified delivery authorization')
+    scope=authorized(service,pointers[0])
+    return {'scope':pointers[0],'included_pages':len(scope['included']),
+        'excluded_pages':len(scope['excluded']),
+        'unknowns_quarantined':sum(p['category']=='execution_quarantined' for p in scope['excluded'])}
 
 def native_cycle(adapter,flow,root,label,inventory):
     from build_execution_recovery import contract_hash,SCOPE
@@ -200,21 +224,24 @@ def run(adapter,request,*,dry_run=False):
         from finalize_disposition_control import stopped
         stopped(adapter,w)
         inv=inventory_for(adapter,w)
+        existing=delivery_authorization(adapter,w)
         from finalize_program_repair import authorize as repairs
         repair=repair_request(adapter,original,original_root,inv)
         if not dry_run:
             _write_atomic(root/'request.json',_json_bytes(request))
             _write_atomic(root/'repair-authorization-request.json',_json_bytes(repair))
-        repair_result=repairs(adapter,repair,dry_run=dry_run)
-        if dry_run:return {'ok':True,'dry_run':True,'program_repair':repair_result,'maximum_native_cycles':2,
-            'next':'automatic native repair if authorized, automatic exclusions, native closure, durable Build pause'}
+        repair_result=({'maximum_new_calls':0,'existing_delivery_reused':True} if existing
+            else repairs(adapter,repair,dry_run=dry_run))
+        if dry_run:return {'ok':True,'dry_run':True,'program_repair':repair_result,'maximum_native_cycles':1 if existing else 2,
+            'next':('reuse exact existing exclusions; native closure only; durable Build pause' if existing else
+                'automatic native repair if authorized, automatic exclusions, native closure, durable Build pause')}
         _write_atomic(root/'request.json',_json_bytes(request))
         if repair_result['maximum_new_calls']:
             native_cycle(adapter,request,root,'repair',inv)
             inv=inventory_for(adapter,adapter.workflow.status(wid))
         from finalize_delivery_control import authorize as exclude
         closure_request=operator_request(adapter,request,'authorize-delivery',operation+'-scope',inv)
-        result=exclude(adapter,closure_request)
+        result=existing or exclude(adapter,closure_request)
         _write_atomic(root/'scope-receipt.json',_json_bytes(result))
         native_cycle(adapter,request,root,'close',inv)
         w=adapter.workflow.status(wid);batch=adapter.workflow.knowledge._batch(w['batch_id'])
