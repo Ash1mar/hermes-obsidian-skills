@@ -107,6 +107,8 @@ def content_path(service,run,page):
     return _vault_path(service.vault,revision['content']['ref'])
 
 def publish_revision(service,binding,work,content,audit_pointer,view_pointer):
+    from .delivery_scope import guard_page
+    guard_page(service,binding['workflow_id'],pinned(service.vault,view_pointer)['view']['path'])
     from .partial_finalize import authority
     authority(service,binding['actor'])
     origin=_load_json(service._run_path(work['run_id']))

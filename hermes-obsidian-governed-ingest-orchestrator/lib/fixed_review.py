@@ -99,6 +99,17 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
     adapter.worker_begin(binding); program=policy_enabled(adapter,binding)
     value=snapshot(adapter,binding,True) if program else snapshot(adapter,binding)
     if program:
+        from hermes_source_units.delivery_scope import active as delivery_authorization,close as close_delivery,pending_reopen
+        if (any(delivery_authorization(adapter.workflow.knowledge,r) for r in value['backend']['runs'])
+                and not any(pending_reopen(adapter.workflow.knowledge,r) for r in value['backend']['runs'])):
+            with worker_binding(binding),workflow_write_guard(adapter.workflow.vault,kinds=('build-finalize',),actor=value['backend']['actor']):
+                current=snapshot(adapter,binding,True)
+                receipt=close_delivery(adapter.workflow.knowledge,binding,current)
+            _write_atomic(_vault_path(adapter.workflow.vault,
+                f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/worker-receipts/delivery-{receipt['sha256']}.json"),
+                _json_bytes({'delivery_closure':receipt,'coverage_complete':False,'source_tasks_completed':False,'new_domain_calls':0}))
+            return adapter.worker_complete(binding)
+    if program:
         from finalize_revision import prepare_revisions
         if prepare_revisions(adapter,binding,value,caller,model_call):
             value=snapshot(adapter,binding,True)

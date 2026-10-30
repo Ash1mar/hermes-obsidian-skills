@@ -20,7 +20,11 @@ def marker(work):
         'basis_kind':grant['basis']['kind'],'predecessor_revision_id':work['original_revision_id']}
 
 def view_with_control(view,work):
-    return {**view,'finalize_revision':marker(work)} if work and work.get('grants') else view
+    if not work or not work.get('grants'):return view
+    encoding=work['grants'][-1].get('evidence_encoding')
+    scope=work['grants'][-1].get('review_scope')
+    return {**view,'finalize_revision':marker(work),**({'evidence_encoding':encoding} if encoding else {}),
+        **({'review_scope':scope} if scope else {})}
 
 def allowed(adapter,binding,phase,view):
     token=ACTIVE.get()

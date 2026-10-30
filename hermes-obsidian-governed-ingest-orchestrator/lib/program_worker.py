@@ -109,10 +109,12 @@ def execute(adapter, binding):
             # Recover the same valid plan after interruption; do not include
             # other workflows' runs or recompute a new release identity.
             path = service._plan_path(release_id)
+            from hermes_source_units.delivery_scope import closure_refs
+            delivery=closure_refs(adapter.workflow.knowledge,batch['run_ids'])
             plan = _load_json(path) if path.is_file() else service.plan({
                 'actor':value['actor'], 'release_id':release_id,
                 'expected_state_revision':service._state()['revision'],
-                'build_run_ids':batch['run_ids']})['plan']
+                'build_run_ids':batch['run_ids'],**({'delivery_scopes':delivery} if delivery else {})})['plan']
         bound.update(release_id=release_id, plan_id=plan['plan_id'])
     elif kind == 'release-apply':
         service = FileVaultFinalizeService(adapter.workflow.vault)
