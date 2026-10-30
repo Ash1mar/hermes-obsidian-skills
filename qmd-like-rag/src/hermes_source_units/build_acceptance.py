@@ -231,6 +231,14 @@ def validate_acceptance(service, run, page, review):
     if acceptance is None:
         return  # Legacy/manual reviews keep their original explicit review contract.
     validate_record('build_acceptance', acceptance)
+    from .finalize_revision_state import active_for_run
+    local=active_for_run(service,run).get(page['page_id'])
+    if local and local.get('grants'):
+        reviewed=local.get('review_audit',{})
+        if (local.get('state')!='revision_reviewed' or local.get('review_result',{}).get('decision')!='approved'
+                or acceptance['independent_review']!='approved'
+                or acceptance['review_audit_ref']!=reviewed.get('ref')):
+            _fail('controlled local revision requires its actual independent native approval')
     # Sidecars are written before page replacement. Exact committed metadata can
     # finish a partially persisted run without needing the overwritten parent.
     committed_review = None

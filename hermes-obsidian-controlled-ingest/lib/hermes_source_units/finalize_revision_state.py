@@ -102,7 +102,8 @@ def content_path(service,run,page):
         # the recorded authored hash before using the content.
         return path
     revision=pinned(service.vault,work['latest_revision'])
-    if revision['page']!=page:fail('revised page differs from registered native output','SOURCE_CHANGED')
+    if {k:v for k,v in revision['page'].items() if k not in ('state','review')}!={k:v for k,v in page.items() if k not in ('state','review')}:
+        fail('revised page differs from registered native output','SOURCE_CHANGED')
     return _vault_path(service.vault,revision['content']['ref'])
 
 def publish_revision(service,binding,work,content,audit_pointer,view_pointer):
@@ -119,6 +120,8 @@ def publish_revision(service,binding,work,content,audit_pointer,view_pointer):
             or audit.get('phase')!='page-write' or audit.get('model',{}).get('origin')!='hermes_native_model'
             or audit.get('response_sha256')!=audit.get('model',{}).get('response_sha256')):
         fail('local body revision lacks its consumed native call proof')
+    if call.get('response',{}).get('content')!=content or call.get('request')!=view_pointer:
+        fail('local body bytes differ from the authenticated native call result')
     original=next(p for p in origin['page_revisions'] if p['page_id']==work['page_id'])
     raw=(content.replace('\r\n','\n').replace('\r','\n').rstrip()+'\n').encode()
     if not raw.strip():fail('empty native revision')
