@@ -432,7 +432,10 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
 
 def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2,_checked=None):
     from reduce_coverage import current
-    if current(adapter,binding):
+    from finalize_revision import allowed as finalize_call_allowed
+    if binding['node']=='build-finalize' and view.get('finalize_revision') and not finalize_call_allowed(adapter,binding,phase,view):
+        raise ContractError('SEMANTIC_OUTPUT_HELD','$','controlled Finalize phase has no fresh cumulative ordinal; authenticate existing completion only')
+    if current(adapter,binding) and not finalize_call_allowed(adapter,binding,phase,view):
         raise ContractError('COVERAGE_SCOPE_INVALID','$','approved limited scope permits native reuse only; no fresh semantic calls')
     if attempt_limit==1 and correction:
         raise ContractError('INVALID_TRANSITION','$','single-attempt admission does not permit a correction call')

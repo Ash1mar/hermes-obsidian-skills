@@ -44,7 +44,9 @@ def contract_hash():
     root=Path(__file__).parent
     return hashlib.sha256(b''.join((root/n).read_bytes() for n in (
         'build_execution_recovery.py','reduce_execution_recovery.py','fixed_review.py',
-        'semantic_output.py','fixed_semantic.py','native_call_state.py','build_disposition.py'))).hexdigest()
+        'semantic_output.py','fixed_semantic.py','native_call_state.py','build_disposition.py',
+        'build_evidence.py','finalize_revision.py','finalize_disposition_control.py',
+        'hermes_source_units/partial_finalize.py','hermes_source_units/finalize_revision_state.py'))).hexdigest()
 
 def recover(adapter,request,*,dry_run=False):
     if request.get('recovery_scope')!=SCOPE or request.get('target_contract_sha256')!=contract_hash():
@@ -92,7 +94,9 @@ def verify(adapter,w,node,binding,entry,runs):
     elif old['binding']!=binding:
         fail('original Build binding changed')
     current=fixed_review.read_snapshot(adapter,binding,{'batch_id':w['batch_id']},True)
-    if current!=old:fail('current Build evidence, drafts, parents or registry differ')
+    from hermes_source_units.partial_finalize import equivalent_snapshot
+    if current!=old and not equivalent_snapshot(adapter.workflow.knowledge,old,current):
+        fail('current Build evidence, drafts, parents or registry differ beyond authenticated partial commits')
     grants=entry.get('retry_unknowns',[])
     if (not isinstance(grants,list) or len({g.get('attempt_ref') for g in grants})!=len(grants)
             or any(set(g)!= {'attempt_ref','attempt_sha256','reason'} or not str(g['reason']).strip() for g in grants)):
@@ -104,8 +108,8 @@ def verify(adapter,w,node,binding,entry,runs):
     for jp in (root/'output-attempts').glob('*.json'):
         j=_load_json(jp)
         if j.get('phase')=='page-review':by_input.setdefault(j['input_sha256'],[]).append((jp,j))
-    for original in current['views']:
-        assessment=current['backend']['pages'][original['page']]['assessment']
+    for original in old['views']:
+        assessment=old['backend']['pages'][original['page']]['assessment']
         # Reconstruct only consumed variants. Untouched pages have no native
         # output to authenticate; admission need not pack a new model request.
         from fixed_page_evidence import MARKER,CONTRACT
@@ -176,6 +180,9 @@ def verify(adapter,w,node,binding,entry,runs):
         if unproven_stop:
             reviews[-1]['unproven_stopped_attempt']=True
     if used!=set(requested):fail('unknown-call grant does not match this Build snapshot')
+    from finalize_revision import authenticate_history
+    controlled_audits,controlled_journals=authenticate_history(adapter,binding,permitted)
+    accounted.update(controlled_audits);journals.update(controlled_journals)
     for jp in (root/'output-attempts').glob('*.json'):
         j=_load_json(jp)
         if any(a.get('task_id')==binding['task_id'] for a in j.get('attempts',[])) and jp.name not in journals:

@@ -186,8 +186,8 @@ def assess(service, run, page, *, selected=None, parent_content=None, committed_
             parent_content = raw.decode('utf-8')
         elif parent_content is not None and _sha(parent_content.encode('utf-8')) != parent_sha:
             _fail('reviewed parent differs from the pinned parent revision')
-    content = _vault_path(service.vault,
-        f"_system/knowledge-builds/{run['run_id']}/pages/{page['page_id']}.md").read_bytes()
+    from .finalize_revision_state import content_path
+    content = content_path(service,run,page).read_bytes()
     if _sha(content) != page['authored_sha256']:
         _fail('draft changed before acceptance')
     resources = {r['unit_ref']['resource_id'] for _, c in selected for r in c['support_refs']}

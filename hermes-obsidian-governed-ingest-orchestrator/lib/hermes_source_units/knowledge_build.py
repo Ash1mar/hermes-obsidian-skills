@@ -2499,9 +2499,14 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             _fail("REVISION_CONFLICT", "build revision changed", "$.expected_revision")
         if run["actor"] != actor:
             _fail("ACCESS_DENIED", "Finalize actor must own the build")
+        from .finalize_revision_state import effective_run,content_path
+        run=effective_run(self,run)
+        partial_request = request.get('partial_manifest')
         reviews = list(request["reviews"])
         by_page = {item["page_id"]: item for item in reviews}
-        if len(by_page) != len(reviews) or set(by_page) != {item["page_id"] for item in run["page_revisions"]}:
+        all_page_ids = {item['page_id'] for item in run['page_revisions']}
+        if (len(by_page) != len(reviews) or (not partial_request and set(by_page) != all_page_ids)
+                or (partial_request and (not by_page or not set(by_page).issubset(all_page_ids)))):
             _fail("REVIEW_REQUIRED", "every page revision needs exactly one review", "$.reviews")
         registry = self._registry()
         proposed_registry = copy.deepcopy(registry)
@@ -2515,11 +2520,12 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         committed_pages: list[dict[str, Any]] = []
         registry_changed = False
         for page in run["page_revisions"]:
+            if partial_request and page['page_id'] not in by_page:continue
             review = by_page[page["page_id"]]
             validate_record("build_review", review)
             from .build_acceptance import validate_acceptance
             validate_acceptance(self, run, page, review)
-            draft = _vault_path(self.vault, f"{BUILD_ROOT}/{run_id}/pages/{page['page_id']}.md")
+            draft = content_path(self,run,page)
             content = draft.read_bytes()
             if _sha(content) != page["authored_sha256"] or review["authored_sha256"] != page["authored_sha256"]:
                 _fail("SOURCE_CHANGED", "reviewed page draft hash differs")
@@ -2596,6 +2602,10 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         partial_task_ids=partial_tasks(self,run.get('coverage_scope'))
         for snapshot in run["tasks"]:
             task = self._task(snapshot["task_id"])
+            if partial_request:
+                if task['revision']!=snapshot['revision'] or task['status']!='running':
+                    _fail('REVISION_CONFLICT','partial Finalize must retain every source task as unfinished')
+                continue
             if task['task_id'] in partial_task_ids:
                 if task['revision']!=snapshot['revision'] or task['status']!='running':
                     _fail('REVISION_CONFLICT','unfinished scoped source task changed')
@@ -2612,13 +2622,21 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         task_units = self._live_units(task_refs, actor, self._document_registry_revision()) if task_refs else []
         for _, task in proposed_tasks:
             validate_references("work", task, task_units)
-        completed_run = {**run, "state": "completed", "revision": run["revision"] + 1,
-                         "reviews": reviews, "page_revisions": committed_pages}
-        support_refs = [ref for page in committed_pages for ref in page["support_refs"]]
+        completed_run = (run if partial_request else {**run, "state": "completed", "revision": run["revision"] + 1,
+                         "reviews": reviews, "page_revisions": committed_pages})
+        support_refs = [ref for page in (run['page_revisions'] if partial_request else committed_pages) for ref in page["support_refs"]]
         support_units = self._live_units(
             support_refs, actor, self._document_registry_revision()) if support_refs else []
         validate_references("build_run", completed_run, support_units)
 
+        partial_intent = None
+        newly_committed_page_count=0
+        if partial_request:
+            from .partial_finalize import prepare, start, progress
+            committed_before=progress(self,run)['committed']
+            newly_committed_page_count=sum(p['page_id'] not in committed_before for p in committed_pages)
+            partial_intent=prepare(self,run,request,registry,committed_pages,proposed_registry)
+            start(self,*partial_intent)
         for revision_path, committed in revision_writes:
             _write_atomic(revision_path, _json_bytes(committed))
         for target, content in page_writes:
@@ -2627,6 +2645,12 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             _write_atomic(_vault_path(self.vault, IDENTITY_PATH), _json_bytes(proposed_registry))
         for task_path, task in proposed_tasks:
             _write_atomic(task_path, _json_bytes(task))
+        if partial_request:
+            from .partial_finalize import finish
+            receipt=finish(self,*partial_intent)
+            return {'ok':True,'committed':bool(page_writes or revision_writes or registry_changed),
+                'newly_committed_page_count':newly_committed_page_count,'run':run,'partial':True,
+                'receipt':receipt,'coverage_complete':False,'source_tasks_completed':False}
         _write_atomic(path, _json_bytes(completed_run))
         return {"ok": True, "committed": True, "run": completed_run,
                 "identity_registry_revision": proposed_registry["revision"]}
@@ -2637,13 +2661,17 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         from .reduce_coverage import check_run
         check_run(self,run)
         self._decision_task_outputs(run)
+        if run['state']=='draft':
+            from .partial_finalize import progress
+            progress(self,run)
         refs = [ref for page in run["page_revisions"] for ref in page["support_refs"]]
         units = self._live_units(refs, run["actor"], self._document_registry_revision()) if refs else []
         validate_references("build_run", run, units)
         registry = self._registry()
         subjects = {item["page_id"]: item for item in registry["subjects"]}
         for page in run["page_revisions"]:
-            draft = _vault_path(self.vault, f"{BUILD_ROOT}/{run_id}/pages/{page['page_id']}.md")
+            from .finalize_revision_state import content_path
+            draft = content_path(self,run,page)
             if _sha(draft.read_bytes()) != page["authored_sha256"]:
                 _fail("SOURCE_CHANGED", "build page draft changed")
             if run["state"] == "completed":
@@ -2734,6 +2762,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 validate_record("build_run", run)
                 from .reduce_coverage import check_run
                 check_run(self,run)
+                from .finalize_revision_state import effective_run
+                run=effective_run(self,run)
                 if run["state"] == "completed":
                     continue
                 if run["actor"] != actor or run["revision"] != int(item["expected_revision"]):
@@ -2783,6 +2813,34 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             return {"ok": not failures, **scope_outcome, "batch": updated, "results": results,
                     "failures": failures, "all_runs_completed": all_runs_completed,
                     "batch_completed": completed}
+
+    def finalize_partial_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        """Native ready-page commits; original manifests/tasks remain unfinished."""
+        from .partial_finalize import authority
+        authority(self,str(request['actor']))
+        batch_id=str(request['batch_id'])
+        with _exclusive_lock(self._batch_lock_path(batch_id)):
+            batch=self._batch(batch_id)
+            if batch['actor']!=request['actor'] or batch['cancel_requested']:
+                _fail('WORKFLOW_STOPPED','partial batch writer is no longer active')
+            requests=list(request['finalizations'])
+            if len({r['run_id'] for r in requests})!=len(requests) or any(r['run_id'] not in batch['run_ids'] for r in requests):
+                _fail('ACCESS_DENIED','partial selection has duplicate or foreign runs')
+            selected_subjects=set();selected_paths=set()
+            for item in requests:
+                selected={r['page_id'] for r in item['reviews']}
+                for page in _load_json(self._run_path(item['run_id']))['page_revisions']:
+                    if page['page_id'] not in selected:continue
+                    if page['subject_id'] in selected_subjects or page['path'] in selected_paths:
+                        _fail('DUPLICATE','partial batch repeats a subject or canonical path')
+                    selected_subjects.add(page['subject_id']);selected_paths.add(page['path'])
+            results=[]
+            with _exclusive_lock(_vault_path(self.vault,f'{BUILD_ROOT}/.finalize.lock')):
+                for item in requests:
+                    results.append(self._finalize_locked({**item,'partial_manifest':request['partial_manifest']}))
+            return {'ok':True,'partial':True,'results':results,'coverage_complete':False,
+                'newly_committed_page_count':sum(r['newly_committed_page_count'] for r in results),
+                'source_tasks_completed':False,'batch_completed':False}
 
     def list_identities(self) -> dict[str, Any]:
         """Return exact identities for semantic comparison; never fuzzy-merge names."""

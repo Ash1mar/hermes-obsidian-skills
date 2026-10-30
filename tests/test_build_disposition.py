@@ -22,7 +22,9 @@ def test_disputed_review_is_never_automatically_approved_and_later_page_survives
     with pytest.raises(ContractError, match='SEMANTIC_REVIEW_REQUIRED'):
         fixed_review.execute(adapter, binding, object(), None, lambda *_: None)
     report = json.loads(next(tmp_path.rglob('build-dispositions/*.json')).read_text())
-    assert calls == ['e0', 'e1'] and submitted == []
+    assert calls == ['e0', 'e1'] and len(submitted) == 1
+    assert len(submitted[0]['finalizations'][0]['reviews']) == 1
+    assert 'partial_manifest' in submitted[0]
     assert report['ready_count'] == 1 and report['deferred_count'] == 1
     disputed = report['items'][0]
     assert disputed['original_decision']['decision'] == 'revision_required'

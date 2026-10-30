@@ -76,6 +76,11 @@ def item(adapter, binding, value, view, *, state, result=None, error=None, audit
     # both retained; this contract grants no replay of either one.
     if result:
         observed = result['decision']
+    from hermes_source_units.finalize_revision_state import load,work_id
+    control=load(vault,binding['workflow_id'])['works'].get(work_id(page['run_id'],revision['page_id']))
+    if not result and control and control.get('grants'):
+        uncertain=[c for g in control['grants'] for c in g['calls'].values() if c['state'] in ('reserved','held') and not c.get('audit')]
+        if uncertain:observed='completion_unknown'
     decision = next((d for run in value['backend']['runs'] if run['run_id'] == page['run_id']
                      for d in run.get('decisions', []) if d['page_id'] == revision['page_id']), {})
     evidence = {'candidate_refs': decision.get('candidate_refs', []),
@@ -86,6 +91,9 @@ def item(adapter, binding, value, view, *, state, result=None, error=None, audit
             'path': view.get('path'), 'state': state, 'observed_status': observed,
             'current_input_sha256': fingerprint(view), 'evidence': evidence, 'history': history,
             'native_audit': _pin(vault, audit_ref) if audit_ref else None,
+            'cumulative_calls':{'baseline':control.get('baseline_calls',{}) if control else {},
+                'additional_consumed':{phase:sum(phase in g['calls'] for g in control.get('grants',[])) for phase in ('page-write','page-review')} if control else {},
+                'controlled_grants':control.get('grants',[]) if control else []},
             'original_decision': result, 'diagnostic': {'code': error.code, 'reason': str(error)} if error else None,
             'attribution': {'status': 'pending_evidence_comparison' if state == 'deferred' else 'not_required',
                 'confirmed_cause': None,
@@ -117,12 +125,18 @@ def persist(adapter, binding, value, snapshot_ref, rows, reviews, acceptances):
             'authored_sha256': page['page']['authored_sha256'], 'parent_authored_sha256': page['parent_hash'],
             'actor': value['backend']['actor'], 'note': reviews[alias],
             **({'acceptance': acceptances[alias]} if alias in acceptances else {})})
+    from build_evidence import check
+    evidence_checks=check(value)
+    if not evidence_checks['ok']:
+        from hermes_source_units import ContractError
+        raise ContractError('INCOMPLETE_COVERAGE','$','Build reference/material mapping is incomplete; retain affected work')
     report = {'contract': CONTRACT, 'binding': dict(binding), 'input_id': value['input_id'],
+        'evidence_checks':evidence_checks,
         'snapshot': _pin(vault, snapshot_ref), 'items': rows, 'prepared_reviews': prepared,
         'counts': dict(Counter(r['observed_status'] for r in rows)), 'ready_count': len(ready),
         'deferred_count': len(rows)-len(ready), 'unchanged_input_new_calls': 0,
         'finalized': False, 'coverage_complete': False, 'publication_authorized': False,
-        'submission_rule': 'Mixed runs retain all prepared reviews; never approve or drop a deferred page to satisfy the unified submit contract. Preparation is independent; unified submission and downstream gates remain held.'}
+        'submission_rule': 'Ready pages may commit through partial-build-finalize/v1. Deferred/unknown pages and source completion remain held; partial commits never release publication or stage acceptance.'}
     # Content addressing preserves previous inventories even after new evidence.
     ref = f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/build-dispositions/{fingerprint(report)}.json"
     _write_atomic(_vault_path(vault, ref), _json_bytes(report))

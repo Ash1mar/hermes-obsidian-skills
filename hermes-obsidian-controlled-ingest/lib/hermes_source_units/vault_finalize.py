@@ -225,6 +225,8 @@ class FileVaultFinalizeService:
         return result
 
     def _build_plan(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .partial_finalize import assert_release_ready
+        assert_release_ready(self.build)
         release_id, actor = str(request["release_id"]), str(request["actor"])
         state = self._state()
         if int(request["expected_state_revision"]) != state["revision"]:

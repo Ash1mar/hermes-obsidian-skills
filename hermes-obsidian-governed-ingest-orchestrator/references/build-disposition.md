@@ -27,11 +27,12 @@ authoritative coverage ledger and required dependency inspections decide coverag
 In the observation phase source conversion and model content issues are recorded
 and deferred. Do not reconvert unchanged sources, manually patch domain outputs,
 request per-item model correction, or overwrite old responses. Continue evaluation
-of other pages. The ready manifest is a durable preparation result, not a page
-commit. Existing unified Finalize submission requires all pages in a run to have
-valid reviews; deferrals cannot be converted into approval or removed from that
-run by this contract. Mixed runs remain held for submission and downstream
-coverage/publication; this is reported explicitly rather than claimed as complete.
+of other pages. The ready manifest is a preparation result. After explicit
+operator enablement, `partial-build-finalize/v1` commits only authenticated ready
+pages. Mixed runs retain their original manifests, drafts, deferred page identities
+and gaps. All associated source tasks remain unfinished until ordinary whole-run
+completion proves coverage. Partial commit does not complete the Build stage or
+release downstream publication/Provider gates.
 
 For identical logical work with unchanged evidence, actual request and failure,
 new retry allowance is zero. A new task ID, reason wording or operation ID is not
@@ -42,13 +43,12 @@ alone grants no calls. After a changed-input correction, check only affected wor
 keep valid preparation, plans, Passes, drafts and approved responses. Use at most
 one authorized bounded attempt and stop on repeated identical failure or unknown.
 
-`build-native/v1` still authenticates current historical responses and supports
-its exact finite unknown-call grants; it does not authorize Finalize content
-revision. Pre-Build citation revision is not valid after Build consumption. A
-future partial canonical submission/revision contract must handle per-page
-identity/provenance, source completion isolation, recovery after registry changes,
-and release gap propagation before it may commit part of a mixed run. The
-inventory intentionally does not bypass these contracts.
+`build-native/v1` authenticates historical responses and controlled local revision
+ordinals. Cancellation recovery accepts only exact registry transitions proven by
+partial intent/receipt history and native revision predecessors; all other source,
+identity, input and coverage checks remain mandatory. Pre-Build citation revision
+is not valid after Build consumption. An interrupted partial intent must finish
+exactly before another selection; replay counts only newly completed page commits.
 
 `build-native/v1` also admits the exact graph-calculation `SOURCE_CHANGED`
 interruption when the trusted native outcome certifies an ended scheduled
@@ -58,3 +58,61 @@ and compare it to a hash-pinned authenticated ancestor: only dispatch binding
 metadata may differ. Preserve the ancestor snapshot and all review ordinals.
 This path grants zero extra domain calls and rejects other source changes,
 ambiguous execution, altered domain evidence and unknown-call grants.
+
+## Stopped operator controls
+
+`finalize-disposition-control/v1` requires a cancelled Build stage with consumers
+and leases drained. Requests bind `workflow_id`, `actor`, current
+`expected_revision`, `expected_control_revision`, stable `operation_id`, `run_id`,
+hash-pinned `inventory` (`ref`, `sha256`), `action`, `reason` and ordinary
+`mutation_digest` as `input_digest`. Preview and apply the same saved request:
+
+```bash
+python3 "<skill-dir>/scripts/manage_finalize_disposition.py" --vault "<vault>" --request "<request.json>" --dry-run
+python3 "<skill-dir>/scripts/manage_finalize_disposition.py" --vault "<vault>" --request "<request.json>"
+```
+
+- `enable-partial`: authorize ready-page submission for exactly the checked
+  original run. Installing code alone enables no workflow.
+- `defer`: bind `issue_id` and category `source_conversion`, `model_content`,
+  `review_dispute` or `unresolved`. Preserve original opinions and missing coverage.
+  Unknown execution cannot be content-deferred; use `hold` for execution issues.
+- `reopen`: provide a new `basis` with kind `verified_program_fix`,
+  `improved_evidence`, `verified_review_error` or `authenticated_existing_completion`,
+  an actual checked reason and hash-pinned `evidence` pointers. An unchanged
+  inventory/snapshot is not a new basis. Reopening grants no calls. Unknown calls
+  require an existing native completion proof, bound to the original ordinal,
+  wire, schema, ended owner and transcript; include its pointer as `native_audit`.
+- `revise`: only an explicitly reopened, uncommitted page can receive one cycle
+  for that material identity. Retain the exact reopened `basis`. `mode` is
+  `review_only` (one review) or `rewrite_and_review` (one body and one review).
+  Identity, path, candidate coverage and governance cannot change. Already
+  committed valid pages are preserved by this pending-page revision path.
+
+Controls append hash-linked immutable events. Work keys use run/page, never
+dispatch/operation/revision IDs. Historical body calls are counted from native
+user/path identities and all original review ordinals, including unknowns, count
+as consumed. Every extra phase reserves its cumulative ordinal before dispatch.
+Another cycle for unchanged material is rejected regardless of new operation IDs,
+cosmetic prompts or evidence-report filenames. A rejected or uncertain ordinal
+remains spent; only authenticated existing completion may finish it. Native
+workers alone write local bodies and review them. New content/revision artifacts
+retain original page/run identity and the immediate predecessor. Original drafts,
+Passes, requests, responses and audits remain unchanged.
+
+## Canonical partial submission
+
+Common checks cover reversible support handles (including bounded subspans),
+text/QA pool delivery, registered asset hashes, explicit required reading,
+citation inspections and complete original page accounting. They never infer
+conversion loss or semantic error from a review opinion. The ordinary source
+renderer and authoritative run whitelist remain the control plane.
+
+The native writer holds the ordinary workflow, batch and Finalize locks. An
+immutable intent precedes canonical page/sidecar/registry writes; a receipt follows
+complete output verification. Run and source-task completion are separate from
+page commits. Required gaps, QA, business and visibility constraints remain in
+force. Direct Vault release planning checks unfinished partial commits, so omitting
+a run ID cannot bypass those gaps. A partial run cannot complete `build-finalize`
+or release a pause. Stop at the authorized observation deadline with a stable
+cancel identity and verify native consumers, readers and leases are drained.
