@@ -100,7 +100,7 @@ def execution(tmp_path,monkeypatch,risks):
         'batch_id':'batch','runs':[{'run_id':'run','revision':1}]}}
     submitted=[]
     adapter=NS(worker_begin=lambda *_:None,worker_complete=lambda *_:{'ok':True},
-        workflow=NS(vault=tmp_path,knowledge=NS(finalize_batch=lambda req:submitted.append(req) or {'ok':True},
+        workflow=NS(vault=tmp_path,knowledge=NS(vault=tmp_path,finalize_batch=lambda req:submitted.append(req) or {'ok':True},
             finalize_partial_batch=lambda req:submitted.append(req) or {'ok':True,'partial':True})))
     for ref in ('native-review','old-review'):
         (tmp_path/ref).write_text('{}')
