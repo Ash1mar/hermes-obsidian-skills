@@ -6,14 +6,45 @@ from hermes_source_units.source_units import _load_json,_vault_path,_json_bytes,
 from hermes_source_units.validation import fingerprint
 
 SCOPE='build-native/v1'
+GRAPH_INTERRUPTION='SOURCE_CHANGED at $: graph dependencies changed during calculation'
 
 def fail(message):raise ContractError('RECOVERY_NOT_ALLOWED','$',message)
+
+
+def graph_interruption(adapter,binding,failure,runs):
+    """Authenticate a native pre-execution cancellation, never a content retry.
+
+    The native runner's scheduled cancellation outcome is positive evidence;
+    missing audit/session data alone is not evidence of an uncalled request.
+    """
+    if failure.get('error_code')!='SOURCE_CHANGED' or failure.get('reason')!=GRAPH_INTERRUPTION:
+        fail('only the exact graph-calculation interruption can use this admission')
+    workflow=adapter.workflow.status(binding['workflow_id'])
+    native=adapter.kanban.task_snapshot(workflow['kanban']['board_id'],binding['task_id'])
+    task=native.get('task',{})
+    if (task.get('id')!=binding['task_id'] or task.get('status')!='archived'
+            or task.get('created_by')!='ingest-workflow' or task.get('worker_pid')
+            or task.get('current_run_id') or task.get('session_id') or native.get('runs')!=runs
+            or not runs or any(r.get('profile')!='ingest-program' or r.get('status')!='scheduled'
+                or r.get('outcome')!='scheduled' or r.get('summary')!='Vault workflow cancelled'
+                or not r.get('ended_at') for r in runs)):
+        fail('graph interruption lacks a trusted ended pre-execution cancellation outcome')
+    root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}"
+    for folder in ('semantic-calls','call-failures','output-attempts'):
+        for path in (root/folder).glob('*.json'):
+            record=_load_json(path)
+            if (record.get('native_task_id',record.get('task_id'))==binding['task_id']
+                    or any(a.get('task_id')==binding['task_id'] for a in record.get('attempts',[]))):
+                fail('graph interruption already has a consumed or uncertain domain attempt')
+    return {'contract':'build-preexecution-graph-interruption/v1',
+        'ended_run_ids':[str(r['id']) for r in runs], 'native_outcome':'scheduled_cancellation',
+        'new_domain_calls_granted':0,'original_review_history_preserved':True}
 
 def contract_hash():
     root=Path(__file__).parent
     return hashlib.sha256(b''.join((root/n).read_bytes() for n in (
         'build_execution_recovery.py','reduce_execution_recovery.py','fixed_review.py',
-        'semantic_output.py','fixed_semantic.py','native_call_state.py'))).hexdigest()
+        'semantic_output.py','fixed_semantic.py','native_call_state.py','build_disposition.py'))).hexdigest()
 
 def recover(adapter,request,*,dry_run=False):
     if request.get('recovery_scope')!=SCOPE or request.get('target_contract_sha256')!=contract_hash():
@@ -42,8 +73,24 @@ def verify(adapter,w,node,binding,entry,runs):
     if w['checkpoints']['checkpoint_1']['state']!='approved':fail('Build requires the accepted checkpoint')
     if not fixed_review.policy_enabled(adapter,binding):fail('Build recovery requires the pinned program-acceptance contract')
     path=_vault_path(adapter.workflow.vault,entry['snapshot_ref']);raw=path.read_bytes();old=json.loads(raw)
-    if hashlib.sha256(raw).hexdigest()!=entry['snapshot_sha256'] or old['binding']!=binding:
-        fail('original Build snapshot or binding changed')
+    if hashlib.sha256(raw).hexdigest()!=entry['snapshot_sha256']:
+        fail('original Build snapshot changed')
+    permitted=permitted_tasks(adapter,binding)
+    graph_proof=entry.get('_verified_graph_interruption')
+    if graph_proof:
+        # Rebind pure input metadata only, from an authenticated ancestor. All
+        # domain bytes, decisions, registry and assessments must be identical.
+        prior=old['binding']
+        if (prior['task_id'] not in permitted or prior['task_id']==binding['task_id']
+                or {k:v for k,v in prior.items() if k not in ('task_id','input_fingerprint')}
+                   !={k:v for k,v in binding.items() if k not in ('task_id','input_fingerprint')}
+                or entry.get('retry_unknowns')):
+            fail('pre-execution recovery requires unchanged ancestor evidence and zero new grants')
+        original=copy.deepcopy(old);original.pop('input_id')
+        if fingerprint(original)!=old['input_id']:fail('ancestor Build snapshot identity differs')
+        old={**old,'binding':dict(binding)};old.pop('input_id');old['input_id']=fingerprint(old)
+    elif old['binding']!=binding:
+        fail('original Build binding changed')
     current=fixed_review.read_snapshot(adapter,binding,{'batch_id':w['batch_id']},True)
     if current!=old:fail('current Build evidence, drafts, parents or registry differ')
     grants=entry.get('retry_unknowns',[])
@@ -51,7 +98,7 @@ def verify(adapter,w,node,binding,entry,runs):
             or any(set(g)!= {'attempt_ref','attempt_sha256','reason'} or not str(g['reason']).strip() for g in grants)):
         fail('explicit unknown-call grants need unique exact attempts and reasons')
     requested={g['attempt_ref']:g for g in grants};used=set();reviews=[];accounted=set();journals=set()
-    permitted=permitted_tasks(adapter,binding);permitted[binding['task_id']]={'ended_run_ids':[str(r['id']) for r in runs]}
+    permitted[binding['task_id']]={'ended_run_ids':[str(r['id']) for r in runs]}
     root=path.parent.parent
     by_input={}
     for jp in (root/'output-attempts').glob('*.json'):
@@ -137,7 +184,8 @@ def verify(adapter,w,node,binding,entry,runs):
         a=_load_json(ap)
         if a.get('native_task_id')==binding['task_id'] and ap.relative_to(adapter.workflow.vault).as_posix() not in accounted:
             fail('native Build call is not accounted for by its exact finite journal')
-    return {'build_review_recovery':{'contract':SCOPE,'snapshot_ref':entry['snapshot_ref'],
+    return {**({'preexecution_graph_interruption':graph_proof} if graph_proof else {}),
+        'build_review_recovery':{'contract':SCOPE,'snapshot_ref':entry['snapshot_ref'],
         'snapshot_sha256':entry['snapshot_sha256'],'input_id':current['input_id'],
         'original_attempts_preserved':True,'additional_calls_granted':len(grants),'reviews':reviews}}
 

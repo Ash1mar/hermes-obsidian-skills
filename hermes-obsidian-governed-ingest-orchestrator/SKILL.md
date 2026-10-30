@@ -190,3 +190,10 @@ the original ordinal, outcome and native evidence remain intact. No semantic
 repair, budget reset, resume or pause continuation is implied by admission.
 
 New workflows use native program workers for deterministic nodes; read `references/program-execution.md`. Pass, resource/global Reduce and triggered page review use fixed semantic phases described in `references/fixed-semantic.md`: the program owns materials, schema, identity expansion and lifecycle; native model sessions only produce semantic JSON. Normal fixed tasks require no search tools, full Skill reads, long digest copying, request assembly or model-directed retries. Legacy workflows retain their pinned contracts; installation does not silently migrate them.
+
+Build workers emit `build-evidence-disposition/v1`; see
+`references/build-disposition.md`. Keep authenticated ready reviews independently
+from deferred content/material opinions and execution unknowns. Record attribution
+as pending until the earliest evidence-chain divergence is verified. Unchanged
+failures receive zero new retry allowance. Deferral never grants approval,
+completes required coverage, or releases unified submission/publication gates.
