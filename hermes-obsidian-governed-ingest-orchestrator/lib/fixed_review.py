@@ -116,16 +116,38 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
     ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-inputs/review-{value['input_id']}.json"
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(value))
     reviews={}; acceptances={}; call_refs=[]; held=[]; dispositions=[]
+    committed={}
+    if program:
+        from hermes_source_units.partial_finalize import progress
+        for run in value['backend']['runs']:
+            committed.update(progress(adapter.workflow.knowledge,run)['committed'])
     for view in value['views']:
         from fixed_semantic import HermesCaller,prepare_request_projection
         from finalize_revision import work_for
         control_work=work_for(adapter,binding,value,view) if program else None
         controlled_revision=bool(control_work and control_work.get('grants'))
-        if isinstance(caller,HermesCaller) and not controlled_revision:
-            from fixed_page_evidence import select
-            view=select(adapter,binding,'page-review',view,prepare_request_projection)
-        from semantic_output import execute as checked_output,check,path_for
         assessment=value['backend']['pages'][view['page']]['assessment'] if program else None
+        page=value['backend']['pages'][view['page']]['page']
+        if program and page['page_id'] in committed:
+            saved=committed[page['page_id']];review=saved['review']
+            if any(saved['page'][k]!=page[k] for k in ('revision_id','authored_sha256','path','support_refs')):
+                fail('STALE_INPUT','committed page differs from current Build evidence')
+            reviews[view['page']]=review['note'];acceptances[view['page']]=review['acceptance']
+            from build_disposition import item
+            dispositions.append(item(adapter,binding,value,view,state='ready',audit_ref=review['acceptance'].get('review_audit_ref')))
+            continue
+        if isinstance(caller,HermesCaller) and not controlled_revision:
+            from fixed_page_evidence import select,select_review
+            try:
+                view=select_review(adapter,binding,view,assessment,prepare_request_projection) if program else select(adapter,binding,'page-review',view,prepare_request_projection)
+            except ContractError as exc:
+                from fixed_page_work import LOCAL
+                if not program or exc.code not in LOCAL:raise
+                held.append({'page':view['page'],'code':exc.code,'reason':str(exc)})
+                from build_disposition import item
+                dispositions.append(item(adapter,binding,value,view,state='deferred',error=exc))
+                continue
+        from semantic_output import execute as checked_output,check,path_for
         # Exact old journals, including refusals and unknown reservations, take
         # precedence. A policy change never erases a consumed review allowance.
         if program:

@@ -73,6 +73,28 @@ def restore_compact(view):
     result.pop('candidate_qa_pool',None);result.pop('source_evidence_pool',None)
     return result
 
+def review_scope(assessment):
+    return {'policy':assessment['policy'],'risk_reasons':assessment['risk_reasons'],
+        'instruction':'Review only the named page risks against its assigned candidates, originals and parent. Do not repeat candidate discovery or review unrelated reading-package coverage.'}
+
+def review_variants(view,assessment):
+    """Known exact historical presentations; never substitute evidence bytes."""
+    variants=[view,{**view,MARKER:CONTRACT},{**view,MARKER:COMPACT_CONTRACT}]
+    if assessment['risk_reasons']:
+        variants.extend({**v,'review_scope':review_scope(assessment)} for v in list(variants))
+    from hermes_source_units.validation import fingerprint
+    return list({fingerprint(v):v for v in variants}.values())
+
+def select_review(adapter,binding,view,assessment,project):
+    """Resolve consumed scoped history before selecting an unused encoding."""
+    from semantic_output import path_for
+    matches=[v for v in review_variants(view,assessment) if path_for(adapter,binding,'page-review',v).exists()]
+    if len(matches)>1:
+        raise ContractError('SEMANTIC_OUTPUT_HELD','$','multiple consumed review presentations retained; no new call or automatic decision')
+    if matches:return matches[0]
+    scoped={**view,'review_scope':review_scope(assessment)} if assessment['risk_reasons'] else view
+    return select(adapter,binding,'page-review',scoped,project)
+
 
 def select(adapter,binding,phase,view,project):
     """Use ordinary historical journals first; no new allowance for old work."""
