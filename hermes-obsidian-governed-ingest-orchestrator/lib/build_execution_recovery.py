@@ -107,7 +107,8 @@ def contract_hash():
         'semantic_output.py','fixed_semantic.py','native_call_state.py','build_disposition.py',
         'build_evidence.py','finalize_revision.py','finalize_disposition_control.py',
         'hermes_source_units/partial_finalize.py','hermes_source_units/finalize_revision_state.py',
-        'hermes_source_units/file_locks.py','hermes_source_units/knowledge_build.py'))).hexdigest()
+        'hermes_source_units/file_locks.py','hermes_source_units/knowledge_build.py',
+        'hermes_source_units/build_acceptance.py','ingest_kanban.py'))).hexdigest()
 
 def recover(adapter,request,*,dry_run=False):
     if request.get('recovery_scope')!=SCOPE or request.get('target_contract_sha256')!=contract_hash():

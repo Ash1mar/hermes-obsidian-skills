@@ -1,7 +1,7 @@
 {
   "__init__.py": "636ba420ad7996c241380d2179b199e43d4bb5a2b9a992434dd52d691ec5f414",
   "__main__.py": "48884b5bd01638149212d2f65b0d35ef31d866a84f13eeeb7c4c2cda6e5529bb",
-  "build_acceptance.py": "f5cfd2204e37b9ee9d055ce5818a1cd5a57f2d57a5faa39ef0132a67299e0982",
+  "build_acceptance.py": "34d8c0c2e1166715bb421421bc152235ca3aa66c7c52deba3e5f4cd325480625",
   "chunk_engine/__init__.py": "65035eca98305cc142b2a2ddb46443e085d4e7acd9d226fc168f0073d4ad1df4",
   "chunk_engine/atoms.py": "bf2811ed114aa929dac3e6dce541438e6fd3cb1fd2ccbae1bcbf05cd4f797d82",
   "chunk_engine/engine.py": "dfac32ec5cd26acbb4262572ff8912d01ff0b28b98dffa408472075648813c33",
@@ -25,7 +25,7 @@
   "ingest_pauses.py": "155305e83fe63ba8deafa3bd65d2c315396a58416a9a8e63e7aa79a3711484ce",
   "ingest_workflow.py": "1a096ed8e975d6c4927afe2ba0f196cc52b8e3b196bb4dcc743febd84de0c70a",
   "interfaces.py": "5d824d42fbea30efc0608260bbd21089d8b170816c85b43bb0dc6d45edb36373",
-  "knowledge_build.py": "3a497a66d292b84605877249d32e5087eab0fc8cb343d7b13a70d1088e578050",
+  "knowledge_build.py": "0c0128931d36503114dd30c4b04ce0617f84ee1fb59549e08959b0290a356518",
   "knowledge_destinations.py": "0523796fef89b2acd05035c1de5191a271e0e243e0243829b392f4542723b71d",
   "legacy_slice_identity.py": "499c817b008df7620e62b39bf57dcb9b9018548be87862dfc11b31d436e6d964",
   "model_presentation.py": "bfd7b6737207534a6104d867eac6fa5efc42194cb85ad9140aeb03050ab978f0",

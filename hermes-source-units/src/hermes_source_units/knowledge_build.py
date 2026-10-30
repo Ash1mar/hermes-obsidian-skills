@@ -1939,9 +1939,10 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                         result[(record['pass_id'], candidate['candidate_id'])] = (record, candidate)
         return result, by_task
 
-    def _decision_task_outputs(self, run: Mapping[str, Any]) -> dict[str, set[str]]:
+    def _decision_task_outputs(self, run: Mapping[str, Any], *, candidates=None) -> dict[str, set[str]]:
         task_ids = [item["task_id"] for item in run["tasks"]]
-        candidates, _ = self._pass_index(task_ids)
+        if candidates is None:
+            candidates, _ = self._pass_index(task_ids)
         outputs = {task_id: set() for task_id in task_ids}
         for decision in run["decisions"]:
             selected = []
@@ -2514,7 +2515,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         path_owners = {item["current_path"]: item["subject_id"] for item in proposed_registry["subjects"]
                        if item["status"] == "active"}
         decisions = {item["page_id"]: item for item in run["decisions"]}
-        outputs_by_task = self._decision_task_outputs(run)
+        candidates, _ = self._pass_index([item['task_id'] for item in run['tasks']])
+        outputs_by_task = self._decision_task_outputs(run,candidates=candidates)
         page_writes: list[tuple[Path, bytes]] = []
         revision_writes: list[tuple[Path, dict[str, Any]]] = []
         committed_pages: list[dict[str, Any]] = []
@@ -2524,7 +2526,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             review = by_page[page["page_id"]]
             validate_record("build_review", review)
             from .build_acceptance import validate_acceptance
-            validate_acceptance(self, run, page, review)
+            decision = decisions[page['page_id']]
+            selected = [candidates.get((r['pass_id'],r['candidate_id'])) for r in decision['candidate_refs']]
+            validate_acceptance(self, run, page, review, selected=selected)
             draft = content_path(self,run,page)
             content = draft.read_bytes()
             if _sha(content) != page["authored_sha256"] or review["authored_sha256"] != page["authored_sha256"]:

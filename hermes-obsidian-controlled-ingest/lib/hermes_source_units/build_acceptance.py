@@ -225,7 +225,7 @@ def record(assessment, *, review_audit_ref=None):
             'review_audit_ref': review_audit_ref}
 
 
-def validate_acceptance(service, run, page, review):
+def validate_acceptance(service, run, page, review, *, selected=None):
     """Recompute risk/evidence under the ordinary Finalize lock before writes."""
     acceptance = review.get('acceptance')
     if acceptance is None:
@@ -254,7 +254,7 @@ def validate_acceptance(service, run, page, review):
         if saved != expected_page:
             _fail('partial committed acceptance differs from this request')
         committed_review = acceptance
-    expected = assess(service, run, page, committed_review=committed_review)
+    expected = assess(service, run, page, selected=selected, committed_review=committed_review)
     if any(acceptance[k] != v for k, v in expected.items()):
         _fail('program acceptance risk or evidence changed')
     ref = acceptance['review_audit_ref']

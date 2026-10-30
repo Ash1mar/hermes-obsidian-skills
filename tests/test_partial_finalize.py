@@ -66,6 +66,22 @@ def test_cancel_resume_replay_does_not_duplicate_canonical_submission(ready):
     assert first['newly_committed_page_count']==1 and second['newly_committed_page_count']==0
     assert service._registry()==registry and list(partial.root(service,run).glob('*.intent.json'))==before
 
+def test_each_locked_finalize_reloads_passes_once_and_rejects_changed_evidence(ready,monkeypatch):
+    service,run,reviews,req=ready;original=service._pass_index;scans=[]
+    def counted(task_ids):
+        scans.append(list(task_ids));return original(scans[-1])
+    monkeypatch.setattr(service,'_pass_index',counted)
+    final={k:v for k,v in req.items() if k!='partial_manifest'};final['reviews']=reviews
+    service.finalize(final)
+    assert len(scans)==1
+    # Reuse is confined to one locked invocation, never persisted across calls.
+    from hermes_source_units.build_acceptance import validate_acceptance
+    paths=list((service.vault/f"_system/knowledge-builds/task-{run['tasks'][0]['task_id']}/passes").glob('*.json'))
+    path=next(p for p in paths if json.loads(p.read_text())['pass_kind']=='citation')
+    value=json.loads(path.read_text());value['candidates'][0]['finding']='changed after first Finalize'
+    path.write_bytes(_json_bytes(value))
+    with pytest.raises(ContractError):validate_acceptance(service,run,run['page_revisions'][0],reviews[0])
+
 def test_crash_after_revision_write_finishes_exact_intent_without_domain_retry(ready,monkeypatch):
     import hermes_source_units.knowledge_build as kb
     service,run,_,req=ready;write=kb._write_atomic;crashed=False
