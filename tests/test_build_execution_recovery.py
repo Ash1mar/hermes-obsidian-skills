@@ -71,6 +71,27 @@ def grant(request,jp,journal,vault):
         'attempt_sha256':fingerprint(journal['attempts'][0]),'reason':'Explicitly authorize one additional native attempt; preserve unknown'}]
     return workflow_request(**{k:v for k,v in request.items() if k!='input_digest'})
 
+def test_multiple_consumed_exact_encodings_are_accounted_without_new_grants(stopped,vault):
+    from fixed_page_evidence import COMPACT_CONTRACT
+    a,w,b,req,jp,journal,view=stopped
+    compact={**view,'evidence_encoding':COMPACT_CONTRACT}
+    assert compact!=view
+    schema=schema_for('page-review',compact);wire=prepare_request_projection('page-review',compact,schema,[])['wire']
+    other=path_for(a,b,'page-review',compact)
+    copy_j=copy.deepcopy(journal);attempt=copy_j['attempts'][0]
+    attempt.update(attempt_id=fingerprint({'path':other.name,'attempt':1}),wire_sha256=fingerprint(wire))
+    outcome={'state':'completion_unknown','completed_output':False,'attempt_id':attempt['attempt_id'],
+        'session_id':attempt['session_id'],'wire':wire,'view':compact}
+    path=jp.parent.parent/'call-failures/compact-unknown.json';path.write_bytes(_json_bytes(outcome))
+    attempt['call_outcome']['report_ref']='call-failures/compact-unknown.json'
+    attempt['call_outcome']['report_sha256']=hashlib.sha256(path.read_bytes()).hexdigest()
+    copy_j.update(input_sha256=fingerprint(compact),schema_sha256=fingerprint(schema));other.write_bytes(_json_bytes(copy_j))
+    before=(jp.read_bytes(),other.read_bytes())
+    result=recovery.verify(a,w,None,b,req['entries'][0],a.kanban.runs['old-build'])['build_review_recovery']
+    assert len(result['reviews'])==2 and result['additional_calls_granted']==0
+    assert all(r['unknown'] and r['additional_calls']==0 for r in result['reviews'])
+    assert before==(jp.read_bytes(),other.read_bytes())
+
 def test_default_admission_preserves_unknown_and_does_not_resume(stopped,vault):
     a,w,b,req,jp,journal,view=stopped;before=files(vault)
     prior={n.name:n.input_fingerprint for n in desired_graph(a.workflow,w)}
