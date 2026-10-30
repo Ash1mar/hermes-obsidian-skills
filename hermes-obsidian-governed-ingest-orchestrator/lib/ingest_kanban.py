@@ -1114,7 +1114,24 @@ class IngestKanbanAdapter:
         return self.sync(followup)
 
     def cancel(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        value = self.workflow.cancel(request)
+        try:
+            value = self.workflow.cancel(request)
+        except ContractError as exc:
+            if exc.code!='LOCK_TIMEOUT':raise
+            # Cancel needs the lock a long domain transaction can hold. Stop
+            # that consumer with the native scheduled transition, then finish
+            # this same request. Stale/unauthorized requests cannot stop cards.
+            self.workflow._check_request(request)
+            current=self.workflow.status(str(request['workflow_id']))
+            if current['actor']!=request['actor'] or current['revision']!=request['expected_revision']:
+                raise
+            board=current['kanban']['board_id']
+            if not board:raise
+            with self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
+                for item in current['kanban']['task_map']:
+                    if item.get('task_id'):
+                        self.kanban.wait(board,item['task_id'],'scheduled','Vault workflow cancel waiting for domain lock')
+            value=self.workflow.cancel(request)
         if value["batch_id"]:
             batch = self.workflow.knowledge._batch(value["batch_id"])
             if not batch.get("cancel_requested"):
