@@ -49,3 +49,12 @@ future partial canonical submission/revision contract must handle per-page
 identity/provenance, source completion isolation, recovery after registry changes,
 and release gap propagation before it may commit part of a mixed run. The
 inventory intentionally does not bypass these contracts.
+
+`build-native/v1` also admits the exact graph-calculation `SOURCE_CHANGED`
+interruption when the trusted native outcome certifies an ended scheduled
+cancellation before domain execution. The task must be archived with no session,
+live worker or consumed/unknown domain attempt. Reconstruct the current snapshot
+and compare it to a hash-pinned authenticated ancestor: only dispatch binding
+metadata may differ. Preserve the ancestor snapshot and all review ordinals.
+This path grants zero extra domain calls and rejects other source changes,
+ambiguous execution, altered domain evidence and unknown-call grants.

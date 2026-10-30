@@ -169,7 +169,8 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 local_amendment=scope=='reduce-cancel/v1' and bool(request.get('amendment_id'))
                 if local_amendment:allowed=(*allowed,'RECOVERY_NOT_ALLOWED','CITATION_AMENDMENT_HELD')
                 if scope=='reduce-validation/v1':allowed=('COVERAGE_SCOPE_INVALID','VALIDATION_FAILED','PROGRAM_EXECUTION_FAILED','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED')
-                if scope=='build-native/v1':allowed=('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','SEMANTIC_REVIEW_REQUIRED')
+                graph_interruption=(scope=='build-native/v1' and report.get('error_code')=='SOURCE_CHANGED')
+                if scope=='build-native/v1':allowed=('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','SEMANTIC_REVIEW_REQUIRED','SOURCE_CHANGED')
                 if not review and ((report.get('error_code') not in allowed and not call_failure) or (scope in ('source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3') and node.kind!='resource-reduce')):
                     fail('RECOVERY_NOT_ALLOWED', 'semantic, material, budget and unknown failures remain held')
                 snap = adapter.kanban.task_snapshot(value['kanban']['board_id'], card['task_id'])
@@ -221,8 +222,13 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     from native_call_state import recovery_evidence
                     audited[-1].update(recovery_evidence(adapter,value,binding,runs))
                 if scope=='build-native/v1':
-                    from build_execution_recovery import verify
-                    audited[-1].update(verify(adapter,value,node,binding,entry,runs))
+                    from build_execution_recovery import verify,graph_interruption as verify_graph_interruption
+                    checked_entry=dict(entry)
+                    if '_verified_graph_interruption' in entry:
+                        fail('INVALID_SCHEMA','internal graph verification is not request authority')
+                    if graph_interruption:
+                        checked_entry['_verified_graph_interruption']=verify_graph_interruption(adapter,binding,report,runs)
+                    audited[-1].update(verify(adapter,value,node,binding,checked_entry,runs))
                 if scope=='semantic-output/v1':
                     from semantic_output_recovery import verify
                     audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))
