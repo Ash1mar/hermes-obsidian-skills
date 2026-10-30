@@ -61,7 +61,7 @@ def controller(tmp_path,monkeypatch,status='revision_required'):
     item={'issue_id':'issue','logical_work':{'run_id':'run','page_id':'page','revision_id':'original'},
         'page':'e1','state':'deferred','observed_status':status,'history':{'attempt_count':1}}
     view={'page':'e1','path':'30_Cards/page.md','identity':{},'existing_page':None,'original_evidence':{},'citation_evidence':[]}
-    snapshot={'backend':{'runs':[run]},'views':[view]};inv={'items':[item]}
+    snapshot={'backend':{'runs':[run]},'views':[view]};inv={'items':[item],'snapshot':{'ref':'snapshot','sha256':'b'}}
     (tmp_path/'run.json').write_text(json.dumps(run))
     service=NS(vault=tmp_path,_check_request=lambda _:None,_lock=lambda _:tmp_path/'workflow.lock',
         knowledge=NS(_run_path=lambda _:tmp_path/'run.json'))

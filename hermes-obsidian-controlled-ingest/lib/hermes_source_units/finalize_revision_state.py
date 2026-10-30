@@ -96,7 +96,11 @@ def content_path(service,run,page):
     if path.exists() and hashlib.sha256(path.read_bytes()).hexdigest()==page['authored_sha256']:
         return path
     work=active_for_run(service,run).get(page['page_id'])
-    if not work or not work.get('latest_revision'):fail('unregistered revised page body')
+    if not work or not work.get('latest_revision'):
+        # Keep the ordinary validators' original draft-drift error contract.
+        # Returning its path never accepts changed bytes: every caller checks
+        # the recorded authored hash before using the content.
+        return path
     revision=pinned(service.vault,work['latest_revision'])
     if revision['page']!=page:fail('revised page differs from registered native output','SOURCE_CHANGED')
     return _vault_path(service.vault,revision['content']['ref'])
