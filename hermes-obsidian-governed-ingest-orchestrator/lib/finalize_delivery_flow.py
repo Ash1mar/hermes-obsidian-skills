@@ -58,6 +58,28 @@ def repair_request(adapter,flow,root,inventory):
         fail('saved repair request belongs to another flow','ACCESS_DENIED')
     return request
 
+def original_flow(vault,request):
+    """A fresh stopped-state authorization may continue one exact saved flow.
+
+    Keep the original repair admission and allowances. A revision change never
+    makes a stale request executable; the caller must authorize the current one.
+    """
+    base=vault/f"_system/ledgers/ingest-workflows/{request['workflow_id']}/delivery-operations"
+    root=base/request['operation_id']
+    parent=request.get('resume_of')
+    if not parent:return request,root
+    operation=parent.get('operation_id','')
+    if not __import__('re').fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,60}',operation) or operation==request['operation_id']:
+        fail('resume must name a distinct exact original flow','IDEMPOTENCY_CONFLICT')
+    root=base/operation
+    saved=_load_json(root/'request.json')
+    if (saved.get('resume_of') or saved['input_digest']!=parent.get('request_digest')
+            or mutation_digest(saved)!=saved['input_digest']):
+        fail('original flow digest changed','IDEMPOTENCY_CONFLICT')
+    if any(saved[k]!=request[k] for k in ('workflow_id','actor','action')):
+        fail('resume belongs to another flow owner','ACCESS_DENIED')
+    return saved,root
+
 def native_cycle(adapter,flow,root,label,inventory):
     from build_execution_recovery import contract_hash,SCOPE
     from hermes_source_units.evidence_snapshot import ROOT,rpc,flags
@@ -135,9 +157,10 @@ def run(adapter,request,*,dry_run=False):
     operation=request.get('operation_id','')
     if not __import__('re').fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,60}',operation):fail('stable delivery flow identity required')
     vault=adapter.workflow.vault;wid=request['workflow_id']
-    root=vault/f'_system/ledgers/ingest-workflows/{wid}/delivery-operations/{operation}'
+    original,original_root=original_flow(vault,request)
+    root=original_root if not request.get('resume_of') else original_root/'resumptions'/operation
     result_path=root/'receipt.json'
-    with _exclusive_lock(root/'.lock'):
+    with _exclusive_lock(original_root/'.lock'):
         if result_path.exists():
             result=_load_json(result_path)
             if result['request_digest']!=request['input_digest']:fail('flow identity changed','IDEMPOTENCY_CONFLICT')
@@ -149,7 +172,7 @@ def run(adapter,request,*,dry_run=False):
         stopped(adapter,w)
         inv=inventory_for(adapter,w)
         from finalize_program_repair import authorize as repairs
-        repair=repair_request(adapter,request,root,inv)
+        repair=repair_request(adapter,original,original_root,inv)
         if not dry_run:
             _write_atomic(root/'request.json',_json_bytes(request))
             _write_atomic(root/'repair-authorization-request.json',_json_bytes(repair))

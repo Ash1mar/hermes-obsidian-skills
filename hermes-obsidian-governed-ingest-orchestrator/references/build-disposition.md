@@ -160,6 +160,14 @@ review-only call per logical work through the existing cumulative controls.
 Any consumed/held/unknown cycle prevents another grant for the same material.
 Unfitting inputs remain input-limit exclusions, without truncation or calls.
 
+After an explicit stop changes the workflow revision, submit a fresh
+`run-delivery` request with the current actor/revision, a new operation identity,
+and `resume_of: {operation_id, request_digest}` naming the exact original saved
+flow. This is explicit continuation authorization, not a stale-request replay.
+The program authenticates the original request, reuses its repair admission and
+cumulative allowances, and records the resumed cycle separately. Existing valid
+native reviews remain reusable; changing the operation never grants extra calls.
+
 Automatic disposition keeps revision opinions pending attribution, explicit
 refusals distinct, and execution uncertainty independent. Quarantine records the
 ended original native owners, pinned journals and unchanged uncertain ordinals.
