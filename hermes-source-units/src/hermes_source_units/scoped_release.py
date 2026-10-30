@@ -63,7 +63,7 @@ def build_plan(service,request,state,runs,scopes):
     source_by_page={p['page_id']:row['closure']['authorization'] for row in scopes.values() for p in row['scope']['excluded']}
     delivery={'contract':'scoped-publication/v1','coverage_complete':False,
         'base_release':(pin(service.vault,service._manifest_path(prior).relative_to(service.vault).as_posix()) if prior else None),
-        'included_page_ids':sorted(included),'excluded':[{'page_id':k,'path':v.get('path',next(p['path'] for p in candidates if p['page_id']==k)),
+        'included_page_ids':sorted(included),'excluded':[{'page_id':k,'path':v.get('path') or next(p['path'] for p in candidates if p['page_id']==k),
             'category':v['category'],'reason':v['reason'],'reopen_condition':v['reopen_condition'],
             'depends_on':v.get('depends_on',[]),'original_scope':source_by_page.get(k)} for k,v in sorted(partition['excluded'].items())],
         'inherited_coverage_gaps':list({r['closure']['authorization']['ref']:r['closure']['authorization'] for r in scopes.values()}.values()),
