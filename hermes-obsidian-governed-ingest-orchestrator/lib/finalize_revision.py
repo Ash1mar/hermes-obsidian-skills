@@ -88,17 +88,17 @@ def prepare_revisions(adapter,binding,value,caller,model_call):
         if any(c['state']=='held' and not (work.get('certificate',{}).get('phase')==p) for p,c in grant['calls'].items()):continue
         try:
             current_view=view_with_control(view,work)
-            if grant['mode']=='rewrite_and_review' and (not work.get('latest_revision') or pinned(adapter.workflow.vault,work['latest_revision'])['grant_id']!=grant['grant_id']):
+            if grant['mode']=='rewrite_and_review' and work.get('authored_grant_id')!=grant['grant_id']:
                 answer,audit=execute_call(adapter,binding,work,'page-write',current_view,caller,model_call)
                 work=copy.deepcopy(load(adapter.workflow.vault,binding['workflow_id'])['works'][work['work_id']])
                 call=work['grants'][-1]['calls']['page-write']
                 with worker_binding(dict(binding)),workflow_write_guard(adapter.workflow.vault,kinds=('build-finalize',),actor=binding['actor']):
                     work['latest_revision']=publish_revision(adapter.workflow.knowledge,binding,work,answer['content'],pin(adapter.workflow.vault,audit),call['request'])
-                    work['state']='revision_authored'
+                    work['state']='revision_authored';work['authored_grant_id']=grant['grant_id']
                     append(adapter.workflow.vault,binding['workflow_id'],work,'revision-'+grant['grant_id'],'revision',{'revision':work['latest_revision']})
-                current_view={**current_view,'content':pinned(adapter.workflow.vault,work['latest_revision'])['content']}
-                record=pinned(adapter.workflow.vault,work['latest_revision'])
-                current_view['content']=_vault_path(adapter.workflow.vault,record['content']['ref']).read_text(encoding='utf-8')
+                if work['latest_revision']:
+                    record=pinned(adapter.workflow.vault,work['latest_revision'])
+                    current_view['content']=_vault_path(adapter.workflow.vault,record['content']['ref']).read_text(encoding='utf-8')
                 changed=True
             result,audit=execute_call(adapter,binding,work,'page-review',current_view,caller,model_call)
             work=copy.deepcopy(load(adapter.workflow.vault,binding['workflow_id'])['works'][work['work_id']])

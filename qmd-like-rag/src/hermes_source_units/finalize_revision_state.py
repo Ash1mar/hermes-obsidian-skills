@@ -32,6 +32,8 @@ def load(vault,wid):
                 or _vault_path(vault,pointer['ref']).stem!=fingerprint(event)):
             fail('Finalize control event identity changed','SOURCE_CHANGED')
         reverse.append(event);pointer=event['previous']
+    if {p.relative_to(vault).as_posix() for p in (d/'events').glob('*.json')}!=seen:
+        fail('Finalize control head does not cover all durable events; stop for recovery','SOURCE_CHANGED')
     events=list(reversed(reverse));works={}
     for n,event in enumerate(events,1):
         work=event['work']
@@ -119,6 +121,8 @@ def publish_revision(service,binding,work,content,audit_pointer,view_pointer):
     page={**original,'authored_sha256':hashlib.sha256(raw).hexdigest()}
     page['revision_id']=fingerprint({k:page[k] for k in ('page_id','subject_id','parent_revision_id','action','path',
         'authored_sha256','support_refs','qa_status','business_status','visibility')})
+    if page['revision_id']==original['revision_id'] and not work.get('latest_revision'):
+        return None  # A native unchanged body consumes its ordinal, not a fabricated content revision.
     previous=work.get('latest_revision')
     predecessor=pinned(service.vault,previous)['page']['revision_id'] if previous else original['revision_id']
     revision_dir=service._run_path(work['run_id']).parent/'finalize-revisions'

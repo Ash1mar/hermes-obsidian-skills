@@ -34,7 +34,7 @@ def ready(vault):
         'actor':'agent','note':'Program acceptance only','acceptance':record(assess(service,run,p))} for p in run['page_revisions']]
     with writer(service) as binding:
         registry=service._registry();snapshot={'binding':binding,'backend':{'runs':[run],'registry':registry}}
-        sp=vault/'_system/reports/partial-basis.json';sp.write_bytes(_json_bytes(snapshot))
+        sp=vault/'_system/reports/partial-basis.json';sp.parent.mkdir(parents=True,exist_ok=True);sp.write_bytes(_json_bytes(snapshot))
         snap=partial.pin(vault,sp.relative_to(vault).as_posix())
         items=[{'logical_work':{'run_id':run['run_id'],'page_id':p['page_id']},'state':'ready' if i==0 else 'deferred'} for i,p in enumerate(run['page_revisions'])]
         manifest={'contract':'build-evidence-disposition/v1','binding':binding,'snapshot':snap,
