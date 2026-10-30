@@ -110,12 +110,12 @@ def recovery_basis(vault,w,inventory):
     # An interrupted close may end before persisting its current input. The
     # recovery kernel separately authenticates this scope and proves that the
     # ended owner consumed no domain ordinal; this pointer alone grants nothing.
-    if failure.get('error_code') in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED'):
+    if failure.get('task_id')==card['task_id'] and failure.get('error_code') in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED'):
         from hermes_source_units.finalize_revision_state import load,work_id
         from hermes_source_units.delivery_scope import authorized
         controls=load(vault,w['workflow_id'])
         pointers=[controls['works'].get(work_id(r['run_id'],'*'),{}).get('delivery_scope')
-            for r in pinned(vault,basis)['backend']['runs']]
+            for r in pinned(vault,basis).get('backend',{}).get('runs',[])]
         if pointers and pointers[0] and all(p==pointers[0] for p in pointers):
             return authorized(__import__('types').SimpleNamespace(vault=vault),pointers[0])['snapshot']
     fail('current ended owner has no exact recoverable review snapshot')
