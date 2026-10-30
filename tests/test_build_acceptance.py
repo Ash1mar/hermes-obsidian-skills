@@ -101,6 +101,8 @@ def execution(tmp_path,monkeypatch,risks):
     submitted=[]
     adapter=NS(worker_begin=lambda *_:None,worker_complete=lambda *_:{'ok':True},
         workflow=NS(vault=tmp_path,knowledge=NS(finalize_batch=lambda req:submitted.append(req) or {'ok':True})))
+    for ref in ('native-review','old-review'):
+        (tmp_path/ref).write_text('{}')
     monkeypatch.setattr(fixed_review,'policy_enabled',lambda *_:True)
     monkeypatch.setattr(fixed_review,'snapshot',lambda *_:copy.deepcopy(value))
     from contextlib import nullcontext

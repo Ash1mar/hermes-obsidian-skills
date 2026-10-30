@@ -90,7 +90,7 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
     value=snapshot(adapter,binding,True) if program else snapshot(adapter,binding)
     ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-inputs/review-{value['input_id']}.json"
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(value))
-    reviews={}; acceptances={}; call_refs=[]; held=[]
+    reviews={}; acceptances={}; call_refs=[]; held=[]; dispositions=[]
     for view in value['views']:
         from fixed_semantic import HermesCaller,prepare_request_projection
         if isinstance(caller,HermesCaller):
@@ -107,10 +107,13 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
                 if not assessment['risk_reasons']:
                     reviews[view['page']]='Program acceptance; no independent page review performed. Citation/Reduce evidence reused; no semantic or publication approval inferred.'
                     acceptances[view['page']]=record(assessment)
+                    from build_disposition import item
+                    dispositions.append(item(adapter,binding,value,view,state='ready'))
                     continue
                 view={**view,'review_scope':{'policy':assessment['policy'],
                     'risk_reasons':assessment['risk_reasons'],
                     'instruction':'Review only the named page risks against its assigned candidates, originals and parent. Do not repeat candidate discovery or review unrelated reading-package coverage.'}}
+        result=None;call_ref=None
         try:
             result,call_ref,_=checked_output(adapter,binding,'page-review',view,caller,model_call,
                 lambda d:check('page-review',None,None,None,d))
@@ -118,19 +121,31 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
         except ContractError as exc:
             from fixed_page_work import LOCAL
             if exc.code not in LOCAL:raise
-            held.append({'page':view['page'],'code':exc.code,'reason':str(exc)});continue
+            held.append({'page':view['page'],'code':exc.code,'reason':str(exc)})
+            if program:
+                from build_disposition import item
+                dispositions.append(item(adapter,binding,value,view,state='deferred',result=result,error=exc,
+                    audit_ref=call_ref or getattr(exc,'semantic_audit_ref',None)))
+            continue
         reviews[view['page']]=result['review_note']; call_refs.append(call_ref)
         if program:acceptances[view['page']]=record(assessment,review_audit_ref=call_ref)
+        if program:
+            from build_disposition import item
+            dispositions.append(item(adapter,binding,value,view,state='ready',result=result,audit_ref=call_ref))
     if program:
-        report=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/reports/build-acceptance-{value['input_id']}.json"
+        from build_disposition import persist
+        disposition_ref=persist(adapter,binding,value,ref,dispositions,reviews,acceptances)
+        report=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/reports/build-acceptance-disposition-v1-{value['input_id']}.json"
         _write_atomic(_vault_path(adapter.workflow.vault,report),_json_bytes({
             'contract':'program-build-acceptance-report/v1','input_id':value['input_id'],
-            'acceptances':acceptances,'held':held,'committed':False,
+            'acceptances':acceptances,'held':held,'committed':False,'disposition_ref':disposition_ref,
             'limitations':'Program acceptance does not prove semantic correctness; QA, coverage, business and release gates remain separate.'}))
     if held:
-        report=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/reports/page-review-held-{value['input_id']}.json"
+        suffix='-disposition-v1' if program else ''
+        report=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/reports/page-review-held{suffix}-{value['input_id']}.json"
         _write_atomic(_vault_path(adapter.workflow.vault,report),_json_bytes({'held':held,'accepted_review_calls':call_refs,'finalized':False}))
-        fail('SEMANTIC_REVIEW_REQUIRED','Independent valid reviews preserved; inspect '+report)
+        fail('SEMANTIC_REVIEW_REQUIRED','Independent valid reviews preserved; inspect '+report+
+            ('; prepared/deferred evidence: '+disposition_ref if program else ''))
     backend=value['backend']; finalizations=[]
     for run in backend['runs']:
         finalizations.append({'run_id':run['run_id'],'actor':backend['actor'],'expected_revision':run['revision'],

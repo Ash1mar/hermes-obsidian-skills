@@ -13,7 +13,7 @@ def contract_hash():
     root=Path(__file__).parent
     return hashlib.sha256(b''.join((root/n).read_bytes() for n in (
         'build_execution_recovery.py','reduce_execution_recovery.py','fixed_review.py',
-        'semantic_output.py','fixed_semantic.py','native_call_state.py'))).hexdigest()
+        'semantic_output.py','fixed_semantic.py','native_call_state.py','build_disposition.py'))).hexdigest()
 
 def recover(adapter,request,*,dry_run=False):
     if request.get('recovery_scope')!=SCOPE or request.get('target_contract_sha256')!=contract_hash():
