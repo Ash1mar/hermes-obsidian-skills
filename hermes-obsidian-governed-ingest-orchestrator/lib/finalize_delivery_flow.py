@@ -80,6 +80,35 @@ def original_flow(vault,request):
         fail('resume belongs to another flow owner','ACCESS_DENIED')
     return saved,root
 
+def recovery_basis(vault,w,inventory):
+    """Use the current ended owner's immutable snapshot, not an old inventory's.
+
+    The inventory may legitimately precede an interrupted review. It is not
+    authority to rebind its snapshot to a different native owner.
+    """
+    from hermes_source_units.partial_finalize import pinned
+    root=vault/f"_system/ledgers/ingest-workflows/{w['workflow_id']}"
+    card=next(c for c in w['kanban']['task_map'] if c['node']=='build-finalize')
+    binding=_load_json(root/f"bindings/{fingerprint(card['idempotency_key'])}.json")
+    basis=pinned(vault,inventory)['snapshot']
+    if pinned(vault,basis)['binding']==binding:return basis
+    found=[]
+    for path in (root/'semantic-inputs').glob('review-*.json'):
+        value=_load_json(path)
+        if value.get('binding')!=binding:continue
+        if value.get('contract')!='fixed-review-input/v1':fail('current owner snapshot contract differs')
+        if fingerprint({k:v for k,v in value.items() if k!='input_id'})!=value.get('input_id'):
+            fail('current owner snapshot identity differs','SOURCE_CHANGED')
+        found.append(pin(vault,path.relative_to(vault).as_posix()))
+    if len(found)==1:return found[0]
+    if found:fail('multiple current-owner snapshots require evidence reconciliation')
+    from build_execution_recovery import GRAPH_INTERRUPTION
+    failure=_load_json(root/f'reports/failed-{fingerprint("build-finalize")[:16]}.json')
+    if (failure.get('task_id')==card['task_id'] and failure.get('error_code')=='SOURCE_CHANGED'
+            and failure.get('reason')==GRAPH_INTERRUPTION):
+        return basis # Existing recovery authenticates the exact pre-execution exception.
+    fail('current ended owner has no exact recoverable review snapshot')
+
 def native_cycle(adapter,flow,root,label,inventory):
     from build_execution_recovery import contract_hash,SCOPE
     from hermes_source_units.evidence_snapshot import ROOT,rpc,flags
@@ -90,7 +119,7 @@ def native_cycle(adapter,flow,root,label,inventory):
     stage='delivery-'+fingerprint({'operation':flow['operation_id'],'cycle':label})[:32]
     card=next(c for c in w['kanban']['task_map'] if c['node']=='build-finalize')
     failure=vault/f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint("build-finalize")[:16]}.json'
-    basis=_load_json(vault/inventory['ref'])['snapshot']
+    basis=recovery_basis(vault,w,inventory)
     request={'workflow_id':wid,'actor':w['actor'],'expected_revision':w['revision'],
         'recovery_scope':SCOPE,'recovery_id':stage,'target_contract_sha256':contract_hash(),
         'reason':'Authorized deterministic delivery flow: '+label+'; no source reset, unchanged semantic retry or pause continuation.',
