@@ -60,11 +60,16 @@ def build_plan(service,request,state,runs,scopes):
     subjects=[s for s in active if s['page_id'] in included]
     navigation,blockers=service._navigation(subjects);redirects=service._redirects(subjects)
     if not included:blockers.append('no-publishable-pages')
+    source_by_page={p['page_id']:row['closure']['authorization'] for row in scopes.values() for p in row['scope']['excluded']}
     delivery={'contract':'scoped-publication/v1','coverage_complete':False,
         'base_release':(pin(service.vault,service._manifest_path(prior).relative_to(service.vault).as_posix()) if prior else None),
-        'included_page_ids':sorted(included),'excluded':[dict(v,page_id=k) for k,v in sorted(partition['excluded'].items())],
-        'inherited_coverage_gaps':[r['scope']['coverage_gaps'] for r in scopes.values()],
-        'raw_source_indexing':False,'dependencies':partition['dependencies']}
+        'included_page_ids':sorted(included),'excluded':[{'page_id':k,'path':v.get('path',next(p['path'] for p in candidates if p['page_id']==k)),
+            'category':v['category'],'reason':v['reason'],'reopen_condition':v['reopen_condition'],
+            'depends_on':v.get('depends_on',[]),'original_scope':source_by_page.get(k)} for k,v in sorted(partition['excluded'].items())],
+        'inherited_coverage_gaps':list({r['closure']['authorization']['ref']:r['closure']['authorization'] for r in scopes.values()}.values()),
+        'coverage_gap_summaries':[{'scope_id':r['scope']['scope_id'],'held_page_count':r['scope']['coverage_gaps'].get('held_page_count',0),
+            'deferred_candidate_occurrences':r['scope']['coverage_gaps'].get('deferred_candidate_occurrences',0)} for r in scopes.values()],
+        'raw_source_indexing':False,'dependencies':[{'page_id':k,'depends_on':v} for k,v in partition['dependencies'].items()]}
     plan={'contract':'hermes-vault-finalize-plan/v1','release_id':str(request['release_id']),
         'revision':1,'state':'draft','actor':str(request['actor']),'expected_state_revision':state['revision'],
         'identity_registry_revision':registry['revision'],'build_runs':[{'run_id':r['run_id'],'revision':r['revision']} for r in runs],
