@@ -45,3 +45,29 @@ def test_fresh_resume_keeps_original_admission_identity(tmp_path,change):
         assert saved['expected_revision']==7 and fresh['expected_revision']==12
     else:
         with pytest.raises(ContractError):flow.original_flow(tmp_path,fresh)
+
+@pytest.mark.parametrize('change',['none','missing','tamper','multiple'])
+def test_recovery_uses_exact_current_owner_snapshot_not_ancestor_inventory(tmp_path,change):
+    from hermes_source_units.partial_finalize import pin
+    from hermes_source_units.validation import fingerprint
+    root=tmp_path/'_system/ledgers/ingest-workflows/workflow'
+    (root/'bindings').mkdir(parents=True);(root/'semantic-inputs').mkdir()
+    binding={'task_id':'current','workflow_id':'workflow','node':'build-finalize'}
+    (root/f'bindings/{fingerprint("key")}.json').write_bytes(_json_bytes(binding))
+    old={'binding':{**binding,'task_id':'ancestor'}}
+    (root/'old.json').write_bytes(_json_bytes(old))
+    (root/'inventory.json').write_bytes(_json_bytes({'snapshot':pin(tmp_path,(root/'old.json').relative_to(tmp_path).as_posix())}))
+    snapshot={'contract':'fixed-review-input/v1','binding':binding,'views':[]}
+    snapshot['input_id']=fingerprint(snapshot)
+    if change=='tamper':snapshot['views']=[{'changed':True}]
+    if change!='missing':(root/'semantic-inputs/review-current.json').write_bytes(_json_bytes(snapshot))
+    if change=='multiple':
+        other={**snapshot,'views':[{'different':True}]};other.pop('input_id');other['input_id']=fingerprint(other)
+        (root/'semantic-inputs/review-other.json').write_bytes(_json_bytes(other))
+    (root/'reports').mkdir()
+    (root/f'reports/failed-{fingerprint("build-finalize")[:16]}.json').write_bytes(_json_bytes({'error_code':'WORKFLOW_STOPPED','task_id':'current'}))
+    w={'workflow_id':'workflow','kanban':{'task_map':[{'node':'build-finalize','idempotency_key':'key','task_id':'current'}]}}
+    inv=pin(tmp_path,(root/'inventory.json').relative_to(tmp_path).as_posix())
+    if change=='none':assert flow.recovery_basis(tmp_path,w,inv)['ref'].endswith('review-current.json')
+    else:
+        with pytest.raises(ContractError):flow.recovery_basis(tmp_path,w,inv)
