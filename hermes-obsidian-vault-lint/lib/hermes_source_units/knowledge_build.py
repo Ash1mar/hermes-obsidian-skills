@@ -1309,6 +1309,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             from .reduce_coverage import check_run
             check_run(self,run)
             run_details.append({"run_id": run_id, "state": run["state"], "revision": run["revision"]})
+            from .delivery_scope import active as delivery_active,completed as delivery_completed
+            if delivery_active(self,run):
+                run_details[-1].update(delivery_state='closed_with_deferrals' if delivery_completed(self,run) else 'pending',coverage_complete=False)
             for snapshot in run["tasks"]:
                 covered.setdefault(snapshot["task_id"], []).append(run_id)
         duplicate_task_runs = sorted(task_id for task_id, values in covered.items() if len(values) > 1)
@@ -1354,7 +1357,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 next_actions.append("batch-validate")
             if any(item["state"] == "draft" for item in run_details):
                 next_actions.append("human-checkpoint-1-then-batch-finalize")
-            if run_details and all(item["state"] == "completed" for item in run_details):
+            if run_details and all(item['state']=='completed' or item.get('delivery_state')=='closed_with_deferrals' for item in run_details):
                 next_actions.append("vault-finalize-plan")
         compact_batch = {key: batch[key] for key in (
             "batch_id", "actor", "state", "revision", "document_registry_revision",
@@ -2492,6 +2495,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         path = self._run_path(run_id)
         run = _load_json(path)
         validate_record("build_run", run)
+        from .delivery_scope import guard_selection
+        guard_selection(self,run,{r['page_id'] for r in request.get('reviews',[])})
         from .reduce_coverage import check_run
         check_run(self,run)
         if run["state"] == "completed":

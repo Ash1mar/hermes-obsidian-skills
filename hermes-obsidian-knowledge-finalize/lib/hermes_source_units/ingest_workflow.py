@@ -473,12 +473,14 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                     or plan["state"] != "draft" or plan["blockers"]):
                 _fail("STALE_INPUT", "release plan identity, actor, state or blockers changed")
             batch = self.knowledge._batch(value["batch_id"])
+            from .delivery_scope import batch_complete,release_closures
+            scopes=release_closures(self.knowledge,plan.get('delivery_scopes',[]),batch['run_ids'])
             if ({item["run_id"] for item in plan["build_runs"]} != set(batch["run_ids"])
-                    or not batch["run_ids"] or batch["state"] != "completed"):
+                    or not batch['run_ids'] or not batch_complete(self.knowledge,batch)):
                 _fail("INCOMPLETE_COVERAGE", "release plan must contain all completed batch runs")
             for item in plan["build_runs"]:
                 checked = self.knowledge.validate_run(item["run_id"])
-                if checked["state"] != "completed" or checked["revision"] != item["revision"]:
+                if (checked['state']!='completed' and item['run_id'] not in scopes) or checked['revision']!=item['revision']:
                     _fail("STALE_INPUT", "release plan run revision changed")
             if value.get("release_id") is not None:
                 if (value["release_id"] == release_id and value["release_plan_id"] == plan["plan_id"]):
@@ -757,6 +759,7 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                         "release_id": plan["release_id"], "actor": plan["actor"],
                         "expected_state_revision": plan["expected_state_revision"],
                         "build_run_ids": [item["run_id"] for item in plan["build_runs"]],
+                        **({'delivery_scopes':plan['delivery_scopes']} if plan.get('delivery_scopes') else {}),
                         "source_changes": plan["source_changes"], "reason": plan["reason"]})
                     if rebuilt != plan:
                         _fail("STALE_INPUT", "release plan changed after validation")

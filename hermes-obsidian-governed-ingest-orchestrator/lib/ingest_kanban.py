@@ -567,9 +567,8 @@ def _domain_completed(service,workflow,node):
                 _fail("SOURCE_CHANGED", "checkpoint 2 lint evidence changed")
         return checkpoint["state"] == "approved"
     if node.kind == "build-finalize":
-        status = service.knowledge.batch_status(workflow["batch_id"], compact=True)
-        return bool(status["runs"]) and all(item["state"] == "completed"
-                                                for item in status["runs"])
+        from hermes_source_units.delivery_scope import batch_complete
+        return batch_complete(service.knowledge,service.knowledge._batch(workflow['batch_id']))
     if node.kind == "vault-finalize-plan":
         return bool(workflow.get("release_id") and workflow.get("release_plan_id"))
     stages = ("created", "source_preparing", "planning", "analyzing", "reducing",
@@ -2130,8 +2129,8 @@ class IngestKanbanAdapter:
             updated = self._approve_automatic(updated, "checkpoint_1", validation)
         elif kind == "build-finalize":
             batch = self.workflow.knowledge._batch(batch_id)
-            if batch["state"] != "completed" or not domain_completed(self.workflow, workflow, node):
-                _fail("INCOMPLETE_COVERAGE", "all build runs must be completed")
+            if not domain_completed(self.workflow, workflow, node):
+                _fail("INCOMPLETE_COVERAGE", "all build runs require full completion or a verified delivery closure")
         elif kind == "vault-finalize-plan":
             updated = self.workflow.bind_release_plan(self._mutation(
                 workflow, release_id=str(request["release_id"]),

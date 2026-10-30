@@ -133,3 +133,58 @@ preparation creates only the revision container. The prior empty preparation
 artifact may be removed only while stopped, under its kernel lock and an existing
 hash-linked preparation authorization; exact recovery records this proof and
 grants zero domain calls. Other lock failures are rejected.
+
+## Automatic delivery with exclusions
+
+An explicit `run-delivery` request uses `manage_finalize_delivery.py` to run a
+deterministic two-cycle operator flow: program repair admission if needed, native
+repair, automatic deferral/dependency exclusion, native scoped closure, and the
+durable `build_finalize` pause. It requires the cancelled Build stage, its actor
+and revision, accepted upstream evidence, a stable operation ID, and an ordinary
+available native Gateway. It never continues a pause or publishes a release.
+
+```bash
+python3 "<skill-dir>/scripts/manage_finalize_delivery.py" --vault "<vault>" --request "<request.json>" --dry-run
+python3 "<skill-dir>/scripts/manage_finalize_delivery.py" --vault "<vault>" --request "<request.json>"
+```
+
+The program finds the current authenticated inventory itself. No document names,
+material whitelist, onsite per-page judgment or LLM triage selects repair work.
+Only `READING_WINDOW_OVERSIZE` with zero consumed attempts is eligible for the
+general representation repair. It verifies exact expansion of all evidence and
+measures the COMPLETE call including schema, review risks, controls and images
+against the unchanged 30000 limit. `lossless-page-evidence/v2` additionally pools
+identical source evidence and encodes candidates as column/row tables. Existing
+consumed v1 wires remain exact. A verified complete fit may authorize one native
+review-only call per logical work through the existing cumulative controls.
+Any consumed/held/unknown cycle prevents another grant for the same material.
+Unfitting inputs remain input-limit exclusions, without truncation or calls.
+
+Automatic disposition keeps revision opinions pending attribution, explicit
+refusals distinct, and execution uncertainty independent. Quarantine records the
+ended original native owners, pinned journals and unchanged uncertain ordinals.
+Late results cannot enter the selected delivery through another task/operation.
+Reopening needs verified new evidence and a new scope; old releases remain bound
+to their original scope and exclusions. Confirmed common evidence/mapping faults
+still stop affected closure rather than becoming semantic exclusions.
+
+`finalize-delivery-scope/v1` authorizes a complete included/excluded page partition
+and transitive page dependencies, retaining upstream limited-scope and source
+coverage gaps. Only the bound native writer creates
+`finalize-delivery-closure/v1`. Its outcome is `closed_with_deferrals`, with
+`delivery_complete=true`, `coverage_complete=false`, and source tasks unfinished.
+The original run, drafts, response journals and canonical partial receipts remain
+unchanged. Repeated closure reuses the identical artifact. Batch readiness,
+reconciliation and pause evidence recognize this explicit closure without
+claiming whole-source coverage.
+
+Scoped Vault Finalize requests bind the exact `delivery_scopes` closure pointers.
+Plans/releases carry included page IDs, exclusions, dependency exclusions and
+inherited gaps. Only pages satisfying their own usable QA, approved business,
+published visibility, current support and source governance can enter publication
+or its index/navigation. Other pages remain explicit publication exclusions;
+an empty eligible set blocks apply. Scoped page releases do not expand into raw
+whole-SourceUnitSet indexing. An unclosed selected run still blocks; an unrelated
+held run cannot block an explicitly selected, independently valid release scope.
+Checkpoint 2, pause continuation, release apply and Provider synchronization keep
+their separate existing authorization and validation.

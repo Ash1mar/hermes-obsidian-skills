@@ -311,6 +311,8 @@ def equivalent_snapshot(service, previous, current):
                 view=next(v for v in old['views'] if v['page']==alias)
                 view['finalize_revision']={'instruction':'Inspect only this explicitly reopened page issue, preserve assigned evidence/identity/coverage and retain unresolved limits. '+grant['basis']['reason'],
                     'basis_kind':grant['basis']['kind'],'predecessor_revision_id':work['original_revision_id']}
+                if grant.get('evidence_encoding'):view['evidence_encoding']=grant['evidence_encoding']
+                if grant.get('review_scope'):view['review_scope']=grant['review_scope']
     for run in previous['backend']['runs']:
         state = progress(service, run)
         if not state['entries']:continue
@@ -322,11 +324,13 @@ def equivalent_snapshot(service, previous, current):
     return old == new
 
 
-def assert_release_ready(service):
-    """A direct release API cannot silently bypass an unfinished partial run."""
+def assert_release_ready(service,run_ids=None,scopes=None):
+    """Selected runs need full completion or their exact authorized closure."""
     for path in (service.vault/'_system/knowledge-builds').glob('*/partial-finalize/*.intent.json'):
         run = _load_json(path.parent.parent/'manifest.json')
+        if run_ids is not None and run['run_id'] not in run_ids:continue
         if run['state'] != 'completed':
+            if scopes and run['run_id'] in scopes:continue
             state = progress(service, run)
             if state['entries']:
                 fail('unfinished partial Finalize retains page/source coverage gaps', 'INCOMPLETE_COVERAGE')

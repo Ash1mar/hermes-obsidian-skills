@@ -89,6 +89,8 @@ def apply(adapter,request,*,dry_run=False):
         if action in ('enable-partial','prepare-storage'):
             from hermes_source_units.partial_finalize import prepare_storage
             prior=state['works'].get(work_id(run_id,'*'))
+            if prior and prior.get('delivery_scope'):
+                fail('an authorized delivery scope cannot be replaced by storage/partial enablement')
             if action=='prepare-storage':
                 if not prior or prior['state']!='enabled':fail('storage preparation requires the existing partial authorization')
             work={'work_id':work_id(run_id,'*'),'run_id':run_id,'page_id':'*','state':'enabled',
@@ -148,8 +150,16 @@ def apply(adapter,request,*,dry_run=False):
                     mode=request.get('mode','rewrite_and_review')
                     if mode not in ('review_only','rewrite_and_review'):fail('unsupported local revision mode')
                     grant={'grant_id':fingerprint({'work':key,'material':material,'basis_kind':basis['kind']}),
+                        'authorized_control_revision':state['revision']+1,
                         'material_sha256':material,'basis':basis,'mode':mode,
                         'limits':{'page-write':int(mode=='rewrite_and_review'),'page-review':1},'calls':{}}
+                    if request.get('evidence_encoding'):
+                        if request['evidence_encoding']!='lossless-page-evidence/v2' or basis['kind']!='verified_program_fix':
+                            fail('encoding change requires the verified lossless program fix')
+                        grant['evidence_encoding']=request['evidence_encoding']
+                        grant['review_scope']={'policy':view.get('review_scope',{}).get('policy','explicit-page-risks/v1'),
+                            'risk_reasons':item['evidence']['assessment']['risk_reasons'],
+                            'instruction':'Review only assigned page risks against all supplied originals; retain every necessary condition, citation and QA limit.'}
                     work['grants'].append(grant);work['state']='revision_authorized'
             else:fail('supported actions: enable-partial, defer, hold, reopen, revise')
         result={'ok':True,'action':action,'work':work,'evidence_checks':checks,'dry_run':dry_run,

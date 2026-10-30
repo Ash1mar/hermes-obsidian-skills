@@ -69,7 +69,8 @@ class WorkflowPauseMixin:
                 ready = stage == boundary and value["checkpoints"][boundary]["state"] == "approved"
             elif boundary == "build_finalize" and stage == "build_finalizing":
                 batch = self.knowledge._batch(value["batch_id"])
-                ready = batch["state"] == "completed" and bool(batch["run_ids"])
+                from .delivery_scope import batch_complete
+                ready = batch_complete(self.knowledge,batch)
             elif boundary == "release_sync":
                 ready = (stage == "validating" or (stage == "indexing"
                          and value["scope"].get("provider", "skip") == "skip"))
@@ -148,6 +149,10 @@ class WorkflowPauseMixin:
         for run_id in batch["run_ids"]:
             self.knowledge.validate_run(run_id)
             tree(self.knowledge._run_path(run_id).parent)
+        from .delivery_scope import closure_refs
+        for pointer in (closure_refs(self.knowledge,batch['run_ids']) if boundary in ('build_finalize','checkpoint_2','release_sync') else []):
+            closure=_load_json(_vault_path(self.vault,pointer['ref']))
+            pin(pointer['ref']);pin(closure['authorization']['ref'])
         from .reduce_coverage import active
         coverage=active(self.vault,value)
         if coverage:

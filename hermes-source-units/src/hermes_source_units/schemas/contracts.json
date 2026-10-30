@@ -2,6 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.hermes.invalid/source-units/0.4.0/contracts.json",
   "$defs": {
+    "delivery_scope_pointer": {"type":"object","additionalProperties":false,"required":["ref","sha256"],"properties":{"ref":{"type":"string","format":"vault-relative-path"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}},
     "span": {
       "type": "object",
       "properties": {
@@ -2090,6 +2091,8 @@
     "vault_finalize_plan": {
       "type": "object",
       "properties": {
+        "delivery_scopes": {"type":"array","minItems":1,"uniqueItems":true,"items":{"$ref":"#/$defs/delivery_scope_pointer"}},
+        "delivery": {"type":"object","additionalProperties":true},
         "contract": {"const": "hermes-vault-finalize-plan/v1"},
         "plan_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "release_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
@@ -2136,6 +2139,8 @@
     "knowledge_release": {
       "type": "object",
       "properties": {
+        "delivery_scopes": {"type":"array","minItems":1,"uniqueItems":true,"items":{"$ref":"#/$defs/delivery_scope_pointer"}},
+        "delivery": {"type":"object","additionalProperties":true},
         "contract": {"const": "hermes-knowledge-release/v1"},
         "release_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
         "plan_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},

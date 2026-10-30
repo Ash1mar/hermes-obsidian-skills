@@ -201,3 +201,15 @@ require existing completion proof. Stable page identities and cumulative phase
 reservations prevent task/operation/cosmetic allowance resets. Local native
 revisions retain predecessors. Partial commit never completes required coverage,
 releases the Build pause or authorizes release/Provider synchronization.
+
+For an explicit user request to exclude deferred problems and finish the valid
+delivery scope, use the automatic `run-delivery` contract in
+`references/build-disposition.md` with `python3 "<skill-dir>/scripts/manage_finalize_delivery.py"`.
+The program selects zero-attempt oversize representation repairs by exact
+round-trip and complete-request budget checks, assigns one cumulative review
+allowance, classifies remaining deferrals without asserting semantic causes,
+quarantines stopped uncertain calls and derives dependency exclusions. Native
+workers perform any authorized review and create scoped closure. No per-document
+operator or LLM judgment drives these controls. Keep original coverage incomplete,
+stop at the Build pause, and bind any later publication to the exact closure and
+each page's separate publication conditions.

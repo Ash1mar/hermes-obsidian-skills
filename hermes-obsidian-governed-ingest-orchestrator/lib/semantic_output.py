@@ -286,6 +286,9 @@ def read_saved_output(adapter,binding,phase,view,validator,prove,expected_ref):
 
 
 def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None,state=None,attempt_limit=2):
+    if phase in ('page-review','page-write'):
+        from hermes_source_units.delivery_scope import guard_page
+        guard_page(adapter.workflow.knowledge,binding['workflow_id'],view.get('path'))
     from fixed_semantic import prepare_request_projection,decode_semantic_response,HermesCaller,attach_receipt
     from fixed_semantic_media import image_catalog,select_images
     from fixed_semantic_recovery import native_reply

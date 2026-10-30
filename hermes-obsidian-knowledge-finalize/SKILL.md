@@ -1,6 +1,6 @@
 ---
 name: hermes-obsidian-knowledge-finalize
-description: Incrementally finalize completed Hermes knowledge builds into an auditable Vault release and explicitly project that committed release to the retrieval Provider. Use after Build Finalize to analyze changed or withdrawn SourceUnit contributions, validate aliases and wikilinks, create safe redirects, publish navigation and eligibility, validate/recover a release, or synchronize its P5 index generation. Does not parse sources or approve business versions.
+description: Incrementally finalize completed Hermes knowledge builds or explicitly closed delivery scopes into an auditable Vault release and explicitly project that committed release to the retrieval Provider. Use after Build Finalize to analyze changed or withdrawn SourceUnit contributions, validate aliases and wikilinks, create safe redirects, publish navigation and eligibility, validate/recover a release, or synchronize its P5 index generation. Does not parse sources or approve business versions.
 ---
 
 # Hermes Obsidian Knowledge Finalize

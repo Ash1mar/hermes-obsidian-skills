@@ -74,12 +74,12 @@ class FileVaultFinalizeService:
             result[resource_id] = pointer
         return result
 
-    def _runs(self, run_ids: Iterable[str]) -> list[dict[str, Any]]:
+    def _runs(self, run_ids: Iterable[str],scopes=None) -> list[dict[str, Any]]:
         runs = []
         for run_id in _unique_strings(run_ids):
             self.build.validate_run(run_id)
             run = _load_json(_vault_path(self.vault, f"{BUILD_ROOT}/{run_id}/manifest.json"))
-            if run.get("state") != "completed":
+            if run.get("state") != "completed" and run_id not in (scopes or {}):
                 _fail("INVALID_STATE", f"build is not completed: {run_id}")
             runs.append(run)
         return runs
@@ -226,7 +226,6 @@ class FileVaultFinalizeService:
 
     def _build_plan(self, request: Mapping[str, Any]) -> dict[str, Any]:
         from .partial_finalize import assert_release_ready
-        assert_release_ready(self.build)
         release_id, actor = str(request["release_id"]), str(request["actor"])
         state = self._state()
         if int(request["expected_state_revision"]) != state["revision"]:
@@ -235,7 +234,13 @@ class FileVaultFinalizeService:
         if not run_ids:
             run_ids = [path.parent.name for path in sorted(_vault_path(self.vault, BUILD_ROOT).glob("*/manifest.json"))
                        if path.parent.name not in state["applied_build_runs"]]
-        runs = self._runs(run_ids)
+        from .delivery_scope import release_closures
+        scopes=release_closures(self.build,request.get('delivery_scopes',[]),run_ids)
+        assert_release_ready(self.build,run_ids,scopes)
+        runs = self._runs(run_ids,scopes)
+        if scopes:
+            from .scoped_release import build_plan
+            return build_plan(self,request,state,runs,scopes)
         current = self._current_sets()
         changes = self._source_changes(request.get("source_changes", []), current)
         change_map = {item["resource_id"]: item for item in changes}
@@ -322,6 +327,9 @@ class FileVaultFinalizeService:
             return {"ok": True, "committed": False, "release": manifest}
         plan = _load_json(self._plan_path(release_id))
         validate_record("vault_finalize_plan", plan)
+        if plan.get('delivery_scopes'):
+            from .delivery_scope import release_closures
+            release_closures(self.build,plan['delivery_scopes'],[r['run_id'] for r in plan['build_runs']])
         if plan["actor"] != actor or plan["plan_id"] != request["plan_id"]:
             _fail("ACCESS_DENIED", "apply must use the owning actor and exact plan")
         if int(request["expected_revision"]) not in (plan["revision"], plan["revision"] - 1):
@@ -338,7 +346,8 @@ class FileVaultFinalizeService:
             rebuilt = self._build_plan({"release_id": release_id, "actor": actor,
                                         "expected_state_revision": plan["expected_state_revision"],
                                         "build_run_ids": [item["run_id"] for item in plan["build_runs"]],
-                                        "source_changes": plan["source_changes"], "reason": plan["reason"]})
+                                        "source_changes": plan["source_changes"], "reason": plan["reason"],
+                                        **({'delivery_scopes':plan['delivery_scopes']} if plan.get('delivery_scopes') else {})})
             if rebuilt != plan:
                 _fail("SOURCE_CHANGED", "Vault changed after Finalize plan")
         elif not recovering:
@@ -376,6 +385,8 @@ class FileVaultFinalizeService:
                    "navigation_sha256": _sha(navigation_bytes),
                    "index_eligibility": plan["index_eligibility"],
                    "blockers": plan["blockers"], "reason": plan["reason"]}
+        if plan.get('delivery_scopes'):
+            release.update(delivery_scopes=plan['delivery_scopes'],delivery=plan['delivery'])
         validate_record("knowledge_release", release)
         _write_atomic(_vault_path(self.vault, RELEASE_STATE_PATH), _json_bytes(new_state))
         _write_atomic(self._plan_path(release_id), _json_bytes(applied_plan))
@@ -396,8 +407,13 @@ class FileVaultFinalizeService:
             _fail("SOURCE_CHANGED", "versioned navigation projection changed")
         for run in release["build_runs"]:
             actual = _load_json(_vault_path(self.vault, f"{BUILD_ROOT}/{run['run_id']}/manifest.json"))
-            if actual.get("revision") != run["revision"] or actual.get("state") != "completed":
+            from .delivery_scope import release_closures
+            scopes=release_closures(self.build,release.get('delivery_scopes',[]),[r['run_id'] for r in release['build_runs']],historical=True)
+            if actual.get("revision") != run["revision"] or (actual.get("state") != "completed" and run['run_id'] not in scopes):
                 _fail("SOURCE_CHANGED", f"pinned build changed: {run['run_id']}")
+        if release.get('delivery_scopes'):
+            from .scoped_release import validate_manifest
+            validate_manifest(self,plan,release)
         state = self._state()
         if release_id not in state["releases"]:
             _fail("UNRESOLVED_REFERENCE", "release is absent from release state")
