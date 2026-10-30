@@ -47,6 +47,25 @@ def enabled(service,binding,run):
     permission=load(service.vault,binding['workflow_id'])['works'].get(work_id(run['run_id'],'*'))
     return bool(permission and permission['state']=='enabled' and permission['run_sha256']==fingerprint(_load_json(service._run_path(run['run_id']))))
 
+def prepare_storage(service,workflow):
+    """Create mechanical output containers before sealing absent Pass parents.
+
+    A sealed parent must keep rejecting new children. Existing unsealed output
+    containers allow ordinary writes without weakening that directory protection.
+    No page body, revision, source task or acceptance record is created here.
+    """
+    import os
+    if (os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT')
+            or workflow['state']!='cancelled' or workflow['current_stage']!='build_finalizing'):
+        fail('Finalize storage preparation requires the stopped operator','ACCESS_DENIED')
+    outputs=[_vault_path(service.vault,'_system/knowledge-builds/.finalize.lock'),
+             _vault_path(service.vault,'_system/knowledge-builds/page-revisions')]
+    if any(p.is_symlink() for p in outputs):fail('Finalize output container is a symlink','ACCESS_DENIED')
+    outputs[0].parent.mkdir(parents=True,exist_ok=True)
+    with outputs[0].open('a',encoding='utf-8'):pass
+    outputs[1].mkdir(exist_ok=True)
+    return [p.relative_to(service.vault).as_posix() for p in outputs]
+
 
 def chain(service, run):
     original_run=_load_json(service._run_path(run['run_id']))

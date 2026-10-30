@@ -40,6 +40,39 @@ def graph_interruption(adapter,binding,failure,runs):
         'ended_run_ids':[str(r['id']) for r in runs], 'native_outcome':'scheduled_cancellation',
         'new_domain_calls_granted':0,'original_review_history_preserved':True}
 
+def storage_interruption(adapter,binding,failure,entry):
+    """Recover only a positively recorded mechanical-container seal conflict."""
+    if (failure.get('error_code')!='EVIDENCE_SNAPSHOT_REVOKED'
+            or failure.get('reason')!='EVIDENCE_SNAPSHOT_REVOKED at $: protected write requested revocation; stop affected consumers before controlled retry'
+            or entry.get('retry_unknowns')):
+        fail('only the exact protected-output-container interruption can recover without new calls')
+    from hermes_source_units.evidence_snapshot import ROOT,flags
+    from hermes_source_units.partial_finalize import pinned,pin
+    from hermes_source_units.finalize_revision_state import load,work_id
+    vault=adapter.workflow.vault;w=adapter.workflow.status(binding['workflow_id'])
+    state_ref=f"{ROOT}/{binding['workflow_id']}/state.json"
+    state=_load_json(vault/state_ref);manifest_ref=f"{ROOT}/{binding['workflow_id']}/manifest.json"
+    manifest=pinned(vault,{'ref':manifest_ref,'sha256':state['manifest_sha256']})
+    if (state.get('state')!='revoked' or state.get('workflow_id')!=binding['workflow_id']
+            or state.get('generation')!=manifest.get('generation')):fail('old protector interruption evidence differs')
+    prefix='controlled write requested: ';reason=state.get('reason','')
+    if not reason.startswith(prefix):fail('revocation was not caused by a mechanical output-container write')
+    path=Path(reason[len(prefix):]);allowed=[vault/'_system/knowledge-builds/.finalize.lock',vault/'_system/knowledge-builds/page-revisions']
+    if path not in allowed:fail('revocation affected source/evidence, not an authorized mechanical output container')
+    for name,previous in manifest['original_flags'].items():
+        if flags(Path(name))!=previous:fail('old snapshot flags have not been restored')
+    controls=load(vault,binding['workflow_id'])
+    snapshot=_load_json(_vault_path(vault,entry['snapshot_ref']))
+    for run in snapshot['backend']['runs']:
+        permission=controls['works'].get(work_id(run['run_id'],'*'),{})
+        if not {p.relative_to(vault).as_posix() for p in allowed}.issubset(permission.get('storage_prepared',[])):
+            fail('mechanical output layout has not been prepared by the stopped operator')
+    if not allowed[0].is_file() or not allowed[1].is_dir():fail('mechanical output layout is not present')
+    return {'contract':'build-output-storage-interruption/v1','protector_state':pin(vault,state_ref),
+        'protector_manifest':pin(vault,manifest_ref),'control_head':controls['head'],
+        'corrected_paths':[p.relative_to(vault).as_posix() for p in allowed],
+        'new_domain_calls_granted':0,'source_protection_unchanged':True}
+
 def contract_hash():
     root=Path(__file__).parent
     return hashlib.sha256(b''.join((root/n).read_bytes() for n in (

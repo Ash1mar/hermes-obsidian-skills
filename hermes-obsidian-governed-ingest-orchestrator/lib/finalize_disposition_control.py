@@ -86,10 +86,15 @@ def apply(adapter,request,*,dry_run=False):
         action=request.get('action');run_id=request.get('run_id')
         run=next((r for r in snapshot['backend']['runs'] if r['run_id']==run_id),None)
         if run is None:fail('selected run is outside current Build')
-        if action=='enable-partial':
+        if action in ('enable-partial','prepare-storage'):
+            from hermes_source_units.partial_finalize import prepare_storage
+            if action=='prepare-storage':
+                prior=state['works'].get(work_id(run_id,'*'))
+                if not prior or prior['state']!='enabled':fail('storage preparation requires the existing partial authorization')
             work={'work_id':work_id(run_id,'*'),'run_id':run_id,'page_id':'*','state':'enabled',
                 'run_sha256':fingerprint(_load_json(service.knowledge._run_path(run_id))),
                 'basis_inventory':request['inventory'],'checks_sha256':fingerprint(checks),'grants':[]}
+            if not dry_run:work['storage_prepared']=prepare_storage(service.knowledge,w)
         else:
             item=next((i for i in inventory['items'] if i['issue_id']==request.get('issue_id') and i['logical_work']['run_id']==run_id),None)
             if item is None:fail('exact original Finalize issue required')

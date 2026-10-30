@@ -73,7 +73,10 @@ python3 "<skill-dir>/scripts/manage_finalize_disposition.py" --vault "<vault>" -
 ```
 
 - `enable-partial`: authorize ready-page submission for exactly the checked
-  original run. Installing code alone enables no workflow.
+  original run and prepare the mechanical Finalize lock/revision containers
+  before sealing. Installing code alone enables no workflow. `prepare-storage`
+  adds these containers to an already enabled stopped run; it creates no domain
+  output and grants no calls. Sealed absent Pass parents remain protected.
 - `defer`: bind `issue_id` and category `source_conversion`, `model_content`,
   `review_dispute` or `unresolved`. Preserve original opinions and missing coverage.
   Unknown execution cannot be content-deferred; use `hold` for execution issues.
@@ -116,3 +119,9 @@ force. Direct Vault release planning checks unfinished partial commits, so omitt
 a run ID cannot bypass those gaps. A partial run cannot complete `build-finalize`
 or release a pause. Stop at the authorized observation deadline with a stable
 cancel identity and verify native consumers, readers and leases are drained.
+
+A protected mechanical-output write can recover through `build-native/v1` only
+with the old revoked protector's exact reason/generation/manifest, restored inode
+flags, a stopped-operator prepared output layout and unchanged complete domain
+evidence. Other revocations/source writes are rejected. No protected-directory
+exemption, capability expansion, source rebind or new domain call is granted.
