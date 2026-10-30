@@ -180,10 +180,11 @@ claiming whole-source coverage.
 
 Scoped Vault Finalize requests bind the exact `delivery_scopes` closure pointers.
 Plans/releases carry included page IDs, exclusions, dependency exclusions and
-inherited gaps. Only pages satisfying their own usable QA, approved business,
-published visibility, current support and source governance can enter publication
-or its index/navigation. Other pages remain explicit publication exclusions;
-an empty eligible set blocks apply. Scoped page releases do not expand into raw
+inherited gaps. P4 audit releases retain the accepted Build pages and their exact
+QA, business and visibility states. Only pages satisfying usable QA, approved
+business and published visibility are index-eligible. An empty delivery set blocks
+apply; zero index eligibility does not add a new audit-release blocker. No business
+approval is fabricated. Scoped page releases do not expand into raw
 whole-SourceUnitSet indexing. An unclosed selected run still blocks; an unrelated
 held run cannot block an explicitly selected, independently valid release scope.
 Checkpoint 2, pause continuation, release apply and Provider synchronization keep

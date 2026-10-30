@@ -13,18 +13,6 @@ from hermes_source_units.delivery_scope import CONTRACT,close,verify,guard_page,
 @pytest.fixture
 def scoped(ready,vault,request):
     k,run,reviews,req=ready
-    if getattr(request,'param',False):
-        # Isolated fixture representing a page whose own governance review has
-        # already completed. Production scope closure never changes these flags.
-        from hermes_source_units.build_acceptance import assess,record
-        page=run['page_revisions'][0];page.update(business_status='approved',visibility='published')
-        page['revision_id']=fingerprint({key:page[key] for key in ('page_id','subject_id','parent_revision_id','action','path','authored_sha256','support_refs','qa_status','business_status','visibility')})
-        run['decisions'][0]['revision_id']=page['revision_id'];k._run_path(run['run_id']).write_bytes(_json_bytes(run))
-        reviews[0]['acceptance']=record(assess(k,run,page));req['reviews']=[reviews[0]]
-        sp=vault/'_system/reports/partial-basis.json';saved=json.loads(sp.read_text());saved['backend']['runs']=[run];sp.write_bytes(_json_bytes(saved))
-        mp=vault/req['partial_manifest']['ref'];saved=json.loads(mp.read_text());saved['snapshot']=pin(vault,sp.relative_to(vault).as_posix());saved['prepared_reviews']=[{'run_id':run['run_id'],**reviews[0]}];mp.write_bytes(_json_bytes(saved));req['partial_manifest']=pin(vault,mp.relative_to(vault).as_posix())
-        state=load(vault,'fixture');work=copy.deepcopy(state['works'][work_id(run['run_id'],'*')]);work['run_sha256']=fingerprint(run)
-        append(vault,'fixture',work,'fixture-governance','enable-partial',{})
     with writer(k) as binding:k.finalize(req)
     pointer=req['partial_manifest'];original=json.loads((vault/pointer['ref']).read_text())
     basis={'binding':binding,'backend':{'runs':[run],'registry':k._registry(),'pages':{}},'views':[]}
@@ -52,21 +40,21 @@ def test_native_scope_closure_is_idempotent_and_never_completes_source_tasks(sco
     with pytest.raises(ContractError,match='DELIVERY_SCOPE_EXCLUDED'):guard_page(k,'fixture',run['page_revisions'][1]['path'])
     with pytest.raises(ContractError):close(k,b,basis)
 
-def test_scoped_release_preserves_own_conditions_and_blocks_empty_publication(scoped,vault):
+def test_scoped_audit_release_preserves_separate_business_index_conditions(scoped,vault):
     k,run,b,basis,pointer,req=scoped
     with writer(k):close(k,b,basis)
     service=FileVaultFinalizeService(vault)
     request={'release_id':'delivery','actor':'agent','expected_state_revision':0,'build_run_ids':[run['run_id']],
         'delivery_scopes':closure_refs(k,[run['run_id']]),'reason':'scoped delivery'}
     plan=service.plan(request)['plan']
-    assert plan['subjects']==[] and plan['index_eligibility']==[] and 'no-publishable-pages' in plan['blockers']
-    assert {p['page_id'] for p in plan['delivery']['excluded']}=={p['page_id'] for p in run['page_revisions']}
+    assert len(plan['subjects'])==1 and len(plan['index_eligibility'])==1 and not plan['blockers']
+    assert plan['index_eligibility'][0]['eligible'] is False
+    assert 'business-unassessed' in plan['index_eligibility'][0]['reasons'] and 'visibility-draft' in plan['index_eligibility'][0]['reasons']
+    assert {p['page_id'] for p in plan['delivery']['excluded']}=={run['page_revisions'][1]['page_id']}
     assert plan['delivery']['raw_source_indexing'] is False
-    with pytest.raises(ContractError):service.apply({'release_id':'delivery','actor':'agent','plan_id':plan['plan_id'],'expected_revision':1})
     with pytest.raises(ContractError):service.plan({**request,'release_id':'unbound','delivery_scopes':[]})
 
-@pytest.mark.parametrize('scoped',[True],indirect=True)
-def test_eligible_scoped_release_publishes_only_selected_pages_and_replays_once(scoped,vault):
+def test_scoped_audit_release_applies_exact_scope_once_without_business_promotion(scoped,vault):
     k,run,b,basis,pointer,req=scoped
     with writer(k):close(k,b,basis)
     service=FileVaultFinalizeService(vault)
@@ -82,7 +70,7 @@ def test_eligible_scoped_release_publishes_only_selected_pages_and_replays_once(
     sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'qmd-like-rag/src'))
     from qmd_like_rag.corpus import load_release_corpus
     corpus=load_release_corpus(vault)
-    assert len(corpus.projections)==1 and corpus.projections[0]['projection_kind']=='knowledge_page'
+    assert corpus.projections==()
     assert len(progress(k,run)['committed'])==1 and all(k._task(t['task_id'])['status']=='running' for t in run['tasks'])
 
 @pytest.mark.parametrize('change',['scope','canonical','task','closure'])

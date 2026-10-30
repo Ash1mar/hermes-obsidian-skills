@@ -1,4 +1,4 @@
-"""Publish exactly eligible delivery pages; retain exclusions without raw-source expansion."""
+"""Scoped P4 audit releases with separate business/index eligibility and no raw expansion."""
 from .source_units import _load_json,_vault_path,_sha
 from .validation import fingerprint,validate_record
 from .delivery_scope import dependency_partition,fail,authorized
@@ -24,8 +24,8 @@ def build_plan(service,request,state,runs,scopes):
         path=_vault_path(service.vault,subject['current_path'])
         if not path.is_file() or _sha(path.read_bytes())!=page['authored_sha256']:
             fail('canonical page changed before scoped publication','SOURCE_CHANGED')
-        reasons=[]
-        if pid not in allowed:reasons.append('outside-selected-delivery')
+        reasons=[];delivery_reasons=[]
+        if pid not in allowed:delivery_reasons.append('outside-selected-delivery')
         for key,needed,reason in (('qa_status','usable','qa-required'),('business_status','approved','business-unassessed'),('visibility','published','visibility-draft')):
             if page[key]!=needed:reasons.append(reason)
         groups={'active':[],'stale':[],'withdrawn':[]}
@@ -33,15 +33,16 @@ def build_plan(service,request,state,runs,scopes):
             groups[service._contribution(ref,current,change_map)].append(ref)
             if not source_eligibility.get(ref['unit_ref']['resource_id'],{}).get('eligible'):
                 reasons.append('source-governance-ineligible')
-        if groups['stale'] or groups['withdrawn'] or not groups['active']:reasons.append('source-support-not-current')
-        if reasons and pid not in exclusions:
-            exclusions[pid]={'page_id':pid,'path':page['path'],'category':'publication_conditions',
-                'reason':','.join(sorted(set(reasons))),'reopen_condition':'verify this page publication conditions and create a new exact release plan'}
+        if groups['stale'] or groups['withdrawn'] or not groups['active']:delivery_reasons.append('source-support-not-current')
+        if 'source-governance-ineligible' in reasons:delivery_reasons.append('source-governance-ineligible')
+        if delivery_reasons and pid not in exclusions:
+            exclusions[pid]={'page_id':pid,'path':page['path'],'category':'delivery_conditions',
+                'reason':','.join(sorted(set(delivery_reasons))),'reopen_condition':'verify this page delivery conditions and create a new exact release plan'}
         candidates.append({'page_id':pid,'path':page['path'],'identity':subject,'content':path.read_text(encoding='utf-8')})
         rows[pid]={'subject_id':subject['subject_id'],'page_id':pid,'current_revision_id':subject['current_revision_id'],
             'current_path':subject['current_path'],'active_support_refs':groups['active'],'stale_support_refs':[],
             'withdrawn_support_refs':[],'disposition':'current','reasons':[],'affected':True}
-        eligible[pid]={'kind':'knowledge_page','id':pid,'eligible':True,'reasons':[],
+        eligible[pid]={'kind':'knowledge_page','id':pid,'eligible':not reasons,'reasons':sorted(set(reasons)),
             'resource_id':None,'unit_set_id':None,'page_revision_id':subject['current_revision_id'],
             'source_unit_refs':groups['active']}
     # Include excluded draft identities in link resolution, so links to them
@@ -59,7 +60,7 @@ def build_plan(service,request,state,runs,scopes):
     included=set(partition['included'])&set(rows)
     subjects=[s for s in active if s['page_id'] in included]
     navigation,blockers=service._navigation(subjects);redirects=service._redirects(subjects)
-    if not included:blockers.append('no-publishable-pages')
+    if not included:blockers.append('no-deliverable-pages')
     source_by_page={p['page_id']:row['closure']['authorization'] for row in scopes.values() for p in row['scope']['excluded']}
     delivery={'contract':'scoped-publication/v1','coverage_complete':False,
         'base_release':(pin(service.vault,service._manifest_path(prior).relative_to(service.vault).as_posix()) if prior else None),
@@ -99,9 +100,9 @@ def validate_manifest(service,plan,release):
         fail('release omitted exclusions or exceeded its delivery','SOURCE_CHANGED')
     if (selected&excluded or selected!={s['page_id'] for s in release['subjects']}
             or selected!={r['id'] for r in release['index_eligibility']}
-            or any(not r['eligible'] or r['kind']!='knowledge_page' for r in release['index_eligibility'])):
+            or any(r['kind']!='knowledge_page' for r in release['index_eligibility'])):
         fail('release subjects/index escaped the exact eligible page set','SOURCE_CHANGED')
     for item in release['index_eligibility']:
         page=service._page_revision(item['id'],item['page_revision_id'])
-        if (page['qa_status'],page['business_status'],page['visibility'])!=('usable','approved','published'):
+        if item['eligible'] and (page['qa_status'],page['business_status'],page['visibility'])!=('usable','approved','published'):
             fail('published page lacked its own required approval','SOURCE_CHANGED')
