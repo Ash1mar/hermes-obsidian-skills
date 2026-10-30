@@ -82,7 +82,7 @@ def authorize(adapter,request,*,dry_run=False):
                 if action=='revise':child.update(mode='review_only',evidence_encoding=row['encoding'])
                 from hermes_source_units import mutation_digest
                 child['input_digest']=mutation_digest(child);planned.append(child);revision+=1
-        plan={'request_digest':request['input_digest'],'report':pointer,'requests':planned,
+        plan={'request_digest':request['input_digest'],'request':request,'report':pointer,'requests':planned,
             'eligible':len(analysis['eligible']),'still_oversize':len(analysis['still_oversize'])}
         if not dry_run:
             _write_atomic(_vault_path(vault,ref),_json_bytes(report));_write_atomic(plan_path,_json_bytes(plan))

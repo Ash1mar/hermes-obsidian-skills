@@ -35,6 +35,29 @@ def operator_request(adapter,flow,action,operation,inventory):
         'inventory':inventory,'action':action,'operation_id':operation,'reason':flow['reason']}
     result['input_digest']=mutation_digest(result);return result
 
+def repair_request(adapter,flow,root,inventory):
+    """Resume a partially saved admission without changing its original digest."""
+    saved=root/'repair-authorization-request.json'
+    if saved.exists():return _load_json(saved)
+    operation=flow['operation_id']+'-repair'
+    request=operator_request(adapter,flow,'authorize-program-repairs',operation,inventory)
+    path=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{flow['workflow_id']}/program-repair-operations/{operation}/plan.json"
+    if path.exists():
+        plan=_load_json(path)
+        if plan.get('request'):request=plan['request']
+        elif plan['requests']:
+            # Earlier additive plan records kept all original child bindings.
+            # Reconstruct only if their original top-level digest proves exact.
+            first=plan['requests'][0]
+            request.update(actor=first['actor'],expected_revision=first['expected_revision'],
+                expected_control_revision=first['expected_control_revision'],inventory=first['inventory'])
+            request['input_digest']=mutation_digest(request)
+        if request['input_digest']!=plan['request_digest']:
+            fail('saved program-repair request cannot be authenticated','IDEMPOTENCY_CONFLICT')
+    if request['workflow_id']!=flow['workflow_id'] or request['actor']!=flow['actor'] or request['operation_id']!=operation:
+        fail('saved repair request belongs to another flow','ACCESS_DENIED')
+    return request
+
 def native_cycle(adapter,flow,root,label,inventory):
     from build_execution_recovery import contract_hash,SCOPE
     from hermes_source_units.evidence_snapshot import ROOT,rpc,flags
@@ -126,8 +149,11 @@ def run(adapter,request,*,dry_run=False):
         stopped(adapter,w)
         inv=inventory_for(adapter,w)
         from finalize_program_repair import authorize as repairs
-        repair_request=operator_request(adapter,request,'authorize-program-repairs',operation+'-repair',inv)
-        repair_result=repairs(adapter,repair_request,dry_run=dry_run)
+        repair=repair_request(adapter,request,root,inv)
+        if not dry_run:
+            _write_atomic(root/'request.json',_json_bytes(request))
+            _write_atomic(root/'repair-authorization-request.json',_json_bytes(repair))
+        repair_result=repairs(adapter,repair,dry_run=dry_run)
         if dry_run:return {'ok':True,'dry_run':True,'program_repair':repair_result,'maximum_native_cycles':2,
             'next':'automatic native repair if authorized, automatic exclusions, native closure, durable Build pause'}
         _write_atomic(root/'request.json',_json_bytes(request))
