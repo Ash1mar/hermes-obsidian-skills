@@ -143,11 +143,11 @@ def apply(adapter,request,*,dry_run=False):
                     if pid in progress(service.knowledge,_load_json(service.knowledge._run_path(run_id)))['committed']:
                         fail('this local revision path preserves already committed valid pages')
                     material=material_identity(view)
-                    if not work['baseline_calls'].get('page-write'):
+                    mode=request.get('mode','rewrite_and_review')
+                    if mode=='rewrite_and_review' and not work['baseline_calls'].get('page-write'):
                         fail('original page-generation call history must be certified before granting a revision')
                     if any(g['material_sha256']==material for g in work['grants']):
                         fail('this logical work already consumed its bounded cycle for unchanged material')
-                    mode=request.get('mode','rewrite_and_review')
                     if mode not in ('review_only','rewrite_and_review'):fail('unsupported local revision mode')
                     grant={'grant_id':fingerprint({'work':key,'material':material,'basis_kind':basis['kind']}),
                         'authorized_control_revision':state['revision']+1,

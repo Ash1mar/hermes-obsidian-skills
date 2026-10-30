@@ -98,3 +98,16 @@ def test_defer_reopen_and_unchanged_material_budget_cannot_reset(tmp_path,monkey
     with pytest.raises(ContractError,match='already consumed'):
         control.apply(a,revised)
     assert len(load(tmp_path,'fixture')['works'][key]['grants'])==1
+
+@pytest.mark.parametrize('mode',['review_only','rewrite_and_review'])
+def test_review_only_of_existing_native_reduce_draft_does_not_require_a_separate_write_call(tmp_path,monkeypatch,mode):
+    a,req,basis,view=controller(tmp_path,monkeypatch)
+    monkeypatch.setattr(control,'original_calls',lambda *_:{'page-write':0,'page-review':0})
+    reopen={**req,'action':'reopen','basis':basis,'operation_id':'open-reduce-draft','input_digest':'open'}
+    control.apply(a,reopen)
+    revise={**reopen,'action':'revise','mode':mode,'expected_control_revision':1,'operation_id':'bounded-review','input_digest':'bounded'}
+    if mode=='rewrite_and_review':
+        with pytest.raises(ContractError,match='page-generation call history'):control.apply(a,revise)
+    else:
+        result=control.apply(a,revise)
+        assert result['new_calls_granted']==1 and result['work']['grants'][0]['limits']=={'page-write':0,'page-review':1}
