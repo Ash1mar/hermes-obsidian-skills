@@ -235,7 +235,10 @@ def validate_acceptance(service, run, page, review):
     local=active_for_run(service,run).get(page['page_id'])
     if local and local.get('grants'):
         reviewed=local.get('review_audit',{})
+        ordinal=local['grants'][-1]['calls'].get('page-review',{})
         if (local.get('state')!='revision_reviewed' or local.get('review_result',{}).get('decision')!='approved'
+                or ordinal.get('state')!='valid' or ordinal.get('audit')!=reviewed
+                or ordinal.get('response',{}).get('decision')!='approved'
                 or acceptance['independent_review']!='approved'
                 or acceptance['review_audit_ref']!=reviewed.get('ref')):
             _fail('controlled local revision requires its actual independent native approval')

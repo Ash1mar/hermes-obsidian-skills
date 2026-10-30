@@ -44,6 +44,7 @@ def test_local_native_body_preserves_old_bytes_and_cannot_self_approve(ready,vau
         'node':'build-finalize','phase':'page-review','response_sha256':'b'*64,
         'model':{'origin':'hermes_native_model','response_sha256':'b'*64}}))
     work.update(state='revision_reviewed',review_result={'decision':'approved'},review_audit=pin(vault,review_ref))
+    work['grants'][-1]['calls']['page-review']={'state':'valid','audit':work['review_audit'],'response':{'decision':'approved'}}
     append(vault,'fixture',work,'review-saved','reviewed',{})
     reviews[1]={'page_id':new['page_id'],'authored_sha256':new['authored_sha256'],'parent_authored_sha256':None,
         'actor':'agent','note':'Actual isolated native review','acceptance':record(assessment,review_audit_ref=review_ref)}
