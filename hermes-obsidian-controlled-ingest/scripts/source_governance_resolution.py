@@ -9,6 +9,8 @@ import hashlib
 import json
 import os
 import re
+import sys
+from contextlib import contextmanager
 from pathlib import Path
 
 from governance_repository import GovernanceError, atomic_write_json, load_json, utc_now, safe_control_path
@@ -16,6 +18,33 @@ from hermes_source_units import FileSourceUnitService
 from hermes_source_units.source_units import ARTIFACT_ROOT, _vault_path
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.workflow_guard import workflow_write_guard
+
+
+@contextmanager
+def operator_guard(repo,request):
+    """Separate stopped-operator authority; never impersonate a source worker."""
+    if not request.get('workflow_ref'):
+        with workflow_write_guard(repo.vault,actor=request['actor']) as worker:yield worker
+        return
+    from hermes_source_units.ingest_workflow import FileIngestWorkflowService,TERMINAL,WORKFLOW_ROOT
+    from hermes_source_units.source_units import _exclusive_lock
+    service=FileIngestWorkflowService(repo.vault);wid=request['workflow_id']
+    if safe_control_path(repo.vault,request['workflow_ref'],'workflow')!=service._path(wid):raise GovernanceError('Canonical workflow reference required')
+    sys.path.insert(0,str(Path(__file__).resolve().parents[2]/'hermes-obsidian-governed-ingest-orchestrator/lib'))
+    from ingest_kanban import IngestKanbanAdapter
+    from native_stop_inventory import verify_cancel_drain
+    lock=_vault_path(repo.vault,f'{WORKFLOW_ROOT}/.dispatch-locks/{wid}.lock')
+    with _exclusive_lock(lock),_exclusive_lock(service._lock(wid)):
+        w=service.status(wid);service.assert_execution_ready(w)
+        if (w['actor']!=request['actor'] or w['revision']!=request.get('expected_workflow_revision')
+                or not w['cancel_requested'] or w['state']!='cancelled' or w['current_stage']!='release_planning'
+                or service.pending_pause(w) or w.get('release_id')):raise GovernanceError('Requires exact drained stopped unbound release workflow')
+        verify_cancel_drain(IngestKanbanAdapter(repo.vault),wid,timeout=0)
+        for path in (repo.vault/WORKFLOW_ROOT).glob('*.json'):
+            other=load_json(path)
+            if other.get('workflow_id')!=wid and other.get('kanban',{}).get('task_map') and (other.get('cancel_requested') or other.get('state') not in TERMINAL):
+                raise GovernanceError('Another workflow can consume this governance state')
+        yield None
 
 
 def digest(value):
@@ -107,7 +136,7 @@ def resolve(repo, request, *, dry_run=False):
         raise GovernanceError('Stable operation identity and reason required')
     root=repo.vault/'_system/metadata/source-governance-resolutions'/operation
     txn_path=root/'transaction.json';receipt=root/'receipt.json'
-    with workflow_write_guard(repo.vault,actor=request['actor']) as worker,repo.mutation_lock(request['actor']):
+    with operator_guard(repo,request) as worker,repo.mutation_lock(request['actor']):
         if worker:raise GovernanceError('Worker cannot approve source governance')
         if txn_path.exists():
             txn=load_json(txn_path)

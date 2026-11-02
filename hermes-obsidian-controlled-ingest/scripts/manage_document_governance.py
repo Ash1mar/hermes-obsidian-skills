@@ -384,7 +384,7 @@ def main() -> int:
         binding = (json.loads(Path(args.worker_binding).read_text(encoding="utf-8"))
                    if args.worker_binding else None)
         with worker_binding(binding) if binding is not None else nullcontext():
-            if args.command == "validate":
+            if args.command in ("validate", "resolve-sources"):
                 result = args.handler(repository, args)
             else:
                 with workflow_write_guard(repository.vault, actor=args.actor):
