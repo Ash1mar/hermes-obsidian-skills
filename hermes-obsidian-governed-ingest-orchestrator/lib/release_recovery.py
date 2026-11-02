@@ -41,9 +41,13 @@ def recover(adapter,request,*,dry_run=False):
         if hashlib.sha256(receipt_data).hexdigest()!=request['governance_receipt']['sha256'] or not receipt.get('applied') or not receipt.get('resolved'):fail('completed governance resolution required')
         transaction=_load_json(receipt_path.with_name('transaction.json'))
         if transaction['request']['workflow_id']!=wid or transaction['request']['actor']!=w['actor']:fail('governance authority differs')
+        operation=transaction['request']['operation_id']
+        if receipt_path!=_vault_path(service.vault,f'_system/metadata/source-governance-resolutions/{operation}/receipt.json') or receipt.get('operation_id')!=operation:fail('governance receipt identity differs')
+        q=transaction['request']
+        if q.get('automatic_approval_activation') is not True or q['input_digest']!='sha256:'+fingerprint({k:v for k,v in q.items() if k!='input_digest'}):fail('governance authorization changed')
         resources={r['resource_id'] for r in receipt['rows'] if r['resolved']}
         p4=FileVaultFinalizeService(service.vault);eligibility=p4._source_eligibility(p4._current_sets(),{})
-        if not resources or any(not e['eligible'] for e in eligibility if e['resource_id'] in resources):fail('resolved sources still ineligible')
+        if not resources or not resources<={e['resource_id'] for e in eligibility} or any(not e['eligible'] for e in eligibility if e['resource_id'] in resources):fail('resolved sources still ineligible')
         if any(r.get('previous_task_id')==card['task_id'] for r in [_load_json(_vault_path(service.vault,h['report_ref'])) for h in history]):fail('same failed work already recovered')
         ref=f'_system/ledgers/ingest-workflows/{wid}/release-recoveries/{rid}.json'
         report={'request':dict(request),'previous_task_id':card['task_id'],'failure':failure,'native_runs':native['runs'],
