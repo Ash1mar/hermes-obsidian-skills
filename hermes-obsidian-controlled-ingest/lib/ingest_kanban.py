@@ -189,6 +189,10 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
                              if name in r['nodes']), None)
             if recovery:
                 inputs = {'domain_inputs': inputs, 'recovery_digest': recovery['input_digest']}
+        if kind=='checkpoint-2-validate' and workflow.get('release_validation_history'):
+            inputs={'domain_inputs':inputs,'validation_recovery_digest':workflow['release_validation_history'][-1]['input_digest']}
+        if kind=='vault-finalize-plan' and workflow.get('release_recovery_history'):
+            inputs={'domain_inputs':inputs,'recovery_digest':workflow['release_recovery_history'][-1]['input_digest']}
         parents_fingerprints = [next(item.input_fingerprint for item in nodes if item.name == parent)
                                for parent in parents]
         nodes.append(Node(name, kind, parents, node_identity(workflow, kind, inputs, parents_fingerprints), gate))
@@ -1280,6 +1284,14 @@ class IngestKanbanAdapter:
         from build_execution_recovery import recover
         return recover(self, request, dry_run=dry_run)
 
+    def recover_release_validation(self,request,*,dry_run=False):
+        from release_validation_recovery import recover
+        return recover(self,request,dry_run=dry_run)
+
+    def recover_release_execution(self, request, *, dry_run=False):
+        from release_recovery import recover
+        return recover(self,request,dry_run=dry_run)
+
     def migrate_release_execution(self, request, *, dry_run=False):
         from release_execution_migration import migrate_release_execution
         return migrate_release_execution(self, request, dry_run=dry_run)
@@ -2113,8 +2125,8 @@ class IngestKanbanAdapter:
         if workflow and workflow.get('release_id'):
             plan=_load_json(_vault_path(self.workflow.vault,f"_system/knowledge-releases/{workflow['release_id']}/plan.json"))
             if plan.get('delivery_scopes'):
-                from hermes_source_units.release_lint import classify
-                payload=classify(plan,payload)
+                from hermes_source_units.release_lint import classify,impact_context
+                payload=classify(plan,payload,impact_context(FileVaultFinalizeService(self.workflow.vault),plan,payload))
         return payload
 
     def _approve_automatic(self, value: Mapping[str, Any], checkpoint: str,

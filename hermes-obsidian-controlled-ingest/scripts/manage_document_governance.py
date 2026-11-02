@@ -70,6 +70,12 @@ def source_from_args(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def command_resolve_sources(repository, args):
+    request=json.loads(args.request.read_text(encoding='utf-8-sig'))
+    if request.get('actor')!=args.actor:raise GovernanceError('Actor differs from authorized request')
+    return repository.resolve_sources(request,dry_run=args.dry_run)
+
+
 def command_validate(repository: JsonGovernanceRepository, args: argparse.Namespace) -> dict[str, Any]:
     organizations, registry = repository.load_state()
     issues = repository.validate_state(organizations, registry)
@@ -254,6 +260,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--worker-binding", help="JSON worker request with workflow_id, task_id and node")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    resolution = subparsers.add_parser('resolve-sources', help='Resolve registered source identities and activate within explicit operator authority')
+    resolution.add_argument('--request',type=Path,required=True)
+    resolution.add_argument('--actor',required=True)
+    resolution.add_argument('--dry-run',action='store_true')
+    add_output_arguments(resolution)
+    resolution.set_defaults(handler=command_resolve_sources)
+
     validate_parser = subparsers.add_parser("validate", help="Validate the complete governance state")
     add_output_arguments(validate_parser)
     validate_parser.set_defaults(handler=command_validate)
@@ -371,7 +384,7 @@ def main() -> int:
         binding = (json.loads(Path(args.worker_binding).read_text(encoding="utf-8"))
                    if args.worker_binding else None)
         with worker_binding(binding) if binding is not None else nullcontext():
-            if args.command == "validate":
+            if args.command in ("validate", "resolve-sources"):
                 result = args.handler(repository, args)
             else:
                 with workflow_write_guard(repository.vault, actor=args.actor):

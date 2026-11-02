@@ -214,3 +214,13 @@ revision.
 Exit code `2` means validation, revision, lock, identity, or transition failure. Re-read both registries,
 resolve the reported issue, and retry with their current revisions. Never bypass a conflict by manually
 editing `registry_revision`.
+
+## Explicitly authorized automatic source governance
+
+A trusted operator may use `python3 "<ingest-skill-root>/scripts/manage_document_governance.py" --vault "<vault>" resolve-sources --request "<request.json>" --actor "<actor>" --dry-run --json`, then apply the same prepared request without dry-run. The request binds a stable operation_id, reason, workflow_id/workflow_ref, unique ready resource_ids, expected organization/document revisions, automatic_approval_activation=true, input_digest and the preview_digest from the read-only inventory. Recompute input_digest after adding preview_digest. This is the explicit user-authorized exception to the ordinary responsible-human approval guidance above. Worker/child contexts cannot use it.
+
+Registered originals, workflow/UnitSet identities and normalized artifact hashes are verified. Existing named bindings and controlled exact aliases may resolve directly. Placeholders require closed role-labelled declarations (joint issuer, dated approval/issue statement, explicit drafting-unit list or corporate cover owner). These roles remain distinct from delivery provenance. Directory names, mere mentions, missing evidence, retired organizations, conflicting version relationships and changed hashes do not authorize approval. No automatic LLM fallback occurs. Unresolved rows remain unchanged and are reported; resolving one source never activates an unrelated failed source. Authority/QA/business/visibility fields are not promoted.
+
+The repository records old/new bindings, identity evidence, authorization and approval/activation in revisioned audit events. A two-registry transaction journal supports exact interruption recovery and idempotent replay. Complete the same pending operation before other governance writes. Originals and existing Bundles/UnitSets are not rewritten. Publication readiness is a separate read-only check.
+
+For a workflow-owned resolution, workflow_ref must be the canonical workflow file and expected_workflow_revision must match the stopped unbound release. The dedicated operator guard serializes workflow/dispatch and governance writes, verifies current and historical cancelled consumers are actually drained, and rejects another active workflow. It never creates a worker binding or clears isolation markers. Read-only qualification must precede any automatic approval; the same operation records its exact scope and evidence.

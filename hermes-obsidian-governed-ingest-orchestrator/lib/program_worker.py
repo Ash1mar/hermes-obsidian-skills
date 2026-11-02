@@ -5,7 +5,7 @@ import importlib.util
 from pathlib import Path
 
 from hermes_source_units import ContractError
-from hermes_source_units.source_units import _load_json, _vault_path
+from hermes_source_units.source_units import _load_json, _vault_path, _json_bytes, _write_atomic
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard
@@ -115,6 +115,11 @@ def execute(adapter, binding):
                 'actor':value['actor'], 'release_id':release_id,
                 'expected_state_revision':service._state()['revision'],
                 'build_run_ids':batch['run_ids'],**({'delivery_scopes':delivery} if delivery else {})})['plan']
+            diagnostic=service._plan_path(release_id).with_name('navigation-diagnostics.json')
+            data=_json_bytes(service.navigation_diagnostics(plan['subjects']))
+            if diagnostic.exists() and diagnostic.read_bytes()!=data:
+                raise ContractError('STALE_INPUT','$','navigation diagnostics changed')
+            if not diagnostic.exists():_write_atomic(diagnostic,data)
         bound.update(release_id=release_id, plan_id=plan['plan_id'])
     elif kind == 'release-apply':
         service = FileVaultFinalizeService(adapter.workflow.vault)

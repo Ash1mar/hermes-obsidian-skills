@@ -748,9 +748,14 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                     lint_ref = (f"{WORKFLOW_ROOT}/{value['workflow_id']}/"
                                 "reports/checkpoint-2-lint.json")
                     plan_ref = f"_system/knowledge-releases/{value['release_id']}/plan.json"
+                    if plan.get('delivery_scopes'):
+                        from .release_lint import classify,impact_context
+                        if classify(plan,lint,impact_context(service,plan,lint))!=lint:
+                            _fail('CHECKPOINT_BLOCKED','release lint impact evidence changed')
+                    lint_errors=(lint.get('release_summary',{}).get('errors') if plan.get('delivery_scopes') else lint.get('summary',{}).get('errors'))
                     if (plan["plan_id"] != value["release_plan_id"] or plan["blockers"]
                             or plan["state"] != "draft" or lint.get("ok") is not True
-                            or lint.get("summary", {}).get("errors") != 0
+                            or lint_errors != 0
                             or evidence.get("lint_ref") != lint_ref
                             or evidence.get("plan_ref") != plan_ref
                             or _load_json(_vault_path(self.vault, lint_ref)) != lint):
