@@ -12,6 +12,7 @@ from .source_units import (UNIT_ROOT, FileSourceUnitService, _exclusive_lock,
                            _write_atomic)
 from .validation import ContractError, fingerprint, validate_record
 from .runtime_telemetry import measured
+from .release_reads import calculation
 
 RELEASE_ROOT = "_system/knowledge-releases"
 RELEASE_STATE_PATH = "_system/metadata/knowledge-release-state.json"
@@ -238,6 +239,7 @@ class FileVaultFinalizeService:
         return result
 
     @measured('release_plan', lambda self, request: {'vault':self.vault})
+    @calculation('release_plan_calculation')
     def _build_plan(self, request: Mapping[str, Any]) -> dict[str, Any]:
         from .partial_finalize import assert_release_ready
         release_id, actor = str(request["release_id"]), str(request["actor"])

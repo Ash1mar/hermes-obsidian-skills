@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import time
+from functools import wraps
 
 from .validation import ContractError
 from .runtime_telemetry import span
@@ -95,3 +96,18 @@ def current(path):
 def body(path):
     from .read_accounting import read_bytes
     return read_bytes(path, 'release_body')
+
+
+def calculation(name):
+    """Direct checkpoint callers get the same bounded calculation and checks."""
+    def decorate(function):
+        @wraps(function)
+        def invoke(self, *args, **kwargs):
+            owner = _CURRENT.get() is None
+            with operation(self.vault,name) as reads:
+                result = function(self,*args,**kwargs)
+                if owner:
+                    reads.confirm()
+                return result
+        return invoke
+    return decorate

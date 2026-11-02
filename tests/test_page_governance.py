@@ -37,6 +37,23 @@ def test_release_reads_never_cache_workflow_authority(tmp_path):
         assert body(p)==b'new' and reads.records=={}
 
 
+def test_direct_calculation_reuse_is_local_and_confirmation_is_mandatory(tmp_path):
+    from hermes_source_units.release_reads import calculation
+    p=tmp_path/'page.md';p.write_bytes(b'old')
+    class Service:
+        vault=tmp_path
+        @calculation('direct')
+        def inspect(self,change=False):
+            before=body(p)
+            if change:p.write_bytes(b'bad')
+            return before,body(p)
+    service=Service()
+    assert service.inspect()==(b'old',b'old')
+    p.write_bytes(b'new')
+    assert service.inspect()==(b'new',b'new')
+    with pytest.raises(ContractError,match='SOURCE_CHANGED'):service.inspect(change=True)
+
+
 def test_added_release_pause_blocks_before_latch_and_legacy_policy_is_unchanged():
     s=WorkflowPauseMixin()
     w={'scope':{'pause_after':['checkpoint_2','release_sync'],'provider':'sync'},'batch_id':'batch',
