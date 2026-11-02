@@ -71,3 +71,27 @@ def test_governance_writer_requires_native_authority(tmp_path):
     p=tmp_path/'grant.json';p.write_bytes(_json_bytes({'request':request}))
     with pytest.raises(ContractError,match='bound native'):
         create(NS(vault=tmp_path),pin(tmp_path,'grant.json'))
+
+
+def test_old_validation_binding_requires_authenticated_published_generation(vault):
+    from test_p4_vault_finalize import completed_page, request, apply
+    from test_p3_knowledge_build import publish_sources
+    from hermes_source_units.vault_finalize import FileVaultFinalizeService
+    from hermes_source_units.page_governance import historical_plan_ids
+    refs=publish_sources(vault,['# Pump\nTransfers coolant.\n'])
+    completed_page(vault,refs)
+    p4=FileVaultFinalizeService(vault)
+    plan=p4.plan(request('prior',['run-initial']))['plan'];apply(p4,plan)
+    base=pin(vault,p4._manifest_path('prior').relative_to(vault).as_posix())
+    q={'policy':POLICY,'actor':'operator','workflow_id':'ingest-fixture','operation_id':'upgrade',
+       'automatic_page_approval':True,'stop_after':'release_apply','base_release':base,
+       'retrieval_scope':p4.source.vault_manifest['vault']['id']}
+    q['input_digest']='sha256:'+fingerprint(q)
+    grant={'request':q,'previous_release':base,'previous_checkpoint':{'state':'approved'}}
+    path=vault/'grant.json';path.write_bytes(_json_bytes(grant))
+    h={'operation_id':'upgrade','input_digest':q['input_digest'],'authorization':pin(vault,'grant.json')}
+    w={'workflow_id':'ingest-fixture','actor':'operator','release_plan_id':None,'release_refresh_history':[h]}
+    service=NS(vault=vault,knowledge=NS(source=p4.source))
+    assert plan['plan_id'] in historical_plan_ids(service,w)
+    changed=copy.deepcopy(w);changed['release_refresh_history'][0]['input_digest']='sha256:'+'0'*64
+    with pytest.raises(ContractError,match='authority changed'):historical_plan_ids(service,changed)
