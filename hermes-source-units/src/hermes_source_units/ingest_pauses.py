@@ -259,6 +259,8 @@ class WorkflowPauseMixin:
             if not boundary or request.get("boundary") != boundary:
                 _fail("INVALID_TRANSITION", "request must name the current latched pause")
             report = _load_json(_vault_path(self.vault, control["report_ref"]))
+            from .pause_recovery import verify as verify_recovery
+            verify_recovery(self,value,report)
             evidence = self._pause_evidence(value, boundary)
             digest = "sha256:" + fingerprint(evidence)
             if (request.get("evidence_digest") != control["evidence_digest"]

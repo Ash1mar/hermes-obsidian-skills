@@ -73,6 +73,8 @@ class PassRevisionMixin:
         control = value['pause_control']
         evidence = self._pause_evidence(value, control['boundary'])
         report = _load_json(_vault_path(self.vault, control['report_ref']))
+        from .pause_recovery import verify as verify_recovery
+        verify_recovery(self,value,report)
         if (evidence != report['evidence'] or 'sha256:' + fingerprint(evidence) != control['evidence_digest']
                 or report['evidence_digest'] != control['evidence_digest']):
             fail('STALE_INPUT', 'current pause evidence changed')
