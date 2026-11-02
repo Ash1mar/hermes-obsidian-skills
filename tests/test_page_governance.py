@@ -53,6 +53,15 @@ def test_added_release_pause_blocks_before_latch_and_legacy_policy_is_unchanged(
     assert s.pending_pause(w)=='release_apply'
 
 
+def test_pending_checkpoint_is_not_a_completed_native_validation():
+    from ingest_kanban import _domain_completed
+    w={'checkpoints':{'checkpoint_2':{'state':'pending'}}}
+    node=NS(kind='checkpoint-2-validate')
+    assert not _domain_completed(None,w,node)
+    w['checkpoints']['checkpoint_2']['state']='approved'
+    assert _domain_completed(None,w,node)
+
+
 def test_qa_inventory_deduplicates_exact_source_check_without_clearing_it():
     check={'qa':'needs-qa','note':'unreadable formula','source_ref':{'span':None}}
     record={'pass_id':'a'*64,'inspections':[check,check]}
