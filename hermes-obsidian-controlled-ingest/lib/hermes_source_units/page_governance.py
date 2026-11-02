@@ -35,6 +35,24 @@ def authorization(vault, pointer):
     return value
 
 
+def historical_plan_ids(service, workflow):
+    """Old repairs remain bound to their original published generation."""
+    result = {workflow.get('release_plan_id')}
+    for refresh in workflow.get('release_refresh_history', []):
+        report = authorization(service.vault,refresh['authorization'])
+        q = report['request']
+        if (q['workflow_id']!=workflow['workflow_id'] or q['actor']!=workflow['actor']
+                or q['operation_id']!=refresh['operation_id'] or q['input_digest']!=refresh['input_digest']
+                or q['retrieval_scope']!=service.knowledge.source.vault_manifest['vault']['id']
+                or report['previous_release']!=q['base_release']
+                or report['previous_checkpoint']['state']!='approved'):
+            fail('release refresh authority changed')
+        base = pinned(service.vault,q['base_release'])
+        validate_record('knowledge_release',base)
+        result.add(base['plan_id'])
+    return result
+
+
 def qa_issues(service, page, selected):
     """Keep exact source checks; do not infer a QA fix from their wording."""
     issues = []
