@@ -191,6 +191,8 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
                 inputs = {'domain_inputs': inputs, 'recovery_digest': recovery['input_digest']}
         if kind=='checkpoint-2-validate' and workflow.get('release_validation_history'):
             inputs={'domain_inputs':inputs,'validation_recovery_digest':workflow['release_validation_history'][-1]['input_digest']}
+        if kind=='vault-finalize-plan' and workflow.get('release_refresh_history'):
+            inputs={'domain_inputs':inputs,'governed_release_generation':workflow['release_refresh_history'][-1]['input_digest']}
         if kind=='vault-finalize-plan' and workflow.get('release_recovery_history'):
             inputs={'domain_inputs':inputs,'recovery_digest':workflow['release_recovery_history'][-1]['input_digest']}
         parents_fingerprints = [next(item.input_fingerprint for item in nodes if item.name == parent)
@@ -1284,6 +1286,10 @@ class IngestKanbanAdapter:
         from build_execution_recovery import recover
         return recover(self, request, dry_run=dry_run)
 
+    def prepare_governed_release(self,request,*,dry_run=False):
+        from governed_release import prepare
+        return prepare(self,request,dry_run=dry_run)
+
     def recover_release_validation(self,request,*,dry_run=False):
         from release_validation_recovery import recover
         return recover(self,request,dry_run=dry_run)
@@ -2100,7 +2106,7 @@ class IngestKanbanAdapter:
                 payload: Mapping[str, Any]) -> str:
         ref = (f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/"
                f"reports/{name}.json")
-        if name=='checkpoint-1-validation':
+        if name=='checkpoint-1-validation' or name.startswith('checkpoint-2') or name=='acceptance-lint':
             from hermes_source_units.reduce_coverage import checkpoint_ref
             ref=checkpoint_ref(workflow,'reports',name)
         _write_atomic(_vault_path(self.workflow.vault, ref), _json_bytes(payload))

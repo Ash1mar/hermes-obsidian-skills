@@ -20,7 +20,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("vault")
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("plan", "apply"):
+    for name in ("preflight", "plan", "apply"):
         command = commands.add_parser(name)
         command.add_argument("--request", required=True)
     validate = commands.add_parser("validate")
@@ -29,7 +29,9 @@ def main() -> int:
     args = parser.parse_args()
     try:
         service = FileVaultFinalizeService(args.vault)
-        if args.command == "plan":
+        if args.command == "preflight":
+            result = service.preflight(request(args.request))
+        elif args.command == "plan":
             result = service.plan(request(args.request))
         elif args.command == "apply":
             result = service.apply(request(args.request))

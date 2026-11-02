@@ -17,13 +17,20 @@ def fail(message, code='FINALIZE_DISPOSITION_INVALID'):
 
 
 def pin(vault, ref):
-    return {'ref': ref, 'sha256': hashlib.sha256(_vault_path(vault, ref).read_bytes()).hexdigest()}
+    from .release_reads import body
+    return {'ref': ref, 'sha256': hashlib.sha256(body(_vault_path(vault, ref))).hexdigest()}
 
 
 def pinned(vault, pointer):
-    raw = _vault_path(vault, pointer['ref']).read_bytes()
+    from .release_reads import body
+    path = _vault_path(vault, pointer['ref'])
+    raw = body(path)
     if hashlib.sha256(raw).hexdigest() != pointer['sha256']:
         fail('pinned Finalize evidence changed', 'SOURCE_CHANGED')
+    from .release_reads import current
+    session = current(path)
+    if session is not None:
+        return session.load(path)
     import json
     return json.loads(raw)
 

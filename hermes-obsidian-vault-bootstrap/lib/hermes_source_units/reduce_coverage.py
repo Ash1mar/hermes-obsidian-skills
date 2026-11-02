@@ -19,6 +19,8 @@ def checkpoint_ref(workflow,folder,name):
         pointers=[p for p in workflow.get('execution_recovery_history',[])
                   if 'checkpoint-1-validate' in p.get('nodes',[])]
         if pointers:suffix='-'+fingerprint(pointers[-1])[:24]
+    if workflow.get('release_refresh_history') and (name.startswith('checkpoint_2') or name.startswith('checkpoint-2') or name in ('release_apply','release_sync','acceptance-lint')):
+        suffix += '-'+fingerprint(workflow['release_refresh_history'][-1])[:24]
     return f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/{folder}/{name}{suffix}.json"
 
 

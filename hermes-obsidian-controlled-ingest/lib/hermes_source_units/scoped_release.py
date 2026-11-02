@@ -19,6 +19,8 @@ def build_plan(service,request,state,runs,scopes):
         allowed.update(s['page_id'] for s in active if (s['page_id'],s['current_revision_id']) in published)
     exclusions={p['page_id']:{**p,'reason':p.get('reason','excluded by delivery scope')} for row in scopes.values() for p in row['scope']['excluded']}
     source_eligibility={r['resource_id']:r for r in service._source_eligibility(current,change_map) if r['resource_id']}
+    from .page_governance import record as governance_record, reasons as governance_reasons
+    governance=request.get('page_governance')
     candidates=[];rows={};eligible={};contents={}
     for subject in active:
         pid=subject['page_id']
@@ -29,13 +31,14 @@ def build_plan(service,request,state,runs,scopes):
             continue
         page=service._page_revision(pid,subject['current_revision_id'])
         path=_vault_path(service.vault,subject['current_path'])
-        data=path.read_bytes() if path.is_file() else None
+        from .release_reads import body
+        data=body(path) if path.is_file() else None
         if data is None or _sha(data)!=page['authored_sha256']:
             fail('canonical page changed before scoped publication','SOURCE_CHANGED')
         reasons=[];delivery_reasons=[]
         if pid not in allowed:delivery_reasons.append('outside-selected-delivery')
-        for key,needed,reason in (('qa_status','usable','qa-required'),('business_status','approved','business-unassessed'),('visibility','published','visibility-draft')):
-            if page[key]!=needed:reasons.append(reason)
+        reasons.extend(governance_reasons(service,page,governance))
+        if governance and reasons:delivery_reasons.extend(reasons)
         groups={'active':[],'stale':[],'withdrawn':[]}
         for ref in page['support_refs']:
             groups[service._contribution(ref,current,change_map)].append(ref)
@@ -89,17 +92,21 @@ def build_plan(service,request,state,runs,scopes):
         'navigation':navigation,'index_eligibility':[eligible[p] for p in sorted(included)],
         'blockers':sorted(set(blockers)),'reason':str(request.get('reason','')),
         'delivery_scopes':request['delivery_scopes'],'delivery':delivery}
+    if governance:plan['page_governance']=governance
     plan['plan_id']=fingerprint({k:v for k,v in plan.items() if k not in ('revision','state')})
     validate_record('vault_finalize_plan',plan);return plan
 
-def validate_manifest(service,plan,release):
-    if release.get('delivery_scopes')!=plan.get('delivery_scopes') or release.get('delivery')!=plan.get('delivery'):
+def validate_manifest(service,plan,release,*,scopes=None):
+    for key in ('subjects','index_eligibility','build_runs','source_changes','redirects'):
+        if release[key]!=plan[key]:
+            fail('published facts differ from the applied plan','SOURCE_CHANGED')
+    if (release.get('page_governance')!=plan.get('page_governance') or release.get('delivery_scopes')!=plan.get('delivery_scopes') or release.get('delivery')!=plan.get('delivery')):
         fail('published scope or exclusions differ from the applied plan','SOURCE_CHANGED')
     selected=set(release['delivery']['included_page_ids']);excluded={p['page_id'] for p in release['delivery']['excluded']}
     if fingerprint({k:v for k,v in plan.items() if k not in ('revision','state','plan_id')})!=plan['plan_id']:
         fail('scoped plan content differs from its identity','SOURCE_CHANGED')
     from .delivery_scope import release_closures
-    scopes=release_closures(service.build,release['delivery_scopes'],[r['run_id'] for r in release['build_runs']],historical=True)
+    if scopes is None:scopes=release_closures(service.build,release['delivery_scopes'],[r['run_id'] for r in release['build_runs']],historical=True)
     allowed={p['page']['page_id'] for row in scopes.values() for p in row['closure']['pages']}
     required_exclusions={p['page_id'] for row in scopes.values() for p in row['scope']['excluded']}
     if release['delivery'].get('base_release'):
@@ -115,5 +122,6 @@ def validate_manifest(service,plan,release):
         fail('release subjects/index escaped the exact eligible page set','SOURCE_CHANGED')
     for item in release['index_eligibility']:
         page=service._page_revision(item['id'],item['page_revision_id'])
-        if item['eligible'] and (page['qa_status'],page['business_status'],page['visibility'])!=('usable','approved','published'):
+        from .page_governance import reasons
+        if item['eligible'] and reasons(service,page,release.get('page_governance')):
             fail('published page lacked its own required approval','SOURCE_CHANGED')

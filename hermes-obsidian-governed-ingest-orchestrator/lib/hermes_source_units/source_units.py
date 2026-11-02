@@ -59,6 +59,10 @@ def _child_path(parent: Path, relative: str, vault: Path) -> Path:
 
 def _load_json(path: Path) -> Any:
     try:
+        from .release_reads import current
+        operation = current(path)
+        if operation is not None:
+            return operation.load(path)
         captured, value = snapshot_json(path)
         if captured:
             return value

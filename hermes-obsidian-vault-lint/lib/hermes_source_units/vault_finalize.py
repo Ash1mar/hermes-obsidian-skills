@@ -137,7 +137,8 @@ class FileVaultFinalizeService:
                 path = _vault_path(self.vault, old_path)
                 if not path.exists():
                     continue
-                content = path.read_bytes()
+                from .release_reads import body
+                content = body(path)
                 marker = f"hermes_page_id: {subject['page_id']}\n".encode()
                 if _sha(content) != revision["authored_sha256"] and marker not in content:
                     _fail("SOURCE_CHANGED", f"historical page path contains unrelated content: {old_path}")
@@ -249,6 +250,8 @@ class FileVaultFinalizeService:
                        if path.parent.name not in state["applied_build_runs"]]
         from .delivery_scope import release_closures
         scopes=release_closures(self.build,request.get('delivery_scopes',[]),run_ids)
+        if request.get('page_governance') and not scopes:
+            _fail('INVALID_STATE','page governance requires an exact scoped delivery')
         assert_release_ready(self.build,run_ids,scopes)
         runs = self._runs(run_ids,scopes)
         if scopes:
@@ -315,8 +318,22 @@ class FileVaultFinalizeService:
         validate_record("vault_finalize_plan", base)
         return base
 
+    def preflight(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .release_reads import operation
+        from .page_governance import preflight
+        with operation(self.vault,'release_preflight_reads') as reads:
+            result = preflight(self._build_plan(request))
+            reads.confirm()
+            return result
+
     def plan(self, request: Mapping[str, Any]) -> dict[str, Any]:
-        plan = self._build_plan(request)
+        from .release_reads import operation
+        with operation(self.vault,'release_plan_reads') as reads:
+            plan = self._build_plan(request)
+            reads.confirm()
+        return self._save_plan(plan)
+
+    def _save_plan(self, plan):
         path = self._plan_path(plan["release_id"])
         if path.exists():
             existing = _load_json(path)
@@ -329,7 +346,9 @@ class FileVaultFinalizeService:
     def apply(self, request: Mapping[str, Any]) -> dict[str, Any]:
         lock = _vault_path(self.vault, f"{RELEASE_ROOT}/.finalize.lock")
         with _exclusive_lock(lock):
-            return self._apply_locked(request)
+            from .release_reads import operation
+            with operation(self.vault,'release_apply_reads'):
+                return self._apply_locked(request)
 
     @measured('release_apply_verify', lambda self, request: {'vault':self.vault})
     def _apply_locked(self, request: Mapping[str, Any]) -> dict[str, Any]:
@@ -341,9 +360,6 @@ class FileVaultFinalizeService:
             return {"ok": True, "committed": False, "release": manifest}
         plan = _load_json(self._plan_path(release_id))
         validate_record("vault_finalize_plan", plan)
-        if plan.get('delivery_scopes'):
-            from .delivery_scope import release_closures
-            release_closures(self.build,plan['delivery_scopes'],[r['run_id'] for r in plan['build_runs']])
         if plan["actor"] != actor or plan["plan_id"] != request["plan_id"]:
             _fail("ACCESS_DENIED", "apply must use the owning actor and exact plan")
         if int(request["expected_revision"]) not in (plan["revision"], plan["revision"] - 1):
@@ -361,11 +377,20 @@ class FileVaultFinalizeService:
                                         "expected_state_revision": plan["expected_state_revision"],
                                         "build_run_ids": [item["run_id"] for item in plan["build_runs"]],
                                         "source_changes": plan["source_changes"], "reason": plan["reason"],
-                                        **({'delivery_scopes':plan['delivery_scopes']} if plan.get('delivery_scopes') else {})})
+                                        **({'delivery_scopes':plan['delivery_scopes']} if plan.get('delivery_scopes') else {}),
+                                        **({'page_governance':plan['page_governance']} if plan.get('page_governance') else {})})
             if rebuilt != plan:
                 _fail("SOURCE_CHANGED", "Vault changed after Finalize plan")
         elif not recovering:
             _fail("REVISION_CONFLICT", "knowledge release state changed during apply")
+        # Recovery must also verify the current exact closure before writing.
+        if recovering and plan.get('delivery_scopes'):
+            from .delivery_scope import release_closures
+            release_closures(self.build,plan['delivery_scopes'],[r['run_id'] for r in plan['build_runs']])
+        from .release_reads import current
+        reads = current(self._plan_path(release_id))
+        if reads is not None:
+            reads.confirm()
         for item in plan["redirects"]:
             path = _vault_path(self.vault, item["from_path"])
             actual = _sha(path.read_bytes())
@@ -401,6 +426,8 @@ class FileVaultFinalizeService:
                    "blockers": plan["blockers"], "reason": plan["reason"]}
         if plan.get('delivery_scopes'):
             release.update(delivery_scopes=plan['delivery_scopes'],delivery=plan['delivery'])
+        if plan.get('page_governance'):
+            release['page_governance'] = plan['page_governance']
         validate_record("knowledge_release", release)
         _write_atomic(_vault_path(self.vault, RELEASE_STATE_PATH), _json_bytes(new_state))
         _write_atomic(self._plan_path(release_id), _json_bytes(applied_plan))
@@ -408,6 +435,13 @@ class FileVaultFinalizeService:
         return {"ok": True, "committed": True, "release": release}
 
     def validate(self, release_id: str) -> dict[str, Any]:
+        from .release_reads import operation
+        with operation(self.vault,'release_validation_reads') as reads:
+            result = self._validate_release(release_id)
+            reads.confirm()
+            return result
+
+    def _validate_release(self, release_id):
         release = _load_json(self._manifest_path(release_id))
         validate_record("knowledge_release", release)
         plan = _load_json(self._plan_path(release_id))
@@ -419,15 +453,15 @@ class FileVaultFinalizeService:
         validate_record("knowledge_navigation", navigation)
         if _sha(_json_bytes(navigation)) != release["navigation_sha256"]:
             _fail("SOURCE_CHANGED", "versioned navigation projection changed")
+        from .delivery_scope import release_closures
+        scopes=release_closures(self.build,release.get('delivery_scopes',[]),[r['run_id'] for r in release['build_runs']],historical=True)
         for run in release["build_runs"]:
             actual = _load_json(_vault_path(self.vault, f"{BUILD_ROOT}/{run['run_id']}/manifest.json"))
-            from .delivery_scope import release_closures
-            scopes=release_closures(self.build,release.get('delivery_scopes',[]),[r['run_id'] for r in release['build_runs']],historical=True)
             if actual.get("revision") != run["revision"] or (actual.get("state") != "completed" and run['run_id'] not in scopes):
                 _fail("SOURCE_CHANGED", f"pinned build changed: {run['run_id']}")
         if release.get('delivery_scopes'):
             from .scoped_release import validate_manifest
-            validate_manifest(self,plan,release)
+            validate_manifest(self,plan,release,scopes=scopes)
         state = self._state()
         if release_id not in state["releases"]:
             _fail("UNRESOLVED_REFERENCE", "release is absent from release state")
