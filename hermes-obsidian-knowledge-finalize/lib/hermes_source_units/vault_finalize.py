@@ -152,7 +152,7 @@ class FileVaultFinalizeService:
         return ("---\nhermes_redirect: true\nhermes_page_id: " + str(item["page_id"]) +
                 "\ntarget: " + target + "\n---\n\n# Redirect\n\n[[" + link + "]]\n").encode("utf-8")
 
-    def _navigation(self, subjects: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[str]]:
+    def _navigation(self, subjects: list[dict[str, Any]], *, contents=None) -> tuple[list[dict[str, Any]], list[str]]:
         lookup: dict[str, set[str]] = {}
         for subject in subjects:
             path = subject["current_path"]
@@ -168,7 +168,8 @@ class FileVaultFinalizeService:
             if not path.is_file():
                 blockers.append(f"missing-page:{subject['page_id']}:{subject['current_path']}")
                 continue
-            for raw in _WIKILINK.findall(path.read_text(encoding="utf-8")):
+            content = contents[subject["page_id"]] if contents is not None else path.read_text(encoding="utf-8")
+            for raw in _WIKILINK.findall(content):
                 matches = lookup.get(raw.strip().casefold(), set())
                 if len(matches) == 1:
                     target = next(iter(matches))

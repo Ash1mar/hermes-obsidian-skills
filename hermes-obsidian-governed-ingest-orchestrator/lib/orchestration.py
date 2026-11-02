@@ -63,11 +63,21 @@ def dispatch_ready_programs(vault, workflow_id):
                 or str(payload.get('error','')).startswith('LOCK_BUSY at $:')):
             raise ContractError('LOCK_BUSY', '$', 'native dispatch is waiting for the current atomic commit')
         raise RuntimeError(detail)
-    return {'state':'dispatched'}
+    payload=json.loads(result.stdout or '{}')
+    return {'state':'handoff_checked','native_result':payload}
 
 
 def dispatch(vault: str | Path, command: str, request: Mapping[str, Any], *, dry_run=False) -> dict[str, Any]:
     adapter = IngestKanbanAdapter(vault, enable_workers=configuration()["worker_dispatch_enabled"])
+    if command == 'release-readiness':
+        from release_readiness import readiness
+        return readiness(adapter, request['workflow_id'])
+    if command in ('resume','continue-workflow'):
+        w=adapter.workflow.status(request['workflow_id'])
+        if w['current_stage']=='release_planning':
+            from release_readiness import readiness
+            if not readiness(adapter,w['workflow_id'])['ok']:
+                raise ContractError('RELEASE_EXECUTOR_MISMATCH','$','explicit release contract migration is required before dispatch')
     if command == "start":
         value = start_and_pin(vault, request)
         result = adapter.sync(_mutation(value))
@@ -79,6 +89,8 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any], *, dry
         result = adapter.recover_reduce_execution(request, dry_run=dry_run)
     elif command == 'recover-build-execution':
         result = adapter.recover_build_execution(request, dry_run=dry_run)
+    elif command == 'migrate-release-execution':
+        result = adapter.migrate_release_execution(request, dry_run=dry_run)
     elif command == 'migrate-reduce-execution':
         result = adapter.migrate_reduce_execution(request, dry_run=dry_run)
     elif command == 'adopt-build-acceptance':

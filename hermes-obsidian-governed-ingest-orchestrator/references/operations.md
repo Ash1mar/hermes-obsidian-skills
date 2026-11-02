@@ -796,3 +796,12 @@ bytes must differ solely in a later revision counter. The batch file is never
 rewritten, and all other paused evidence must match. The audit names this extra
 batch_metadata_refresh and later continuation verifies its proof. Arbitrary
 hash drift, missing approved snapshots or changed business/coverage fields fail.
+
+
+## Release program migration and impact validation
+
+Use `python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault "<vault>" release-readiness --request "<request.json>"` for a read-only pinned-executor inventory. A ready card is not a started worker. Program handoff returns the native result without claiming a worker was spawned.
+
+Explicitly authorized `migrate-release-execution --dry-run` then the same request without dry-run uses migration_scope=release-fixed/v1, stable migration_id, reason, workflow_id, actor, expected_revision, input_digest, previous_pins_digest and target_template_hashes. Requires cancelled/drained release_planning, released Build pause, verified Build closure, pending checkpoint_2, no release result and no actual release worker attempts. It changes only five downstream pins, preserves historical templates/bindings/results, records authenticated migration evidence and remains cancelled. Replay is idempotent; resume requires user authorization. It never releases checkpoint_2 or grants model calls.
+
+Scoped publication reads selected/current retained page bodies once per plan; excluded identities remain in dependency resolution. Unselected bodies cannot block the plan in isolation. Necessary dependencies outside delivery are excluded transitively. Apply still rebuilds against current bytes. Release lint preserves whole_vault_ok and raw issue fields, adds release_blocking/impact_reason; only mechanically identified excluded-page-local issues may be diagnostic. Unknown/shared/global failures remain blocking. Both checkpoint_2 and final acceptance use this decision. Delivery counts and index eligibility remain separate; audit publication does not confer business approval. Lint trace records stage timings.

@@ -21,7 +21,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--vault", required=True)
     sub = parser.add_subparsers(dest="command", required=True)
-    for name in ("start", "sync", "cancel", "resume", "interruption-status", "continue-workflow", "revise-passes", "worker-begin", "worker-check",
+    for name in ("release-readiness", "start", "sync", "cancel", "resume", "interruption-status", "continue-workflow", "revise-passes", "worker-begin", "worker-check",
                  "worker-register-source", "worker-prepare-source", "worker-plan-exact", "worker-heartbeat", "worker-complete", "worker-fail", "arm-canary",
                  "disarm-canary"):
         command = sub.add_parser(name)
@@ -41,6 +41,9 @@ def main() -> int:
     build_recovery = sub.add_parser('recover-build-execution')
     build_recovery.add_argument('--request', required=True)
     build_recovery.add_argument('--dry-run', action='store_true')
+    release_migration = sub.add_parser('migrate-release-execution')
+    release_migration.add_argument('--request', required=True)
+    release_migration.add_argument('--dry-run', action='store_true')
     migration = sub.add_parser('migrate-reduce-execution')
     migration.add_argument('--request', required=True)
     migration.add_argument('--dry-run', action='store_true')
