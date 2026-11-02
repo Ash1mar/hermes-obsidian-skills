@@ -45,7 +45,9 @@ def main():
                 if (path/name).exists():flags(path/name,flags(path/name)&~IMMUTABLE)
         print(json.dumps({'state':'revoked','stale_protector':True}));return
     w=service.status(args.workflow_id)
-    if w['state']!='cancelled':raise RuntimeError('prepare requires the supported stopped workflow')
+    from native_stop_inventory import verify_cancel_drain,verify_pause_drain
+    if w['state']=='cancelled':verify_cancel_drain(adapter,args.workflow_id,timeout=0)
+    else:verify_pause_drain(adapter,args.workflow_id,timeout=0)
     # No worker processes/leases may survive the caller's normal deployment and
     # recovery handoff. Completed slices cannot be frozen while a Pass is active.
     assert_sealable_slices(w,service.knowledge._slices(w['batch_id']))
