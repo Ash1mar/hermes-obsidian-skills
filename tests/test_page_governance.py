@@ -15,6 +15,7 @@ from hermes_source_units.validation import fingerprint
 from hermes_source_units.source_units import _json_bytes
 from hermes_source_units.release_reads import operation, body
 from hermes_source_units.ingest_pauses import WorkflowPauseMixin
+from test_p3_knowledge_build import vault
 
 
 def test_operation_reuses_bytes_but_freshly_rejects_same_length_change(tmp_path):
