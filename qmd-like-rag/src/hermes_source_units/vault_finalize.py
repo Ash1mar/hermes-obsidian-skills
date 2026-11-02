@@ -11,6 +11,7 @@ from .source_units import (UNIT_ROOT, FileSourceUnitService, _exclusive_lock,
                            _json_bytes, _load_json, _sha, _vault_path,
                            _write_atomic)
 from .validation import ContractError, fingerprint, validate_record
+from .runtime_telemetry import measured
 
 RELEASE_ROOT = "_system/knowledge-releases"
 RELEASE_STATE_PATH = "_system/metadata/knowledge-release-state.json"
@@ -225,6 +226,7 @@ class FileVaultFinalizeService:
                                "page_revision_id": None, "source_unit_refs": []})
         return result
 
+    @measured('release_plan', lambda self, request: {'vault':self.vault})
     def _build_plan(self, request: Mapping[str, Any]) -> dict[str, Any]:
         from .partial_finalize import assert_release_ready
         release_id, actor = str(request["release_id"]), str(request["actor"])
@@ -319,6 +321,7 @@ class FileVaultFinalizeService:
         with _exclusive_lock(lock):
             return self._apply_locked(request)
 
+    @measured('release_apply_verify', lambda self, request: {'vault':self.vault})
     def _apply_locked(self, request: Mapping[str, Any]) -> dict[str, Any]:
         release_id, actor = str(request["release_id"]), str(request["actor"])
         manifest_path = self._manifest_path(release_id)

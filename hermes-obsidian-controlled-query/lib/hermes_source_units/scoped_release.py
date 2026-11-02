@@ -1,6 +1,7 @@
 """Scoped P4 audit releases with separate business/index eligibility and no raw expansion."""
 from .source_units import _load_json,_vault_path,_sha
 from .validation import fingerprint,validate_record
+from .runtime_telemetry import span
 from .delivery_scope import dependency_partition,fail,authorized
 from .partial_finalize import pin,pinned
 
@@ -67,7 +68,9 @@ def build_plan(service,request,state,runs,scopes):
     partition=dependency_partition(candidates,exclusions)
     included=set(partition['included'])&set(rows)
     subjects=[s for s in active if s['page_id'] in included]
-    navigation,blockers=service._navigation(subjects, contents=contents);redirects=service._redirects(subjects)
+    with span('release_scope_summary',vault=service.vault, unique_body_reads=len(contents),
+              identity_count=len(candidates),included=len(included),excluded=len(partition['excluded'])):
+        navigation,blockers=service._navigation(subjects, contents=contents);redirects=service._redirects(subjects)
     if not included:blockers.append('no-deliverable-pages')
     source_by_page={p['page_id']:row['closure']['authorization'] for row in scopes.values() for p in row['scope']['excluded']}
     delivery={'contract':'scoped-publication/v1','coverage_complete':False,

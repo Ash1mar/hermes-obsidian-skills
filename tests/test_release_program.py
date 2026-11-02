@@ -26,7 +26,7 @@ def test_excluded_canonical_body_drift_does_not_poison_selected_release(scoped,v
     registry=k._registry();extra=copy.deepcopy(registry['subjects'][0]);extra.update(page_id='unrelated',subject_id='unrelated',current_path='unrelated.md',canonical_name='Unrelated',aliases=[])
     registry['subjects'].append(extra)
     from hermes_source_units.source_units import _write_atomic,_json_bytes
-    _write_atomic(k._registry_path(),_json_bytes(registry))
+    _write_atomic(vault/'_system/metadata/knowledge-identities.json',_json_bytes(registry))
     (vault/'unrelated.md').write_text('uncommitted unrelated content')
     plan=service._build_plan(request)
     assert plan['subjects']==expected['subjects'] and not plan['blockers']

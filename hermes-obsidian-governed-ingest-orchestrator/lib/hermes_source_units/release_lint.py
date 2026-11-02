@@ -9,4 +9,5 @@ def classify(plan, lint):
         unrelated=path in excluded and path not in selected and code.startswith(local)
         rows.append({**issue,'release_blocking':issue.get('severity')=='error' and not unrelated,
                      'impact_reason':'excluded-page-local' if unrelated else 'selected-shared-or-unclassified'})
-    return {**lint,'ok':not any(r['release_blocking'] for r in rows),'issues':rows,'whole_vault_ok':lint.get('ok',False)}
+    return {**lint,'ok':bool(lint.get('ok')) or (bool(rows) and not any(r['release_blocking'] for r in rows)),
+            'issues':rows,'whole_vault_ok':lint.get('ok',False)}

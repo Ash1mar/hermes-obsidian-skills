@@ -74,6 +74,10 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
             value = adapter.workflow.status(workflow_id)
             if value["cancel_requested"] or value["state"] in ("completed", "partial", "failed"):
                 return
+            if value['current_stage']=='release_planning':
+                from release_readiness import readiness
+                if not readiness(adapter,workflow_id)['ok']:
+                    raise ContractError('RELEASE_EXECUTOR_MISMATCH','$','no compatible release program executor; operator migration required')
             try:
                 with span('watch_cycle',vault=vault,workflow_id=workflow_id):
                     # Existing ready bindings can refill a free slot without
