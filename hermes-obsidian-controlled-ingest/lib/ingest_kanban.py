@@ -1280,6 +1280,10 @@ class IngestKanbanAdapter:
         from build_execution_recovery import recover
         return recover(self, request, dry_run=dry_run)
 
+    def migrate_release_execution(self, request, *, dry_run=False):
+        from release_execution_migration import migrate_release_execution
+        return migrate_release_execution(self, request, dry_run=dry_run)
+
     def migrate_reduce_execution(self, request, *, dry_run=False):
         from reduce_execution_migration import migrate_reduce_execution
         return migrate_reduce_execution(self, request, dry_run=dry_run)
@@ -2090,13 +2094,13 @@ class IngestKanbanAdapter:
         _write_atomic(_vault_path(self.workflow.vault, ref), _json_bytes(payload))
         return ref
 
-    def _lint(self) -> dict[str, Any]:
+    def _lint(self, workflow=None) -> dict[str, Any]:
         script = (Path(__file__).resolve().parents[2] /
                   "hermes-obsidian-vault-lint/scripts/lint_vault.py")
         if not script.is_file():
             _fail("VALIDATOR_UNAVAILABLE", "Vault lint Skill is not installed")
         result = subprocess.run([sys.executable, str(script), "--vault",
-                                 str(self.workflow.vault), "--profile", "post-ingest",
+                                 str(self.workflow.vault), "--profile", "post-ingest", "--trace",
                                  "--json"], capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", timeout=300,
                                 check=False)
@@ -2106,6 +2110,11 @@ class IngestKanbanAdapter:
             _fail("VALIDATOR_UNAVAILABLE", result.stderr.strip() or "Vault lint returned no JSON")
         if result.returncode not in (0, 1, 2):
             _fail("VALIDATOR_UNAVAILABLE", result.stderr.strip() or "Vault lint failed")
+        if workflow and workflow.get('release_id'):
+            plan=_load_json(_vault_path(self.workflow.vault,f"_system/knowledge-releases/{workflow['release_id']}/plan.json"))
+            if plan.get('delivery_scopes'):
+                from hermes_source_units.release_lint import classify
+                payload=classify(plan,payload)
         return payload
 
     def _approve_automatic(self, value: Mapping[str, Any], checkpoint: str,
@@ -2162,7 +2171,7 @@ class IngestKanbanAdapter:
         elif kind == "checkpoint-2-validate":
             if not workflow.get("release_id"):
                 _fail("INCOMPLETE_COVERAGE", "release plan is not bound")
-            lint = self._lint()
+            lint = self._lint(workflow)
             report = self._report(workflow, "checkpoint-2-lint", lint)
             if not lint.get("ok"):
                 self._report(workflow, f"failed-{fingerprint(node.name)[:16]}",
@@ -2200,7 +2209,7 @@ class IngestKanbanAdapter:
         elif kind == "acceptance":
             release_id = workflow.get("release_id")
             checked = FileVaultFinalizeService(self.workflow.vault).validate(release_id)
-            lint = self._lint()
+            lint = self._lint(workflow)
             report = self._report(workflow, "acceptance-lint", lint)
             if not checked["ok"] or not lint.get("ok"):
                 self._report(workflow, f"failed-{fingerprint(node.name)[:16]}",

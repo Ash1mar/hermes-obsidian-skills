@@ -1,6 +1,7 @@
 """Scoped P4 audit releases with separate business/index eligibility and no raw expansion."""
 from .source_units import _load_json,_vault_path,_sha
 from .validation import fingerprint,validate_record
+from .runtime_telemetry import span
 from .delivery_scope import dependency_partition,fail,authorized
 from .partial_finalize import pin,pinned
 
@@ -18,11 +19,18 @@ def build_plan(service,request,state,runs,scopes):
         allowed.update(s['page_id'] for s in active if (s['page_id'],s['current_revision_id']) in published)
     exclusions={p['page_id']:{**p,'reason':p.get('reason','excluded by delivery scope')} for row in scopes.values() for p in row['scope']['excluded']}
     source_eligibility={r['resource_id']:r for r in service._source_eligibility(current,change_map) if r['resource_id']}
-    candidates=[];rows={};eligible={}
+    candidates=[];rows={};eligible={};contents={}
     for subject in active:
-        pid=subject['page_id'];page=service._page_revision(pid,subject['current_revision_id'])
+        pid=subject['page_id']
+        if pid not in allowed:
+            exclusions.setdefault(pid,{'page_id':pid,'path':subject['current_path'],'category':'delivery_conditions',
+                'reason':'outside-selected-delivery','reopen_condition':'authorize a new exact delivery'})
+            candidates.append({'page_id':pid,'path':subject['current_path'],'identity':subject,'content':''})
+            continue
+        page=service._page_revision(pid,subject['current_revision_id'])
         path=_vault_path(service.vault,subject['current_path'])
-        if not path.is_file() or _sha(path.read_bytes())!=page['authored_sha256']:
+        data=path.read_bytes() if path.is_file() else None
+        if data is None or _sha(data)!=page['authored_sha256']:
             fail('canonical page changed before scoped publication','SOURCE_CHANGED')
         reasons=[];delivery_reasons=[]
         if pid not in allowed:delivery_reasons.append('outside-selected-delivery')
@@ -38,7 +46,8 @@ def build_plan(service,request,state,runs,scopes):
         if delivery_reasons and pid not in exclusions:
             exclusions[pid]={'page_id':pid,'path':page['path'],'category':'delivery_conditions',
                 'reason':','.join(sorted(set(delivery_reasons))),'reopen_condition':'verify this page delivery conditions and create a new exact release plan'}
-        candidates.append({'page_id':pid,'path':page['path'],'identity':subject,'content':path.read_text(encoding='utf-8')})
+        contents[pid]=data.decode('utf-8')
+        candidates.append({'page_id':pid,'path':page['path'],'identity':subject,'content':contents[pid]})
         rows[pid]={'subject_id':subject['subject_id'],'page_id':pid,'current_revision_id':subject['current_revision_id'],
             'current_path':subject['current_path'],'active_support_refs':groups['active'],'stale_support_refs':[],
             'withdrawn_support_refs':[],'disposition':'current','reasons':[],'affected':True}
@@ -59,7 +68,9 @@ def build_plan(service,request,state,runs,scopes):
     partition=dependency_partition(candidates,exclusions)
     included=set(partition['included'])&set(rows)
     subjects=[s for s in active if s['page_id'] in included]
-    navigation,blockers=service._navigation(subjects);redirects=service._redirects(subjects)
+    with span('release_scope_summary',vault=service.vault, unique_body_reads=len(contents),
+              identity_count=len(candidates),included=len(included),excluded=len(partition['excluded'])):
+        navigation,blockers=service._navigation(subjects, contents=contents);redirects=service._redirects(subjects)
     if not included:blockers.append('no-deliverable-pages')
     source_by_page={p['page_id']:row['closure']['authorization'] for row in scopes.values() for p in row['scope']['excluded']}
     delivery={'contract':'scoped-publication/v1','coverage_complete':False,
