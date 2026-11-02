@@ -111,6 +111,17 @@ def test_automatic_disposition_never_labels_all_revision_opinions_model_errors()
     assert [r['category'] for r in rows]==['unresolved','material_insufficient','unresolved']
     assert all(r['attribution_confirmed'] is False for r in rows)
 
+@pytest.mark.parametrize('closed',[False,True])
+def test_release_transition_requires_verified_closure_and_keeps_original_run(scoped,closed):
+    from ingest_kanban import finalized_build_refs
+    k,run,b,basis,pointer,req=scoped;original=k._run_path(run['run_id']).read_bytes()
+    if closed:
+        with writer(k):close(k,b,basis)
+    refs=finalized_build_refs(k,{'run_ids':[run['run_id']]})
+    if closed:assert len(refs)==2 and any(p.endswith('.closure.json') for p in refs)
+    else:assert refs is None
+    assert k._run_path(run['run_id']).read_bytes()==original
+
 @pytest.mark.parametrize('change',['none','ordinal','audit','failure','grant','owner'])
 def test_stopped_uncalled_close_reuses_exact_scope_without_domain_allowance(scoped,vault,change):
     import hashlib

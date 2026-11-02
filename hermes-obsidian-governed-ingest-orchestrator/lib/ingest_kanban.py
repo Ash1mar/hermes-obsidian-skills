@@ -518,6 +518,13 @@ class KanbanCLI:
             self._refresh_projection(slug)
 
 
+def finalized_build_refs(knowledge,batch):
+    """A verified scoped close advances delivery without completing raw coverage."""
+    from hermes_source_units.delivery_scope import batch_complete,closure_refs
+    if not batch_complete(knowledge,batch):return None
+    return ([f"_system/knowledge-builds/{rid}/manifest.json" for rid in batch['run_ids']]
+        +[p['ref'] for p in closure_refs(knowledge,batch['run_ids'])])
+
 def domain_completed(service: FileIngestWorkflowService,
                      workflow: Mapping[str, Any], node: Node) -> bool:
     return completion_proof(service,workflow,node,lambda:_domain_completed(service,workflow,node))
@@ -1609,10 +1616,8 @@ class IngestKanbanAdapter:
                             and value["checkpoints"]["checkpoint_1"]["state"] == "approved"):
                         value = self._advance(value, "build_finalizing")
                     if value["current_stage"] == "build_finalizing":
-                        status = self.workflow.knowledge.batch_status(value["batch_id"], compact=True)
-                        if status["runs"] and all(item["state"] == "completed" for item in status["runs"]):
-                            refs = [f"_system/knowledge-builds/{item['run_id']}/manifest.json"
-                                    for item in status["runs"]]
+                        refs=finalized_build_refs(self.workflow.knowledge,self.workflow.knowledge._batch(value['batch_id']))
+                        if refs:
                             value = self._advance(value, "release_planning", refs)
                     if (value["current_stage"] == "checkpoint_2"
                             and value["checkpoints"]["checkpoint_2"]["state"] == "approved"):
