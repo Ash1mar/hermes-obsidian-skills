@@ -51,3 +51,30 @@ def verify_cancel_drain(adapter, workflow_id, *, timeout=30):
     if unsafe:
         raise ContractError('NATIVE_ROUTING_CONFLICT','$','cancelled board has runnable or triage cards')
     return {'actual_consumers':0,'runnable_or_triage_cards':0,'native_board_checked':board}
+
+def verify_pause_drain(adapter,workflow_id,*,timeout=30):
+    value=adapter.workflow.status(workflow_id)
+    if value['cancel_requested'] or not value.get('pause_control',{}).get('boundary'):
+        raise ContractError('WORKFLOW_PAUSED','$','live latched pause required')
+    from hermes_source_units.runtime_telemetry import notify_reconciler
+    notify_reconciler(adapter.workflow.vault,workflow_id)
+    deadline=time.monotonic()+timeout
+    while workflow_processes(workflow_id,value['kanban']['board_id']):
+        if time.monotonic()>=deadline:raise ContractError('WORKER_ACTIVE','$','paused consumers have not drained')
+        time.sleep(.2)
+    board=value['kanban']['board_id'];states=adapter.kanban.task_states(board) if board else {}
+    if any(s in ('ready','running','triage') for s in states.values()):
+        raise ContractError('NATIVE_ROUTING_CONFLICT','$','paused board has runnable cards')
+    if any(s['state']=='leased' or s['lease']['worker_id'] for s in adapter.workflow.knowledge._slices(value['batch_id'])):
+        raise ContractError('WORKER_ACTIVE','$','paused workflow has live leases')
+    adapter.workflow._verify_pause_snapshot(adapter.workflow.status(workflow_id))
+    return {'actual_consumers':0,'active_leases':0,'runnable_or_triage_cards':0,'boundary':value['pause_control']['boundary'],'paused':True}
+
+def settle_workflow(adapter,workflow_id,operation_id):
+    """Normal arrival preserves a valid pause. Other exits use normal cancel."""
+    from native_ingest import operator_only,control_workflow
+    operator_only();w=adapter.workflow.status(workflow_id)
+    if w.get('pause_control',{}).get('boundary') and not w['cancel_requested']:
+        return verify_pause_drain(adapter,workflow_id)
+    if w['state']!='cancelled':control_workflow(adapter.workflow.vault,workflow_id,'cancel',operation_id)
+    return verify_cancel_drain(adapter,workflow_id)

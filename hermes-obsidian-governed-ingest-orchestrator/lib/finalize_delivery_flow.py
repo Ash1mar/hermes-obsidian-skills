@@ -184,9 +184,8 @@ def native_cycle(adapter,flow,root,label,inventory):
         # One stable operation for every exit, including error/timeout. The
         # supported cancel path handles a native holder's lock timeout itself.
         try:
-            if adapter.workflow.status(wid)['state']!='cancelled':
-                record('cancel',control_workflow(vault,wid,'cancel',stage+'-cancel'))
-            record('drain',verify_cancel_drain(adapter,wid))
+            from native_stop_inventory import settle_workflow
+            record('drain',settle_workflow(adapter,wid,stage+'-cancel'))
         finally:
             if protector is not None:
                 state=_load_json(state_path)

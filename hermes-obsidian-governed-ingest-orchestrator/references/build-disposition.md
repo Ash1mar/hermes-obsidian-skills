@@ -205,3 +205,21 @@ whole-SourceUnitSet indexing. An unclosed selected run still blocks; an unrelate
 held run cannot block an explicitly selected, independently valid release scope.
 Checkpoint 2, pause continuation, release apply and Provider synchronization keep
 their separate existing authorization and validation.
+
+Normal boundary arrival uses `settle_workflow`: verify the latched pause, drain
+native consumers and leases, retain both ledgers and clean up only owned services.
+Non-paused exits use supported cancellation. Never cancel a valid pause merely
+because an observation/controller exits.
+
+For an already cancelled latched pause, use the operator-only
+`manage_pause_control.py --vault <vault> --request <request.json>` (optionally
+`--dry-run`), invoked explicitly with python3. The request action is
+`recover-paused-control`, with workflow/actor/current revision, stable operation
+ID, reason and hash-pinned `pause_report`. `pause-control-recovery/v1` authenticates
+the original snapshot and supported adjacent batch resume/cancel receipts. It
+rejects any domain, identity, coverage, delivery scope or dependency drift. An
+immutable intent preserves both control states; revision numbers advance. A new
+pause report pins the predecessor and proof; the same boundary/history remains,
+with no dispatcher, domain call, deferred reopening or canonical submission.
+Exact interrupted writes and duplicate requests are idempotent; a changed
+request/state is rejected. Original reports and receipts are retained.
