@@ -61,22 +61,6 @@ def test_unknown_attempt_metadata_is_not_treated_as_never_started():
     with cli.projection('board'):
         assert cli.task_has_runs('board','t')
 
-def test_completed_domain_projection_uses_native_scheduled_transition_without_dispatch():
-    calls=[];row={'id':'t','status':'scheduled','started_at':1}
-    def invoke(argv):
-        verb=argv[4];calls.append(verb)
-        if verb=='list':value=[dict(row)]
-        elif verb=='unblock':row['status']='ready';value={}
-        elif verb=='complete':
-            assert row['status']=='ready';row['status']='done';value={}
-        else:pytest.fail('projection must not dispatch or rewrite task: '+verb)
-        return subprocess.CompletedProcess(argv,0,json.dumps(value),'')
-    cli=KanbanCLI(invoke)
-    with cli.projection('board'):
-        cli.complete('board','t','Authenticated canonical Vault outcome')
-        cli.complete('board','t','Authenticated canonical Vault outcome')
-    assert calls==['list','unblock','list','complete','list']
-
 
 def test_projection_includes_archived_status_without_per_card_reads():
     calls=[];rows=[{'id':f'old-{i}','status':'archived','started_at':1} for i in range(40)]

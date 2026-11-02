@@ -442,13 +442,6 @@ class KanbanCLI:
     def complete(self, slug: str, task_id: str, result: str) -> None:
         if self.task_status(slug, task_id) in ("done", "archived"):
             return
-        # Native complete accepts ready/blocked/running/review, not scheduled.
-        # Reconciliation already proved this Vault outcome and holds its write
-        # boundary. Restore only the native projection through supported commands;
-        # no worker dispatch, new domain result or attempt allowance is created.
-        if self.task_status(slug, task_id) == 'scheduled':
-            self.unblock(slug,task_id)
-            if self.task_status(slug,task_id) in ('done','archived'):return
         self.command("kanban", "--board", slug, "complete", task_id,
                      "--force", "--result", result)
         self._refresh_projection(slug)
