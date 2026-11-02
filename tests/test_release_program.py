@@ -7,6 +7,15 @@ from hermes_source_units.delivery_scope import close,closure_refs
 from hermes_source_units import FileVaultFinalizeService,ContractError
 from hermes_source_units.release_lint import classify
 
+def test_scoped_navigation_retains_labels_but_rejects_actual_ambiguous_links(tmp_path):
+    service=object.__new__(FileVaultFinalizeService);service.vault=tmp_path
+    subjects=[{'page_id':str(i),'subject_id':str(i),'current_path':str(i)+'.md','canonical_name':str(i),'aliases':['Shared']} for i in range(2)]
+    for s in subjects:(tmp_path/s['current_path']).write_text('independent')
+    assert service._navigation(subjects)[1]
+    assert service._navigation(subjects,scoped=True)[1]==[]
+    (tmp_path/'0.md').write_text('[[Shared]]')
+    assert any(b.startswith('ambiguous-link:') for b in service._navigation(subjects,scoped=True)[1])
+
 def test_lint_only_proven_excluded_local_errors_are_nonblocking():
     plan={'subjects':[{'current_path':'in.md'}],'delivery':{'excluded':[{'path':'out.md'}]}}
     lint={'ok':False,'issues':[{'code':'evidence.unknown_section','severity':'error','path':'out.md'}]}

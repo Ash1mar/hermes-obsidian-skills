@@ -34,7 +34,19 @@ def recover(adapter,request,*,dry_run=False):
         if hashlib.sha256(data).hexdigest()!=request.get('failure_sha256') or failure.get('task_id')!=card['task_id'] or failure.get('error_code')!='STALE_INPUT':fail('exact rejected plan failure required')
         oldpath=_vault_path(service.vault,request['blocked_plan']['ref']);olddata=oldpath.read_bytes();plan=_load_json(oldpath)
         expected=FileVaultFinalizeService(service.vault)._plan_path('release-'+fingerprint({'workflow_id':wid,'node':node.name,'input_fingerprint':node.input_fingerprint})[:24])
-        if oldpath!=expected or hashlib.sha256(olddata).hexdigest()!=request['blocked_plan']['sha256'] or plan['blockers']!=['no-deliverable-pages'] or plan['state']!='draft':fail('only an exact unbound empty-delivery plan may replan')
+        scope=request.get('recovery_scope','governance-resolved/v1')
+        allowed=(plan['blockers']==['no-deliverable-pages'] if scope=='governance-resolved/v1' else
+            bool(plan['blockers']) and all(b.startswith('ambiguous-alias:') for b in plan['blockers']) if scope=='unused-navigation-alias/v1' else False)
+        if oldpath!=expected or hashlib.sha256(olddata).hexdigest()!=request['blocked_plan']['sha256'] or not allowed or plan['state']!='draft':fail('exact blocked plan and supported cause required')
+        if scope=='unused-navigation-alias/v1':
+            from hermes_source_units.vault_finalize import _WIKILINK
+            labels={b.split(':',2)[1] for b in plan['blockers']}
+            p4=FileVaultFinalizeService(service.vault)
+            for subject in plan['subjects']:
+                page=p4._page_revision(subject['page_id'],subject['current_revision_id'])
+                data=_vault_path(service.vault,subject['current_path']).read_bytes()
+                if hashlib.sha256(data).hexdigest()!=page['authored_sha256']:fail('selected page changed')
+                if any(raw.strip().casefold() in labels for raw in _WIKILINK.findall(data.decode('utf-8'))):fail('an ambiguous label is actually referenced')
         native=adapter.kanban.task_snapshot_fresh(w['kanban']['board_id'],card['task_id'])
         if not native['runs'] or any(not r.get('ended_at') for r in native['runs']):fail('native attempts must be ended')
         receipt_path=_vault_path(service.vault,request['governance_receipt']['ref']);receipt_data=receipt_path.read_bytes();receipt=_load_json(receipt_path)

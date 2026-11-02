@@ -70,7 +70,7 @@ def build_plan(service,request,state,runs,scopes):
     subjects=[s for s in active if s['page_id'] in included]
     with span('release_scope_summary',vault=service.vault, unique_body_reads=len(contents),
               identity_count=len(candidates),included=len(included),excluded=len(partition['excluded'])):
-        navigation,blockers=service._navigation(subjects, contents=contents);redirects=service._redirects(subjects)
+        navigation,blockers=service._navigation(subjects, contents=contents, scoped=True);redirects=service._redirects(subjects)
     if not included:blockers.append('no-deliverable-pages')
     source_by_page={p['page_id']:row['closure']['authorization'] for row in scopes.values() for p in row['scope']['excluded']}
     delivery={'contract':'scoped-publication/v1','coverage_complete':False,

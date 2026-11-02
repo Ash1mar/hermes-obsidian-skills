@@ -153,7 +153,7 @@ class FileVaultFinalizeService:
         return ("---\nhermes_redirect: true\nhermes_page_id: " + str(item["page_id"]) +
                 "\ntarget: " + target + "\n---\n\n# Redirect\n\n[[" + link + "]]\n").encode("utf-8")
 
-    def _navigation(self, subjects: list[dict[str, Any]], *, contents=None) -> tuple[list[dict[str, Any]], list[str]]:
+    def _navigation(self, subjects: list[dict[str, Any]], *, contents=None, scoped=False) -> tuple[list[dict[str, Any]], list[str]]:
         lookup: dict[str, set[str]] = {}
         for subject in subjects:
             path = subject["current_path"]
@@ -162,8 +162,8 @@ class FileVaultFinalizeService:
             for key in keys:
                 lookup.setdefault(str(key).casefold(), set()).add(subject["page_id"])
         outgoing: dict[str, set[str]] = {item["page_id"]: set() for item in subjects}
-        blockers: list[str] = [f"ambiguous-alias:{key}:{','.join(sorted(values))}"
-                               for key, values in sorted(lookup.items()) if len(values) > 1]
+        blockers: list[str] = ([f"ambiguous-alias:{key}:{','.join(sorted(values))}"
+                               for key, values in sorted(lookup.items()) if len(values) > 1] if not scoped else [])
         for subject in subjects:
             path = _vault_path(self.vault, subject["current_path"])
             if not path.is_file():
@@ -191,6 +191,16 @@ class FileVaultFinalizeService:
                     "incoming_page_ids": sorted(incoming[item["page_id"]])}
                    for item in sorted(subjects, key=lambda row: row["page_id"])]
         return entries, _unique_strings(blockers)
+
+    def navigation_diagnostics(self, subjects):
+        """Ambiguous labels are retained, never converted to a chosen identity."""
+        selected={s['page_id'] for s in subjects};lookup={}
+        for s in self._registry()['subjects']:
+            if s['page_id'] not in selected:continue
+            for key in [s['current_path'],s['current_path'].removesuffix('.md'),Path(s['current_path']).stem,s['canonical_name'],*s['aliases']]:
+                lookup.setdefault(key.casefold(),set()).add(s['page_id'])
+        return {'contract':'release-navigation-diagnostics/v1','ambiguous_labels':[
+            {'label':k,'page_ids':sorted(v),'resolution':'ambiguous; no identity selected'} for k,v in sorted(lookup.items()) if len(v)>1]}
 
     def _source_eligibility(self, current: Mapping[str, Mapping[str, Any]],
                             changes: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
