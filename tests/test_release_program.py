@@ -26,7 +26,7 @@ def test_excluded_canonical_body_drift_does_not_poison_selected_release(scoped,v
     scopes=release_closures(k,request['delivery_scopes'],[run['run_id']])
     expected=build_plan(service,request,service._state(),[run],scopes)
     # Add an unrelated active identity using an existing immutable revision.
-    registry=k._registry();extra=copy.deepcopy(registry['subjects'][0]);extra.update(page_id='a'*64,subject_id='b'*64,current_path='unrelated.md',canonical_name='Unrelated',aliases=[])
+    registry=k._registry();extra=copy.deepcopy(registry['subjects'][0]);extra.update(page_id='a'*64,subject_id='b'*64,current_path='unrelated.md',canonical_name='Unrelated',identity_key='unrelated',aliases=[])
     registry['subjects'].append(extra)
     from hermes_source_units.source_units import _write_atomic,_json_bytes
     _write_atomic(vault/'_system/metadata/knowledge-identities.json',_json_bytes(registry))
@@ -36,4 +36,5 @@ def test_excluded_canonical_body_drift_does_not_poison_selected_release(scoped,v
     assert any(e['page_id']=='a'*64 for e in plan['delivery']['excluded'])
     (vault/run['page_revisions'][0]['path']).write_text('changed selected evidence')
     with pytest.raises(ContractError):build_plan(service,request,service._state(),[run],scopes)
+
 
