@@ -21,15 +21,19 @@ def test_excluded_canonical_body_drift_does_not_poison_selected_release(scoped,v
     service=FileVaultFinalizeService(vault)
     request={'release_id':'scope-local','actor':'agent','expected_state_revision':0,'build_run_ids':[run['run_id']],
              'delivery_scopes':closure_refs(k,[run['run_id']])}
-    expected=service._build_plan(request)
+    from hermes_source_units.scoped_release import build_plan
+    from hermes_source_units.delivery_scope import release_closures
+    scopes=release_closures(k,request['delivery_scopes'],[run['run_id']])
+    expected=build_plan(service,request,service._state(),[run],scopes)
     # Add an unrelated active identity using an existing immutable revision.
-    registry=k._registry();extra=copy.deepcopy(registry['subjects'][0]);extra.update(page_id='unrelated',subject_id='unrelated',current_path='unrelated.md',canonical_name='Unrelated',aliases=[])
+    registry=k._registry();extra=copy.deepcopy(registry['subjects'][0]);extra.update(page_id='a'*64,subject_id='b'*64,current_path='unrelated.md',canonical_name='Unrelated',aliases=[])
     registry['subjects'].append(extra)
     from hermes_source_units.source_units import _write_atomic,_json_bytes
     _write_atomic(vault/'_system/metadata/knowledge-identities.json',_json_bytes(registry))
     (vault/'unrelated.md').write_text('uncommitted unrelated content')
-    plan=service._build_plan(request)
+    plan=build_plan(service,request,service._state(),[run],scopes)
     assert plan['subjects']==expected['subjects'] and not plan['blockers']
-    assert any(e['page_id']=='unrelated' for e in plan['delivery']['excluded'])
+    assert any(e['page_id']=='a'*64 for e in plan['delivery']['excluded'])
     (vault/run['page_revisions'][0]['path']).write_text('changed selected evidence')
-    with pytest.raises(ContractError):service._build_plan(request)
+    with pytest.raises(ContractError):build_plan(service,request,service._state(),[run],scopes)
+
