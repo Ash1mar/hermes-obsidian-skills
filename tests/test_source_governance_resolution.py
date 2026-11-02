@@ -76,3 +76,22 @@ def test_worker_cannot_approve_and_stale_revision_cannot_mutate(fixture,monkeypa
     monkeypatch.delenv('HERMES_KANBAN_TASK');q['expected_registry_revision']=999
     q['input_digest']=resolution.digest({k:v for k,v in q.items() if k!='input_digest'})
     with pytest.raises(GovernanceError,match='revision conflict'):repo.resolve_sources(q)
+
+def test_stopped_operator_guard_checks_other_cancelled_workflows_and_rejects_active(tmp_path,monkeypatch):
+    import hermes_source_units.ingest_workflow as workflow
+    import ingest_kanban,native_stop_inventory
+    root=tmp_path/'_system/ledgers/ingest-workflows';root.mkdir(parents=True)
+    w={'workflow_id':'ingest-current','actor':'operator','revision':7,'state':'cancelled','cancel_requested':True,'current_stage':'release_planning','release_id':None}
+    other={'workflow_id':'ingest-history','state':'cancelled','cancel_requested':True,'kanban':{'task_map':[{}]}}
+    path=root/'ingest-history.json';path.write_text(json.dumps(other))
+    service=SimpleNamespace(_path=lambda wid:root/(wid+'.json'),_lock=lambda wid:root/(wid+'.lock'),
+        status=lambda wid:w,assert_execution_ready=lambda w:None,pending_pause=lambda w:False)
+    monkeypatch.setattr(workflow,'FileIngestWorkflowService',lambda *a:service)
+    monkeypatch.setattr(ingest_kanban,'IngestKanbanAdapter',lambda *a:None)
+    observed=[];monkeypatch.setattr(native_stop_inventory,'verify_cancel_drain',lambda a,wid,**kw:observed.append(wid))
+    q={'workflow_id':'ingest-current','actor':'operator','workflow_ref':'_system/ledgers/ingest-workflows/ingest-current.json','expected_workflow_revision':7}
+    with resolution.operator_guard(SimpleNamespace(vault=tmp_path),q):pass
+    assert observed==['ingest-current','ingest-history']
+    other.update(state='release_planning',cancel_requested=False);path.write_text(json.dumps(other))
+    with pytest.raises(GovernanceError,match='Another workflow'): 
+        with resolution.operator_guard(SimpleNamespace(vault=tmp_path),q):pass

@@ -42,8 +42,11 @@ def operator_guard(repo,request):
         verify_cancel_drain(IngestKanbanAdapter(repo.vault),wid,timeout=0)
         for path in (repo.vault/WORKFLOW_ROOT).glob('*.json'):
             other=load_json(path)
-            if other.get('workflow_id')!=wid and other.get('kanban',{}).get('task_map') and (other.get('cancel_requested') or other.get('state') not in TERMINAL):
-                raise GovernanceError('Another workflow can consume this governance state')
+            if other.get('workflow_id')!=wid and other.get('kanban',{}).get('task_map'):
+                if other.get('state')=='cancelled' and other.get('cancel_requested'):
+                    verify_cancel_drain(IngestKanbanAdapter(repo.vault),other['workflow_id'],timeout=0)
+                elif other.get('state') not in TERMINAL:
+                    raise GovernanceError('Another workflow can consume this governance state')
         yield None
 
 
