@@ -189,6 +189,8 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
                              if name in r['nodes']), None)
             if recovery:
                 inputs = {'domain_inputs': inputs, 'recovery_digest': recovery['input_digest']}
+        if kind=='vault-finalize-plan' and workflow.get('release_recovery_history'):
+            inputs={'domain_inputs':inputs,'recovery_digest':workflow['release_recovery_history'][-1]['input_digest']}
         parents_fingerprints = [next(item.input_fingerprint for item in nodes if item.name == parent)
                                for parent in parents]
         nodes.append(Node(name, kind, parents, node_identity(workflow, kind, inputs, parents_fingerprints), gate))
@@ -1279,6 +1281,10 @@ class IngestKanbanAdapter:
     def recover_build_execution(self, request, *, dry_run=False):
         from build_execution_recovery import recover
         return recover(self, request, dry_run=dry_run)
+
+    def recover_release_execution(self, request, *, dry_run=False):
+        from release_recovery import recover
+        return recover(self,request,dry_run=dry_run)
 
     def migrate_release_execution(self, request, *, dry_run=False):
         from release_execution_migration import migrate_release_execution

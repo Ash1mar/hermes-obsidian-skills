@@ -207,6 +207,16 @@ class ExecutionPlanMixin:
                 original = _vault_path(self.vault, pin['path']).read_bytes()
                 if 'sha256:'+hashlib.sha256(original).hexdigest() != pin['template_hash']:
                     fail('TEMPLATE_CHANGED', 'Release migration template bytes changed')
+        for recovery in workflow.get('release_recovery_history',[]):
+            data=_vault_path(self.vault,recovery['report_ref']).read_bytes()
+            if hashlib.sha256(data).hexdigest()!=recovery['report_sha256']:fail('STALE_INPUT','release recovery audit changed')
+            report=json.loads(data);request=report['request'];self._check_request(request)
+            if (request['workflow_id']!=workflow['workflow_id'] or request['actor']!=workflow['actor']
+                    or request['recovery_id']!=recovery['recovery_id'] or request['input_digest']!=recovery['input_digest']
+                    or report.get('domain_calls_granted')!=0):fail('STALE_INPUT','release recovery authority changed')
+            for pointer in [report['blocked_plan'],report['governance_receipt']]:
+                if hashlib.sha256(_vault_path(self.vault,pointer['ref']).read_bytes()).hexdigest()!=pointer['sha256']:
+                    fail('STALE_INPUT','release recovery evidence changed')
         recovered = set()
         for recovery in workflow.get('execution_recovery_history', []):
             data = _vault_path(self.vault, recovery['report_ref']).read_bytes()
