@@ -111,10 +111,20 @@ def execute(adapter, binding):
             path = service._plan_path(release_id)
             from hermes_source_units.delivery_scope import closure_refs
             delivery=closure_refs(adapter.workflow.knowledge,batch['run_ids'])
+            governance = None
+            if value.get('release_refresh_history'):
+                from hermes_source_units.page_governance import create
+                from hermes_source_units.release_reads import operation
+                with operation(service.vault,'page_governance_reads') as reads:
+                    governance = create(service,value['release_refresh_history'][-1]['authorization'])
+                    reads.confirm()
             plan = _load_json(path) if path.is_file() else service.plan({
                 'actor':value['actor'], 'release_id':release_id,
                 'expected_state_revision':service._state()['revision'],
-                'build_run_ids':batch['run_ids'],**({'delivery_scopes':delivery} if delivery else {})})['plan']
+                'build_run_ids':batch['run_ids'],**({'delivery_scopes':delivery} if delivery else {}),
+                **({'page_governance':governance} if governance else {})})['plan']
+            from hermes_source_units.page_governance import preflight
+            _write_atomic(path.with_name('governance-preflight.json'),_json_bytes(preflight(plan)))
             diagnostic=service._plan_path(release_id).with_name('navigation-diagnostics.json')
             data=_json_bytes(service.navigation_diagnostics(plan['subjects']))
             if diagnostic.exists() and diagnostic.read_bytes()!=data:

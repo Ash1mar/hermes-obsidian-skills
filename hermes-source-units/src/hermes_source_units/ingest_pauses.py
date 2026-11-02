@@ -12,7 +12,7 @@ from .validation import ContractError, fingerprint, validate_record
 from .verified_snapshot import field_projection
 
 PAUSE_BOUNDARIES = ("exact_plan", "canary", "pass", "checkpoint_1",
-                    "build_finalize", "checkpoint_2", "release_sync")
+                    "build_finalize", "checkpoint_2", "release_apply", "release_sync")
 
 
 def _fail(code, message):
@@ -40,8 +40,14 @@ class WorkflowPauseMixin:
         control = value.get("pause_control", {})
         if control.get("boundary"):
             return control["boundary"]
-        wanted = value["scope"].get("pause_after", [])
-        released = {item["boundary"] for item in control.get("history", [])}
+        wanted = list(value["scope"].get("pause_after", []))
+        generation = value.get('release_refresh_history', [])
+        generation = generation[-1]['input_digest'] if generation else None
+        if generation and 'release_apply' not in wanted:
+            wanted.append('release_apply')
+        released = {item['boundary'] for item in control.get('history', [])
+            if item['boundary'] not in ('checkpoint_2','release_apply','release_sync')
+            or item.get('release_generation')==generation}
         if not wanted or not value["batch_id"] or value["cancel_requested"]:
             return None
         stage = value["current_stage"]
@@ -71,6 +77,8 @@ class WorkflowPauseMixin:
                 batch = self.knowledge._batch(value["batch_id"])
                 from .delivery_scope import batch_complete
                 ready = batch_complete(self.knowledge,batch)
+            elif boundary == "release_apply":
+                ready = stage == "indexing"
             elif boundary == "release_sync":
                 ready = (stage == "validating" or (stage == "indexing"
                          and value["scope"].get("provider", "skip") == "skip"))
@@ -150,7 +158,7 @@ class WorkflowPauseMixin:
             self.knowledge.validate_run(run_id)
             tree(self.knowledge._run_path(run_id).parent)
         from .delivery_scope import closure_refs
-        for pointer in (closure_refs(self.knowledge,batch['run_ids']) if boundary in ('build_finalize','checkpoint_2','release_sync') else []):
+        for pointer in (closure_refs(self.knowledge,batch['run_ids']) if boundary in ('build_finalize','checkpoint_2','release_apply','release_sync') else []):
             closure=_load_json(_vault_path(self.vault,pointer['ref']))
             pin(pointer['ref']);pin(closure['authorization']['ref'])
         from .reduce_coverage import active
@@ -192,6 +200,11 @@ class WorkflowPauseMixin:
                     _fail("SOURCE_CHANGED", "checkpoint decision evidence changed")
         if value.get("release_id"):
             tree(self.vault / "_system/knowledge-releases" / value["release_id"])
+            release_plan = _load_json(self.vault / '_system/knowledge-releases' / value['release_id'] / 'plan.json')
+            if release_plan.get('page_governance'):
+                pin(release_plan['page_governance']['ref'])
+        for refresh in value.get('release_refresh_history', []):
+            pin(refresh['authorization']['ref'])
         if boundary == "release_sync" and value["scope"].get("provider") == "sync":
             pin("_system/reports/retrieval-index-manifest.json")
         return {"workflow_id": value["workflow_id"], "boundary": boundary,
@@ -275,6 +288,8 @@ class WorkflowPauseMixin:
             control["history"].append({"boundary": boundary, "continue_id": continue_id,
                 "actor": value["actor"], "evidence_digest": digest,
                 "input_digest": request["input_digest"], "report_ref": ref})
+            if value.get('release_refresh_history'):
+                control['history'][-1]['release_generation'] = value['release_refresh_history'][-1]['input_digest']
             control.update(boundary=None, evidence_digest=None, report_ref=None)
             value["revision"] += 1
             self._write(value)

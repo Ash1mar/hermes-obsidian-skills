@@ -745,8 +745,7 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                     validate_record("vault_finalize_plan", plan)
                     lint = decision.get("lint", {})
                     evidence = decision.get("evidence", {})
-                    lint_ref = (f"{WORKFLOW_ROOT}/{value['workflow_id']}/"
-                                "reports/checkpoint-2-lint.json")
+                    lint_ref = checkpoint_ref(value,'reports','checkpoint-2-lint')
                     plan_ref = f"_system/knowledge-releases/{value['release_id']}/plan.json"
                     if plan.get('delivery_scopes'):
                         from .release_lint import classify,impact_context
@@ -765,6 +764,7 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                         "expected_state_revision": plan["expected_state_revision"],
                         "build_run_ids": [item["run_id"] for item in plan["build_runs"]],
                         **({'delivery_scopes':plan['delivery_scopes']} if plan.get('delivery_scopes') else {}),
+                        **({'page_governance':plan['page_governance']} if plan.get('page_governance') else {}),
                         "source_changes": plan["source_changes"], "reason": plan["reason"]})
                     if rebuilt != plan:
                         _fail("STALE_INPUT", "release plan changed after validation")

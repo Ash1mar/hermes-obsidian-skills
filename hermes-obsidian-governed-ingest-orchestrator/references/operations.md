@@ -819,3 +819,33 @@ Scoped navigation retains duplicate labels in `navigation-diagnostics.json`; a l
 Release lint keeps raw summary/issues/whole_vault_ok. The release_summary and per-issue release_blocking describe only this delivery. The program validates required SourceUnits and registry ownership before classifying an unselected, unowned draft's stale coverage scope or a genuinely empty legacy Bundle directory as diagnostic. Selected/owned runs, nonempty unknown containers, source/hash corruption and unclassified errors remain blocking. Automatic checkpoint approval independently reconstructs this impact context, checks the exact report and rebuilds the plan; a zero-error release_summary does not make the whole Vault clean.
 
 For an explicitly authorized correction of this program classification, `recover-release-validation --dry-run` and the same request without dry-run require stopped/drained release_planning with the exact bound scoped plan, current checkpoint task/input identity, failure_sha256 and lint_report {ref,sha256}, a stable recovery_id/reason/actor/revision/input_digest. The program must prove all remaining errors nonblocking under current evidence. It preserves original failure/lint bytes and the valid plan, rebinding only checkpoint validation and its held successors. Replay is idempotent; no domain/model allowance, plan regeneration, resume or pause continuation is granted.
+# Governed release refresh and the pre-Provider pause
+
+For an explicit request to qualify previously accepted draft pages for internal
+retrieval, use `python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault
+<vault> prepare-governed-release --request <json>` (optional `--dry-run`). The
+request binds workflow/actor/revision/digest, stable operation ID, reason, exact
+`base_release` file pin, `retrieval_scope` Vault ID, the full fixed policy from
+`hermes_source_units.page_governance.POLICY`, `automatic_page_approval=true` and
+`stop_after=release_apply`. Only a cancelled, drained workflow at indexing with
+an applied scoped release and no Provider worker attempt qualifies. Native fixed
+program contracts must already be adopted. This operator control does not create
+governance outputs, resume or release a pause.
+
+The compatibility operation appends an audited release generation, retaining the
+original scope/pause policy, old task records, checkpoint decision and release.
+Only release planning and successors receive new identities. Existing Pass and
+Build results are reused after current evidence checks. On authorized resume the
+native planning worker appends governance, isolates unresolved QA and dependencies,
+and produces a new plan. The new checkpoint_2 requires its own review/continuation;
+an old continuation cannot release this generation's checkpoint or later pause.
+
+New workflows may include `release_apply` in `pause_after`. For compatible existing
+workflows the explicit refresh authorization adds this stop without rewriting
+the immutable start policy. After actual apply and trusted native confirmation,
+the workflow latches `release_apply` at indexing. Provider claims and writes fail
+closed even before the pause report is latched. Resume/service restart leaves it
+held; only an exact explicit continuation authorizes Provider work. `release_sync`
+retains its existing meaning after actual Provider completion. Do not use cancel
+as the normal representation of this new waiting state.
+

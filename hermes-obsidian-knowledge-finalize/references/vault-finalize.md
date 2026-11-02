@@ -27,3 +27,35 @@ The release manifest pins Build revisions, identity registry revision, source
 changes, affected dispositions, navigation hash, redirects and the complete index
 eligibility projection. It is written last. A missing manifest means the operation
 did not commit and `apply` can be retried with the same request.
+
+## Internal retrieval governance
+
+`python3 "<skill-dir>/scripts/manage_vault_finalize.py" <vault> preflight --request <json>`
+calculates current qualification with the same rules as planning; it does not
+write a plan or start a Provider. Counts distinguish delivery, index eligibility,
+missing business/visibility/QA conditions and exact isolated pages.
+
+Page revisions retain their immutable draft governance fields. An explicitly
+authorized native program planning worker can append `hermes-page-governance/v1`
+under the fixed `internal-vault-retrieval-policy/v1` policy. The policy approves
+source-grounded retrieval only inside the named Vault, not professional
+applicability or public access. It binds content/version/hash, current qualified
+sources, supporting Passes, exact delivery closure, Build acceptance, any required
+native review, actor and authorization. Missing records retain the old defaults.
+There is no blanket promotion and no new semantic review. QA is never cleared:
+unresolved pages and dependents are recorded and excluded from the new snapshot.
+Original content, reviews,  delivery gaps and previous releases stay intact.
+
+Plans/releases optionally pin `page_governance`; planning, apply, validation and
+Provider admission interpret the same effective conditions. Changed content or
+evidence invalidates the binding. Scope, source and authorization failures remain
+closed. A new governance decision requires a new release, never an edited old
+manifest. Provider code must support this contract before a later authorized sync.
+
+Release operations reuse bytes/JSON only within one controlled calculation and
+rehash actual inputs before commit. Workflow permissions and leases never enter
+this cache. Independent verification uses a fresh calculation. Out-of-band code
+or data maintenance must stop consumers. Telemetry separates calculation,
+confirmation, JSON parsing, bytes, unique captured files and reuse counts; these
+instrumented reads do not include separate operator audits or uninstrumented
+filesystem operations. No cross-operation cache or concurrency increase is used.

@@ -134,7 +134,8 @@ def verify(service,pointer,*,historical=False):
         if _load_json(_vault_path(service.vault,side))!=p:fail('closed page revision changed','SOURCE_CHANGED')
         if not historical:
             import hashlib
-            if hashlib.sha256(_vault_path(service.vault,p['path']).read_bytes()).hexdigest()!=p['authored_sha256']:
+            from .release_reads import body
+            if hashlib.sha256(body(_vault_path(service.vault,p['path']))).hexdigest()!=p['authored_sha256']:
                 fail('closed canonical page bytes changed','SOURCE_CHANGED')
     return value
 

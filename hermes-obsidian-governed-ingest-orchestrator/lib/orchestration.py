@@ -89,6 +89,8 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any], *, dry
         result = adapter.recover_reduce_execution(request, dry_run=dry_run)
     elif command == 'recover-build-execution':
         result = adapter.recover_build_execution(request, dry_run=dry_run)
+    elif command == 'prepare-governed-release':
+        result = adapter.prepare_governed_release(request, dry_run=dry_run)
     elif command == 'recover-release-validation':
         result = adapter.recover_release_validation(request, dry_run=dry_run)
     elif command == 'recover-release-execution':

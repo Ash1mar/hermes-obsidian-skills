@@ -2,6 +2,265 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://schemas.hermes.invalid/source-units/0.4.0/contracts.json",
   "$defs": {
+    "page_governance_policy": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "internal-vault-retrieval-policy/v1"
+        },
+        "purpose": {
+          "const": "source-grounded internal retrieval; no professional applicability approval"
+        },
+        "qa": {
+          "const": "usable-only; unresolved QA and dependent pages remain isolated"
+        },
+        "acceptance": {
+          "const": "reuse exact committed Build acceptance and any required native review"
+        },
+        "sources": {
+          "const": "current, processed, active, approved source organizations"
+        },
+        "visibility": {
+          "const": "published within the named Vault access boundary; never public access"
+        },
+        "semantic_calls": {
+          "const": 0
+        }
+      },
+      "required": [
+        "contract",
+        "purpose",
+        "qa",
+        "acceptance",
+        "sources",
+        "visibility",
+        "semantic_calls"
+      ],
+      "additionalProperties": false
+    },
+    "page_governance_row": {
+      "type": "object",
+      "properties": {
+        "page_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "revision_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "authored_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "page_revision": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "sha256"
+          ],
+          "properties": {
+            "ref": {
+              "type": "string",
+              "format": "vault-relative-path"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "support_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "acceptance_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "ref",
+              "sha256"
+            ],
+            "properties": {
+              "ref": {
+                "type": "string",
+                "format": "vault-relative-path"
+              },
+              "sha256": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{64}$"
+              }
+            }
+          }
+        },
+        "qa_status": {
+          "enum": [
+            "usable",
+            "qa_required"
+          ]
+        },
+        "business_status": {
+          "enum": [
+            "unassessed",
+            "approved"
+          ]
+        },
+        "visibility": {
+          "enum": [
+            "draft",
+            "published"
+          ]
+        },
+        "eligible": {
+          "type": "boolean"
+        },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "qa_issues": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "pass_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "check_json": {
+                "type": "string"
+              },
+              "issue_id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              }
+            },
+            "required": [
+              "pass_id",
+              "check_json",
+              "issue_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "qa_disposition": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "page_id",
+        "revision_id",
+        "authored_sha256",
+        "page_revision",
+        "support_digest",
+        "acceptance_digest",
+        "evidence",
+        "qa_status",
+        "business_status",
+        "visibility",
+        "eligible",
+        "reasons",
+        "qa_issues",
+        "qa_disposition"
+      ],
+      "additionalProperties": false
+    },
+    "page_governance": {
+      "type": "object",
+      "properties": {
+        "contract": {
+          "const": "hermes-page-governance/v1"
+        },
+        "governance_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "authorization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "sha256"
+          ],
+          "properties": {
+            "ref": {
+              "type": "string",
+              "format": "vault-relative-path"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "actor": {
+          "type": "string"
+        },
+        "workflow_id": {
+          "type": "string"
+        },
+        "retrieval_scope": {
+          "type": "string"
+        },
+        "policy": {
+          "$ref": "#/$defs/page_governance_policy"
+        },
+        "policy_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "base_release": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "sha256"
+          ],
+          "properties": {
+            "ref": {
+              "type": "string",
+              "format": "vault-relative-path"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
+        "pages": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/page_governance_row"
+          }
+        },
+        "new_model_calls": {
+          "const": 0
+        }
+      },
+      "required": [
+        "contract",
+        "governance_id",
+        "authorization",
+        "actor",
+        "workflow_id",
+        "retrieval_scope",
+        "policy",
+        "policy_sha256",
+        "base_release",
+        "pages",
+        "new_model_calls"
+      ],
+      "additionalProperties": false
+    },
     "delivery_publication": {"type":"object","additionalProperties":false,"required":["contract","coverage_complete","base_release","included_page_ids","excluded","inherited_coverage_gaps","coverage_gap_summaries","raw_source_indexing","dependencies"],"properties":{"contract":{"const":"scoped-publication/v1"},"coverage_complete":{"const":false},"base_release":{"oneOf":[{"$ref":"#/$defs/delivery_scope_pointer"},{"type":"null"}]},"included_page_ids":{"type":"array","items":{"type":"string","minLength":1}},"excluded":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["page_id","path","category","reason","reopen_condition","depends_on","original_scope"],"properties":{"page_id":{"type":"string","minLength":1},"path":{"type":"string","minLength":1},"category":{"type":"string","minLength":1},"reason":{"type":"string","minLength":1},"reopen_condition":{"type":"string","minLength":1},"depends_on":{"type":"array","items":{"type":"string","minLength":1}},"original_scope":{"oneOf":[{"$ref":"#/$defs/delivery_scope_pointer"},{"type":"null"}]}}}},"inherited_coverage_gaps":{"type":"array","items":{"$ref":"#/$defs/delivery_scope_pointer"}},"coverage_gap_summaries":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["scope_id","held_page_count","deferred_candidate_occurrences"],"properties":{"scope_id":{"type":"string","minLength":1},"held_page_count":{"type":"integer","minimum":0},"deferred_candidate_occurrences":{"type":"integer","minimum":0}}}},"raw_source_indexing":{"const":false},"dependencies":{"type":"array","items":{"type":"object","additionalProperties":false,"required":["page_id","depends_on"],"properties":{"page_id":{"type":"string","minLength":1},"depends_on":{"type":"array","items":{"type":"string","minLength":1}}}}}}},
     "delivery_scope_pointer": {"type":"object","additionalProperties":false,"required":["ref","sha256"],"properties":{"ref":{"type":"string","format":"vault-relative-path"},"sha256":{"type":"string","pattern":"^[a-f0-9]{64}$"}}},
     "span": {
@@ -1823,7 +2082,7 @@
         "knowledge_selector": {"type": "string", "minLength": 1, "pattern": "\\S"},
         "execution_mode": {"enum": ["manual", "canary_only", "auto_full"]},
         "provider": {"enum": ["skip", "sync"]},
-        "pause_after": {"type": "array", "uniqueItems": true, "items": {"enum": ["exact_plan", "canary", "pass", "checkpoint_1", "build_finalize", "checkpoint_2", "release_sync"]}}
+        "pause_after": {"type": "array", "uniqueItems": true, "items": {"enum": ["exact_plan", "canary", "pass", "checkpoint_1", "build_finalize", "checkpoint_2", "release_apply", "release_sync"]}}
       },
       "required": ["source_paths", "knowledge_selector"],
       "additionalProperties": false
@@ -1898,11 +2157,12 @@
     "ingest_workflow_pause_control": {
       "type": "object",
       "properties": {
-        "boundary": {"anyOf": [{"enum": ["exact_plan", "canary", "pass", "checkpoint_1", "build_finalize", "checkpoint_2", "release_sync"]}, {"type": "null"}]},
+        "boundary": {"anyOf": [{"enum": ["exact_plan", "canary", "pass", "checkpoint_1", "build_finalize", "checkpoint_2", "release_apply", "release_sync"]}, {"type": "null"}]},
         "evidence_digest": {"anyOf": [{"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}, {"type": "null"}]},
         "report_ref": {"anyOf": [{"type": "string", "format": "vault-relative-path"}, {"type": "null"}]},
         "history": {"type": "array", "items": {"type": "object", "properties": {
-          "boundary": {"enum": ["exact_plan", "canary", "pass", "checkpoint_1", "build_finalize", "checkpoint_2", "release_sync"]},
+              "release_generation": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+          "boundary": {"enum": ["exact_plan", "canary", "pass", "checkpoint_1", "build_finalize", "checkpoint_2", "release_apply", "release_sync"]},
           "continue_id": {"type": "string", "minLength": 1},
           "actor": {"type": "string", "minLength": 1},
           "evidence_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
@@ -1916,6 +2176,49 @@
     "ingest_workflow": {
       "type": "object",
       "properties": {
+        "release_refresh_history": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "operation_id": {
+                "type": "string"
+              },
+              "input_digest": {
+                "type": "string",
+                "pattern": "^sha256:[0-9a-f]{64}$"
+              },
+              "authorization": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "ref",
+                  "sha256"
+                ],
+                "properties": {
+                  "ref": {
+                    "type": "string",
+                    "format": "vault-relative-path"
+                  },
+                  "sha256": {
+                    "type": "string",
+                    "pattern": "^[a-f0-9]{64}$"
+                  }
+                }
+              },
+              "stop_after": {
+                "const": "release_apply"
+              }
+            },
+            "required": [
+              "operation_id",
+              "input_digest",
+              "authorization",
+              "stop_after"
+            ],
+            "additionalProperties": false
+          }
+        },
         "reduce_migration_history": {"type":"array","items":{"type":"object","properties":{
           "migration_id":{"type":"string","pattern":"^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"},
           "input_digest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"},
@@ -2110,6 +2413,24 @@
     "vault_finalize_plan": {
       "type": "object",
       "properties": {
+        "page_governance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "sha256"
+          ],
+          "properties": {
+            "ref": {
+              "type": "string",
+              "format": "vault-relative-path"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
         "delivery_scopes": {"type":"array","minItems":1,"uniqueItems":true,"items":{"$ref":"#/$defs/delivery_scope_pointer"}},
         "delivery": {"$ref":"#/$defs/delivery_publication"},
         "contract": {"const": "hermes-vault-finalize-plan/v1"},
@@ -2158,6 +2479,24 @@
     "knowledge_release": {
       "type": "object",
       "properties": {
+        "page_governance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "ref",
+            "sha256"
+          ],
+          "properties": {
+            "ref": {
+              "type": "string",
+              "format": "vault-relative-path"
+            },
+            "sha256": {
+              "type": "string",
+              "pattern": "^[a-f0-9]{64}$"
+            }
+          }
+        },
         "delivery_scopes": {"type":"array","minItems":1,"uniqueItems":true,"items":{"$ref":"#/$defs/delivery_scope_pointer"}},
         "delivery": {"$ref":"#/$defs/delivery_publication"},
         "contract": {"const": "hermes-knowledge-release/v1"},

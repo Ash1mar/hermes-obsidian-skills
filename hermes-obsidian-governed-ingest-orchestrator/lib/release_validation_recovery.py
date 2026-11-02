@@ -21,7 +21,9 @@ def recover(adapter,request,*,dry_run=False):
                 if h['input_digest']!=request['input_digest']:fail('operation conflict')
                 return {'ok':True,'replayed':True,'resumed':False,'report_ref':h['report_ref']}
         w=service._mutation(request)
-        if w['state']!='cancelled' or not w['cancel_requested'] or w['current_stage']!='release_planning' or not w['release_id'] or service.pending_pause(w):fail('requires stopped bound release before checkpoint')
+        pending=request.get('recovery_scope')=='pending-governed-checkpoint/v1'
+        if w['state']!='cancelled' or not w['cancel_requested'] or w['current_stage']!=('checkpoint_2' if pending else 'release_planning') or not w['release_id'] or service.pending_pause(w):fail('requires stopped bound release before checkpoint')
+        if pending and (not w.get('release_refresh_history') or w['checkpoints']['checkpoint_2']['state']!='pending'):fail('requires pending governed checkpoint')
         verify_cancel_drain(adapter,wid,timeout=0)
         from ingest_kanban import desired_graph
         node=next(n for n in desired_graph(service,w) if n.name=='checkpoint-2-validate')
@@ -32,11 +34,23 @@ def recover(adapter,request,*,dry_run=False):
         failure_path=_vault_path(service.vault,f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint(node.name)[:16]}.json')
         if hashlib.sha256(failure_path.read_bytes()).hexdigest()!=request.get('failure_sha256'):fail('failure changed')
         failure=_load_json(failure_path)
-        if failure.get('input_fingerprint')!=node.input_fingerprint or failure.get('report_ref')!=request['lint_report']['ref']:fail('failure is not this lint')
+        if failure.get('input_fingerprint')!=node.input_fingerprint:fail('failure belongs to another checkpoint')
+        if pending:
+            if failure.get('task_id')!=card['task_id'] or failure.get('error_code')!='CHECKPOINT_BLOCKED':fail('exact pending checkpoint failure required')
+        elif failure.get('report_ref')!=request['lint_report']['ref']:fail('failure is not this lint')
         plan_path=FileVaultFinalizeService(service.vault)._plan_path(w['release_id']);plan=_load_json(plan_path)
         if plan['plan_id']!=w['release_plan_id'] or plan['blockers'] or not plan.get('delivery_scopes'):fail('exact scoped bound plan required')
         lint_path=_vault_path(service.vault,request['lint_report']['ref']);lint=_load_json(lint_path)
-        if hashlib.sha256(lint_path.read_bytes()).hexdigest()!=request['lint_report']['sha256'] or lint.get('ok'):fail('exact failed lint required')
+        if hashlib.sha256(lint_path.read_bytes()).hexdigest()!=request['lint_report']['sha256'] or (not pending and lint.get('ok')):fail('exact bound lint required')
+        if pending:
+            from hermes_source_units.reduce_coverage import checkpoint_ref
+            from hermes_source_units.partial_finalize import pinned
+            decision_path=checkpoint_ref(w,'decisions','checkpoint_2')
+            decision=pinned(service.vault,request['pending_decision'])
+            if (request['pending_decision']['ref']!=decision_path or not plan.get('page_governance')
+                    or decision.get('approval_digest')!=w['checkpoints']['checkpoint_2']['approval_digest']
+                    or decision.get('lint')!=lint or not lint.get('ok')
+                    or decision.get('evidence')!={'lint_ref':request['lint_report']['ref'],'plan_ref':plan_path.relative_to(service.vault).as_posix()}):fail('pending native decision or plan changed')
         p4=FileVaultFinalizeService(service.vault);corrected=classify(plan,lint,impact_context(p4,plan,lint))
         if not corrected['ok']:fail('material or unclassified errors remain')
         if any(_load_json(_vault_path(service.vault,h['report_ref']))['previous_task_id']==card['task_id'] for h in history):fail('same checkpoint already recovered')

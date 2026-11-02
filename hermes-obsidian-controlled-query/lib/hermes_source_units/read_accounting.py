@@ -68,6 +68,9 @@ def note_capture(path):
 
 
 def read_bytes(path,origin):
+    from .release_reads import current as release_operation
+    operation=release_operation(path)
+    if operation is not None:return operation.read(path)
     from .evidence_snapshot import current
     session=current()
     if session is not None:
