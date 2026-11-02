@@ -16,6 +16,32 @@ def test_scoped_navigation_retains_labels_but_rejects_actual_ambiguous_links(tmp
     (tmp_path/'0.md').write_text('[[Shared]]')
     assert any(b.startswith('ambiguous-link:') for b in service._navigation(subjects,scoped=True)[1])
 
+@pytest.mark.parametrize('change',['owned','selected','nonempty','hash-failure'])
+def test_release_lint_proves_legacy_scope_and_rejects_required_or_unknown_damage(scoped,vault,change):
+    from hermes_source_units.release_lint import impact_context
+    from hermes_source_units.source_units import _json_bytes,_write_atomic
+    k,run,b,basis,pointer,req=scoped
+    with writer(k):close(k,b,basis)
+    service=FileVaultFinalizeService(vault)
+    plan=service._build_plan({'release_id':'lint-scope','actor':'agent','expected_state_revision':0,
+         'build_run_ids':[run['run_id']],'delivery_scopes':closure_refs(k,[run['run_id']])})
+    old=copy.deepcopy(run);old.update(run_id='run-old-draft',state='draft')
+    path=vault/'_system/knowledge-builds/run-old-draft/manifest.json';path.parent.mkdir(parents=True);path.write_bytes(_json_bytes(old))
+    empty=vault/'10_Raw/converted/empty_document_bundle';empty.mkdir(parents=True)
+    lint={'ok':False,'summary':{'errors':2},'issues':[
+        {'severity':'error','code':'source_units.knowledge_build_invalid','message':'COVERAGE_SCOPE_INVALID: old draft','path':path.relative_to(vault).as_posix()},
+        {'severity':'error','code':'bundle.missing_control_file','path':empty.relative_to(vault).as_posix()}]}
+    classified=classify(plan,lint,impact_context(service,plan,lint))
+    assert classified['ok'] and classified['summary']['errors']==2 and classified['release_summary']['errors']==0
+    assert classify(plan,classified,impact_context(service,plan,classified))==classified
+    if change=='owned':
+        registry=k._registry();registry['subjects'][0]['created_by_run']=old['run_id']
+        _write_atomic(vault/'_system/metadata/knowledge-identities.json',_json_bytes(registry))
+    elif change=='selected':plan=copy.deepcopy(plan);plan['build_runs'].append({'run_id':old['run_id'],'revision':old['revision']})
+    elif change=='nonempty':(empty/'evidence.txt').write_text('not proven empty')
+    else:lint['issues'][0]['message']='SOURCE_CHANGED: unknown corruption'
+    assert not classify(plan,lint,impact_context(service,plan,lint))['ok']
+
 def test_lint_only_proven_excluded_local_errors_are_nonblocking():
     plan={'subjects':[{'current_path':'in.md'}],'delivery':{'excluded':[{'path':'out.md'}]}}
     lint={'ok':False,'issues':[{'code':'evidence.unknown_section','severity':'error','path':'out.md'}]}
