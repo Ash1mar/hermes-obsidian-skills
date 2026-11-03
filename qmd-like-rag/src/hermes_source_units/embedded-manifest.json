@@ -52,7 +52,7 @@
   "runtime_policy.py": "52ef9c3b6f128cf31d1c62d164f1bf3960d7c48c855fbc7cfc275b593d17fb17",
   "runtime_telemetry.py": "c3ceb88b8789087c75ca1c96a60fb2ad4cb141d2ba183ac445c38432a051b22a",
   "schema_assets.py": "28a2cf24d676743ffdec6f83f14688b2413e5883115ded1f17b82d0e3366c213",
-  "schemas/contracts.json": "54cbbf3016bf17451ecf01a3724842d75a6d726dde49d9931c1268f9cd14a083",
+  "schemas/contracts.json": "6dea29d4156712999188d53b162b77abc4e2bab8f09f305da50ef5f17ef53f16",
   "scoped_release.py": "8f0919a77a2845de7864a4278352945c236032d00aea1c51c77668445c44ccde",
   "semantic_budget.py": "2069063af1afaa67f0841dc4eb1861248678b0183df5e07f8a5d0509fab9919d",
   "semantic_submission.py": "059a45deb482a4848e77609a93b4c9daa609723f2723a50ff9c1c884070e7477",
