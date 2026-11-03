@@ -151,6 +151,10 @@ def diagnosis(phase,packet,draft,error,*,state=None):
     # Preserve the answer verbatim in native audit. Corrections return a full
     # replacement; the program never chooses or applies a domain patch.
     result['failed_response']=copy.deepcopy(draft)
+    if phase=='resource-reduce' and error.code=='SEMANTIC_REVIEW_REQUIRED':
+        result['allowed_candidate_refs']=packet['candidate_refs']
+        result['instruction']+=' Preserve verified proposals. Explicitly omit candidates whose original evidence cannot verify them, using omitted_candidate_refs and explaining the coverage loss. This is a disposition of unsupported candidates, not permission to repair source text or approve missing evidence.'
+        return result
     if error.code=='INVALID_SCHEMA':return result
     if packet.get('view',{}).get('output_contract')=='global-target-refs/v1':
         from fixed_global_targets import expand,offered
@@ -276,7 +280,8 @@ def read_saved_output(adapter,binding,phase,view,validator,prove,expected_ref):
             except json.JSONDecodeError as exc:raise ContractError('INVALID_SCHEMA','$',str(exc)) from exc
             result=validator(draft)
         except ContractError as exc:
-            if (attempt.get('state')!='rejected' or not attempt.get('correctable') or exc.code not in ELIGIBLE
+            if (attempt.get('state')!='rejected' or not attempt.get('correctable') or not (exc.code in ELIGIBLE or
+                    exc.code=='SEMANTIC_REVIEW_REQUIRED' and record.get('automatic_policy')=='once_then_isolate')
                 or index==len(attempts)-1):held('historical rejection/correction no longer matches a successful prefix')
             continue
         if index!=len(attempts)-1 or attempt.get('state')!='valid' or ref!=expected_ref:
@@ -397,11 +402,15 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
         if error is None:
             attempt.update(state='valid',correctable=False);write(path,record)
             return draft,call_ref,result
-        eligible=bool(call_ref and error.code in ELIGIBLE)
+        from automatic_pass_recovery import enabled
+        automatic_review=(phase=='resource-reduce' and error.code=='SEMANTIC_REVIEW_REQUIRED'
+            and enabled(adapter.workflow.status(binding['workflow_id'])))
+        eligible=bool(call_ref and (error.code in ELIGIBLE or automatic_review))
+        if automatic_review:record['automatic_policy']='once_then_isolate'
         if call_ref and attempt.get('state')!='rejected':attach_receipt(adapter,call_ref,{'ok':False,'validated':False,'state':'output_contract_rejected' if eligible else 'semantic_output_held','origin':'fixed-output-validation/v1','code':error.code,'reason':str(error)})
         # Historical diagnostics are part of the exact native correction wire.
         # Improving diagnostics cannot rewrite a consumed request or its budget.
-        diagnostic=attempt.get('diagnostic') if attempt.get('state')=='rejected' else None
+        diagnostic=attempt.get('diagnostic') if attempt.get('state')=='rejected' and attempt.get('correctable') else None
         attempt.update(state='rejected',correctable=eligible,diagnostic=diagnostic or (diagnosis(phase,packet or {},draft,error,state=state) if eligible else {'code':error.code,'reason':str(error)}))
         write(path,record)
         if call_ref:error.semantic_audit_ref=call_ref

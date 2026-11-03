@@ -148,6 +148,32 @@ def test_material_refusal_and_invalid_identity_never_get_correction(tmp_path,mon
     assert c.calls==[None]
 
 
+@pytest.mark.parametrize('second_valid',[True,False])
+def test_automatic_source_disposition_has_one_durable_correction(tmp_path,monkeypatch,second_valid):
+    from test_reduce_packets import value,adapter
+    from fixed_reduce_packets import plan
+    packet=plan(adapter(),value(20),fixed.prepare_request_projection)[0]
+    refusal={'blocked_reason':'Original required number is truncated; unsupported claim cannot be adopted.'}
+    legal={'proposals':[],'omitted_candidate_refs':packet['candidate_refs'],'reason':'Unverified source claims omitted.'}
+    c=fixture(tmp_path,monkeypatch,[refusal,legal if second_valid else refusal])
+    c.binding['node']='resource-reduce:fixture'
+    c.adapter.workflow.status=lambda _:{'scope':{'execution_mode':'auto_full'},'execution_recovery_history':[]}
+    monkeypatch.setattr('orchestration.configuration',lambda:{'pass_failure_policy':'once_then_isolate'})
+    def run():return output.execute(c.adapter,c.binding,'resource-reduce',packet['view'],object(),
+        # The fixture caller preserves native-journal semantics without real model work.
+        lambda a,b,p,v,caller,limit,correction=None,**kw:invoke(correction),
+        lambda d:output.check('resource-reduce',value(20),packet,None,d),packet=packet)
+    def invoke(correction):
+        c.calls.append(copy.deepcopy(correction));draft=[refusal,legal if second_valid else refusal][len(c.calls)-1]
+        ref='audit-'+str(len(c.calls));c.saved[ref]=draft;output.note_audit(ref)
+        return copy.deepcopy(draft),ref
+    for _ in range(2):
+        if second_valid:assert run()[0]==legal
+        else:
+            with pytest.raises(ContractError,match='SEMANTIC_REVIEW_REQUIRED'):run()
+    assert len(c.calls)==2 and 'omit' in c.calls[1]['instruction']
+
+
 def test_raw_native_verification_does_not_accept_changed_authority(tmp_path):
     from test_reduce_semantic_recovery import call_fixture
     c=call_fixture(tmp_path,'global-plan')

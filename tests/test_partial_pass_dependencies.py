@@ -8,8 +8,8 @@ from hermes_source_units.source_units import _write_atomic,_json_bytes
 def test_reduce_uses_complete_sibling_without_calling_gap_success(stopped,monkeypatch):
     adapter,value,_=stopped;k=adapter.workflow.knowledge
     item=next(s for s in k._slices(value['batch_id']) if s['state']=='completed')
-    assert len(item['task_ids'])==2
-    valid,excluded=item['task_ids'];gap='pass-slice:'+item['slice_id']
+    assert len(item['task_ids'])>=2
+    valid,excluded=item['task_ids'][:2];gap='pass-slice:'+item['slice_id']
     task=k._task(excluded);task.update(status='skipped',reason='isolated fixture gap',revision=task['revision']+1)
     _write_atomic(k._task_path(excluded),_json_bytes(task))
     item['state']='cancelled';_write_atomic(k._slice_path(value['batch_id'],item['slice_id']),_json_bytes(item))
