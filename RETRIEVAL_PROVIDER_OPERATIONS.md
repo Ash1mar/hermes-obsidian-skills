@@ -61,8 +61,32 @@ transport only with an explicit deployment endpoint. Never infer a service URL.
 
 - Missing or mismatched tokenizer: sync fails; never substitute another tokenizer.
 - Submitted release differs from the current release: sync fails without publishing a generation.
-- Model, renderer or tokenizer fingerprint changes: create a new generation; SourceUnit IDs remain.
+- Embedding, renderer or embedding-tokenizer fingerprint changes: create a new generation;
+  SourceUnit IDs remain. Reranker and query settings are audited independently and do not rebuild
+  vectors under `release-index/v2`. Legacy generations retain their original strict checks.
 - Provider unavailable during Query: record the route as unavailable and continue hierarchical
   navigation; do not build or repair an index.
 - Failed sync: preserve the previous `last_success`, leave the knowledge release committed, and
   keep `query_ready` false for that release.
+
+## Sync progress and proportional recovery
+
+Use `qmd-like-rag status --vault-root <vault> --config <host-config>` (or HTTP `GET /status`)
+to observe `sync_progress` while a sync request is in flight. The selected generation's status
+and the current attempt's status are distinct. A failed attempt does not promote its candidate;
+a ready older generation does not make a newer release query-ready.
+
+The Provider bounds vector windows by `index_batch_size`, `embedding_batch_max_tokens` and
+the storage limit, with smaller model calls controlled by `embedding_batch_size`. Keep model
+concurrency unchanged. Metrics identify computed, cached, deduplicated and resumed inputs and
+time spent in each phase; report measured scope instead of assuming a speedup percentage.
+
+Within existing execution authorization, retry the same release ID/hash after correcting a
+transient failure. Verified completed batches are reused after current input/provenance checks.
+A name-only remote model does not qualify for cross-release vector caching. Never edit cache,
+checkpoint, release or pause records to obtain readiness. A stale release must be resubmitted
+through the supported writer; a damaged selected generation requires an authorized `--rebuild`.
+
+Changing code, inspecting status or completing isolated checks does not authorize Provider sync,
+workflow resume or crossing `release_sync`. Native workflow stage evidence remains separate
+from Provider implementation verification.

@@ -22,9 +22,51 @@ the canonical Unit again before using it as evidence.
 5. Chroma, BM25 and `projection-manifest.json` are stored under
    `<state-root>/<vault-id>/generations/<generation>/`; `index-state.json` selects the ready
    generation.
-6. Recall refuses configuration, model or release mismatches. It never rebuilds during Query.
+6. Recall refuses indexing-configuration, embedding/tokenizer or release mismatches. Query-only
+   settings and the current verified reranker can change without rebuilding vectors. Each response
+   records the effective query configuration/model fingerprints. It never rebuilds during Query.
 
 The first 0.5 sync is a clean rebuild. Old heading/token chunks and their indexes are not migrated.
+
+### Bounded sync and recovery
+
+Sync has one nonblocking file lock per Vault, shared by CLI and HTTP processes. A concurrent
+writer fails promptly. HTTP status remains readable during sync; retrieval selects an immutable
+ready generation. No partially built candidate becomes query-ready.
+
+`index_batch_size` (default 128) and `embedding_batch_max_tokens` (32768) bound each vector
+window, also respecting Chroma's write limit. `embedding_batch_size` (32) bounds individual
+model calls inside that window. An input larger than the batch token budget fails explicitly;
+increase the budget rather than truncating it. The corpus and BM25 are still built in memory;
+this change bounds vector generation/write memory, not the entire ingestion process.
+
+After each window, sync reads back text, complete index provenance and finite vectors of the
+expected dimension, then saves a checksummed batch completion record. Retrying the same sync
+revalidates current release inputs and saved batches and only writes missing or invalid batches.
+Changing batch limits does not invalidate vectors. Changed source identities or permissions
+are never bypassed by a checkpoint. BM25 remains a full build for the selected release.
+
+`embedding-cache.sqlite3` stores rebuildable vectors on the Provider host, outside the Vault.
+Its key includes the exact rendered text, embedding identity/revision, effective tokenizer,
+preprocessing, endpoint/request model and vector dimension. Each vector has a checksum.
+Cross-release reuse requires a full immutable embedding revision; remote `name-only` assurance
+disables it even if a revision label was supplied. `embedding_cache_enabled: false` disables
+this cache. Text deduplication and valid batch recovery still apply without the cache.
+
+`sync-progress.json` reports phases, counts and timings without selecting the candidate.
+`status.sync_progress.writer_active` distinguishes live work from an interrupted process;
+reading status never repairs or resumes it. `sync_metrics.seconds` separates validation,
+rendering, model initialization, embedding/cache lookup, vector writes, batch verification,
+BM25, final validation and total time. Cache, deduplication and resumed counts are separate.
+The Finalize adapter includes these portable metrics in its Vault status record.
+
+Once all batches and BM25 are complete, sync revalidates the current corpus, hashes and access
+before atomically publishing `index-state.json`. Failures preserve the selected generation.
+`--rebuild` explicitly creates a fresh candidate, including for the same release, and never
+resets a selected generation. It starts a fresh attempt rather than resuming a failed rebuild.
+An ordinary retry resumes its deterministic candidate. Host-local generations may be removed
+only when no selected state or active reader needs them; sync performs no automatic garbage
+collection. Legacy generations retain their original compatibility checks until explicit sync.
 
 ## Tokenizer contract
 

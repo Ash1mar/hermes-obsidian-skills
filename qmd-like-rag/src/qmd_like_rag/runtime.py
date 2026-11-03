@@ -9,9 +9,10 @@ from .config import ProviderConfig
 from .contract import PROTOCOL_VERSION, PROVIDER_ID, normalize_candidate, recall_response
 from .corpus import current_release_identity
 from .tokenization import ModelTokenizer
+from .sync_support import read_json, writer_active
 
 
-def read_status(config: ProviderConfig) -> dict[str, Any]:
+def _read_index_status(config: ProviderConfig) -> dict[str, Any]:
     if not config.state_path().is_file():
         try:
             tokenizer = ModelTokenizer(config).manifest()
@@ -61,6 +62,18 @@ def read_status(config: ProviderConfig) -> dict[str, Any]:
     return json.loads(config.state_path().read_text(encoding="utf-8"))
 
 
+def read_status(config: ProviderConfig) -> dict[str, Any]:
+    state = _read_index_status(config)
+    progress = read_json(config.progress_path())
+    if progress:
+        progress["writer_active"] = writer_active(config.persist_dir)
+        if progress.get("status") == "building" and not progress["writer_active"]:
+            progress["status"] = "interrupted"
+        state["sync_progress"] = progress
+    state["desired_query_configuration_fingerprint"] = config.query_config_fingerprint()
+    return state
+
+
 def sync(config: ProviderConfig, rebuild: bool = False, expected_release_id: str | None = None,
          expected_release_hash: str | None = None) -> dict[str, Any]:
     from .indexer import HybridIndexer
@@ -81,10 +94,16 @@ def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict
             index_generation=state.get("index_generation"),
         )
     compatibility_warnings: list[str] = []
-    if state.get("configuration_fingerprint") != config.config_fingerprint():
-        compatibility_warnings.append("index-configuration-mismatch")
-    if state.get("model_fingerprint") != config.model_fingerprint():
-        compatibility_warnings.append("index-model-mismatch")
+    decoupled = state.get("index_contract") == "release-index/v2"
+    if decoupled:
+        if state.get("index_configuration_fingerprint") != config.index_config_fingerprint():
+            compatibility_warnings.append("index-configuration-mismatch")
+    else:
+        # Existing generations keep their original strict contract until an explicit sync.
+        if state.get("configuration_fingerprint") != config.config_fingerprint():
+            compatibility_warnings.append("index-configuration-mismatch")
+        if state.get("model_fingerprint") != config.model_fingerprint():
+            compatibility_warnings.append("index-model-mismatch")
     try:
         current_tokenizer = ModelTokenizer(config).manifest()
         if state.get("tokenizer", {}).get("fingerprint") != current_tokenizer.get("fingerprint"):
@@ -94,7 +113,7 @@ def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict
     if config.use_reranker:
         try:
             current_reranker_tokenizer = ModelTokenizer(config, "reranker").manifest()
-            if (state.get("reranker_tokenizer", {}).get("fingerprint")
+            if (not decoupled and state.get("reranker_tokenizer", {}).get("fingerprint")
                     != current_reranker_tokenizer.get("fingerprint")):
                 compatibility_warnings.append("index-reranker-tokenizer-mismatch")
         except Exception as exc:
@@ -132,7 +151,7 @@ def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict
     else:
         raw = raw[:limit]
     candidates = [normalize_candidate(item, config.vault_root) for item in raw]
-    return recall_response(
+    result = recall_response(
         vault_id=config.vault_id,
         index_fingerprint=state.get("index_fingerprint"),
         candidates=candidates,
@@ -140,6 +159,10 @@ def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict
         release_id=state.get("release_id"), release_hash=state.get("release_hash"),
         index_generation=state.get("index_generation"),
     )
+    result["query_configuration_fingerprint"] = config.query_config_fingerprint()
+    result["query_model_fingerprint"] = config.model_fingerprint()
+    result["reranker_tokenizer"] = current_reranker_tokenizer if config.use_reranker else None
+    return result
 
 
 def doctor() -> dict[str, Any]:

@@ -37,8 +37,7 @@ def make_handler(config: ProviderConfig) -> type[BaseHTTPRequestHandler]:
             if self.path == "/health":
                 self._write(200, doctor())
             elif self.path == "/status":
-                with runtime_lock:
-                    self._write(200, read_status(config))
+                self._write(200, read_status(config))
             else:
                 self._write(404, {"status": "error", "error": "not-found"})
 
@@ -53,10 +52,11 @@ def make_handler(config: ProviderConfig) -> type[BaseHTTPRequestHandler]:
                         result = recall(config, query, int(payload.get("top_k") or config.rerank_top_k))
                     self._write(200, result)
                 elif self.path == "/sync":
-                    with runtime_lock:
-                        result = sync(config, bool(payload.get("rebuild", False)),
-                                      expected_release_id=payload.get("release_id"),
-                                      expected_release_hash=payload.get("release_hash"))
+                    # The runtime's file lock also excludes writers in other HTTP/CLI processes.
+                    # Readers select immutable generations and status stays observable.
+                    result = sync(config, bool(payload.get("rebuild", False)),
+                                  expected_release_id=payload.get("release_id"),
+                                  expected_release_hash=payload.get("release_hash"))
                     self._write(200, result)
                 else:
                     self._write(404, {"status": "error", "error": "not-found"})
