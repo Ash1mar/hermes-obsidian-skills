@@ -6,7 +6,7 @@ from hermes_source_units.validation import fingerprint
 
 
 def read_outcome(adapter,binding,view,prove,images):
-    from semantic_output import path_for,CONTRACT,ELIGIBLE,check
+    from semantic_output import path_for,CONTRACT,ELIGIBLE,check,eligible_error
     from fixed_semantic import prepare_request_projection,decode_semantic_response
     from fixed_semantic_schema import schema_for
     path=path_for(adapter,binding,'page-write',view)
@@ -28,7 +28,7 @@ def read_outcome(adapter,binding,view,prove,images):
     last=None;previous=None
     for index,attempt in enumerate(attempts):
         if (attempt.get('attempt')!=index+1 or attempt.get('attempt_id')!=fingerprint({'path':path.name,'attempt':index+1})
-            or index and (previous is None or previous.code not in ELIGIBLE)):return None
+            or index and (previous is None or not eligible_error(previous.code,journal))):return None
         ref=attempt.get('audit_ref')
         if not ref:
             return {'kind':'pending','ref':last['ref'],'error':previous} if last and previous else None
@@ -52,7 +52,7 @@ def read_outcome(adapter,binding,view,prove,images):
             last={'kind':'valid','ref':ref,'draft':draft,'error':None}
         else:
             if attempt.get('state')!='rejected':return None
-            if index<len(attempts)-1 and (error.code not in ELIGIBLE or not attempt.get('correctable')):return None
+            if index<len(attempts)-1 and (not eligible_error(error.code,journal) or not attempt.get('correctable')):return None
             last={'kind':'held','ref':ref,'error':error}
         previous=error
     if last['kind']=='held' and len(attempts)==1 and attempts[0].get('correctable'):return None

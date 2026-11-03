@@ -13,7 +13,7 @@ def contract_hash():
     names=['reduce_coverage.py','reduce_coverage_reopen.py','fixed_page_work.py','fixed_reduce.py',
            'reduce_execution_recovery.py','hermes_source_units/execution_plan.py',
            'hermes_source_units/reduce_coverage.py','hermes_source_units/knowledge_build.py',
-           'hermes_source_units/schemas/contracts.json']
+           'hermes_source_units/schemas/contracts.json','qa_scope.py']
     return fingerprint({n:hashlib.sha256((root/n).read_bytes()).hexdigest() for n in names})
 
 
@@ -120,6 +120,9 @@ def verify_pages(adapter,binding,value,manifest,prove):
 
 
 def verify(adapter,workflow,node,binding,entry,failure,runs):
+    if entry.get('automatic_qa') is True:
+        from qa_scope import verify as verify_qa
+        return verify_qa(adapter,workflow,node,binding,entry,failure,runs)
     if entry.get('amendment_id'):
         from citation_amendment_admission import verify as local_verify
         return local_verify(adapter,workflow,node,binding,entry)
@@ -226,7 +229,7 @@ def execute(adapter,binding,value,state,scope):
     written=reuse_pages(adapter,value,scope)
     effective=copy.deepcopy(state)
     effective['pages']=[{k:p[k] for k in ('identity','path','candidate_refs')} for p in manifest['allowed_pages']]
-    effective['omitted_candidate_refs']=[c for p in manifest['gaps'] for c in p['candidate_refs']]
+    effective['omitted_candidate_refs']=[c for p in manifest['gaps'] for c in p['candidate_refs']]+manifest.get('omitted_planning_candidate_refs',[])
     effective['reasons'].append('Explicit limited-scope acceptance; deferred necessary coverage remains incomplete.')
     draft=g.complete(value,effective);bodies={p['path']:p['content'] for p in written}
     for p in draft['pages']:p['content']=bodies[p['path']]

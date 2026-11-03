@@ -45,7 +45,7 @@
   "read_reuse_policy.py": "aa8df65a292a41ad834623269d56150fbe8c50cf95fcad0af929f85ff716a6ca",
   "reading_dependencies.py": "65a66a583811552c206339f1e6c58f97d94a445a7ab5c92ed98f28a40f7771be",
   "record_snapshot.py": "bd4398fa8829176d8ed4ce78073692ebddcdfcece1b8421261754410957f169f",
-  "reduce_coverage.py": "424bb07d719a4d598aa6a8655bb73ba471988ad28b0655ac9587a959a2d072bd",
+  "reduce_coverage.py": "4a9ada539df0ae8b5c4695b449aefcb0df06638b59ab4b82b1e193a6369148cc",
   "reduce_dependency_revision.py": "43373e4078ab7566c20d7280ce3fcc352b46ba8778757d9c099d044910ff8c02",
   "reduce_task_skip.py": "3d9e5383e2ded91e219a16e0502810b53c06ace0fc7fd5c6494d1b3e6527f3e8",
   "release_lint.py": "761699220c4a69a0e293cb4a8081d248f9c0df86f467cba9762179caa8decdb5",
