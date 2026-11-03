@@ -32,7 +32,7 @@ def permitted_tasks(adapter,binding,*,compact=False):
     from hermes_source_units.evidence_snapshot import history_query
     w=history_state(adapter.workflow,binding['workflow_id']);permitted={binding['task_id']:None};scope=_PROOFS.get()
     cache=getattr(adapter.workflow,'_verified_json_reads',None)
-    allowed=('build-native/v1','reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1')
+    allowed=('build-native/v1','reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1','qa-policy/v1')
     pointers=w.get('execution_recovery_history',[])
     with history_query(adapter.workflow,pointers):
         for pointer in pointers:
@@ -171,7 +171,7 @@ def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode,
     permitted = {binding['task_id']: None}
     for recovery in workflow.get('execution_recovery_history', []):
         report = _load_json(_vault_path(adapter.workflow.vault, recovery['report_ref']))
-        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1'):
+        if report['request'].get('recovery_scope') not in ('reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','qa-policy/v1'):
             continue
         for entry in report['entries']:
             if entry['node'] == binding['node']:

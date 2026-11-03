@@ -32,7 +32,7 @@ def start(request, record, bootstrap_skill):
     if not sources or any(not p.is_file() for p in sources) or len({p.name for p in sources})!=len(sources):
         raise ValueError('unique source basenames required')
     cfg=configuration()
-    policy={k:cfg[k] for k in ('source_prepare_concurrency','program_worker_concurrency','reduce_page_concurrency','pass_worker_concurrency')}
+    policy={k:cfg[k] for k in ('source_prepare_concurrency','program_worker_concurrency','reduce_page_concurrency','pass_worker_concurrency','reduce_worker_concurrency')}
     policy.update(request.get('execution_policy',{}))
     from hermes_source_units.validation import validate_record
     validate_record('ingest_workflow_scope',{'source_paths':[],'knowledge_selector':'startup',

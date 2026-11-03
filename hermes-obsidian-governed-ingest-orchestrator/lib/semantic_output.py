@@ -151,6 +151,8 @@ def diagnosis(phase,packet,draft,error,*,state=None):
     # Preserve the answer verbatim in native audit. Corrections return a full
     # replacement; the program never chooses or applies a domain patch.
     result['failed_response']=copy.deepcopy(draft)
+    if error.code=='SEMANTIC_REVIEW_REQUIRED':
+        result['instruction']+=' QA/needs-qa labels alone are advisory and do not prove a factual defect. Check only concrete evidence necessary for this assigned output. Retain limitations; if it remains unsupported, return blocked_reason for program isolation. Do not repair originals or invent approval. No human review follows this one additional check.'
     if phase=='resource-reduce' and error.code=='SEMANTIC_REVIEW_REQUIRED':
         result['allowed_candidate_refs']=packet['candidate_refs']
         result['instruction']+=' Preserve verified proposals. Explicitly omit candidates whose original evidence cannot verify them, using omitted_candidate_refs and explaining the coverage loss. This is a disposition of unsupported candidates, not permission to repair source text or approve missing evidence.'
@@ -362,6 +364,8 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
                 draft=None;error=ContractError('INVALID_SCHEMA','$',str(exc))
             else:error=None
         else:
+            if index>=2 and record.get('automatic_policy')=='once_then_isolate':
+                held('automatic QA correction exhausted; isolate instead of granting a third call')
             # Replay has fresh checks before/after native transcript proof.
             # New calls require fresh authority immediately before reservation.
             # Pure request construction has not changed the evidence checked at
@@ -403,7 +407,8 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
             attempt.update(state='valid',correctable=False);write(path,record)
             return draft,call_ref,result
         from automatic_pass_recovery import enabled
-        automatic_review=(phase=='resource-reduce' and error.code=='SEMANTIC_REVIEW_REQUIRED'
+        from hermes_source_units.qa_policy import SEMANTIC_PHASES
+        automatic_review=(phase in SEMANTIC_PHASES and error.code=='SEMANTIC_REVIEW_REQUIRED'
             and enabled(adapter.workflow.status(binding['workflow_id'])))
         eligible=bool(call_ref and (error.code in ELIGIBLE or automatic_review))
         if automatic_review:record['automatic_policy']='once_then_isolate'

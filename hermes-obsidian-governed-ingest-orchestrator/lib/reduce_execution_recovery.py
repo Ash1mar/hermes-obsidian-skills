@@ -58,7 +58,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
     if scope == 'reduce-citation-impact/v1':
         from citation_revision_preview import inspect
         return inspect(adapter, request, dry_run=dry_run)
-    if scope not in ('build-native/v1','reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1','reduce-validation/v1'):
+    if scope not in ('build-native/v1','reduce-cancel/v1','source-packets/v1','source-hold/v1','source-hold/v2','source-hold/v3','source-format/v1','dependency-resolved/v1','source-result-review/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1','reduce-validation/v1','qa-policy/v1'):
         fail('INVALID_SCHEMA', 'Reduce recovery requires a supported explicit correction scope')
     if scope in ('reduce-coverage/v1','reduce-coverage-reopen/v1','reduce-validation/v1'):
         from reduce_coverage import contract_hash
@@ -163,7 +163,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     fail('STALE_INPUT', 'failure evidence or binding changed')
                 projection=scope=='reduce-cancel/v1' and report.get('error_code')=='DISPATCH_ARTIFACT_CHANGED'
                 call_failure=scope in ('reduce-cancel/v1','build-native/v1') and report.get('error_code') in ('NATIVE_REQUEST_REJECTED','NATIVE_COMPLETION_UNKNOWN','PROGRAM_EXECUTION_FAILED')
-                allowed=(('SEMANTIC_REVIEW_REQUIRED','SEMANTIC_OUTPUT_HELD','INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','NATIVE_COMPLETION_UNKNOWN','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED') if scope in ('reduce-disposition/v1','reduce-coverage/v1') else ('INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','INVALID_TRANSITION','READING_WINDOW_OVERSIZE') if scope=='semantic-output/v1' else ('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
+                allowed=(('SEMANTIC_REVIEW_REQUIRED',) if scope=='qa-policy/v1' else ('SEMANTIC_REVIEW_REQUIRED','SEMANTIC_OUTPUT_HELD','INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','NATIVE_COMPLETION_UNKNOWN','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED') if scope in ('reduce-disposition/v1','reduce-coverage/v1') else ('INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','INVALID_TRANSITION','READING_WINDOW_OVERSIZE') if scope=='semantic-output/v1' else ('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
                     ('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED'))
                 if scope=='reduce-coverage/v1':allowed=(*allowed,'REDUCTION_FAILED')
                 local_amendment=scope=='reduce-cancel/v1' and bool(request.get('amendment_id'))
@@ -209,6 +209,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                     'previous_input_fingerprint': node.input_fingerprint, 'failure_ref': ref,
                     'failure_sha256': hashlib.sha256(data).hexdigest(), 'failure': report,
                     'ended_run_ids': [str(r['id']) for r in runs], 'template_hash': template_hash})
+                if scope=='qa-policy/v1':
+                    from qa_program import verify_recovery
+                    audited[-1].update(verify_recovery(adapter,value,node,binding,entry,report,runs))
                 if local_amendment:
                     from citation_amendment_compat import verify_execution_recovery
                     audited[-1].update(verify_execution_recovery(adapter,value,request,binding))

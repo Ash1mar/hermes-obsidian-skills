@@ -1129,7 +1129,13 @@ def run_reduce(adapter,binding,caller):
             gap.update(contract='automatic-source-packet-gaps/v1',source_submitted=False,
                 coverage_complete=False,failed_results_verified=False,additional_attempt_limit=1)
             _write_atomic(_vault_path(adapter.workflow.vault,report_ref),_json_bytes(gap))
-        result=fixed_reduce.submit(adapter,binding,ref,merge(input_value,packets,drafts))
+        merged=merge(input_value,packets,drafts)
+        from hermes_source_units.qa_policy import enabled as qa_enabled,gap as qa_gap
+        if merged['omitted_candidate_refs'] and qa_enabled(adapter.workflow.status(binding['workflow_id'])):
+            qa_gap(adapter.workflow.vault,binding['workflow_id'],binding['node'],
+                {'omitted_candidate_refs':merged['omitted_candidate_refs']},
+                [{'native_call_refs':calls,'reason':merged['reason']}])
+        result=fixed_reduce.submit(adapter,binding,ref,merged)
         if deferred:
             gap['source_submitted']=True;gap['submission_receipt_ref']=result['receipt_ref']
             _write_atomic(_vault_path(adapter.workflow.vault,report_ref),_json_bytes(gap))
@@ -1149,6 +1155,11 @@ def run_reduce(adapter,binding,caller):
         except ContractError as exc:
             call_ref=call_ref or getattr(exc,'semantic_audit_ref',None)
             if call_ref:attach_receipt(adapter,call_ref,{'ok':False,'validated':False,'state':'planning_packet_held','code':exc.code,'reason':str(exc)})
+            from qa_program import isolate_plan
+            isolated=isolate_plan(adapter,binding,input_value,state,packet,exc)
+            if isolated is not None:
+                state=isolated
+                return []
             raise
         state=updated
         attach_receipt(adapter,call_ref,{'ok':True,'validated':True,'state':'planning_packet_only','preceding_state_sha256':packet['previous_state_sha256'],'planned_state_sha256':fingerprint(state)})
@@ -1165,6 +1176,10 @@ def run_reduce(adapter,binding,caller):
     from fixed_page_work import execute as page_work,LOCAL
     from fixed_global_replay import successful_prefix,recorded_packet
     prefix=successful_prefix(adapter,binding,input_value) if isinstance(caller,HermesCaller) else []
+    # Program exclusions must replay in their original position. The ordinary
+    # finite journals still reuse every exact native result without new calls.
+    qa_root=adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}/qa-gaps'
+    if any('planning_packet' in _load_json(p).get('scope',{}) for p in qa_root.glob('*.json')):prefix=[]
     planning_failure=None
     try:
         with planning_scope(input_value):

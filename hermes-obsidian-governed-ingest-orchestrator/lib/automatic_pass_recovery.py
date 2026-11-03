@@ -14,8 +14,11 @@ POLICY={'contract':'automatic-pass-recovery/v1','additional_attempts':1,
 
 def enabled(value):
     from orchestration import configuration
+    from hermes_source_units.qa_policy import POLICY
+    cfg=configuration()
+    if cfg.get('qa_policy',POLICY)!=POLICY:raise ContractError('INVALID_SCHEMA','$','unsupported automatic QA policy')
     return (value.get('scope',{}).get('execution_mode')=='auto_full'
-            and configuration().get('pass_failure_policy','hold')=='once_then_isolate')
+            and cfg.get('pass_failure_policy','hold')=='once_then_isolate')
 
 
 def request(adapter,wid,**fields):
@@ -83,6 +86,9 @@ def recover(adapter,wid,*,resume=True):
     """
     from native_ingest import control_workflow
     from native_stop_inventory import verify_cancel_drain
+    if adapter.workflow.status(wid)['current_stage']=='build_finalizing':
+        from qa_build_recovery import recover as recover_build
+        return recover_build(adapter,wid,resume=resume)
     if adapter.workflow.status(wid)['current_stage']=='reducing':
         from automatic_reduce_recovery import recover as recover_source
         return recover_source(adapter,wid,resume=resume)
