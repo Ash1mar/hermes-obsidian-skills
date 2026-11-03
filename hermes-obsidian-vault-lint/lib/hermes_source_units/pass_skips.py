@@ -55,7 +55,7 @@ class PassSkipMixin:
                 seen.update(pointer['task_ids']);reports.append(report);continue
             for entry in report['entries']:
                 item=self.knowledge._slice(value['batch_id'],entry['slice_id'])
-                if ((item['task_ids']!=entry['task_ids'] and not (entry.get('automatic_proof') and set(entry['task_ids']).issubset(item['task_ids']) and all(self.knowledge._task(t)['status']=='completed' for t in set(item['task_ids'])-set(entry['task_ids'])))) or item['input_fingerprint']!=entry['slice_input_fingerprint']):
+                if ((item['task_ids']!=entry['task_ids'] and not (entry.get('automatic_proof') and set(entry['task_ids']).issubset(item['task_ids']) and all(self._task_passes_complete(t) for t in set(item['task_ids'])-set(entry['task_ids'])))) or item['input_fingerprint']!=entry['slice_input_fingerprint']):
                     fail('STALE_INPUT','skipped slice ownership changed')
                 for task_id,expected in entry['target_fingerprints'].items():
                     task=self.knowledge._task(task_id)
@@ -119,7 +119,7 @@ class PassSkipMixin:
                             fail('INVALID_TRANSITION','only cancelled unskipped failed work may be excluded')
                         automatic=entry.get('deferral')=='automatic_retry_exhausted'
                         selected=entry.get('task_ids') if automatic else item['task_ids']
-                        if automatic and (not selected or not set(selected).issubset(item['task_ids']) or any(service._task(t)['status']!='completed' for t in set(item['task_ids'])-set(selected))):
+                        if automatic and (not selected or not set(selected).issubset(item['task_ids']) or any(not self._task_passes_complete(t) for t in set(item['task_ids'])-set(selected))):
                             fail('SKIP_NOT_ALLOWED','automatic isolation preserves completed tasks and must account for every unfinished task')
                         proofs=[];covered=set();automatic_proof=None
                         for evidence in entry['evidence']:

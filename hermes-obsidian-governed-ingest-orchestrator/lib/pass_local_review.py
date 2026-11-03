@@ -57,11 +57,11 @@ def verify(adapter,w,item,binding,failure,snapshot,*,call_count=1):
         tid=call['task_identities'][t['task']]
         if tid not in item['task_ids']:fail('native output names foreign work')
         task=adapter.workflow.knowledge._task(tid)
-        if task['status']=='completed':continue
+        if task['status']=='completed' or adapter.workflow._task_passes_complete(tid):continue
         projection=adapter.workflow.knowledge.preview_model_input(tid,batch)
-        if phase=='candidate' and projection.get('continuation',{}).get('action')=='citation':continue
         # Build an ordinary current packet so pools and heading aliases are compared by content.
         packet=visible_packet(adapter.workflow.knowledge.model_packet([projection],w['batch_id'],persist=False)['view'])
+        if phase=='candidate' and packet['tasks'][0]['continuation']['action']=='citation':continue
         packet=subset(packet,packet['tasks'],phase)
         if task_content(view,t)!=task_content(packet,packet['tasks'][0]):fail('current reading/input differs from rejected call')
         pending.append(tid);identities[tid]=task_content(view,t)
