@@ -15,7 +15,8 @@ from hermes_source_units.ingest_workflow import display_phase
 
 
 def test_small_canary_is_pinned_and_legacy_still_requires_eight(vault):
-    plan_sliced_batch(vault,6,'small')
+    batch=plan_sliced_batch(vault,6,'small')
+    batch.initialize_slices('small','agent',batch._batch('small')['revision'])
     scope={'source_paths':[],'knowledge_selector':'all','execution_mode':'auto_full','canary_policy':'sample'}
     w=start_and_pin(vault,workflow_request(workflow_id='ingest-small',actor='agent',expected_revision=0,
         profile='compact-5',scope=scope,batch_id='small'))
@@ -34,7 +35,8 @@ def test_small_canary_is_pinned_and_legacy_still_requires_eight(vault):
 
 
 def test_off_is_explicit_and_does_not_fabricate_selection(vault):
-    plan_sliced_batch(vault,3,'off')
+    batch=plan_sliced_batch(vault,3,'off')
+    batch.initialize_slices('off','agent',batch._batch('off')['revision'])
     scope={'source_paths':[],'knowledge_selector':'all','execution_mode':'auto_full','canary_policy':'off'}
     w=start_and_pin(vault,workflow_request(workflow_id='ingest-off',actor='agent',expected_revision=0,
         profile='compact-5',scope=scope,batch_id='off'))

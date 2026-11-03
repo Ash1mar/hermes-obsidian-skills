@@ -1581,7 +1581,6 @@ class IngestKanbanAdapter:
         with span('reconciliation_state_settlement'):
             value = self.workflow.status(workflow_id)
             self.apply_policy(value)
-            self.apply_policy(value)
             self.workflow.assert_execution_ready(value)
             if value["actor"] != actor:
                 _fail("ACTOR_MISMATCH", "workflow actor differs")
