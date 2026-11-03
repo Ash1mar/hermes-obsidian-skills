@@ -14,6 +14,7 @@ import sys
 
 from program_worker import ASSIGNEE, canonical_binding, admission_check
 from hermes_source_units import ContractError
+from hermes_source_units.pass_capacity import effective as pass_capacity
 from hermes_source_units.source_units import _exclusive_lock, _vault_path
 from hermes_source_units.runtime_telemetry import measured, span
 
@@ -84,7 +85,7 @@ def _dispatch_programs(adapter, workflow_id):
             if cap is not None and kd.count_running_tasks(conn) + kd.count_running_tasks_other_boards(board) >= cap:
                 break
             if (card['node'].startswith('pass-slice:') and batch
-                    and len(occupied)>=batch['slice_config']['pass_worker_concurrency']):
+                    and len(occupied)>=pass_capacity(adapter.workflow.vault,batch)):
                 break
             if kd.check_respawn_guard(conn, task.id) is not None:
                 continue
@@ -101,7 +102,7 @@ def _dispatch_programs(adapter, workflow_id):
                 live_tasks = {native.id:native for native in kb.list_tasks(conn)}
                 live_occupied.update(c['node'] for c in current['kanban']['task_map'] if c['node'].startswith('pass-slice:')
                     and c['task_id'] in live_tasks and live_tasks[c['task_id']].status=='running')
-                if len(live_occupied)>=live_batch['slice_config']['pass_worker_concurrency']:
+                if len(live_occupied)>=pass_capacity(adapter.workflow.vault,live_batch):
                     return spawned
             if (request['task_id'] != task.id or request['node'] != card['node']
                     or current['kanban']['board_id'] != board

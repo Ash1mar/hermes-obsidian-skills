@@ -267,6 +267,8 @@ def workflow_status(vault, workflow_id=None, *, runtime=False):
            'source_counts':{key:len(coverage[key]) for key in ('ready','failed','pending')}}
     if value['batch_id']:
         batch = service.knowledge._batch(value['batch_id'])
+        from hermes_source_units.pass_capacity import effective
+        out['pass_runtime_capacity']=effective(service.vault,batch)
         slices = service.knowledge._slices(value['batch_id'])
         out.update(batch_revision=batch['revision'], batch_state=batch['state'],
                    slice_counts=dict(Counter(s['state'] for s in slices)), total_slices=len(slices),
