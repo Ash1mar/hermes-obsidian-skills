@@ -850,7 +850,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                             "slice": selected}
                 return {"ok": True, "leased": False, "reason": "slice_leased", "slice": None}
             leased_count = sum(item["state"] == "leased" for item in slices)
-            if leased_count >= int(batch["slice_config"]["pass_worker_concurrency"]):
+            from .pass_capacity import effective
+            if leased_count >= effective(self.vault,batch):
                 return {"ok": True, "leased": False, "reason": "concurrency_limit", "slice": None}
             if slice_id is None:
                 selected = next((item for item in slices if item["state"] == "ready"), None)

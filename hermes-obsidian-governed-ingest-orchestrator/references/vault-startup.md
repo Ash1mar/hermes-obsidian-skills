@@ -15,7 +15,7 @@ and receipt on retries. New targets must be empty; existing Vault ingestion
 continues through the existing workflow entry, without bootstrap.
 
 Optional `execution_policy` overrides the four positive integer limits:
-`pass_worker_concurrency` (default 5), `source_prepare_concurrency` (2),
+`pass_worker_concurrency` (default 10), `source_prepare_concurrency` (2),
 `program_worker_concurrency` (2), `reduce_page_concurrency` (10).
 The effective values are fixed in the receipt and workflow scope. Native host
 capacity and memory pressure still apply. Pass capacity is separate from other
@@ -68,3 +68,11 @@ must be obtained separately before claiming that deployment is fully qualified.
 Updating shared installed code requires all consumers to stop; pinned templates
 alone do not pin executable bytes. Cancel only the selected workflow and retain
 shared Gateway services needed by others.
+
+For an explicitly authorized change to an existing Pass batch, stop and drain the
+workflow, then call `python3 "<orchestrator-skill-dir>/scripts/set_pass_capacity.py"
+--vault "<vault>" --workflow-id "<id>" --limit 10 --operation-id "<stable-id>"`.
+The atomic batch pointer names a hash-bound append-only request. Original slice
+configuration, input fingerprints, Canary selection, attempts and domain outputs
+remain unchanged. This operation neither repairs failures nor resumes execution.
+Native status reports `pass_runtime_capacity`; host capacity still limits admission.

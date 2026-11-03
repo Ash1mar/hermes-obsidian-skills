@@ -107,6 +107,6 @@ def test_short_startup_reuses_bootstrap_and_observes_existing_workflow(tmp_path,
     assert calls==['start']
     assert first['startup']['workflow_id']==second['startup']['workflow_id']
     assert second['workflow']['current_stage']=='created'
-    assert second['startup']['execution_policy']['pass_worker_concurrency']==5
+    assert second['startup']['execution_policy']['pass_worker_concurrency']==10
     source.write_text('changed')
     with pytest.raises(ValueError,match='changed'): module.start(request,record,bootstrap)

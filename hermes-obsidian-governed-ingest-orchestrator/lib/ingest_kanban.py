@@ -1685,7 +1685,7 @@ class IngestKanbanAdapter:
             ][:self.source_prepare_concurrency]}
             pass_window = set()
             if value['batch_id']:
-                capacity = self.workflow.knowledge._batch(value['batch_id'])['slice_config']['pass_worker_concurrency']
+                capacity = __import__('hermes_source_units.pass_capacity',fromlist=['effective']).effective(self.workflow.vault,self.workflow.knowledge._batch(value['batch_id']))
                 held={'pass-slice:'+s['slice_id'] for s in self.workflow.knowledge._slices(value['batch_id']) if s['lease']['worker_id']}
                 candidates = [node for node in nodes if node.kind == 'pass-slice'
                               and self._canary_allows(value, node)
