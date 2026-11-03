@@ -56,7 +56,7 @@ def dispatch(vault,request_path):
             if kd._memory_pressure_level()=='critical':fail('host memory pressure')
             tid=kb.create_task(conn,title='One-time release Provider experiment; production disabled',body=json.dumps(body,sort_keys=True),
                 assignee=ASSIGNEE,created_by='provider-probe',workspace_kind='dir',workspace_path=str(out),
-                project_id='',initial_status='ready',max_retries=1,max_runtime_seconds=1900,
+                project_id='',initial_status='running',max_retries=1,max_runtime_seconds=1900,
                 idempotency_key='provider-probe:'+q['workflow_id']+':'+q['operation_id'],board=board)
             task=kb.get_task(conn,tid)
             if task.body!=json.dumps(body,sort_keys=True):fail('operation identity already differs')
