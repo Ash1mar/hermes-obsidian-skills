@@ -14,6 +14,7 @@ def test_capacity_changes_preserve_inputs_and_detect_audit_tampering(vault):
     with pytest.raises(ContractError,match='INVALID_TRANSITION'):
         set_capacity(a,w['workflow_id'],10,'ten')
     a.workflow.cancel(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=w['revision']))
+    k.cancel_batch('capacity','agent',k._batch('capacity')['revision'])
     original={p:p.read_bytes() for p in a.workflow.knowledge._slice_root('capacity').glob('*.json')}
     result=set_capacity(a,w['workflow_id'],10,'ten')
     assert effective(vault,a.workflow.knowledge._batch('capacity'))==10
