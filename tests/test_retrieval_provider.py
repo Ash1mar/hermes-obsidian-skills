@@ -122,7 +122,7 @@ def test_query_adapter_normalizes_provider_output(tmp_path: Path) -> None:
     assert result["candidates"][0]["retrieval_routes"] == ["qmd-like-rag"]
 
 
-def test_default_provider_configs_enable_read_only_query_but_not_sync(tmp_path: Path) -> None:
+def test_default_provider_configs_keep_query_and_sync_disabled(tmp_path: Path) -> None:
     vault = make_vault(tmp_path)
     query = subprocess.run(
         [sys.executable, str(QUERY_ADAPTER), str(vault), "供电可用性"],
@@ -131,11 +131,11 @@ def test_default_provider_configs_enable_read_only_query_but_not_sync(tmp_path: 
         check=True,
     )
     query_result = json.loads(query.stdout)
-    assert json.loads(QUERY_CONFIG.read_text(encoding="utf-8"))["enabled"] is True
+    assert json.loads(QUERY_CONFIG.read_text(encoding="utf-8"))["enabled"] is False
     assert json.loads(FINALIZE_CONFIG.read_text(encoding="utf-8"))["enabled"] is False
     assert json.loads(QUERY_CONFIG.read_text(encoding="utf-8"))["provider_config"] == "/root/.config/qmd-like-rag/main.json"
     assert json.loads(FINALIZE_CONFIG.read_text(encoding="utf-8"))["provider_config"] == "/root/.config/qmd-like-rag/main.json"
-    assert query_result["status"] in {"ok", "unavailable"}
+    assert query_result["status"] == "disabled"
     assert query_result["candidates"] == []
 
     sync = subprocess.run(
