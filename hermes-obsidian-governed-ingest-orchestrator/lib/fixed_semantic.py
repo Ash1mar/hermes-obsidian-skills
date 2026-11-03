@@ -363,6 +363,12 @@ def wire_prompt(phase,view,output_schema,correction=None):
         # The actual request carries the schema once at the API boundary.
         body['required_result_slots']=[t['task'] for t in view.get('tasks',[])]
     if correction: body['correction'] = _stable_objects(correction)
+    system=system_prompt(phase,view,correction)
+    return {'system':system,
+        'user':'Semantic input v1\n'+json.dumps(body,ensure_ascii=False,separators=(',',':'))}
+
+
+def system_prompt(phase,view,correction=None):
     system=COMMON+'\n'+RULES[phase]
     if phase=='page-review' and view.get('review_scope'):
         from reduce_disposition import PAGE_RULE
@@ -391,8 +397,7 @@ def wire_prompt(phase,view,output_schema,correction=None):
         system+=' Prior candidate.evidence_qa findings are earlier review narratives, not source material or extra claims to prove. Never require an original matching that narrative. Retain QA status/notes and real source limits. Ground each candidate in its supplied original_evidence and existing support_refs; several support refs are valid and need not identify a unique material per subclaim. An omitted cN is unverified coverage loss, not verification. Omit unsupported claims with concrete reasons and retain supported claims. An omitted-context count alone does not mean assigned core is absent. Missing assigned material objects, changed evidence, permission or feeding faults still block; identify the actual absent reading/material. Do not infer or repair text, omit for grouping/budget, or change citations.'
     elif phase=='resource-reduce' and 'hold_resolution' in view:
         system+=' For this authorized partial source reduction, distinguish candidate support from request integrity. An explicitly omitted cN is an unverified coverage loss, never verified evidence. After inspecting its supplied originals, omit an unsupported or unreadable candidate with a concrete reason and preserve the verifiable candidates; this does not require a pre-existing QA flag. Do not omit merely for wording, grouping difficulty or budget. A genuinely absent required material object, changed evidence, permission or binding problem must still block; do not hide a program feeding defect as a source limitation.'
-    return {'system':system,
-        'user':'Semantic input v1\n'+json.dumps(body,ensure_ascii=False,separators=(',',':'))}
+    return system
 
 
 def prepare_request_projection(phase,view,output_schema,images=(),correction=None):
