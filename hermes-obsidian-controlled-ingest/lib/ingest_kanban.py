@@ -245,6 +245,10 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
         return nodes  # Unopened Reduce work must not scan every task and Pass.
 
     resource_tasks: dict[str, list[str]] = {}
+    # A partially excluded slice is not a successful slice. Its other tasks
+    # nevertheless retain their independently verified Pass evidence.
+    gap_nodes={'pass-slice:'+sid for sid in service.skipped_pass_slices(workflow)}
+    if gap_nodes:service.verify_pass_skips(workflow)
     for task_id in batch["task_ids"]:
         task = service.knowledge._task(task_id)
         if task['status']=='skipped':
@@ -255,7 +259,8 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
     reducers = []
     for resource_id, task_ids in sorted(resource_tasks.items()):
         parents = tuple(sorted({pass_nodes[task_id] for task_id in task_ids
-                                if task_id in pass_nodes}))
+                                if task_id in pass_nodes and not (pass_nodes[task_id] in gap_nodes
+                                    and service._task_passes_complete(task_id))}))
         pass_ids = []
         for task_id in task_ids:
             root = _vault_path(service.vault,
