@@ -105,14 +105,14 @@ def recover(adapter,wid,*,resume=True):
             if entry['action']=='retry':
                 if not saved_request.exists():_write_atomic(saved_request,_json_bytes(request(adapter,wid,recovery_id=rid,
                     recovery_scope='pass-local-review/v1',reason='Automatic one-correction program policy; original evidence retained',
-                    entries=[{k:entry[k] for k in ('node','task_id','failure_sha256')}]))))
+                    entries=[{k:entry[k] for k in ('node','task_id','failure_sha256')}])))
                 adapter.recover_pass_execution(_load_json(saved_request))
             else:
                 if not saved_request.exists():_write_atomic(saved_request,_json_bytes(request(adapter,wid,operation_id=rid,
                     entries=[{'slice_id':entry['node'].partition(':')[2],
                         'deferral':'automatic_retry_exhausted','task_ids':entry['proof']['task_ids'],
                         'automatic_proof':entry['proof'],'reason':'One native correction exhausted; unresolved coverage retained',
-                        'evidence':[{'ref':entry['failure_ref'],'sha256':entry['failure_sha256']}]}]))))
+                        'evidence':[{'ref':entry['failure_ref'],'sha256':entry['failure_sha256']}]}])))
                 adapter.skip_pass_slices(_load_json(saved_request))
         complete=root/(op+'.json')
         _write_atomic(complete,_json_bytes({**intent,'state':'applied','domain_outputs_changed':False}))

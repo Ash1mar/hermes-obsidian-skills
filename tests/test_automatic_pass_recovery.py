@@ -1,7 +1,9 @@
 """Finite attempts survive worker/reconciler restarts and preserve task scope."""
 from types import SimpleNamespace
-import json
+from pathlib import Path
+import json,sys
 import pytest
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'hermes-obsidian-governed-ingest-orchestrator/lib'))
 from hermes_source_units import ContractError
 from pass_local_review import reserve_budget,finish_budget
 
