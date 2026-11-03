@@ -9,6 +9,9 @@ from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from native_stop_inventory import verify_cancel_drain
 
 def recover(adapter,request,*,dry_run=False):
+    if request.get('recovery_scope')=='provider-disabled/v1':
+        from provider_disposition_control import prepare
+        return prepare(adapter,request,dry_run=dry_run)
     def fail(message):raise ContractError('RELEASE_RECOVERY_NOT_ALLOWED','$',message)
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):fail('operator only')
     service=adapter.workflow;service._check_request(request);wid=request['workflow_id'];rid=request.get('recovery_id','')

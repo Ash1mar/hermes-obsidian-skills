@@ -1,5 +1,24 @@
 # Operations
 
+## Explicit disabled Provider disposition
+
+When the user explicitly keeps the Provider disabled, a stopped and drained
+`indexing` stage whose exact ended native attempt failed `PROVIDER_DISABLED`
+may use `recover-release-execution` with `recovery_scope=provider-disabled/v1`.
+Bind actor/revision/digest, stable recovery_id/reason, task_id/input_fingerprint,
+failure_sha256, release {ref,sha256}, adapter_config_fingerprint, and explicit
+skip_provider_sync=true, stop_after=release_sync. Preview then apply the identical
+request. The operation preserves the immutable starting policy and failure,
+adds an auditable no-index disposition, and never resumes execution itself.
+
+An authorized resume dispatches the native program worker to write a disabled
+status record for that exact release, with query_ready=false, no generation,
+zero indexed documents and no Provider/model call. It then reaches the normal
+release_sync durable pause. A missing authorization, changed release/config,
+unknown execution or a fake ready/generation is rejected. This is an explicit
+skip, not successful indexing or permission to cross release_sync. Existing
+Provider data and the previous last_success remain intact.
+
 Shared fixed-call failures use the existing recover-reduce-execution command and
 reduce-cancel/v1 scope. NATIVE_REQUEST_REJECTED/NATIVE_COMPLETION_UNKNOWN, or an old
 PROGRAM_EXECUTION_FAILED, are not blanket eligibility: the operation authenticates
