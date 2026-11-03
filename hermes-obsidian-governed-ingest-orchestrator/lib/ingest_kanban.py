@@ -685,6 +685,8 @@ class IngestKanbanAdapter:
                             "hermes-obsidian-governed-ingest-orchestrator/config/orchestration.json")
         self.source_prepare_concurrency = int(config.get("source_prepare_concurrency", 2))
         self.program_worker_concurrency = int(config.get('program_worker_concurrency', 2))
+        self.reduce_worker_concurrency = int(config.get('reduce_worker_concurrency', 2))
+        if not 1<=self.reduce_worker_concurrency<=10:_fail('INVALID_SCHEMA','reduce_worker_concurrency must be 1 through 10')
         self.reduce_page_concurrency = int(config.get('reduce_page_concurrency', 2))
         if not 1 <= self.reduce_page_concurrency <= 10:
             _fail('INVALID_SCHEMA', 'reduce_page_concurrency must be between 1 and 10')
@@ -2273,6 +2275,9 @@ class IngestKanbanAdapter:
             release_id = workflow.get("release_id")
             checked = FileVaultFinalizeService(self.workflow.vault).validate(release_id)
             lint = self._lint(workflow)
+            from hermes_source_units.qa_policy import reports as qa_reports,POLICY as QA_POLICY
+            qa_gaps=qa_reports(self.workflow.vault,workflow['workflow_id'])
+            lint={**lint,'qa_policy':QA_POLICY,'qa_gap_refs':qa_gaps,'qa_human_review_required':False}
             report = self._report(workflow, "acceptance-lint", lint)
             if not checked["ok"] or not lint.get("ok"):
                 self._report(workflow, f"failed-{fingerprint(node.name)[:16]}",
@@ -2286,7 +2291,7 @@ class IngestKanbanAdapter:
                                            if item.get("severity") == "error"]})
             release_ref = f"_system/knowledge-releases/{release_id}/manifest.json"
             from hermes_source_units.reduce_coverage import batch_outcome
-            target = ("partial" if batch_outcome(self.workflow.knowledge,self.workflow.knowledge._batch(batch_id)) or self.workflow.source_coverage(workflow)["failed"] or self.workflow.skipped_pass_tasks(workflow)
+            target = ("partial" if qa_gaps or batch_outcome(self.workflow.knowledge,self.workflow.knowledge._batch(batch_id)) or self.workflow.source_coverage(workflow)["failed"] or self.workflow.skipped_pass_tasks(workflow)
                       else "completed")
             updated = self._advance(workflow, target, [release_ref, report])
         else:

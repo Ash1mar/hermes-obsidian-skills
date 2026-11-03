@@ -11,5 +11,14 @@
   },
   "activation_note": "In auto_full, dispatch source preparation, exact plan, an eight-slice canary, remaining Pass slices and all downstream nodes. Advance both checkpoints only after durable validation and rechecked hashed decisions.",
   "pass_worker_concurrency": 10,
-  "pass_failure_policy": "once_then_isolate"
+  "pass_failure_policy": "once_then_isolate",
+  "qa_policy": {
+    "contract": "automatic-qa-policy/v1",
+    "labels": "advisory",
+    "blocking_action": "isolate_with_dependents",
+    "max_additional_hermes_checks": 1,
+    "human_review_required": false,
+    "invalid_evidence_accepted": false
+  },
+  "reduce_worker_concurrency": 10
 }

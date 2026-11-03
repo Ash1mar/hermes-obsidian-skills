@@ -265,6 +265,9 @@ def workflow_status(vault, workflow_id=None, *, runtime=False):
            'execution_config':plan['config'] if plan else None,
            'execution_journal_pending':(service._execution_journal(workflow_id).exists() or service._pass_skip_journal(workflow_id).exists()),
            'source_counts':{key:len(coverage[key]) for key in ('ready','failed','pending')}}
+    from orchestration import configuration
+    cfg=configuration();effective_policy={**{k:cfg[k] for k in ('source_prepare_concurrency','program_worker_concurrency','reduce_page_concurrency','reduce_worker_concurrency') if k in cfg},**value['scope'].get('execution_policy',{})}
+    out['runtime_concurrency']=effective_policy
     if value['batch_id']:
         batch = service.knowledge._batch(value['batch_id'])
         from hermes_source_units.pass_capacity import effective

@@ -6,6 +6,8 @@ from hermes_source_units.source_units import _load_json,_vault_path,_write_atomi
 
 
 def recover(adapter,wid,*,resume=True):
+    from qa_program import recover_global
+    if recover_global(adapter,wid,resume=resume):return True
     from automatic_pass_recovery import enabled,request,POLICY
     from native_ingest import control_workflow
     from native_stop_inventory import verify_cancel_drain

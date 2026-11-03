@@ -77,9 +77,12 @@ def _dispatch_programs(adapter, workflow_id):
                 continue
             if new_policy and not card['node'].startswith('pass-slice:'):
                 live_tasks={t.id:t for t in kb.list_tasks(conn)}
+                resource=card['node'].startswith('resource-reduce:')
                 running=sum(1 for c in value['kanban']['task_map'] if not c['node'].startswith('pass-slice:')
+                    and c['node'].startswith('resource-reduce:')==resource
                     and c['task_id'] in live_tasks and live_tasks[c['task_id']].status=='running')
-                if running>=adapter.program_worker_concurrency: continue
+                capacity=adapter.reduce_worker_concurrency if resource else adapter.program_worker_concurrency
+                if running>=capacity: continue
             if pressure == 'critical' or (pressure == 'elevated' and spawned):
                 break
             if cap is not None and kd.count_running_tasks(conn) + kd.count_running_tasks_other_boards(board) >= cap:

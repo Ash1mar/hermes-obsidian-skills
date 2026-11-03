@@ -251,6 +251,14 @@ class ExecutionPlanMixin:
                     original=_vault_path(self.vault,proof['original_call_ref'])
                     if hashlib.sha256(original.read_bytes()).hexdigest()!=proof['original_call_sha256']:
                         fail('STALE_INPUT','original local review call evidence changed')
+                if scope=='qa-policy/v1':
+                    proof=entry.get('qa_policy',{})
+                    if (proof.get('contract')!=scope or proof.get('domain_inputs_preserved') is not True
+                        or proof.get('original_attempts_preserved') is not True or proof.get('new_call_budget_granted')!=0
+                        or proof.get('unknown_completion_allowed') is not False or not proof.get('native_calls')):
+                        fail('STALE_INPUT','automatic QA continuation lacks native finite-budget proof')
+                    if hashlib.sha256(_vault_path(self.vault,proof['snapshot_ref']).read_bytes()).hexdigest()!=proof['snapshot_sha256']:
+                        fail('STALE_INPUT','QA snapshot changed')
                 if scope=='reduce-cancel/v1':
                     cause=entry.get('previous_task_id')
                     if (not isinstance(cause,str) or not cause or (entry.get('failure',{}).get('error_code')

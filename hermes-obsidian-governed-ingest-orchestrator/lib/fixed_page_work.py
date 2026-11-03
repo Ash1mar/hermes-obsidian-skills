@@ -226,8 +226,16 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         pool.shutdown(wait=True,cancel_futures=True)
     save()
     if held or planning_failure:
-        raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',
-            f'Independent page work preserved: {len(written)} native bodies, {len(held)} held pages; inspect {progress_ref}')
+        from qa_program import isolate_pages
+        isolated=isolate_pages(adapter,binding,value,working,written,held,planning_failure)
+        if isolated:
+            working,qa_gap_ref=isolated
+            _write_atomic(_vault_path(adapter.workflow.vault,progress_ref+'.qa.json'),_json_bytes({
+                'contract':'automatic-page-qa-isolation/v1','binding':binding,'gap_ref':qa_gap_ref,
+                'native_bodies_preserved':len(written),'human_review_requested':False}))
+        else:
+            raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',
+                f'Independent page work preserved: {len(written)} native bodies, {len(held)} held pages; inspect {progress_ref}')
     bodies={p['path']:p['content'] for p in written}
     draft=g.complete(value,working)
     for p in draft['pages']:p['content']=bodies[p['path']]
