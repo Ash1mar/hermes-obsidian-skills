@@ -13,7 +13,7 @@ from test_incremental_global_reduce import page,response,proposal_page,proposal_
 
 def setup(tmp_path,monkeypatch,value):
  b={'workflow_id':'fixture','node':'global-reduce','task_id':'native'}
- a=NS(workflow=NS(vault=tmp_path,status=lambda _:{'execution_recovery_history':[]}),
+ a=NS(workflow=NS(vault=tmp_path,knowledge=NS(vault=tmp_path),status=lambda _:{'execution_recovery_history':[]}),
       worker_check=lambda *_:None,worker_complete=lambda *_:{'ok':True})
  monkeypatch.setattr(fixed,'canonical_binding',lambda *_a,**_k:(b,{}))
  monkeypatch.setattr(fixed_reduce,'prepare',lambda *_:('fixture-input',value))
@@ -120,7 +120,8 @@ def test_later_independent_page_review_still_runs_after_a_local_rejection(tmp_pa
  monkeypatch.setattr(fixed_review,'policy_enabled',lambda *_:False)
  b={'workflow_id':'fixture','node':'build-finalize','task_id':'review'}
  a=NS(worker_begin=lambda *_:None,workflow=NS(vault=tmp_path))
- value={'input_id':'b'*64,'views':[{'page':'e1'},{'page':'e2'}]}
+ value={'input_id':'b'*64,'views':[{'page':'e1'},{'page':'e2'}],
+        'backend':{'pages':{'e1':{'page':{}},'e2':{'page':{}}}}}
  monkeypatch.setattr(fixed_review,'snapshot',lambda *_:value);calls=[]
  def checked(_a,_b,phase,view,*args,**kwargs):
   calls.append(view['page'])
