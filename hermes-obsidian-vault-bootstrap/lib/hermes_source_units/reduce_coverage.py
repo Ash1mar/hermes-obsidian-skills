@@ -59,6 +59,12 @@ def active(vault, workflow):
         if (manifest['workflow_id']!=workflow['workflow_id'] or not approval.get('accept_necessary_coverage_gaps')
                 or approval['actor']!=workflow['actor'] or approval['manifest_sha256']!=proof['manifest_sha256']
                 or proof['new_model_calls_granted']!=0):fail('limited scope lacks exact approval')
+        if proof.get('program_policy_admission'):
+            from .qa_policy import POLICY,enabled
+            if (not enabled(workflow) or proof['program_policy_admission']!=POLICY
+                    or approval.get('contract')!='automatic-qa-scope-decision/v1' or approval.get('policy')!=POLICY
+                    or approval.get('human_review_performed') is not False or approval.get('new_model_calls_granted')!=0):
+                fail('automatic QA scope cannot imply human approval or new model authority')
         ref={'contract':ADMIT,'workflow_id':workflow['workflow_id'],
              'authorization_ref':pointer['report_ref'],'authorization_sha256':pointer['report_sha256'],
              'manifest_ref':proof['manifest_ref'],'manifest_sha256':proof['manifest_sha256']}

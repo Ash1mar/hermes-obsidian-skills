@@ -50,7 +50,7 @@ def successful_prefix(adapter,binding,value):
     return []
 
 
-def recorded_packet(adapter,binding,value,remaining,state,ref,project,*,pending=(),home=None):
+def recorded_packet(adapter,binding,value,remaining,state,ref,project,*,pending=(),home=None,allow_rejected=False):
     from fixed_global_targets import target_view
     from fixed_semantic_recovery import _request_text
     from fixed_semantic_schema import schema_for
@@ -60,7 +60,7 @@ def recorded_packet(adapter,binding,value,remaining,state,ref,project,*,pending=
     if path.parent!=root:fail('prefix audit is outside the workflow call directory')
     audit=_load_json(path);phase='global-detail' if pending else 'global-plan'
     if (audit.get('phase')!=phase or audit.get('node')!=binding['node']
-            or audit.get('workflow_id')!=binding['workflow_id'] or audit.get('validated') is not True
+            or audit.get('workflow_id')!=binding['workflow_id'] or (audit.get('validated') is not True and not allow_rejected)
             or audit.get('template_hash')!=binding['template_hash']):fail('prefix audit identity differs')
     home=Path(home) if home else Path.home()/'.hermes'
     with sqlite3.connect('file:'+str(home/'state.db')+'?mode=ro',uri=True) as db:

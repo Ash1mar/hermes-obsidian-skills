@@ -25,6 +25,10 @@ def isolate_plan(adapter,binding,value,state,packet,error):
         {'planning_packet':packet['candidate_refs'],'proposal_refs':packet['proposal_refs'],
          'source_input_sha256':fingerprint(value['view'])},
         [{'code':error.code,'reason':str(error),'audit_ref':error.semantic_audit_ref}])
+    return apply_plan_exclusion(state,packet,ref)
+
+
+def apply_plan_exclusion(state,packet,ref):
     result=copy.deepcopy(state)
     result['omitted_candidate_refs'].extend(packet['candidate_refs'])
     result['proposal_refs'].extend(packet['proposal_refs'])
@@ -128,13 +132,16 @@ def recover_global(adapter,wid,*,resume=True):
         fp=root/f'reports/failed-{fingerprint("global-reduce")[:16]}.json'
         if not card or not fp.exists():return False
         failure=_load_json(fp)
-        if failure.get('task_id')!=card['task_id'] or failure.get('error_code')!='SEMANTIC_REVIEW_REQUIRED':return False
+        if failure.get('task_id')!=card['task_id'] or failure.get('error_code') not in ('SEMANTIC_REVIEW_REQUIRED','REDUCTION_FAILED'):return False
+        coverage=failure.get('error_code')=='REDUCTION_FAILED'
         candidates=[p for p in (root/'semantic-inputs').glob('*.json')
             if (v:=_load_json(p)).get('contract')=='fixed-reduce-input/v1' and v.get('binding',{}).get('task_id')==card['task_id']]
         if len(candidates)!=1:raise ContractError('RECOVERY_NOT_ALLOWED','$','QA recovery needs one exact source snapshot')
         snapshot=candidates[0];code=execution_code_fingerprint();op='auto-qa-'+fingerprint({'node':card['node'],'task':card['task_id'],'code':code})[:24]
         if not w['cancel_requested']:control_workflow(adapter.workflow.vault,wid,'cancel',op+'-stop')
         verify_cancel_drain(adapter,wid,timeout=0)
+        if coverage:
+            return recover_coverage(adapter,wid,card,snapshot,fp,op,resume=resume)
         rp=root/f'automatic-qa/{op}.request.json'
         if not rp.exists():_write_atomic(rp,_json_bytes(request(adapter,wid,recovery_id=op,recovery_scope=SCOPE,
             reason='Automatic all-stage QA policy; reuse native bodies, isolate blocked work and actual dependents; no human review',
@@ -144,3 +151,35 @@ def recover_global(adapter,wid,*,resume=True):
         _write_atomic(root/f'automatic-qa/{op}.json',_json_bytes(result))
         if resume:control_workflow(adapter.workflow.vault,wid,'resume',op+'-resume')
         return True
+
+
+def recover_coverage(adapter,wid,card,snapshot,failure_path,op,*,resume=True):
+    from automatic_pass_recovery import request
+    from native_ingest import control_workflow
+    from qa_scope import manifest_for
+    from reduce_coverage import contract_hash
+    root=adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{wid}'
+    w=adapter.workflow.status(wid);batch=adapter.workflow.knowledge._batch(w['batch_id'])
+    allowed='context or partial reading cannot complete the target'
+    if not batch.get('failures') or any(f.get('stage')!='reduce' or f.get('code')!='INCOMPLETE_COVERAGE' or allowed not in f.get('message','') for f in batch['failures']):
+        raise ContractError('RECOVERY_NOT_ALLOWED','$','global submission failure is not the known incomplete-work contract')
+    binding=_load_json(snapshot)['binding'];work=root/f'semantic-inputs/page-work-{_load_json(snapshot)["input_id"]}.json'
+    if not work.exists():raise ContractError('RECOVERY_NOT_ALLOWED','$','missing native page work')
+    request_path=root/f'automatic-qa/{op}-coverage.request.json'
+    if not request_path.exists():
+        manifest=manifest_for(adapter,w,binding,snapshot.relative_to(adapter.workflow.vault).as_posix(),work.relative_to(adapter.workflow.vault).as_posix())
+        folder=root/'coverage-scopes';mp=folder/('program-qa-'+fingerprint(manifest)+'.json');_write_atomic(mp,_json_bytes(manifest));mh=hashlib.sha256(mp.read_bytes()).hexdigest()
+        approval={'contract':'automatic-qa-scope-decision/v1','workflow_id':wid,'actor':w['actor'],'policy':POLICY,
+            'human_review_performed':False,'accept_necessary_coverage_gaps':True,'manifest_sha256':mh,
+            'stop_after':'workflow_configured_boundary','new_model_calls_granted':0}
+        ap=folder/('program-qa-decision-'+fingerprint(approval)+'.json');_write_atomic(ap,_json_bytes(approval))
+        q=request(adapter,wid,recovery_id=op+'-scope',recovery_scope='reduce-coverage/v1',target_contract_sha256=contract_hash(),
+            reason='Automatic QA policy scope; native evidence only, incomplete source work remains incomplete, no human review',
+            entries=[{'node':'global-reduce','task_id':card['task_id'],'automatic_qa':True,
+                'failure_sha256':hashlib.sha256(failure_path.read_bytes()).hexdigest(),
+                'manifest_ref':mp.relative_to(adapter.workflow.vault).as_posix(),'manifest_sha256':mh,
+                'approval_ref':ap.relative_to(adapter.workflow.vault).as_posix(),'approval_sha256':hashlib.sha256(ap.read_bytes()).hexdigest()}])
+        _write_atomic(request_path,_json_bytes(q))
+    result=adapter.recover_reduce_execution(_load_json(request_path));_write_atomic(root/f'automatic-qa/{op}-coverage.json',_json_bytes(result))
+    if resume:control_workflow(adapter.workflow.vault,wid,'resume',op+'-coverage-resume')
+    return True

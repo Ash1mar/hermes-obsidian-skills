@@ -17,6 +17,10 @@ ACTIVE=ContextVar('semantic_output_attempt',default=None)
 ELIGIBLE={'INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT'}
 
 
+def eligible_error(code,record):
+    return code in ELIGIBLE or (code=='SEMANTIC_REVIEW_REQUIRED' and record.get('automatic_policy')=='once_then_isolate')
+
+
 def held(message):raise ContractError('SEMANTIC_OUTPUT_HELD','$',message)
 
 
