@@ -17,6 +17,18 @@ must not start the Provider, read host model configuration or load model/index l
 always read-only. Only `sync_release_index.py`, run after a committed Vault Finalize release, may
 call Provider sync.
 
+Both checked-in production adapters default to disabled. An explicit one-time experiment uses
+the native `probe_release_provider.py` entry point and a request binding the current release,
+paused workflow, adapter hashes, model configuration and external audit directory. The request
+must declare sync_once, preserve_pause and keep_disabled. Dispatch with
+`python3 "<orchestrator-skill-root>/scripts/probe_release_provider.py" dispatch --vault "<vault>" --request "<request.json>"`.
+It creates a real native program task, runs the supported Finalize writer with a temporary enabled
+configuration and `--no-write-manifest`, then removes that temporary configuration. It does not
+resume the workflow, replace its disabled status, or enable Query. The resulting host index may
+be tested through an explicitly requested direct recall; regular query routes stay disabled.
+Observe the Provider status/progress separately, retain timings and native receipts, and verify
+the original pause and adapter bytes afterward. No automatic second attempt is admitted.
+
 ## Readiness sequence
 
 1. Install qmd-like-rag 0.5 in its independent environment or container.
