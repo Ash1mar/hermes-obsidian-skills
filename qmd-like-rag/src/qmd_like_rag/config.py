@@ -47,6 +47,9 @@ class ProviderConfig:
     embedding_api_key_env: str | None = None
     reranker_api_key_env: str | None = None
     embedding_batch_size: int = 32
+    index_batch_size: int = 128
+    embedding_batch_max_tokens: int = 32768
+    embedding_cache_enabled: bool = True
     model_request_timeout_seconds: float = 120.0
     model_request_max_retries: int = 2
     model_audit_mode: str | None = None
@@ -88,8 +91,8 @@ class ProviderConfig:
             raise ValueError("embedding_backend must be one of: sentence_transformers, openai_http")
         if self.reranker_backend not in {"cross_encoder", "openai_http"}:
             raise ValueError("reranker_backend must be one of: cross_encoder, openai_http")
-        if self.embedding_batch_size < 1:
-            raise ValueError("embedding_batch_size must be positive")
+        if min(self.embedding_batch_size, self.index_batch_size, self.embedding_batch_max_tokens) < 1:
+            raise ValueError("embedding and index batch limits must be positive")
         if self.model_request_timeout_seconds <= 0 or self.model_request_max_retries < 0:
             raise ValueError("model request timeout must be positive and retries must be non-negative")
         if self.model_audit_mode not in {None, "immutable-revision", "name-only"}:
@@ -137,6 +140,9 @@ class ProviderConfig:
     def state_path(self) -> Path:
         return self.persist_dir / "index-state.json"
 
+    def progress_path(self) -> Path:
+        return self.persist_dir / "sync-progress.json"
+
     @property
     def generation_dir(self) -> Path:
         return self.persist_dir / "generations" / (self.index_generation or "pending")
@@ -173,6 +179,44 @@ class ProviderConfig:
     def config_fingerprint(self) -> str:
         payload = json.dumps(self.portable_dict(), ensure_ascii=False, sort_keys=True).encode("utf-8")
         return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    def index_configuration(self) -> dict[str, Any]:
+        """Only settings that affect stored vectors, text or index structure."""
+        return {
+            "contract": "release-index/v2", "vault_id": self.vault_id,
+            "renderer_version": self.renderer_version,
+            "embedding": {"identity": self.embedding_model, "revision": self.embedding_revision,
+                          "dimension": self.embedding_dimension,
+                          "assurance": self.model_audit_mode or (
+                              "immutable-revision" if self.require_immutable_model_revisions else "name-only")},
+            "embedding_tokenizer": {
+                "identity": self.embedding_tokenizer_id or self.embedding_model,
+                "revision": self.embedding_tokenizer_revision or self.embedding_revision,
+                "sha256": self.embedding_tokenizer_sha256, "max_tokens": self.embedding_max_tokens},
+            "embedding_backend": self.embedding_backend,
+            "embedding_endpoint_fingerprint": (
+                self._endpoint_fingerprint(self.embedding_endpoint) if self.embedding_endpoint else None),
+            "embedding_request_model": self.embedding_request_model,
+            "embedding_preprocessing": "exact-rendered-text/v1",
+            "distance": "cosine",
+        }
+
+    def index_config_fingerprint(self) -> str:
+        payload = json.dumps(self.index_configuration(), sort_keys=True).encode("utf-8")
+        return "sha256:" + hashlib.sha256(payload).hexdigest()
+
+    def query_config_fingerprint(self) -> str:
+        model = self.model_manifest()
+        payload = {
+            "reranker": model["reranker"], "reranker_tokenizer": model["reranker_tokenizer"],
+            "reranker_backend": self.reranker_backend,
+            "reranker_endpoint": (self._endpoint_fingerprint(self.reranker_endpoint)
+                                  if self.reranker_endpoint else None),
+            "top_k": self.top_k, "rerank_top_k": self.rerank_top_k, "rrf_k": self.rrf_k,
+            "dedup_similarity_threshold": self.dedup_similarity_threshold,
+            "ignore_chunk_types": self.ignore_chunk_types,
+        }
+        return "sha256:" + hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
     def model_fingerprint(self) -> str:
         payload = json.dumps(self.model_manifest(), ensure_ascii=False, sort_keys=True).encode("utf-8")
