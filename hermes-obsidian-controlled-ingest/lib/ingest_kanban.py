@@ -1616,7 +1616,6 @@ class IngestKanbanAdapter:
                         value=self.workflow.skip_canary(self._mutation(value))
                     elif policy["mode"] == "disabled":
                         try:
-                            from hermes_source_units.runtime_policy import canary_count
                             preview = self.workflow.canary_preview(workflow_id, canary_count(self.workflow,value))
                         except ContractError as exc:
                             if exc.code != "CANARY_UNAVAILABLE":
