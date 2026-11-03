@@ -29,7 +29,8 @@ def dispatch_programs(adapter, workflow_id):
         raise RuntimeError('program dispatcher requires a trusted operator process')
     # Serialize fixed-program capacity selection and native claims across this
     # Vault's workflows, including direct native CLI calls outside a watcher.
-    lock = _vault_path(adapter.workflow.vault, '_system/ledgers/ingest-workflows/.dispatch-locks/program-capacity.lock')
+    from hermes_cli import kanban_db as kb
+    lock = Path(kb.kanban_db_path(board='default')).parent / '.ingest-program-capacity.lock'
     with _exclusive_lock(lock):
         return _dispatch_programs(adapter, workflow_id)
 
@@ -57,7 +58,10 @@ def _dispatch_programs(adapter, workflow_id):
         if (value['cancel_requested'] or adapter.workflow.pending_pause(value)
                 or value['kanban']['board_id'] != board):
             return []
-        cap = effective_capacity(adapter, kd.resolve_max_in_progress(kd.configured_max_in_progress()))
+        if hasattr(adapter,'apply_policy'): adapter.apply_policy(value)
+        new_policy=bool(value.get('scope',{}).get('execution_policy'))
+        native_cap=kd.resolve_max_in_progress(kd.configured_max_in_progress())
+        cap = native_cap if new_policy else effective_capacity(adapter,native_cap)
         pressure = kd._memory_pressure_level()
         with span('capacity_snapshot'):
             tasks = {task.id:task for task in kb.list_tasks(conn)}
@@ -70,6 +74,11 @@ def _dispatch_programs(adapter, workflow_id):
             task = tasks.get(card['task_id'])
             if not task or task.status != 'ready' or task.assignee != ASSIGNEE:
                 continue
+            if new_policy and not card['node'].startswith('pass-slice:'):
+                live_tasks={t.id:t for t in kb.list_tasks(conn)}
+                running=sum(1 for c in value['kanban']['task_map'] if not c['node'].startswith('pass-slice:')
+                    and c['task_id'] in live_tasks and live_tasks[c['task_id']].status=='running')
+                if running>=adapter.program_worker_concurrency: continue
             if pressure == 'critical' or (pressure == 'elevated' and spawned):
                 break
             if cap is not None and kd.count_running_tasks(conn) + kd.count_running_tasks_other_boards(board) >= cap:
@@ -128,7 +137,7 @@ def _dispatch_programs(adapter, workflow_id):
             with span('native_claim',binding=request) as claim_trace:
                 # The dispatcher owns the Vault's capacity mutex. Recheck live
                 # capacity here; native claim owns its own non-nestable CAS txn.
-                if kd.count_running_tasks(conn) + kd.count_running_tasks_other_boards(board) >= cap:
+                if cap is not None and kd.count_running_tasks(conn) + kd.count_running_tasks_other_boards(board) >= cap:
                     return spawned
                 claimed = kb.claim_task(conn, task.id, claimer='ingest-program-dispatch')
                 if claimed:

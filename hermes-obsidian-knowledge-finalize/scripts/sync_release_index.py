@@ -28,13 +28,17 @@ def load_json(path: Path) -> dict[str, Any]:
     return data
 
 
-def provider_config(path: Path | None) -> tuple[Path, dict[str, Any]]:
+def provider_config(path: Path | None, vault_root=None) -> tuple[Path, dict[str, Any]]:
     configured = path or (
         Path(os.environ["HERMES_RETRIEVAL_PROVIDER_CONFIG"])
         if os.environ.get("HERMES_RETRIEVAL_PROVIDER_CONFIG")
         else Path(__file__).resolve().parents[1] / "config" / "retrieval-provider.json"
     )
-    return configured, load_json(configured)
+    config=load_json(configured)
+    if vault_root is not None:
+        from hermes_source_units.runtime_policy import vault_provider_config
+        config=vault_provider_config(config,vault_root,'sync')
+    return configured, config
 
 
 def release_identity(vault_root: Path) -> tuple[str, str]:
@@ -149,7 +153,7 @@ def main() -> int:
     manifest_path = vault_root / "_system" / "reports" / "retrieval-index-manifest.json"
     previous = load_json(manifest_path) if manifest_path.is_file() else None
     try:
-        _, config = provider_config(args.provider_config)
+        _, config = provider_config(args.provider_config, vault_root)
         if config.get("enabled", True) is False:
             transport = "disabled"
             payload = {

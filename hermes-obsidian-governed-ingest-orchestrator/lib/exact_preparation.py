@@ -67,7 +67,7 @@ def prepare_exact(adapter, request):
             model_measure=model_measurement(knowledge, inputs['actor'], registry))
         plan = planner.prepare()
         from hermes_source_units.semantic_budget import budget_policy_pin
-        plan['slice_config'] = knowledge._slice_config({'semantic_budget_policy':budget_policy_pin()})
+        plan['slice_config'] = knowledge._slice_config({'semantic_budget_policy':budget_policy_pin(), **({'pass_worker_concurrency': workflow['scope']['execution_policy']['pass_worker_concurrency']} if workflow['scope'].get('execution_policy') else {})})
         knowledge._exact_planner = planner
         try:
             adapter.worker_check(bound)
