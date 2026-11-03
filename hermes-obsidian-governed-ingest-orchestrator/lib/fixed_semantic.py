@@ -1104,6 +1104,12 @@ def run_reduce(adapter,binding,caller):
                     raise
                 attach_receipt(adapter,call_ref,{'ok':False,'validated':False,'code':exc.code,'reason':str(exc),'state':'packet_deferred'})
                 deferred.append({'candidate_refs':packet['candidate_refs'],'audit_ref':call_ref,'code':exc.code,'reason':str(exc)})
+                from automatic_pass_recovery import enabled
+                if enabled(adapter.workflow.status(binding['workflow_id'])):
+                    # Mechanical exclusion only: no proposal, fact or page body
+                    # is synthesized. The rejected journal remains rejected.
+                    drafts.append({'proposals':[],'omitted_candidate_refs':packet['candidate_refs'],
+                        'reason':'Program isolated an unverified packet after its finite attempts; original failure: '+str(exc)})
                 continue
             drafts.append(draft);calls.append(call_ref)
             from semantic_output import stop_at_output_boundary
@@ -1112,12 +1118,21 @@ def run_reduce(adapter,binding,caller):
             report_ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/reports/source-packets-deferred-{input_value['input_id']}.json"
             _write_atomic(_vault_path(adapter.workflow.vault,report_ref),_json_bytes({
                 'contract':'source-packets-deferred/v1','binding':binding,'input_ref':ref,
-                'completed_packet_count':len(drafts),'successful_call_refs':calls,'held_packets':deferred,
+                'completed_packet_count':len(calls),'successful_call_refs':calls,'held_packets':deferred,
                 'source_submitted':False,'unchanged_semantic_retries':0}))
-            raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',
-                'Source remains held; valid packets preserved and later packets attempted; report: '+report_ref+'\n'
-                +'\n'.join(d['reason'] for d in deferred))
+            from automatic_pass_recovery import enabled
+            if not enabled(adapter.workflow.status(binding['workflow_id'])):
+                raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',
+                    'Source remains held; valid packets preserved and later packets attempted; report: '+report_ref+'\n'
+                    +'\n'.join(d['reason'] for d in deferred))
+            gap=_load_json(_vault_path(adapter.workflow.vault,report_ref))
+            gap.update(contract='automatic-source-packet-gaps/v1',source_submitted=False,
+                coverage_complete=False,failed_results_verified=False,additional_attempt_limit=1)
+            _write_atomic(_vault_path(adapter.workflow.vault,report_ref),_json_bytes(gap))
         result=fixed_reduce.submit(adapter,binding,ref,merge(input_value,packets,drafts))
+        if deferred:
+            gap['source_submitted']=True;gap['submission_receipt_ref']=result['receipt_ref']
+            _write_atomic(_vault_path(adapter.workflow.vault,report_ref),_json_bytes(gap))
         for call_ref in calls:attach_receipt(adapter,call_ref,result)
         return adapter.worker_complete(binding)
     from fixed_global_packets import units,next_packet,accept,accept_proposals,detail_packet,initial,complete,CONTRACT as GLOBAL_CONTRACT

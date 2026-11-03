@@ -14,7 +14,7 @@ POLICY={'contract':'automatic-pass-recovery/v1','additional_attempts':1,
 
 def enabled(value):
     from orchestration import configuration
-    return (value['scope'].get('execution_mode')=='auto_full'
+    return (value.get('scope',{}).get('execution_mode')=='auto_full'
             and configuration().get('pass_failure_policy','hold')=='once_then_isolate')
 
 
@@ -83,6 +83,9 @@ def recover(adapter,wid,*,resume=True):
     """
     from native_ingest import control_workflow
     from native_stop_inventory import verify_cancel_drain
+    if adapter.workflow.status(wid)['current_stage']=='reducing':
+        from automatic_reduce_recovery import recover as recover_source
+        return recover_source(adapter,wid,resume=resume)
     root=adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{wid}/automatic-recovery'
     with _exclusive_lock(root/'.controller.lock'):
         value=adapter.workflow.status(wid)
