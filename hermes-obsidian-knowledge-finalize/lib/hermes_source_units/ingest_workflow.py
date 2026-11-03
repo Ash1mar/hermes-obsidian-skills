@@ -565,6 +565,10 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
             requested = list(request["slice_ids"])
             if len(requested) != len(set(requested)) or not 1 <= len(requested) <= 8:
                 _fail("INVALID_SCHEMA", "canary requires 1 to 8 distinct slice IDs")
+            if value['scope'].get('canary_policy') == 'sample':
+                from .runtime_policy import canary_count
+                if len(requested) != canary_count(self,value):
+                    _fail('INVALID_SCHEMA', 'sample policy requires its complete planned selection')
             preview = self.canary_preview(value["workflow_id"], len(requested))
             selected = [item["slice_id"] for item in preview["slices"]]
             if (requested != selected or request.get("selection_digest") !=

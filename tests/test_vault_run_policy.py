@@ -24,6 +24,10 @@ def test_small_canary_is_pinned_and_legacy_still_requires_eight(vault):
     n=canary_count(service,w); assert 0<n<8
     preview=service.canary_preview(w['workflow_id'],8)
     assert len(preview['slices'])==n
+    if n>1:
+        with pytest.raises(ContractError,match='INVALID_SCHEMA'):
+            service.arm_canary(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=w['revision'],
+                slice_ids=[preview['slices'][0]['slice_id']],selection_digest=preview['selection_digest']))
     arm=service.arm_canary(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=w['revision'],
         slice_ids=[s['slice_id'] for s in preview['slices']],selection_digest=preview['selection_digest']))
     assert service.canary_preview(w['workflow_id'],8)['selection_digest']==preview['selection_digest']
