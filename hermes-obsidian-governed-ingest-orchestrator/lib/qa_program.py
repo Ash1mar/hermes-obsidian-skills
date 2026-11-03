@@ -9,9 +9,16 @@ from hermes_source_units.validation import fingerprint
 SCOPE='qa-policy/v1'
 
 
+def execution_code_fingerprint():
+    root=Path(__file__).parent
+    return fingerprint({n:hashlib.sha256((root/n).read_bytes()).hexdigest()
+        for n in ('qa_program.py','fixed_page_work.py','fixed_semantic.py')})
+
+
 def isolate_plan(adapter,binding,value,state,packet,error):
     if (not enabled(adapter.workflow.status(binding['workflow_id']))
-            or error.code!='SEMANTIC_REVIEW_REQUIRED' or not getattr(error,'semantic_audit_ref',None)):return None
+            or error.code not in ('SEMANTIC_REVIEW_REQUIRED','IDENTITY_CONFLICT','DUPLICATE','INVALID_SCHEMA','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE')
+            or not getattr(error,'semantic_audit_ref',None)):return None
     used={c for p in state['pages'] for c in p['candidate_refs']}|set(state['omitted_candidate_refs'])
     if used.intersection(packet['candidate_refs']):raise ContractError('INCOMPLETE_COVERAGE','$','QA packet overlaps previously assigned evidence')
     ref=gap(adapter.workflow.vault,binding['workflow_id'],binding['node'],
@@ -66,13 +73,25 @@ def verify_recovery(adapter,w,node,binding,entry,failure,runs):
         raise ContractError('STALE_INPUT','$','original QA snapshot changed')
     current=preview_snapshot(adapter,binding)
     if any(old[k]!=current[k] for k in ('contract','view','backend')):raise ContractError('STALE_INPUT','$','QA continuation cannot change materials')
-    root=path.parent.parent;calls=[];ended={str(r['id']) for r in runs}
+    code=execution_code_fingerprint()
+    if entry.get('execution_code_fingerprint')!=code:raise ContractError('STALE_INPUT','$','QA recovery executor changed')
+    root=path.parent.parent;calls=[];allowed={binding['task_id']:{str(r['id']) for r in runs}}
+    for pointer in w.get('execution_recovery_history',[]):
+        report_path=_vault_path(adapter.workflow.vault,pointer['report_ref']);raw=report_path.read_bytes()
+        if hashlib.sha256(raw).hexdigest()!=pointer['report_sha256']:raise ContractError('STALE_INPUT','$','QA ancestor authority changed')
+        report=json.loads(raw)
+        if report['request'].get('recovery_scope')!=SCOPE:continue
+        for prior in report['entries']:
+            if prior['node']==node.name:
+                allowed[prior['previous_task_id']]=set(prior['ended_run_ids'])
+                if prior.get('qa_policy',{}).get('execution_code_fingerprint')==code:
+                    raise ContractError('RECOVERY_EXHAUSTED','$','unchanged program cannot repeat automatic QA continuation')
     with sqlite3.connect('file:'+str(Path.home()/'.hermes/state.db')+'?mode=ro',uri=True) as db:
         for p in (root/'semantic-calls').glob('*.json'):
             call=_load_json(p)
-            if call.get('native_task_id')!=binding['task_id'] or call.get('reused_from_audit'):continue
+            if call.get('native_task_id') not in allowed or call.get('reused_from_audit'):continue
             phase=call['phase'];sid=call['model']['session_id']
-            if phase not in ('global-plan','global-detail','page-write') or str(call.get('native_run_id')) not in ended:
+            if phase not in ('global-plan','global-detail','page-write') or str(call.get('native_run_id')) not in allowed[call['native_task_id']]:
                 raise ContractError('RECOVERY_NOT_ALLOWED','$','unrecognized QA native call')
             rows=list(db.execute('select role,content,tool_calls from messages where session_id=?',(sid,)))
             users=[c for r,c,_ in rows if r=='user' and fingerprint(c)==call['user_sha256']]
@@ -91,6 +110,7 @@ def verify_recovery(adapter,w,node,binding,entry,failure,runs):
             if a.get('task_id')==binding['task_id'] and a.get('state')=='reserved' and not a.get('audit_ref'):
                 raise ContractError('RECOVERY_NOT_ALLOWED','$','unknown completion is not a QA failure')
     return {'qa_policy':{'contract':SCOPE,'policy':POLICY,'snapshot_ref':entry['snapshot_ref'],
+        'execution_code_fingerprint':code,
         'snapshot_sha256':entry['snapshot_sha256'],'native_calls':calls,'domain_inputs_preserved':True,
         'original_attempts_preserved':True,'new_call_budget_granted':0,'unknown_completion_allowed':False}}
 
@@ -112,13 +132,13 @@ def recover_global(adapter,wid,*,resume=True):
         candidates=[p for p in (root/'semantic-inputs').glob('*.json')
             if (v:=_load_json(p)).get('contract')=='fixed-reduce-input/v1' and v.get('binding',{}).get('task_id')==card['task_id']]
         if len(candidates)!=1:raise ContractError('RECOVERY_NOT_ALLOWED','$','QA recovery needs one exact source snapshot')
-        snapshot=candidates[0];op='auto-qa-'+fingerprint({'node':card['node'],'task':card['task_id']})[:24]
+        snapshot=candidates[0];code=execution_code_fingerprint();op='auto-qa-'+fingerprint({'node':card['node'],'task':card['task_id'],'code':code})[:24]
         if not w['cancel_requested']:control_workflow(adapter.workflow.vault,wid,'cancel',op+'-stop')
         verify_cancel_drain(adapter,wid,timeout=0)
         rp=root/f'automatic-qa/{op}.request.json'
         if not rp.exists():_write_atomic(rp,_json_bytes(request(adapter,wid,recovery_id=op,recovery_scope=SCOPE,
             reason='Automatic all-stage QA policy; reuse native bodies, isolate blocked work and actual dependents; no human review',
-            entries=[{'node':card['node'],'task_id':card['task_id'],'failure_sha256':hashlib.sha256(fp.read_bytes()).hexdigest(),
+            entries=[{'node':card['node'],'task_id':card['task_id'],'execution_code_fingerprint':code,'failure_sha256':hashlib.sha256(fp.read_bytes()).hexdigest(),
                 'snapshot_ref':snapshot.relative_to(adapter.workflow.vault).as_posix(),'snapshot_sha256':hashlib.sha256(snapshot.read_bytes()).hexdigest()}])))
         result=adapter.recover_reduce_execution(_load_json(rp))
         _write_atomic(root/f'automatic-qa/{op}.json',_json_bytes(result))

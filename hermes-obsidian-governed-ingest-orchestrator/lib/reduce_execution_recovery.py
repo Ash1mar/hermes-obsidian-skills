@@ -140,7 +140,8 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 previous_reports=[_load_json(_vault_path(service.vault,r['report_ref']))
                     for r in value.get('execution_recovery_history',[]) if name in r['nodes']]
                 from hermes_source_units.execution_plan import execution_recovery_key
-                requested_key=execution_recovery_key(scope,{'node':name,'previous_task_id':entry.get('task_id')})
+                requested_key=execution_recovery_key(scope,{'node':name,'previous_task_id':entry.get('task_id'),
+                    **({'execution_code_fingerprint':entry.get('execution_code_fingerprint')} if scope=='qa-policy/v1' else {})})
                 if any(r['request'].get('recovery_scope')==scope and any(execution_recovery_key(scope,e)==requested_key for e in r['entries']) for r in previous_reports):
                     fail('RECOVERY_EXHAUSTED', 'one cancellation recovery per exact native attempt; diagnose further failure')
                 card = next((c for c in value['kanban']['task_map'] if c['node'] == name), None)

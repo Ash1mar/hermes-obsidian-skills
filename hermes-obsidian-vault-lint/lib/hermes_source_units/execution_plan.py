@@ -23,7 +23,8 @@ def fail(code, message):
 def execution_recovery_key(scope,entry):
     """Shared admission/replay identity; journals separately enforce call budget."""
     cause=(entry.get('previous_task_id') if scope in ('build-native/v1','reduce-cancel/v1','semantic-output/v1','reduce-disposition/v1','reduce-coverage/v1','reduce-coverage-reopen/v1','reduce-validation/v1')
-           else packet_recovery_cause(entry.get('failure',{})) if scope=='revision-citation-packet/v1' else None)
+           else packet_recovery_cause(entry.get('failure',{})) if scope=='revision-citation-packet/v1'
+           else entry.get('qa_policy',{}).get('execution_code_fingerprint',entry.get('execution_code_fingerprint')) if scope=='qa-policy/v1' else None)
     return entry['node'],scope,cause
 
 
