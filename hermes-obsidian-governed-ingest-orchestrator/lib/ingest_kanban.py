@@ -184,7 +184,7 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
     workflow_id = workflow["workflow_id"]
     def add(name: str, kind: str, parents: tuple[str, ...], inputs: Any,
             gate: bool = False) -> str:
-        if kind in ('resource-reduce', 'global-reduce', 'checkpoint-1-validate', 'build-finalize'):
+        if kind in ('resource-reduce', 'global-reduce', 'checkpoint-1-validate', 'build-finalize', 'provider-sync'):
             recovery = next((r for r in reversed(workflow.get('execution_recovery_history', []))
                              if name in r['nodes']), None)
             if recovery:
@@ -2231,7 +2231,12 @@ class IngestKanbanAdapter:
             manifest = _load_json(_vault_path(self.workflow.vault, ref))
             release_ref = f"_system/knowledge-releases/{workflow['release_id']}/manifest.json"
             release_hash = hashlib.sha256(_vault_path(self.workflow.vault, release_ref).read_bytes()).hexdigest()
-            if (manifest.get("status") != "ready" or
+            if manifest.get('status')=='disabled':
+                from hermes_source_units.provider_disposition import validate_manifest
+                from program_worker import provider_module
+                _,config=provider_module().provider_config(None)
+                validate_manifest(self.workflow.vault,workflow,manifest,config=config)
+            elif (manifest.get("status") != "ready" or
                     manifest.get("release_id") != workflow["release_id"] or
                     manifest.get("release_hash") != release_hash):
                 _fail("INCOMPLETE_COVERAGE", "Provider index is not ready for the exact release")

@@ -234,6 +234,11 @@ class ExecutionPlanMixin:
             report = json.loads(data)
             request = report['request']
             scope=request.get('recovery_scope','mechanical/v1')
+            if 'provider-sync' in recovery['nodes']:
+                from .provider_disposition import active,SCOPE
+                if scope!=SCOPE or recovery['nodes']!=['provider-sync']:
+                    fail('STALE_INPUT','unsupported Provider recovery authority')
+                active(self.vault,workflow)
             keys=[]
             for entry in report['entries']:
                 cause=packet_recovery_cause(entry.get('failure',{})) if scope=='revision-citation-packet/v1' else None

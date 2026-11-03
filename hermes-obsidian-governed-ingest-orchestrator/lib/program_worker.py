@@ -55,14 +55,33 @@ def canonical_binding(adapter, binding, *, executor='program-v1'):
     return request, value
 
 
-def sync_provider(adapter, bound, value):
+def provider_module():
     script = Path(__file__).resolve().parents[2] / 'hermes-obsidian-knowledge-finalize/scripts/sync_release_index.py'
     spec = importlib.util.spec_from_file_location('bound_release_index', script)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    return module
+
+
+def sync_provider(adapter, bound, value):
+    module=provider_module()
     _, config = module.provider_config(None)
     if config.get('enabled', True) is False:
-        raise ContractError('PROVIDER_DISABLED', '$', 'requested sync has no enabled Provider; no command or model started')
+        from hermes_source_units.provider_disposition import active,validate_manifest
+        proof=active(adapter.workflow.vault,value,config=config)
+        if proof is None:
+            raise ContractError('PROVIDER_DISABLED', '$', 'requested sync has no enabled Provider; no command or model started')
+        adapter.worker_check(bound)
+        path=_vault_path(adapter.workflow.vault,'_system/reports/retrieval-index-manifest.json')
+        with worker_binding(bound),workflow_write_guard(adapter.workflow.vault,kinds=('provider-sync',),actor=value['actor']):
+            previous=module.load_json(path) if path.is_file() else None
+            payload={'provider':'qmd-like-rag','protocol_version':module.PROTOCOL_VERSION,'status':'disabled',
+                     'release_id':proof['release_id'],'release_hash':proof['release_hash'],'errors':[]}
+            manifest=module.portable_manifest(payload,'disabled',previous)
+            manifest.update(query_ready=False,sync_disposition=proof)
+            validate_manifest(adapter.workflow.vault,value,manifest,config=config)
+            module.write_manifest(path,manifest)
+        return
     release_id, release_hash = module.release_identity(adapter.workflow.vault)
     if release_id != value['release_id']:
         raise ContractError('STALE_INPUT', '$', 'Provider target differs from the bound release')
