@@ -55,7 +55,7 @@ class PassSkipMixin:
                 seen.update(pointer['task_ids']);reports.append(report);continue
             for entry in report['entries']:
                 item=self.knowledge._slice(value['batch_id'],entry['slice_id'])
-                if item['task_ids']!=entry['task_ids'] or item['input_fingerprint']!=entry['slice_input_fingerprint']:
+                if ((item['task_ids']!=entry['task_ids'] and not (entry.get('automatic_proof') and set(entry['task_ids']).issubset(item['task_ids']) and all(self._task_passes_complete(t) for t in set(item['task_ids'])-set(entry['task_ids'])))) or item['input_fingerprint']!=entry['slice_input_fingerprint']):
                     fail('STALE_INPUT','skipped slice ownership changed')
                 for task_id,expected in entry['target_fingerprints'].items():
                     task=self.knowledge._task(task_id)
@@ -64,7 +64,7 @@ class PassSkipMixin:
             seen.update(pointer['task_ids']);reports.append(report)
         return reports
 
-    def skip_pass_slices(self,request,*,dry_run=False,budget_check=None):
+    def skip_pass_slices(self,request,*,dry_run=False,budget_check=None,automatic_check=None):
         if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
             fail('ACCESS_DENIED','Pass skipping requires a trusted operator')
         self._check_request(request);wid=str(request['workflow_id']);op=request.get('operation_id','')
@@ -91,7 +91,7 @@ class PassSkipMixin:
                 return {'ok':True,'applied':False,'replayed':True,'revision':value['revision'],'report_ref':old['report_ref']}
             value=self._mutation(request)
             if (value['state']!='cancelled' or not value['cancel_requested'] or value['current_stage']!='analyzing'
-                    or not value['batch_id'] or self.pending_pause(value) or value['dispatch_policy']['mode']!='full'):
+                    or not value['batch_id'] or self.pending_pause(value) or (value['dispatch_policy']['mode']!='full' and not (automatic_check and value['dispatch_policy']['mode']=='canary' and all(e.get('deferral')=='automatic_retry_exhausted' for e in entries)))):
                 fail('INVALID_TRANSITION','skip requires a cancelled released Pass phase')
             if value.get('pass_revision') and value['pass_revision']['state']!='accepted':
                 fail('REVISION_REVIEW_REQUIRED','finish semantic revision review first')
@@ -117,7 +117,11 @@ class PassSkipMixin:
                         if (item['slice_id'] not in {s['slice_id'] for s in slices} or item['state']!='cancelled'
                                 or item['slice_id'] in previously or not entry.get('reason','').strip()):
                             fail('INVALID_TRANSITION','only cancelled unskipped failed work may be excluded')
-                        proofs=[];covered=set()
+                        automatic=entry.get('deferral')=='automatic_retry_exhausted'
+                        selected=entry.get('task_ids') if automatic else item['task_ids']
+                        if automatic and (not selected or not set(selected).issubset(item['task_ids']) or any(not self._task_passes_complete(t) for t in set(item['task_ids'])-set(selected))):
+                            fail('SKIP_NOT_ALLOWED','automatic isolation preserves completed tasks and must account for every unfinished task')
+                        proofs=[];covered=set();automatic_proof=None
                         for evidence in entry['evidence']:
                             path=_vault_path(self.vault,evidence['ref'])
                             expected_root=self.vault/f'_system/ledgers/ingest-workflows/{wid}/reports'
@@ -126,7 +130,11 @@ class PassSkipMixin:
                             data=path.read_bytes();failure=json.loads(data)
                             if hashlib.sha256(data).hexdigest()!=evidence['sha256']:fail('STALE_INPUT','skip failure changed')
                             budget_proof=None
-                            if entry.get('deferral')=='bounded_input':
+                            if automatic:
+                                if automatic_check is None:fail('ACCESS_DENIED','automatic isolation requires native program verification')
+                                automatic_proof=automatic_check(value,batch,item,failure,entry)
+                                category='AUTOMATIC_CORRECTION_EXHAUSTED'
+                            elif entry.get('deferral')=='bounded_input':
                                 if failure.get('error_code')!='READING_WINDOW_OVERSIZE' or budget_check is None:
                                     fail('SKIP_NOT_ALLOWED','budget deferral requires current bounded-input verification')
                                 budget_proof=budget_check(value,batch,item,failure)
@@ -150,7 +158,7 @@ class PassSkipMixin:
                         if not proofs or not covered or (covered!=set(item['task_ids']) and entry.get('scope')!='whole_failed_slice'):
                             fail('INCOMPLETE_COVERAGE','partial failure evidence requires an explicit whole unfinished slice exclusion')
                         targets={}
-                        for tid in item['task_ids']:
+                        for tid in selected:
                             task=service._task(tid)
                             if task['actor']!=value['actor'] or task['status'] in ('completed','skipped'):
                                 fail('STALE_INPUT','skip task owner or status changed')
@@ -160,8 +168,9 @@ class PassSkipMixin:
                                 'before_sha256':hashlib.sha256(service._task_path(tid).read_bytes()).hexdigest(),'after':after})
                             targets[tid]=fingerprint(task['target_refs']);task_ids.append(tid)
                         audited.append({'slice_id':item['slice_id'],'slice_input_fingerprint':item['input_fingerprint'],
-                            'task_ids':item['task_ids'],'target_fingerprints':targets,'reason':entry['reason'],'evidence':proofs})
-                        audited[-1].update(known_failure_task_ids=sorted(covered),
+                            'task_ids':selected,'target_fingerprints':targets,'reason':entry['reason'],'evidence':proofs})
+                        if automatic_proof:audited[-1]['automatic_proof']=automatic_proof
+                        audited[-1].update(known_failure_task_ids=sorted(covered.intersection(selected)),
                             withheld_unverified_task_ids=sorted(set(item['task_ids'])-covered))
                     report={'contract':'pass-coverage-gaps/v1','request':dict(request),'batch_id':value['batch_id'],
                         'entries':audited,'task_ids':task_ids,'verification_success':False,'domain_outputs_preserved':True}

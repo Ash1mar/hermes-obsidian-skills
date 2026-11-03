@@ -106,6 +106,13 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                     return
                 if result.get('execution_blocked') and not result.get('background_dispatch'):
                     settle_blocked_pass(adapter,workflow_id,wake,interval)
+                    from automatic_pass_recovery import enabled
+                    if enabled(adapter.workflow.status(workflow_id)):
+                        subprocess.Popen([sys.executable,str(Path(__file__).with_name('recover_ingest_workflow.py')),
+                            '--vault',str(vault),'--workflow-id',workflow_id],stdin=subprocess.DEVNULL,
+                            stdout=sys.stdout,stderr=sys.stderr,start_new_session=True)
+                        print('Handed blocked Pass to the automatic finite-recovery controller',flush=True)
+                        return
                     print('Execution blocked; trusted repair required: ' + ', '.join(result['execution_blocked']), flush=True)
                     return
                 if result.get("canary_complete") and value["scope"].get("execution_mode") == "canary_only":

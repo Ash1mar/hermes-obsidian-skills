@@ -628,7 +628,9 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
             from .runtime_policy import canary_count
             if policy["mode"] != "canary" or len(policy["slice_ids"]) != canary_count(self, value):
                 _fail("CANARY_UNAVAILABLE", "exactly eight pinned canary slices are required")
+            gaps=self.verify_pass_skips(value)
             for slice_id in policy["slice_ids"]:
+                if slice_id in self.skipped_pass_slices(value):continue  # Explicit partial coverage, never accepted evidence.
                 item = self.knowledge._slice(value["batch_id"], slice_id)
                 if item["state"] != "completed" or not item["result_refs"]:
                     _fail("INCOMPLETE_COVERAGE", "canary slice lacks durable Pass coverage")
