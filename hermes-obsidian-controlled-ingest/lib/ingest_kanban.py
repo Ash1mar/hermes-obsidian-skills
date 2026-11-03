@@ -241,7 +241,7 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
         for task_id in item["task_ids"]:
             pass_nodes[task_id] = name
 
-    if staged and workflow['current_stage'] == 'analyzing':
+    if workflow['current_stage']=='analyzing' and (staged or workflow['scope'].get('execution_mode')=='auto_full'):
         return nodes  # Unopened Reduce work must not scan every task and Pass.
 
     resource_tasks: dict[str, list[str]] = {}
@@ -1250,7 +1250,7 @@ class IngestKanbanAdapter:
         with _exclusive_lock(lock), record_validation_scope():
             from native_stop_inventory import verify_cancel_drain
             verify_cancel_drain(self,wid,timeout=0)
-            return self.workflow.skip_pass_slices(request,dry_run=dry_run,budget_check=self._citation_budget_deferral)
+            return self.workflow.skip_pass_slices(request,dry_run=dry_run,budget_check=self._citation_budget_deferral,automatic_check=lambda v,b,i,f,e:__import__("automatic_pass_recovery").verify_isolation(self,v,i,f,e))
 
     def skip_reduce_tasks(self, request, *, dry_run=False):
         from hermes_source_units.reduce_task_skip import skip
@@ -1335,7 +1335,7 @@ class IngestKanbanAdapter:
             _fail('INVALID_SCHEMA', 'describe the corrected mechanical cause')
         entries = request.get('entries')
         scope=request.get('recovery_scope','mechanical/v1')
-        if scope not in ('mechanical/v1','phase-packet-grouping/v1','correction-reserve-admission/v1','legacy-slice-config/v1','revision-citation-packet/v1','amendment-native-result/v1'):
+        if scope not in ('mechanical/v1','phase-packet-grouping/v1','correction-reserve-admission/v1','legacy-slice-config/v1','revision-citation-packet/v1','amendment-native-result/v1','pass-local-review/v1'):
             _fail('INVALID_SCHEMA','unknown recovery scope')
         if (not isinstance(entries, list) or not entries or any(not isinstance(e, dict) for e in entries)
                 or len({e.get('node') for e in entries}) != len(entries)):
@@ -1363,8 +1363,8 @@ class IngestKanbanAdapter:
                 and request.get('revision_id')==value['pass_revision']['revision_id'])
             if (value['state'] != 'cancelled' or not value['cancel_requested'] or not value['batch_id']
                     or (value['current_stage'] != 'analyzing' and not legacy_revision) or self.workflow.pending_pause(value)
-                    or value['dispatch_policy']['mode'] != 'full'):
-                _fail('INVALID_TRANSITION', 'recovery requires a cancelled, released Pass batch')
+                    or (value['dispatch_policy']['mode'] != 'full' and not (scope=='pass-local-review/v1' and value['dispatch_policy']['mode']=='canary'))):
+                _fail('INVALID_TRANSITION', 'recovery requires a cancelled authorized Pass batch')
             if scope in ('legacy-slice-config/v1','revision-citation-packet/v1') and not legacy_revision:
                 _fail('INVALID_TRANSITION','historical slice recovery requires the current dependency revision')
             if value.get('pass_revision') and value['pass_revision']['state'] != 'accepted' and not legacy_revision:
@@ -1440,6 +1440,8 @@ class IngestKanbanAdapter:
                         codes=None  # Verify the ended native cancellation below.
                     elif legacy_revision and scope=='amendment-native-result/v1':
                         codes=['AUTHENTICATED_NATIVE_RESULT_REPLAY']  # No model request or CLI permission.
+                    elif scope=='pass-local-review/v1':
+                        codes=['BOUNDED_LOCAL_REVIEW']
                     else:
                         codes = mechanical_failure_codes(report,scope,input_limit=batch['slice_config']['slice_max_input_codepoints'])
                     if scope in ('phase-packet-grouping/v1','correction-reserve-admission/v1'):
@@ -1474,6 +1476,12 @@ class IngestKanbanAdapter:
                             batch['document_registry_revision'], None)
                     packet_identity=None
                     native_replay=None
+                    local_review=None
+                    if scope=='pass-local-review/v1':
+                        if value['dispatch_policy']['mode']=='canary' and item['slice_id'] not in value['dispatch_policy']['slice_ids']:
+                            _fail('ACCESS_DENIED','local review is outside the selected Canary')
+                        from pass_local_review import verify
+                        local_review=verify(self,value,item,binding,report,snapshot)
                     if scope=='amendment-native-result/v1':
                         from citation_native_authority import verify_replay_recovery
                         native_replay=verify_replay_recovery(self,value,request,binding)
@@ -1487,6 +1495,7 @@ class IngestKanbanAdapter:
                     audited.append({'node':name, 'previous_task_id':card['task_id'],
                         'previous_input_fingerprint':node.input_fingerprint, 'failure_ref':ref,
                         'failure_sha256':hashlib.sha256(data).hexdigest(), 'failure':report, 'codes':codes})
+                    if local_review:audited[-1]['local_review']=local_review
                     if legacy_identity:audited[-1]['legacy_identity']=legacy_identity
                     if packet_identity:audited[-1]['revision_packet_identity']=packet_identity
                     if native_replay:audited[-1]['native_result_replay']=native_replay
@@ -1496,7 +1505,7 @@ class IngestKanbanAdapter:
                     return {**result, 'revision':value['revision'], 'entries':audited}
                 ref = f'_system/ledgers/ingest-workflows/{wid}/execution-recoveries/{rid}.json'
                 report = {'request':dict(request), 'entries':audited, 'batch_id':value['batch_id'],
-                          'domain_inputs_changed':False, 'semantic_retry_authorized':False}
+                          'domain_inputs_changed':False, 'semantic_retry_authorized':scope=='pass-local-review/v1'}
                 path = _vault_path(self.workflow.vault, ref)
                 data = _json_bytes(report)
                 if path.exists() and path.read_bytes() != data:
@@ -1631,7 +1640,7 @@ class IngestKanbanAdapter:
                         armed["input_digest"] = mutation_digest(armed)
                         value = self.workflow.arm_canary(armed)
                     elif value["scope"].get("execution_mode") == "auto_full" and policy["mode"] == "canary" and len(policy["slice_ids"]) == canary_count(self.workflow,value) and all(
-                            self.workflow.knowledge._slice(value["batch_id"], slice_id)["state"] == "completed"
+                            (self.workflow.knowledge._slice(value["batch_id"], slice_id)["state"] == "completed" or slice_id in self.workflow.skipped_pass_slices(value))
                             for slice_id in policy["slice_ids"]):
                         promoted = {"workflow_id": workflow_id, "actor": actor,
                                     "expected_revision": value["revision"]}
@@ -1941,12 +1950,14 @@ class IngestKanbanAdapter:
                     in ("ready", "leased")) for node in nodes)
             canary_done = (updated["dispatch_policy"]["mode"] == "canary"
                            and len(updated["dispatch_policy"]["slice_ids"]) == canary_count(self.workflow,updated)
-                           and all(self.workflow.knowledge._slice(updated["batch_id"], sid)["state"] == "completed"
+                           and all((self.workflow.knowledge._slice(updated["batch_id"], sid)["state"] == "completed" or sid in self.workflow.skipped_pass_slices(updated))
                                    for sid in updated["dispatch_policy"]["slice_ids"]))
             canary_report = None
             if canary_done:
                 canary_report = self._report(updated, "canary", {
-                    "workflow_id": workflow_id, "ok": True,
+                    "workflow_id": workflow_id, "ok": not bool(self.workflow.skipped_pass_tasks(updated)),
+                    "outcome": "partial" if self.workflow.skipped_pass_tasks(updated) else "complete",
+                    "coverage_gaps": updated.get("pass_skip_history",[]),
                     "slice_ids": updated["dispatch_policy"]["slice_ids"],
                     "selection_digest": updated["dispatch_policy"]["selection_digest"],
                     "source_coverage": self.workflow.source_coverage(updated),

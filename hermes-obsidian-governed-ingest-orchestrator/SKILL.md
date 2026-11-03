@@ -215,3 +215,4 @@ workers perform any authorized review and create scoped closure. No per-document
 operator or LLM judgment drives these controls. Keep original coverage incomplete,
 stop at the Build pause, and bind any later publication to the exact closure and
 each page's separate publication conditions.
+`auto_full` 的有限自动恢复与覆盖缺口规则见 [automatic-recovery.md](references/automatic-recovery.md)。

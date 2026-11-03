@@ -68,7 +68,7 @@ class WorkflowPauseMixin:
                 ready = (bool(selected) and len(records) == len(selected)
                          and (boundary != "canary" or len(selected) == canary_count(self,value))
                          and all((s["state"] == "completed" and s["result_refs"])
-                                 or (boundary=='pass' and s['slice_id'] in self.skipped_pass_slices(value)) for s in records))
+                                 or (s['slice_id'] in self.skipped_pass_slices(value)) for s in records))
                 if boundary == "pass" and not slices:
                     tasks = self.knowledge._batch(value["batch_id"])["task_ids"]
                     ready = bool(tasks) and all(self._task_passes_complete(t) for t in tasks)
@@ -186,7 +186,7 @@ class WorkflowPauseMixin:
                       else [s["slice_id"] for s in self.knowledge._slices(value["batch_id"])])
             for sid in chosen:
                 item = self.knowledge._slice(value["batch_id"], sid)
-                if boundary=='pass' and sid in self.skipped_pass_slices(value):
+                if sid in self.skipped_pass_slices(value):
                     continue  # Explicit gap; never validate it as successful evidence.
                 if item["state"] != "completed" or not item["result_refs"]:
                     _fail("INCOMPLETE_COVERAGE", "pause requires durable completed Pass slices")

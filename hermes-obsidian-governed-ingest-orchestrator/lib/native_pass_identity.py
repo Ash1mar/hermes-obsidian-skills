@@ -137,7 +137,7 @@ def pass_failure(exc, *, semantic=False):
     detail='required reading dependency has not been inspected; retain original evidence'
     missing_inspection=(semantic and code=='INCOMPLETE_COVERAGE' and getattr(exc,'path',None)=='$'
         and getattr(exc,'message',None) in (detail,'INCOMPLETE_COVERAGE at $: '+detail))
-    if missing_inspection or (semantic and code == 'INVALID_SCHEMA') or code in ('UNINSPECTED_SUPPORT','INVALID_RANGE','OUTSIDE_READING_PACKAGE'):
+    if missing_inspection or (semantic and code in ('INVALID_SCHEMA','DUPLICATE')) or code in ('UNINSPECTED_SUPPORT','INVALID_RANGE','OUTSIDE_READING_PACKAGE'):
         state, action, owner = 'draft_rejected', 'correct_semantic_draft', 'worker'
     elif code in ('LOCK_TIMEOUT','LOCK_BUSY'):
         state, action, owner = 'waiting', 'end_worker', 'trusted_operator'

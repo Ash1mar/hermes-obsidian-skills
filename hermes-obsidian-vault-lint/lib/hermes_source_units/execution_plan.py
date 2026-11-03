@@ -244,6 +244,13 @@ class ExecutionPlanMixin:
                 cause=packet_recovery_cause(entry.get('failure',{})) if scope=='revision-citation-packet/v1' else None
                 if scope=='revision-citation-packet/v1' and (not cause or not entry.get('revision_packet_identity')):
                     fail('STALE_INPUT','packet recovery lacks its recognized cause or native input proof')
+                if scope=='pass-local-review/v1':
+                    proof=entry.get('local_review',{})
+                    if (proof.get('contract')!=scope or proof.get('additional_calls')!=1 or proof.get('original_attempts_preserved') is not True or proof.get('unknown_completion_allowed') is not False or not proof.get('task_ids')):
+                        fail('STALE_INPUT','local review must preserve original attempts and grant one known-response correction')
+                    original=_vault_path(self.vault,proof['original_call_ref'])
+                    if hashlib.sha256(original.read_bytes()).hexdigest()!=proof['original_call_sha256']:
+                        fail('STALE_INPUT','original local review call evidence changed')
                 if scope=='reduce-cancel/v1':
                     cause=entry.get('previous_task_id')
                     if (not isinstance(cause,str) or not cause or (entry.get('failure',{}).get('error_code')

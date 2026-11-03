@@ -585,9 +585,11 @@ def _dispatch_model_call(adapter,binding,phase,view,caller,limit,correction=None
         if 'blocked_reason' in value: raise ContractError('SEMANTIC_REVIEW_REQUIRED','$',value['blocked_reason'])
         return value,ref
     except ContractError as exc:
+        audit.update(validated=False,error_code=exc.code);_write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(audit))
         exc.semantic_audit_ref=ref
         raise
     except json.JSONDecodeError as exc:
+        audit.update(validated=False,error_code='INVALID_SCHEMA');_write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(audit))
         error=ContractError('INVALID_SCHEMA','$',
             f'semantic response is not one JSON object: {exc.msg} at line {exc.lineno}, column {exc.colno}')
         error.semantic_audit_ref=ref
@@ -922,6 +924,8 @@ def run_pass(adapter,binding,caller):
     images=image_catalog(adapter,packet)
     if isinstance(caller,HermesCaller): caller.image_catalog=images
     value=adapter.workflow.status(binding['workflow_id'])
+    from pass_local_review import grants as local_grants
+    local_reviews=local_grants(adapter,binding)
     correction_tasks=set()
     for recovery in value.get('execution_recovery_history',[]):
         report=_load_json(_vault_path(adapter.workflow.vault,recovery['report_ref']))
@@ -953,6 +957,8 @@ def run_pass(adapter,binding,caller):
         else:
             groups=pass_groups(packet,pending,phase,limit,images)
         for tasks in groups:
+            review=next((g for g in local_reviews if g['phase']==phase and set(g['task_ids'])=={checked_ids[t['task']] for t in tasks}),None)
+            review_reservation=None
             correction=None
             recovery_checked=False;attempt=0
             attempt_limit=group_usage(packet,tasks,phase,limit,images,policy)['semantic_attempt_limit'] if policy else 2
@@ -966,6 +972,10 @@ def run_pass(adapter,binding,caller):
                         ', '.join(m['ref'] for m in t['materials'] if m.get('required_dependency'))}
                     for t in tasks if checked_ids[t['task']] in correction_tasks]}
                 recovery_checked=True  # A known rejected draft is not a reusable correction.
+            if review:
+                attempt=attempt_limit-1
+                recovery_checked=True
+                correction={'code':'AUTHORIZED_LOCAL_REVIEW','message':'One additional request only. Resolve every material text_ref through the input texts pool, including required_dependency context. Linked content_provided=true with an actual material_ref and pool text is already supplied; inspect it. Return at most one inspection per own source_ref, combining the inspection findings in that record. Preserve factual uncertainty and do not invent missing content.'}
             while attempt<attempt_limit:
                 recovered=None
                 try:
@@ -982,7 +992,24 @@ def run_pass(adapter,binding,caller):
                         remaining=[t for t in tasks if t['task'] not in found]
                         draft['slot_failures']=[{'task':t['task'],'code':'INCOMPLETE_COVERAGE','message':'no reusable audited result; obtain remaining semantic work'} for t in remaining]
                     else:
-                        draft,call_ref=model_call(adapter,binding,phase,view,caller,limit,correction,policy=policy,attempt_limit=attempt_limit)
+                        from pass_local_review import reserve_budget,finish_budget
+                        budget_reservation=reserve_budget(adapter,binding,phase,view,tasks,checked_ids,review,attempt_limit)
+                        if review:
+                            from pass_local_review import reserve
+                            review_reservation=reserve(adapter,binding,review,phase,view,tasks,checked_ids)
+                        try:
+                            draft,call_ref=model_call(adapter,binding,phase,view,caller,limit,correction,policy=policy,attempt_limit=attempt_limit)
+                        except ContractError as error:
+                            if getattr(error,'semantic_audit_ref',None):
+                                finish_budget(budget_reservation,error.semantic_audit_ref)
+                                if review_reservation:
+                                    from pass_local_review import returned
+                                    returned(adapter,review_reservation,error.semantic_audit_ref)
+                            raise
+                        finish_budget(budget_reservation,call_ref)
+                        if review_reservation:
+                            from pass_local_review import returned
+                            returned(adapter,review_reservation,call_ref)
                     authored,confirmations,failures=prepare_pass_items(adapter,draft,packet,tasks,phase)
                     for action,key,payload in (('submit','passes',authored),('confirm','confirmations',confirmations)):
                         if not payload: continue
@@ -996,6 +1023,10 @@ def run_pass(adapter,binding,caller):
                     # Keep other valid slots and phases; never complete this slice
                     # while its refused work remains unresolved.
                     refused=[f for f in failures if f['code']=='SEMANTIC_REVIEW_REQUIRED']
+                    if failures:
+                        with ACTION_LOCK:
+                            attach_receipt(adapter,call_ref,{'ok':False,'validated':False,
+                                'state':'draft_rejected','phase':phase,'failures':failures})
                     if refused:
                         with ACTION_LOCK:
                             attach_receipt(adapter,call_ref,{'ok':False,'validated':False,
@@ -1012,7 +1043,7 @@ def run_pass(adapter,binding,caller):
                         correction={'failures':[{k:(bounded_correction_message(v,policy) if k=='message' else v)
                             for k,v in f.items() if k in ('task','code','message')} for f in failures]}
                 except ContractError as exc:
-                    if exc.code not in ('INVALID_SCHEMA','UNRESOLVED_REFERENCE','UNINSPECTED_SUPPORT','INCOMPLETE_COVERAGE'): raise
+                    if exc.code not in ('INVALID_SCHEMA','DUPLICATE','UNRESOLVED_REFERENCE','UNINSPECTED_SUPPORT','INCOMPLETE_COVERAGE'): raise
                     correction={'code':exc.code,'message':bounded_correction_message(exc,policy) if policy else str(exc)[:500]}
                 if recovered:
                     continue  # Mechanical replay consumes no semantic correction budget.
