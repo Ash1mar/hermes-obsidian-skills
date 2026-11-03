@@ -8,7 +8,7 @@ from types import SimpleNamespace
 
 import pytest
 from test_p3_knowledge_build import (vault, plan_sliced_batch, workflow_request,
-    start_and_pin, FileIngestWorkflowService, ContractError, ROOT)
+    start_and_pin, FileIngestWorkflowService, ContractError, ROOT, FakeKanban, IngestKanbanAdapter)
 from test_refill_handoff import refill
 from hermes_source_units.runtime_policy import canary_count, vault_provider_config, POLICY_REF, check_provider_pin
 from hermes_source_units.ingest_workflow import display_phase
@@ -44,6 +44,21 @@ def test_off_is_explicit_and_does_not_fabricate_selection(vault):
     result=service.skip_canary(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=w['revision']))
     assert result['dispatch_policy']=={'mode':'full','slice_ids':[],'selection_digest':None}
     assert not any(s['result_refs'] for s in service.knowledge._slices('off'))
+
+
+def test_legacy_eight_slice_arm_reconciles_without_new_policy(vault):
+    plan_sliced_batch(vault,27,'legacy')
+    w=start_and_pin(vault,workflow_request(workflow_id='ingest-legacy',actor='agent',expected_revision=0,
+        profile='diagnostic-6',scope={'source_paths':[],'knowledge_selector':'all'},batch_id='legacy'))
+    fake=FakeKanban(True);adapter=IngestKanbanAdapter(vault,fake,enable_workers=True)
+    adapter.sync(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=w['revision']))
+    preview=adapter.workflow.canary_preview(w['workflow_id'],8)
+    assert len(preview['slices'])==8
+    current=adapter.workflow.status(w['workflow_id'])
+    adapter.arm_canary(workflow_request(workflow_id=w['workflow_id'],actor='agent',expected_revision=current['revision'],
+        slice_ids=[s['slice_id'] for s in preview['slices']],selection_digest=preview['selection_digest']))
+    assert len(fake.unblocked)==2
+    assert len(adapter.workflow.status(w['workflow_id'])['dispatch_policy']['slice_ids'])==8
 
 
 def test_provider_is_vault_local_and_pin_detects_change(tmp_path):
