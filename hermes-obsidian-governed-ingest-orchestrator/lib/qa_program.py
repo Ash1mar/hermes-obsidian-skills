@@ -56,7 +56,8 @@ def isolate_pages(adapter,binding,value,state,written,held,planning_failure):
 def verify_recovery(adapter,w,node,binding,entry,failure,runs):
     """Authenticate current immutable inputs and ended known native responses."""
     from fixed_reduce import preview_snapshot
-    from fixed_semantic import COMMON,RULES
+    from fixed_semantic import system_prompt
+    from fixed_semantic_recovery import _request_text
     if not enabled(w) or node.name!='global-reduce' or failure.get('error_code')!='SEMANTIC_REVIEW_REQUIRED':
         raise ContractError('RECOVERY_NOT_ALLOWED','$','only a known global QA hold may use automatic continuation')
     path=_vault_path(adapter.workflow.vault,entry['snapshot_ref']);old=_load_json(path)
@@ -75,10 +76,12 @@ def verify_recovery(adapter,w,node,binding,entry,failure,runs):
                 raise ContractError('RECOVERY_NOT_ALLOWED','$','unrecognized QA native call')
             rows=list(db.execute('select role,content,tool_calls from messages where session_id=?',(sid,)))
             users=[c for r,c,_ in rows if r=='user' and fingerprint(c)==call['user_sha256']]
+            body=json.loads(_request_text(users[0])) if len(users)==1 else {}
             if (db.execute('select source from sessions where id=?',(sid,)).fetchone()!=('kanban',)
                     or len(users)!=1 or any(tc and tc!='[]' for _,_,tc in rows)
                     or not any(r=='assistant' and fingerprint(c)==call['response_sha256'] for r,c,_ in rows)
-                    or fingerprint({'system':COMMON+'\n'+RULES[phase],'user':users[0]})!=call['input_sha256']):
+                    or body.get('phase')!=phase
+                    or fingerprint({'system':system_prompt(phase,body['input'],body.get('correction')),'user':users[0]})!=call['input_sha256']):
                 raise ContractError('RECOVERY_NOT_ALLOWED','$','QA native request/response proof differs')
             calls.append({'ref':p.relative_to(adapter.workflow.vault).as_posix(),
                 'semantic_sha256':fingerprint({k:v for k,v in call.items() if k not in ('receipt_refs','validated')})})
