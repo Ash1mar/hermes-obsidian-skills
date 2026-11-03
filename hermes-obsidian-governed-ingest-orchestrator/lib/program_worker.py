@@ -37,6 +37,7 @@ def canonical_binding(adapter, binding, *, executor='program-v1'):
     request = _load_json(path)
     adapter.validate_worker_request(request)
     value = adapter.workflow.status(request['workflow_id'])
+    adapter.apply_policy(value)
     cards = [c for c in value['kanban']['task_map'] if c.get('task_id') == request['task_id']
              and c['node'] == request['node']]
     if len(cards) != 1 or path != _vault_path(adapter.workflow.vault,
@@ -65,7 +66,7 @@ def provider_module():
 
 def sync_provider(adapter, bound, value):
     module=provider_module()
-    _, config = module.provider_config(None)
+    _, config = module.provider_config(None, adapter.workflow.vault)
     if config.get('enabled', True) is False:
         from hermes_source_units.provider_disposition import active,validate_manifest
         proof=active(adapter.workflow.vault,value,config=config)
@@ -118,6 +119,7 @@ def execute(adapter, binding):
     begun = adapter.worker_begin(request)
     bound = {**request, 'template_hash': begun['template_hash']}
     value = adapter.workflow.status(request['workflow_id'])
+    adapter.apply_policy(value)
     if kind == 'vault-finalize-plan':
         service = FileVaultFinalizeService(adapter.workflow.vault)
         batch = adapter.workflow.knowledge._batch(value['batch_id'])

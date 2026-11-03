@@ -37,6 +37,10 @@ WORKER_KINDS = (
     "provider-sync", "acceptance",
 )
 DISPLAY_PHASES = {
+    "compact-5": (("bootstrap", ()), ("source_ingest", ("created","source_preparing")),
+        ("knowledge_build", ("planning","analyzing","reducing","checkpoint_1")),
+        ("build_finalize", ("build_finalizing",)),
+        ("release_and_acceptance", ("release_planning","checkpoint_2","applying","indexing","validating","completed"))),
     "compact-3": (
         ("ingest_to_build_checkpoint", ("created", "source_preparing", "planning",
                                         "analyzing", "reducing", "checkpoint_1")),
@@ -76,7 +80,8 @@ def display_phase(value: Mapping[str, Any]) -> dict[str, Any]:
             checkpoint = (stage if stage in ("checkpoint_1", "checkpoint_2")
                           and value["checkpoints"][stage]["state"] != "approved" else None)
             return {"phase": number, "phase_count": len(DISPLAY_PHASES[profile]),
-                    "name": name, "awaiting_approval": checkpoint}
+                    "name": name, "awaiting_approval": checkpoint,
+                    **({'subphase': {"planning":"exact_plan","analyzing":"map_pass","reducing":"reduce","checkpoint_1":"reduce_validation"}.get(stage,stage)} if profile=='compact-5' else {})}
     _fail("INVALID_SCHEMA", "workflow stage has no display phase")
 
 
@@ -113,6 +118,8 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                 readonly=readonly,origin=origin)
         if value["workflow_id"] != workflow_id:
             _fail("INVALID_SCHEMA", "workflow file identity mismatch")
+        from .runtime_policy import check_provider_pin
+        if selected is None: check_provider_pin(self.vault,value["scope"])
         if selected is not None and (captured or cache is None):return copy.deepcopy(project(value))
         return value
 
@@ -258,6 +265,8 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
             _fail("INVALID_SCHEMA", "scope must be an object")
         if scope.get("pause_after") and scope.get("execution_mode") != "auto_full":
             _fail("INVALID_SCHEMA", "pause_after requires auto_full execution")
+        if scope.get("canary_policy") == "off" and (scope.get("execution_mode") != "auto_full" or "canary" in scope.get("pause_after", [])):
+            _fail("INVALID_SCHEMA", "Canary off requires auto_full without a canary pause")
         batch_id = request.get("batch_id")
         if batch_id is not None and scope.get("source_paths"):
             _fail("INVALID_SCHEMA", "adopted batches cannot bypass scoped source preparation")
@@ -284,6 +293,8 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
             "start_digest": request["input_digest"],
         }
         validate_record("ingest_workflow", value)
+        from .runtime_policy import check_provider_pin
+        check_provider_pin(self.vault,scope)
         with _exclusive_lock(self._lock(workflow_id)):
             if path.exists():
                 existing = self._load(workflow_id)
@@ -520,8 +531,17 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
         else:
             ready = [item for item in self.knowledge._slices(value["batch_id"])
                      if item["state"] == "ready"]
-            if len(ready) < limit:
+            if value["scope"].get("canary_policy") == "sample":
+                limit=min(limit,len(self.knowledge._slices(value["batch_id"])))
+            if not limit or len(ready) < limit:
                 _fail("CANARY_UNAVAILABLE", "fewer ready slices than requested")
+            if value["scope"].get("canary_policy") == "sample":
+                # Deterministic first round across sources, then fill in plan order.
+                seen=set(); first=[]; rest=[]
+                for item in ready:
+                    source=tuple(sorted({ref["unit_ref"]["resource_id"] for t in item["task_ids"] for ref in self.knowledge._task(t)["target_refs"]}))
+                    (rest if source in seen else first).append(item); seen.add(source)
+                ready=first+rest
             selected = ready[:limit]
             digest = "sha256:" + fingerprint({
                 "workflow_id": workflow_id,
@@ -578,6 +598,18 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
             self._write(updated)
             return updated
 
+    def skip_canary(self, request):
+        with _exclusive_lock(self._lock(str(request["workflow_id"]))):
+            value=self._mutation(request); self.assert_not_paused(value)
+            if (value["scope"].get("canary_policy")!="off" or value["scope"].get("execution_mode")!="auto_full"
+                or value["cancel_requested"] or value["current_stage"]!="analyzing"):
+                _fail("ACCESS_DENIED", "Canary skip is not authorized by this workflow")
+            if not self.knowledge._slices(value["batch_id"]):
+                _fail("CANARY_UNAVAILABLE", "no planned slices")
+            if value["dispatch_policy"]["mode"]!="disabled": return value
+            value["dispatch_policy"]={"mode":"full","slice_ids":[],"selection_digest":None}
+            value["revision"]+=1; self._write(value); return value
+
     def promote_canary(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Open remaining Pass slices only after the pinned eight-slice trial passed."""
         with _exclusive_lock(self._lock(str(request["workflow_id"]))):
@@ -589,7 +621,8 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
             policy = value["dispatch_policy"]
             if policy["mode"] == "full":
                 return value
-            if policy["mode"] != "canary" or len(policy["slice_ids"]) != 8:
+            from .runtime_policy import canary_count
+            if policy["mode"] != "canary" or len(policy["slice_ids"]) != canary_count(self, value):
                 _fail("CANARY_UNAVAILABLE", "exactly eight pinned canary slices are required")
             for slice_id in policy["slice_ids"]:
                 item = self.knowledge._slice(value["batch_id"], slice_id)

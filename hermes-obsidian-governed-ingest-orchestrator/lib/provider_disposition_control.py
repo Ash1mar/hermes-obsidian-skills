@@ -43,7 +43,7 @@ def prepare(adapter,request,*,dry_run=False):
         if (native['task'].get('worker_pid') or not native['runs'] or any(not r.get('ended_at') for r in native['runs'])
                 or not any(r.get('worker_pid') for r in native['runs'])):fail('exact native attempt must be ended')
         from program_worker import provider_module
-        module=provider_module();_,config=module.provider_config(None)
+        module=provider_module();_,config=module.provider_config(None,adapter.workflow.vault)
         if config.get('enabled') is not False or fingerprint(config)!=request.get('adapter_config_fingerprint'):fail('disabled adapter differs')
         release_id,release_hash=module.release_identity(service.vault)
         if request.get('release')!={'ref':f'_system/knowledge-releases/{release_id}/manifest.json','sha256':release_hash} or release_id!=w['release_id']:fail('release changed')

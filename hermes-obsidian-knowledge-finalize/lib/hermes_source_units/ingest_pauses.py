@@ -1,5 +1,6 @@
 """Durable operator continuation gates, independent of dispatch recovery."""
 from __future__ import annotations
+from .runtime_policy import canary_count
 
 import hashlib
 import os
@@ -65,7 +66,7 @@ class WorkflowPauseMixin:
                             else {s["slice_id"] for s in slices})
                 records = [s for s in slices if s["slice_id"] in selected]
                 ready = (bool(selected) and len(records) == len(selected)
-                         and (boundary != "canary" or len(selected) == 8)
+                         and (boundary != "canary" or len(selected) == canary_count(self,value))
                          and all((s["state"] == "completed" and s["result_refs"])
                                  or (boundary=='pass' and s['slice_id'] in self.skipped_pass_slices(value)) for s in records))
                 if boundary == "pass" and not slices:

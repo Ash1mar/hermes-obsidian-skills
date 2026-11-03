@@ -32,13 +32,17 @@ def load_json(path: Path) -> dict[str, Any]:
     return data
 
 
-def provider_config(path: Path | None) -> tuple[Path, dict[str, Any]]:
+def provider_config(path: Path | None, vault_root=None) -> tuple[Path, dict[str, Any]]:
     configured = path or (
         Path(os.environ["HERMES_RETRIEVAL_PROVIDER_CONFIG"])
         if os.environ.get("HERMES_RETRIEVAL_PROVIDER_CONFIG")
         else Path(__file__).resolve().parents[1] / "config" / "retrieval-provider.json"
     )
-    return configured, load_json(configured)
+    config=load_json(configured)
+    if vault_root is not None:
+        from hermes_source_units.runtime_policy import vault_provider_config
+        config=vault_provider_config(config,vault_root,'query')
+    return configured, config
 
 
 def call_command(config: dict[str, Any], vault_root: Path, query: str, top_k: int) -> dict[str, Any]:
@@ -278,7 +282,7 @@ def main() -> int:
     vault_root = args.vault_root.resolve()
     started = time.monotonic_ns()
     try:
-        config_path, config = provider_config(args.provider_config)
+        config_path, config = provider_config(args.provider_config, vault_root)
         if config.get("enabled", True) is False:
             result = {
                 "status": "disabled",

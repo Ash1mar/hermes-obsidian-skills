@@ -1,5 +1,6 @@
 """Rebuildable Hermes Kanban projection of a Vault ingest workflow."""
 from __future__ import annotations
+from hermes_source_units.runtime_policy import canary_count
 
 from dataclasses import dataclass
 import ast
@@ -687,6 +688,10 @@ class IngestKanbanAdapter:
         if self.source_prepare_concurrency < 1:
             _fail("INVALID_SCHEMA", "source_prepare_concurrency must be positive")
 
+    def apply_policy(self, value):
+        for key,number in value["scope"].get("execution_policy",{}).items():
+            if key != "pass_worker_concurrency": setattr(self,key,number)
+
     @staticmethod
     def _mutation(value: Mapping[str, Any], **fields: Any) -> dict[str, Any]:
         request = {"workflow_id": value["workflow_id"], "actor": value["actor"],
@@ -741,6 +746,7 @@ class IngestKanbanAdapter:
     def _sync_current(self, workflow_id: str, *, max_attempts=16, yield_requested=None) -> dict[str, Any]:
         for _ in range(max_attempts):
             value = self.workflow.status(workflow_id)
+            self.apply_policy(value)
             try:
                 return (self.sync(self._mutation(value), yield_requested=yield_requested)
                         if yield_requested is not None else self.sync(self._mutation(value)))
@@ -940,6 +946,7 @@ class IngestKanbanAdapter:
                     or value['current_stage']!='analyzing' or not value['scope'].get('pause_after')
                     or not value['kanban']['board_id'] or not hasattr(self.kanban,'task_states')):
                 return
+            self.apply_policy(value)
             self.workflow.assert_execution_ready(value)
             board=value['kanban']['board_id']
             with self.workflow.execution_projection(), self.kanban.projection(board) if hasattr(self.kanban,'projection') else nullcontext():
@@ -1348,6 +1355,7 @@ class IngestKanbanAdapter:
                 return {'ok':True, 'replayed':True, 'applied':False, 'workflow_id':wid,
                         'revision':value['revision'], 'report_ref':prior['report_ref'], 'nodes':prior['nodes']}
             value = self.workflow._mutation(request)
+            self.apply_policy(value)
             self.workflow.assert_execution_ready(value)
             legacy_revision=(scope in ('mechanical/v1','legacy-slice-config/v1','revision-citation-packet/v1','amendment-native-result/v1') and value['current_stage']=='reducing'
                 and value.get('pass_revision',{}).get('revision_scope')=='reduce-dependencies/v1'
@@ -1572,6 +1580,8 @@ class IngestKanbanAdapter:
         workflow_id, actor = str(request["workflow_id"]), str(request["actor"])
         with span('reconciliation_state_settlement'):
             value = self.workflow.status(workflow_id)
+            self.apply_policy(value)
+            self.apply_policy(value)
             self.workflow.assert_execution_ready(value)
             if value["actor"] != actor:
                 _fail("ACTOR_MISMATCH", "workflow actor differs")
@@ -1603,9 +1613,12 @@ class IngestKanbanAdapter:
                         and not self.workflow.pending_pause(value)
                         and value["current_stage"] == "analyzing"):
                     policy = value["dispatch_policy"]
-                    if policy["mode"] == "disabled":
+                    if policy["mode"] == "disabled" and value["scope"].get("canary_policy")=="off":
+                        value=self.workflow.skip_canary(self._mutation(value))
+                    elif policy["mode"] == "disabled":
                         try:
-                            preview = self.workflow.canary_preview(workflow_id, 8)
+                            from hermes_source_units.runtime_policy import canary_count
+                            preview = self.workflow.canary_preview(workflow_id, canary_count(self.workflow,value))
                         except ContractError as exc:
                             if exc.code != "CANARY_UNAVAILABLE":
                                 raise
@@ -1619,7 +1632,7 @@ class IngestKanbanAdapter:
                                  "selection_digest": preview["selection_digest"]}
                         armed["input_digest"] = mutation_digest(armed)
                         value = self.workflow.arm_canary(armed)
-                    elif value["scope"].get("execution_mode") == "auto_full" and policy["mode"] == "canary" and len(policy["slice_ids"]) == 8 and all(
+                    elif value["scope"].get("execution_mode") == "auto_full" and policy["mode"] == "canary" and len(policy["slice_ids"]) == canary_count(self.workflow,value) and all(
                             self.workflow.knowledge._slice(value["batch_id"], slice_id)["state"] == "completed"
                             for slice_id in policy["slice_ids"]):
                         promoted = {"workflow_id": workflow_id, "actor": actor,
@@ -1684,7 +1697,7 @@ class IngestKanbanAdapter:
                 # A failed native card does not make its live domain lease free.
                 pass_window = held | {n.name for n in candidates[:max(0,capacity-len(held))]}
         with span('reconciliation_bindings'):
-            slug = board_slug(workflow_id)
+            slug = value["kanban"]["board_id"] or (board_slug(str(self.workflow.vault.resolve())+":"+workflow_id) if value["scope"].get("execution_policy") else board_slug(workflow_id))
             self.kanban.ensure_board(slug)
             ids: dict[str, str] = {}
             task_map: list[dict[str, str]] = []
@@ -1773,6 +1786,7 @@ class IngestKanbanAdapter:
                 task_map.append({"node": node.name, "idempotency_key": key,
                                  "task_id": task_id})
             value = self.workflow.status(workflow_id)
+            self.apply_policy(value)
             checkpoint()
             # A revision narrows the dispatch graph without retiring valid native
             # outcomes. Keep their identities so later projection cannot recreate
@@ -1928,7 +1942,7 @@ class IngestKanbanAdapter:
                     updated["batch_id"], node.name.partition(":")[2])["state"]
                     in ("ready", "leased")) for node in nodes)
             canary_done = (updated["dispatch_policy"]["mode"] == "canary"
-                           and len(updated["dispatch_policy"]["slice_ids"]) == 8
+                           and len(updated["dispatch_policy"]["slice_ids"]) == canary_count(self.workflow,updated)
                            and all(self.workflow.knowledge._slice(updated["batch_id"], sid)["state"] == "completed"
                                    for sid in updated["dispatch_policy"]["slice_ids"]))
             canary_report = None
@@ -2234,7 +2248,7 @@ class IngestKanbanAdapter:
             if manifest.get('status')=='disabled':
                 from hermes_source_units.provider_disposition import validate_manifest
                 from program_worker import provider_module
-                _,config=provider_module().provider_config(None)
+                _,config=provider_module().provider_config(None, self.workflow.vault)
                 validate_manifest(self.workflow.vault,workflow,manifest,config=config)
             elif (manifest.get("status") != "ready" or
                     manifest.get("release_id") != workflow["release_id"] or
