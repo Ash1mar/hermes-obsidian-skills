@@ -263,6 +263,9 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
         scope = request["scope"]
         if not isinstance(scope, dict):
             _fail("INVALID_SCHEMA", "scope must be an object")
+        if 'recovery_policy' in scope:
+            from .recovery_policy import validate
+            validate(scope['recovery_policy'])
         if scope.get("pause_after") and scope.get("execution_mode") != "auto_full":
             _fail("INVALID_SCHEMA", "pause_after requires auto_full execution")
         if scope.get("canary_policy") == "off" and (scope.get("execution_mode") != "auto_full" or "canary" in scope.get("pause_after", [])):
@@ -825,10 +828,18 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
             if (current["actor"] == request["actor"] and current["state"] == "cancelled"
                     and current["cancel_requested"]
                     and current["revision"] == request["expected_revision"] + 1):
+                from .recovery_control import record_cancel
+                record_cancel(self.vault,request)
                 return current
             value = self._mutation(request)
+            if value['state']=='cancelled' and value['cancel_requested']:
+                from .recovery_control import record_cancel
+                record_cancel(self.vault,request)
+                return value
             if value["state"] in TERMINAL:
                 _fail("WORKFLOW_STOPPED", "workflow already terminal")
+            from .recovery_control import record_cancel
+            record_cancel(self.vault,request)
             value["resume_stage"] = value["current_stage"]
             value["state"] = "cancelled"
             value["cancel_requested"] = True
@@ -838,6 +849,8 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
 
     def resume(self, request: Mapping[str, Any]) -> dict[str, Any]:
         with _exclusive_lock(self._lock(str(request["workflow_id"]))):
+            from .recovery_control import check
+            check(self.vault,str(request['workflow_id']))
             value = self._mutation(request)
             self.assert_execution_ready(value)
             if value["state"] not in TERMINAL:

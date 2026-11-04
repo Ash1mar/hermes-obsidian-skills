@@ -104,10 +104,11 @@ def run(vault, binding):
         notify_reconciler(vault,request['workflow_id'])
         # The trusted reconciler acknowledges the durable result and holds
         # successors at pauses. Keep the native PID alive until it does so.
-        with span('completion_acknowledgement',binding=request):
+        with span('completion_acknowledgement',binding=request) as acknowledgement:
             deadline = time.monotonic() + 120
             while own_run() and time.monotonic() < deadline:
                 time.sleep(.5)
+            acknowledgement['outcome']='pending_timeout' if own_run() else 'native_grant_released'
         return result
     except Exception as exc:
         completed.set()

@@ -63,6 +63,14 @@ class SupervisorTest(unittest.TestCase):
         self.fail("timed out waiting for subprocess state")
 
     def test_two_slots_across_independent_supervisors(self):
+        self.config['max_concurrent']=2
+        self.check_slots(2)
+
+    def test_default_single_slot_across_independent_supervisors(self):
+        self.assertEqual(self.config['max_concurrent'],1)
+        self.check_slots(1)
+
+    def check_slots(self,expected):
         events = self.root / "events"
         code = ("import os,time; p=" + repr(str(events)) + "; "
                 "f=os.open(p,os.O_CREAT|os.O_APPEND|os.O_WRONLY,0o600); "
@@ -74,7 +82,7 @@ class SupervisorTest(unittest.TestCase):
         for line in events.read_text().splitlines():
             current += 1 if line.startswith("start") else -1
             peak = max(peak, current)
-        self.assertEqual(peak, 2)
+        self.assertEqual(peak, expected)
         self.assertEqual(current, 0)
         self.assertFalse(list((self.root / "state").glob("slot-*.json")))
 

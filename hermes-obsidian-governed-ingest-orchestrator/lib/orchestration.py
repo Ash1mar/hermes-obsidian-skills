@@ -115,7 +115,7 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any], *, dry
         result = prepare_exact(adapter, request)
     else:
         result = getattr(adapter, command.replace("-", "_"))(request)
-    if (command in ("start", "resume", "continue-workflow", "revise-passes") and result.get("background_dispatch")
+    if (command in ("start", "resume", "continue-workflow", "revise-passes") and (result.get("background_dispatch") or result.get('initial_release_pending'))
             and os.name == "posix"):
         if command == 'resume' and result.get('program_dispatch'):
             try:

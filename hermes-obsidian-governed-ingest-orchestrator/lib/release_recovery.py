@@ -33,12 +33,19 @@ def recover(adapter,request,*,dry_run=False):
         node=nodes['vault-finalize-plan'];card=next(c for c in w['kanban']['task_map'] if c['node']==node.name)
         if request.get('task_id')!=card['task_id'] or request.get('input_fingerprint')!=node.input_fingerprint:fail('native binding changed')
         path=_vault_path(service.vault,f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint(node.name)[:16]}.json')
-        data=path.read_bytes();failure=_load_json(path)
-        if hashlib.sha256(data).hexdigest()!=request.get('failure_sha256') or failure.get('task_id')!=card['task_id'] or failure.get('error_code')!='STALE_INPUT':fail('exact rejected plan failure required')
+        proactive=request.get('recovery_scope')=='initial-release-preflight/v1'
+        failure=None
+        if proactive:
+            from hermes_source_units.initial_release import needs_preflight
+            if not needs_preflight(service.vault,w) or not request.get('initial_page_governance'):fail('explicit initial release policy and grant required')
+            if path.exists():fail('unstarted preflight cannot recover an existing failure')
+        else:
+            data=path.read_bytes();failure=_load_json(path)
+            if hashlib.sha256(data).hexdigest()!=request.get('failure_sha256') or failure.get('task_id')!=card['task_id'] or failure.get('error_code')!='STALE_INPUT':fail('exact rejected plan failure required')
         oldpath=_vault_path(service.vault,request['blocked_plan']['ref']);olddata=oldpath.read_bytes();plan=_load_json(oldpath)
         expected=FileVaultFinalizeService(service.vault)._plan_path('release-'+fingerprint({'workflow_id':wid,'node':node.name,'input_fingerprint':node.input_fingerprint})[:24])
         scope=request.get('recovery_scope','governance-resolved/v1')
-        allowed=(plan['blockers']==['no-deliverable-pages'] if scope=='governance-resolved/v1' else
+        allowed=(plan['blockers']==['no-deliverable-pages'] if scope in ('governance-resolved/v1','initial-release-preflight/v1') else
             bool(plan['blockers']) and all(b.startswith('ambiguous-alias:') for b in plan['blockers']) if scope=='unused-navigation-alias/v1' else False)
         if oldpath!=expected or hashlib.sha256(olddata).hexdigest()!=request['blocked_plan']['sha256'] or not allowed or plan['state']!='draft':fail('exact blocked plan and supported cause required')
         if scope=='unused-navigation-alias/v1':
@@ -51,7 +58,9 @@ def recover(adapter,request,*,dry_run=False):
                 if hashlib.sha256(data).hexdigest()!=page['authored_sha256']:fail('selected page changed')
                 if any(raw.strip().casefold() in labels for raw in _WIKILINK.findall(data.decode('utf-8'))):fail('an ambiguous label is actually referenced')
         native=adapter.kanban.task_snapshot_fresh(w['kanban']['board_id'],card['task_id'])
-        if not native['runs'] or any(not r.get('ended_at') for r in native['runs']):fail('native attempts must be ended')
+        if proactive:
+            if native['runs']:fail('initial preflight requires no native attempt')
+        elif not native['runs'] or any(not r.get('ended_at') for r in native['runs']):fail('native attempts must be ended')
         receipt_path=_vault_path(service.vault,request['governance_receipt']['ref']);receipt_data=receipt_path.read_bytes();receipt=_load_json(receipt_path)
         if hashlib.sha256(receipt_data).hexdigest()!=request['governance_receipt']['sha256'] or not receipt.get('applied') or not receipt.get('resolved'):fail('completed governance resolution required')
         transaction=_load_json(receipt_path.with_name('transaction.json'))
@@ -64,7 +73,7 @@ def recover(adapter,request,*,dry_run=False):
         p4=FileVaultFinalizeService(service.vault);eligibility=p4._source_eligibility(p4._current_sets(),{})
         if not resources or not resources<={e['resource_id'] for e in eligibility} or any(not e['eligible'] for e in eligibility if e['resource_id'] in resources):fail('resolved sources still ineligible')
         if request.get('initial_page_governance'):
-            if scope!='governance-resolved/v1':fail('initial page scope requires source-governance recovery')
+            if scope not in ('governance-resolved/v1','initial-release-preflight/v1'):fail('initial page scope requires source-governance recovery')
             from hermes_source_units.initial_release import validate as validate_initial,admitted_pointer
             if admitted_pointer(service.vault,w):fail('initial page authority was already admitted')
             validate_initial(p4,w,request['initial_page_governance'],blocked_plan=request['blocked_plan'],

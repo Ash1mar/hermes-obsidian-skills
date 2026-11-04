@@ -2161,6 +2161,20 @@
           ],
           "additionalProperties": false
         },
+        "recovery_policy": {
+          "type": "object",
+          "required": ["contract", "semantic_failure", "qa", "source_resource_retries", "controller_attempts", "unknown_completion", "initial_release"],
+          "properties": {
+            "contract": {"const": "workflow-recovery-policy/v1"},
+            "semantic_failure": {"enum": ["hold", "once_then_isolate"]},
+            "qa": {"type": "object"},
+            "source_resource_retries": {"const": 1},
+            "controller_attempts": {"const": 3},
+            "unknown_completion": {"const": "hold"},
+            "initial_release": {"enum": ["hold", "scoped_bootstrap"]}
+          },
+          "additionalProperties": false
+        },
         "provider_policy_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$"

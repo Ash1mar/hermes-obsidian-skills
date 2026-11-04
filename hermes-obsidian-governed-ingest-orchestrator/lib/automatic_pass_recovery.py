@@ -14,11 +14,10 @@ POLICY={'contract':'automatic-pass-recovery/v1','additional_attempts':1,
 
 def enabled(value):
     from orchestration import configuration
-    from hermes_source_units.qa_policy import POLICY
-    cfg=configuration()
-    if cfg.get('qa_policy',POLICY)!=POLICY:raise ContractError('INVALID_SCHEMA','$','unsupported automatic QA policy')
+    from hermes_source_units.recovery_policy import effective
+    policy=effective(value,configuration())
     return (value.get('scope',{}).get('execution_mode')=='auto_full'
-            and cfg.get('pass_failure_policy','hold')=='once_then_isolate')
+            and policy['semantic_failure']=='once_then_isolate')
 
 
 def request(adapter,wid,**fields):

@@ -76,22 +76,28 @@ def prepare_source(adapter, request):
             with tempfile.TemporaryDirectory(prefix="hermes-source-binding-") as temporary:
                 binding_file = Path(temporary) / "binding.json"
                 binding_file.write_text(json.dumps(bound, ensure_ascii=False), encoding="utf-8")
+                def convert(target, log):
+                    from hermes_source_units.runtime_telemetry import span
+                    root.mkdir(parents=True, exist_ok=True)
+                    with span('source_conversion',vault=vault,binding=bound,backend=backend), log.open('wb') as output:
+                        return subprocess.run([sys.executable,str(scripts/'convert_pdf_with_mineru_bundle.py'),
+                            str(raw),'-o',str(target),'--vault',str(vault),'--worker-binding',str(binding_file),
+                            '--backend',backend,'--model-source','local'],stdout=output,stderr=subprocess.STDOUT,check=False)
                 for attempt, backend in ((1, "hybrid-engine"), (2, "pipeline")):
                     adapter.worker_check(bound)
                     candidate = _vault_path(vault, f"{base}/attempt-{attempt}")
                     result = None
                     if not candidate.exists():
-                        root.mkdir(parents=True, exist_ok=True)
-                        with (root / f"conversion-{attempt}.log").open("wb") as output:
-                            result = subprocess.run(
-                                [sys.executable, str(scripts / "convert_pdf_with_mineru_bundle.py"),
-                                 str(raw), "-o", str(candidate), "--vault", str(vault),
-                                 "--worker-binding", str(binding_file), "--backend", backend,
-                                 "--model-source", "local"], stdout=output, stderr=subprocess.STDOUT,
-                                check=False)
+                        result = convert(candidate,root/f'conversion-{attempt}.log')
                         # Missing entrypoints, binding or environment errors cannot
                         # be repaired by parsing the same PDF with weaker settings.
                     adapter.worker_check(bound)
+                    from source_resource_recovery import recover as recover_resource
+                    policy=adapter.workflow.status(request['workflow_id'])['scope'].get('recovery_policy',{})
+                    recovered=recover_resource(candidate,root,source,backend,convert,
+                        lambda:adapter.worker_check(bound),allowed=policy.get('source_resource_retries')==1)
+                    if recovered!=candidate:
+                        candidate=recovered;result=None  # Typed bound diagnostic owns the ended retry result.
                     if result is not None and result.returncode not in (0, 3, 4):
                         _fail("PREPARATION_RUNTIME_FAILED", f"converter rejected attempt {attempt}; inspect {root.relative_to(vault)}; source outcome remains pending")
                     diagnostic_path = candidate / 'conversion-result.json'

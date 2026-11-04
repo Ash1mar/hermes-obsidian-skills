@@ -17,11 +17,13 @@ def recover(adapter,wid,*,resume=True):
     from hermes_source_units.vault_finalize import FileVaultFinalizeService
     from hermes_source_units.partial_finalize import pin
     from hermes_source_units.page_governance import POLICY
-    from hermes_source_units.initial_release import CONTRACT,admitted_pointer
+    from hermes_source_units.initial_release import CONTRACT,admitted_pointer,needs_preflight
     service=adapter.workflow;root=service.vault/f'_system/ledgers/ingest-workflows/{wid}/automatic-release'
     with _exclusive_lock(root/'.controller.lock'):
         w=service.status(wid)
-        if not enabled(w) or w['current_stage']!='release_planning' or service.pending_pause(w) or w.get('release_id'):return False
+        proactive=needs_preflight(service.vault,w)
+        if (not enabled(w) and not proactive) or w['current_stage']!='release_planning' or service.pending_pause(w) or w.get('release_id'):return False
+        if w['scope'].get('recovery_policy',{}).get('initial_release')=='hold':return False
         bootstrap=w['scope'].get('bootstrap_ref')
         if not bootstrap:return False
         start=_load_json(_vault_path(service.vault,bootstrap))
@@ -41,17 +43,35 @@ def recover(adapter,wid,*,resume=True):
                 return True
             return False
         fp=service.vault/f'_system/ledgers/ingest-workflows/{wid}/reports/failed-{fingerprint("vault-finalize-plan")[:16]}.json'
-        if not card or not fp.exists():return False
-        failure=_load_json(fp)
-        if failure.get('task_id')!=card['task_id'] or failure.get('error_code')!='STALE_INPUT':return False
+        if not card:return False
+        if proactive:
+            from ingest_kanban import desired_graph,domain_completed
+            nodes={n.name:n for n in desired_graph(service,w)}
+            if not domain_completed(service,w,nodes['build-finalize']):return False
+            node=nodes['vault-finalize-plan']
+            if adapter.kanban.task_snapshot_fresh(w['kanban']['board_id'],card['task_id']).get('runs'):
+                raise ContractError('STALE_INPUT','$','initial preflight requires an unstarted native plan')
+            failure={'input_fingerprint':node.input_fingerprint}
+        else:
+            if not fp.exists():return False
+            failure=_load_json(fp)
+            if failure.get('task_id')!=card['task_id'] or failure.get('error_code')!='STALE_INPUT':return False
         p4=FileVaultFinalizeService(service.vault)
         if (p4._state().get('current_release_id') or start.get('vault_id')!=p4.source.vault_manifest['vault']['id']):return False
         release='release-'+fingerprint({'workflow_id':wid,'node':card['node'],'input_fingerprint':failure['input_fingerprint']})[:24]
-        pp=p4._plan_path(release);plan=_load_json(pp)
-        if plan.get('blockers')!=['no-deliverable-pages']:return False
+        pp=p4._plan_path(release)
         op='auto-release-'+fingerprint(card['task_id'])[:20]
         if not w['cancel_requested']:control_workflow(service.vault,wid,'cancel',op+'-stop')
         verify_cancel_drain(adapter,wid,timeout=0);w=service.status(wid)
+        if proactive and not pp.exists():
+            # Deterministic preview before granting the first native planning run.
+            # It is audit evidence, not a failed task or a release application.
+            from hermes_source_units.delivery_scope import closure_refs
+            batch=service.knowledge._batch(w['batch_id']);delivery=closure_refs(service.knowledge,batch['run_ids'])
+            p4.plan({'actor':w['actor'],'release_id':release,'expected_state_revision':p4._state()['revision'],
+                'build_run_ids':batch['run_ids'],**({'delivery_scopes':delivery} if delivery else {})})
+        plan=_load_json(pp)
+        if plan.get('blockers')!=['no-deliverable-pages']:return False
         # Exact registered content and role-labelled declarations establish source
         # identity. The program never guesses owners from filenames or directories.
         scripts=Path(__file__).resolve().parents[2]/'hermes-obsidian-controlled-ingest/scripts';sys.path.insert(0,str(scripts))
@@ -89,10 +109,10 @@ def recover(adapter,wid,*,resume=True):
                 'preserve_domain_results':True,'new_model_calls':0,'resumed':False}))
         recovery=root/(op+'-recovery.request.json')
         if not recovery.exists():
-            q=request(adapter,wid,recovery_id=op,recovery_scope='governance-resolved/v1',
+            q=request(adapter,wid,recovery_id=op,recovery_scope='initial-release-preflight/v1' if proactive else 'governance-resolved/v1',
                 reason='Program initial internal source/page qualification; scoped to the authorized Bootstrap workflow',
                 task_id=card['task_id'],input_fingerprint=failure['input_fingerprint'],
-                failure_sha256=hashlib.sha256(fp.read_bytes()).hexdigest(),blocked_plan=pin(service.vault,pp.relative_to(service.vault).as_posix()),
+                **({} if proactive else {'failure_sha256':hashlib.sha256(fp.read_bytes()).hexdigest()}),blocked_plan=pin(service.vault,pp.relative_to(service.vault).as_posix()),
                 governance_receipt=receipt,initial_page_governance=pin(service.vault,grant_path.relative_to(service.vault).as_posix()))
             _write_atomic(recovery,_json_bytes(q))
         result=adapter.recover_release_execution(_load_json(recovery));_write_atomic(root/(op+'-receipt.json'),_json_bytes(result))

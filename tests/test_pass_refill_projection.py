@@ -178,7 +178,9 @@ def test_native_api_grant_change_between_reads_prevents_ack(projection,monkeypat
     assert 'ack:t1' not in projection.events and len(count)==2
 
 
-def test_completion_and_ended_lease_settlement_precede_fresh_refill(projection):
+@pytest.mark.parametrize('pauses',[['pass'],[]])
+def test_completion_and_ended_lease_settlement_precede_fresh_refill(projection,pauses):
+    projection.value['scope']['pause_after']=pauses
     run(projection)
     events = projection.events
     assert events.index('pause-latch') < events.index('ack:t1') < events.index('settle-ended')
