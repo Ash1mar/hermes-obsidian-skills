@@ -1035,7 +1035,7 @@ def test_auto_full_dispatches_through_both_checkpoints_and_acceptance(
                                        "template_hash": blocked_begin["template_hash"]})
     assert blocked["ok"] is False and blocked["blocking_codes"]
     assert adapter.workflow.status(full["workflow_id"])["current_stage"] == "release_planning"
-    monkeypatch.setattr(adapter, "_lint", lambda: {"ok": True,
+    monkeypatch.setattr(adapter, "_lint", lambda workflow=None: {"ok": True,
                                                     "summary": {"errors": 0},
                                                     "issues": []})
     finish("checkpoint-2-validate")

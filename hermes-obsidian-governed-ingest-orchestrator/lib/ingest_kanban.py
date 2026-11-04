@@ -1136,6 +1136,8 @@ class IngestKanbanAdapter:
 
     def _eligible(self, workflow: Mapping[str, Any], node: Node,
                   nodes: list[Node], *, by_name=None) -> bool:
+        if workflow.get('cancel_requested') or workflow.get('state') in ('completed','partial','failed','cancelled'):
+            return False
         if workflow.get('pass_skip_history') and node.kind=='pass-slice' and node.name.partition(':')[2] in self.workflow.skipped_pass_slices(workflow):
             return False
         if by_name is None:by_name = {item.name: item for item in nodes}

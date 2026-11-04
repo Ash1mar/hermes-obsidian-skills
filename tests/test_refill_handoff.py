@@ -226,7 +226,7 @@ def test_watcher_refills_before_full_sync_and_retains_wake(monkeypatch, tmp_path
 
         def status(self, wid):
             reads.append(wid)
-            return {"cancel_requested": len(reads) > 1, "state": "analyzing"}
+            return {"cancel_requested": len(reads) > 1, "state": "analyzing", "current_stage":"analyzing"}
 
         def _sync_current(self, wid, *, max_attempts, yield_requested):
             assert max_attempts == 1 and not yield_requested()
@@ -317,6 +317,7 @@ def worker(monkeypatch, tmp_path):
     monkeypatch.setattr(module, "span", no_span)
     monkeypatch.setattr(runtime_telemetry, "span", no_span)
     state.binding = tmp_path / "immutable-binding.json"
+    state.binding.write_text(json.dumps(request))
     return state
 
 

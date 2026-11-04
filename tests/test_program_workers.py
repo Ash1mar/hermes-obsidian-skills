@@ -10,6 +10,14 @@ from program_worker import canonical_binding, sync_provider
 
 
 def test_program_downstream_retains_pauses_and_review_contracts(vault, monkeypatch):
+    import test_p3_knowledge_build as fixture
+    class SnapshotKanban(fixture.FakeKanban):
+        def task_snapshot(self,slug,task_id):
+            row=next(t for t in self.tasks.values() if t['id']==task_id)
+            status='done' if task_id in self.completed else self.waited.get(task_id,'ready' if task_id in self.unblocked else 'blocked')
+            return {'task':{'id':task_id,'status':status,'body':json.dumps(row['body']),
+                'created_by':'ingest-workflow','worker_pid':None,'current_run_id':None},'runs':[],'children':[]}
+    monkeypatch.setattr(fixture,'FakeKanban',SnapshotKanban)
     _downstream(vault, monkeypatch, pause_mode=True, provider='skip', program_execution=True)
 
 
