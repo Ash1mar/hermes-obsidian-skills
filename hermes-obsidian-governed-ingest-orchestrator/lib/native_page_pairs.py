@@ -66,6 +66,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     from fixed_semantic_recovery import native_reply
     from fixed_semantic import prepare_request_projection
     by_key={key(p):(p,v) for p,v in items};calls=[];written={};held=[]
+    if len(by_key)!=len(items):raise ContractError('IDENTITY_CONFLICT','$','duplicate durable page identities')
+    for page,view in items:book.status(page,view)  # Fail before persisting any changed-input result.
     def authenticate(q,response):
         ref=response['audit_ref'];path=_vault_path(adapter.workflow.vault,ref)
         if not path.is_file():return False
