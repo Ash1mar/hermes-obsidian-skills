@@ -91,6 +91,23 @@ def calls_report(calls, events, attempts):
         'usage_scope':'session usage is not divided between requests; unknown physical HTTP retries stay unknown'}
 
 
+def attempt_yield(journals):
+    known=valid=additional=additional_valid=unknown=0
+    for journal in journals:
+        attempts=journal.get('attempts',[])
+        if not attempts:continue
+        first=attempts[0].get('state')
+        if first in ('valid','rejected'):
+            known+=1;valid+=int(first=='valid')
+        else:unknown+=1
+        for row in attempts[1:]:
+            additional+=1;additional_valid+=int(row.get('state')=='valid')
+    return {'first_known_outputs':known,'first_valid_outputs':valid,'first_unknown_outputs':unknown,
+        'first_valid_fraction':valid/known if known else None,'additional_attempts':additional,
+        'additional_valid_outputs':additional_valid,
+        'scope':'durable output-validation journals only; not full domain acceptance or factual accuracy'}
+
+
 def delta(a,b):
     if not a or not b:return None
     x=a.get('finished_monotonic_ns');y=b.get('started_monotonic_ns')

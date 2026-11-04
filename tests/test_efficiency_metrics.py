@@ -140,3 +140,38 @@ def test_protected_roots_report_added_files(tmp_path):
     protected=tmp_path/'protected';protected.mkdir();(protected/'new').write_text('x')
     r=metrics.collect(service(tmp_path),'w',timeline=tmp_path,protected={},protected_roots=[protected])
     assert r['registry']['W07']['value']['unlisted_new_files']==[str(protected/'new')]
+
+
+def test_failed_request_without_audit_preserves_usage_session(tmp_path):
+    row={**event('sdk_request_start',session_id='lost-session'),'vault':str(tmp_path),'workflow_id':'w'}
+    (tmp_path/'events.jsonl').write_text(json.dumps(row)+'\n')
+    r=metrics.collect(service(tmp_path),'w',timeline=tmp_path)
+    assert r['usage']['unique_sessions']==1 and r['usage']['unknown_samples']['input']==1
+
+
+def test_conflicting_event_identity_is_quarantined(tmp_path):
+    row={**event('sdk_request_start'),'vault':str(tmp_path),'workflow_id':'w'}
+    (tmp_path/'events.jsonl').write_text('\n'.join(json.dumps(x) for x in [row,{**row,'phase':'different'},row]))
+    rows,diagnostics=metrics.events_from(tmp_path,tmp_path,'w')
+    assert rows==[] and diagnostics['conflicting_span_ids']==[row['span_id']]
+
+
+def test_attempt_yield_does_not_count_unknown_as_success():
+    result=detail.attempt_yield([{'attempts':[{'state':'reserved'}]},
+        {'attempts':[{'state':'rejected'},{'state':'valid'}]}])
+    assert result['first_valid_fraction']==0 and result['first_unknown_outputs']==1
+    assert result['additional_attempts']==result['additional_valid_outputs']==1
+
+
+def test_final_export_once_after_exact_settlement(tmp_path,monkeypatch):
+    import final_metrics
+    monkeypatch.setattr(final_metrics,'runtime_directory',lambda *a:tmp_path)
+    monkeypatch.setattr(final_metrics,'event',lambda *a,**kw:None)
+    result={'snapshot_consistent':True,'current_snapshot':{'revision':4},'efficiency':{'native_settlement':
+        {'state':'settled','workflow_id':'w','vault':str(tmp_path),'revision':4}}}
+    calls=[]
+    def collect(*a,**k):calls.append(1);return result
+    monkeypatch.setattr(metrics,'collect',collect)
+    adapter=NS(workflow=service(tmp_path))
+    final_metrics.export(adapter,'w');final_metrics.export(adapter,'w')
+    assert len(calls)==1 and json.loads((tmp_path/'final-metrics-4.json').read_text())==result

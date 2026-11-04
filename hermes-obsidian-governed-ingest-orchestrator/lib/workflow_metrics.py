@@ -138,7 +138,7 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
     for p in sorted((root/'semantic-calls').glob('*.json')):
         row=read(p);calls[fingerprint(row)]={**row,'evidence_ref':p.relative_to(vault).as_posix()}
     calls=list(calls.values())
-    from efficiency_metrics import reads,calls_report,coordination,stages,writer_cost
+    from efficiency_metrics import reads,calls_report,coordination,stages,writer_cost,attempt_yield
     attempts=[{**read(p),'evidence_ref':p.relative_to(vault).as_posix()} for p in sorted((root/'output-attempts').glob('*.json'))]
     recovery=[{**read(p),'evidence_ref':p.relative_to(vault).as_posix()} for p in sorted((root/'automatic-control').glob('*.json'))]
     receipts={ref:read(vault/ref) for ref in {r for c in calls for r in c.get('receipt_refs',[])}
@@ -146,7 +146,8 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
     phase_windows=stages(events)
     detail={'model_calls':calls_report(calls,events,attempts),'reads':reads(events),
         'coordination':coordination(events,distribution),'stage_windows':phase_windows,
-        'recovery':recovery,'domain_receipts':receipts,'runtime_writer':writer_cost(events)}
+        'recovery':recovery,'domain_receipts':receipts,'runtime_writer':writer_cost(events),
+        'attempt_yield':attempt_yield(attempts)}
     for o in observations:
         if o.get('workflow_id')!=workflow_id or Path(o.get('vault','')).resolve()!=vault.resolve():
             raise ValueError('observation identity differs from workflow')
@@ -201,7 +202,10 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
         chosen.insert(0,{'start':min(e['started_at'] for e in events),
             'cutoff':max(e['finished_at'] for e in events)+.000001,'window_id':'historical_including_pauses_and_maintenance'})
     history=[window(events,float(x['start']),float(x['cutoff']),x['window_id']) for x in chosen]
-    usage=usage_for(calls,database)
+    # A request may fail before its call audit is written. Include observed SDK
+    # sessions too, without inventing request-local allocations of session usage.
+    usage=usage_for(calls+[{'model':{'session_id':e['session_id']}} for e in events
+        if e['name'] in ('sdk_request_start','sdk_model_request') and e.get('session_id')],database)
     definitions=json.loads((Path(__file__).resolve().parents[1]/'config/metric-definitions.json').read_text(encoding='utf-8'))
     registry={key:{'definition':definition,'status':'unknown','reason':'no authoritative collector for this metric'} for key,definition in definitions.items()}
     def measured(key,value,scope,evidence):
@@ -239,6 +243,7 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
         if outputs:measured('M04',outputs,'output size only; semantic restatement ratio unknown','native response already in memory')
     if detail['coordination']['chains']:
         measured('P02',{'report_ref':'efficiency.coordination'},'observed ready/worker/receipt/ack; exact native claim transaction unknown','paired task/run/clock spans')
+    if attempts:measured('M06',detail['attempt_yield'],'recorded output-validation ordinals; full domain acceptance separate','output-attempts journals')
     if history:measured('M09',[{'window_id':h['window_id'],**h['sdk']} for h in history],'historical paired requests; missing pairs explicitly unknown','telemetry')
     if w['state'] in ('completed','partial'):measured('Z01',snapshot,'current domain terminal state; native settlement separate','workflow ledger')
     if w.get('release_id'):
