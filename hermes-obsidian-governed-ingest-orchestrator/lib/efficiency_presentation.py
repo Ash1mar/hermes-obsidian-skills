@@ -28,6 +28,7 @@ def enabled(adapter,binding):
             budget=root/'pass-call-budget.json'
             if budget.exists():consumed=consumed or any(r.get('attempts') for r in _load_json(budget).get('tasks',{}).values())
             record={**identity,'contract':'legacy' if consumed else CONTRACT}
+            if not consumed:record['page_call_contract']='durable-page-calls/v1'
             _write_atomic(path,_json_bytes(record))
     if any(record.get(k)!=v for k,v in identity.items()) or record.get('contract') not in ('legacy',CONTRACT):
         raise ContractError('STALE_INPUT','$','presentation identity changed')
@@ -51,13 +52,16 @@ def qa_restore(view):
         if isinstance(c.get('evidence_qa'),str) and c['evidence_qa'] in pool:c['evidence_qa']=copy.deepcopy(pool[c['evidence_qa']])
     return result
 
-def page_evidence_view(packet,candidates):
+def page_evidence_view(packet,candidates,*,provenance=None):
     """Conservative derived view. Unknown relevance always retains a whole package.
 
     No semantic guesses: dropping a material requires a producer-supplied exact
     dependency closure with complete_context=True. Existing packets have no such
     proof and retain every material, heading, QA and omission notice.
     """
+    if provenance is not None:
+        from page_dependencies import derive
+        return derive(packet,candidates,provenance)
     result=copy.deepcopy(packet);selected=[]
     refs={}
     for c in candidates:
@@ -98,3 +102,9 @@ def pair_preview(pages,measure,*,limit=30000):
     size=measure(view)
     if size>limit:raise ContractError('READING_WINDOW_OVERSIZE','$','pair exceeds complete request budget')
     return {**view,'input_size':size,'dispatch_authorized':False,'additional_checks_per_page':1}
+
+
+def page_contract(adapter,binding):
+    if not enabled(adapter,binding):return False
+    path=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/presentation-contract.json"
+    return _load_json(path).get('page_call_contract')=='durable-page-calls/v1'

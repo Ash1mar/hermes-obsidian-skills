@@ -97,6 +97,11 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     if scope:
         if planning_failure:raise ContractError('COVERAGE_SCOPE_INVALID','$','approved scope requires full native planning')
         return scoped_execute(adapter,binding,value,state,scope)
+    from fixed_semantic import HermesCaller
+    if not planning_failure and isinstance(caller,HermesCaller):
+        from native_page_pairs import execute as durable_pages
+        durable=durable_pages(adapter,binding,value,state,caller,model_call,attach_receipt,project,measure)
+        if durable is not None:return durable
     from semantic_output import execute as checked_output,check,stop_at_output_boundary
     from fixed_global_targets import select
     original_plan_sha=fingerprint(state);working=copy.deepcopy(state);written=[];calls=[];held=[]

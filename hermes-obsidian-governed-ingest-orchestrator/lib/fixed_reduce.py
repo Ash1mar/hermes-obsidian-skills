@@ -107,6 +107,12 @@ def _snapshot(adapter,binding,checked,*,presentation=True):
             view['existing_pages'].append({'identity':{k:subject[k] for k in ('kind','identity_key','canonical_name','aliases')},
                 'path':subject['current_path'],
                 'qa_status':page['qa_status'],'business_status':page['business_status'],'visibility':page['visibility']})
+    if presentation:
+        from efficiency_presentation import page_contract
+        if page_contract(adapter,binding):
+            from page_dependencies import provenance
+            backend['page_dependency_proof']=provenance(packet,readings)
+            view['page_call_contract']='durable-page-calls/v1'
     result = {'contract':'fixed-reduce-input/v1','binding':dict(binding),'view':view,'backend':backend}
     if kind=='resource-reduce':
         from source_hold_recovery import rebind_view
@@ -208,7 +214,11 @@ def page_view(adapter, value, page):
         view['original_evidence']=fixed_evidence.selected(value['view']['original_evidence'],readings)
         if value['view'].get('efficiency_contract'):
             from efficiency_presentation import page_evidence_view
-            view['original_evidence'],view['evidence_selection']=page_evidence_view(view['original_evidence'],candidates)
+            proof=value['backend'].get('page_dependency_proof')
+            if proof:
+                if proof['packet_sha256']!=fingerprint(value['view']['original_evidence']):fail('SOURCE_CHANGED','dependency packet changed')
+                proof={**proof,'packet_sha256':fingerprint(view['original_evidence'])}
+            view['original_evidence'],view['evidence_selection']=page_evidence_view(view['original_evidence'],candidates,provenance=proof)
             view['efficiency_contract']=value['view']['efficiency_contract']
     return view
 
