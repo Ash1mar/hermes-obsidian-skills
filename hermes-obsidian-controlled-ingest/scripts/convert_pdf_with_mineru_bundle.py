@@ -53,10 +53,20 @@ CONVERSION_RESULT_SCHEMA = "hermes-conversion-result/v1"
 
 
 class ConversionFailure(RuntimeError):
-    def __init__(self, message: str, *, document_failed: bool = False, engine_exit: int | None = None):
+    def __init__(self, message: str, *, document_failed: bool = False, engine_exit: int | None = None, resource_failure=None):
         super().__init__(message)
         self.document_failed = document_failed
         self.engine_exit = engine_exit
+        self.resource_failure = resource_failure
+
+
+def gpu_resource_failure(output):
+    """Only an ended typed CUDA OOM traceback qualifies, never a loose keyword."""
+    lines=[re.sub(r'\x1b\[[0-9;]*m','',line).strip() for line in output.splitlines() if line.strip()]
+    if (lines and 'Traceback (most recent call last):' in output and
+            re.match(r'^(?:torch\.(?:cuda\.)?OutOfMemoryError|torch\.cuda\.memory\.OutOfMemoryError): CUDA out of memory\.',lines[-1])):
+        return 'cuda_out_of_memory'
+    return None
 
 
 def document_load_failure(output: str) -> str | None:
@@ -75,13 +85,14 @@ def document_load_failure(output: str) -> str | None:
     return lines[-1] if re.fullmatch(pattern, lines[-1]) else None
 
 
-def write_conversion_result(args, bundle_dir, status, *, reason=None, engine_exit=None):
+def write_conversion_result(args, bundle_dir, status, *, reason=None, engine_exit=None, resource_failure=None):
     """Bind machine-readable diagnostics to the exact conversion inputs."""
     value = {"schema_version": CONVERSION_RESULT_SCHEMA, "status": status,
              "source_sha256": sha256_file(args.input), "backend": args.backend,
              "error_code": "CONVERSION_FAILED" if status == "document_failed" else
                            "PREPARATION_RUNTIME_FAILED" if status == "runtime_failed" else None,
              "reason": reason, "engine_exit": engine_exit}
+    if resource_failure:value['resource_failure']=resource_failure
     (bundle_dir / "conversion-result.json").write_text(
         json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
@@ -204,7 +215,8 @@ def run_mineru(args: argparse.Namespace, work_dir: Path) -> None:
             if code:
                 diagnostic = document_load_failure("".join(tail)) if code > 0 else None
                 raise ConversionFailure(diagnostic or f"MinerU execution exited {code}",
-                                        document_failed=diagnostic is not None, engine_exit=code)
+                                        document_failed=diagnostic is not None, engine_exit=code,
+                                        resource_failure=gpu_resource_failure(''.join(tail)) if code>0 else None)
         finally:
             if process.poll() is None:
                 process.terminate()
@@ -1206,7 +1218,7 @@ def main() -> int:
         except ConversionFailure as exc:
             write_conversion_result(args, bundle_dir,
                 "document_failed" if exc.document_failed else "runtime_failed",
-                reason=str(exc), engine_exit=exc.engine_exit)
+                reason=str(exc), engine_exit=exc.engine_exit, resource_failure=exc.resource_failure)
             print(str(exc), file=sys.stderr)
             return 4 if exc.document_failed else 1
         except (RuntimeError, TimeoutError, ValueError, OSError) as exc:

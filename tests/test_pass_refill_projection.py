@@ -178,7 +178,9 @@ def test_native_api_grant_change_between_reads_prevents_ack(projection,monkeypat
     assert 'ack:t1' not in projection.events and len(count)==2
 
 
-def test_completion_and_ended_lease_settlement_precede_fresh_refill(projection):
+@pytest.mark.parametrize('pauses',[['pass'],[]])
+def test_completion_and_ended_lease_settlement_precede_fresh_refill(projection,pauses):
+    projection.value['scope']['pause_after']=pauses
     run(projection)
     events = projection.events
     assert events.index('pause-latch') < events.index('ack:t1') < events.index('settle-ended')
@@ -195,6 +197,17 @@ def test_latched_pause_acknowledges_completed_current_run_without_refill(project
     assert 'ack:t1' in projection.events
     assert 'settle-ended' not in projection.events
     assert not any(event.startswith(('admission:', 'unblock:')) for event in projection.events)
+
+
+def test_fast_refill_uses_verified_capacity_amendment(projection,monkeypatch):
+    from hermes_source_units import pass_capacity
+    observed=[]
+    def capacity(vault,batch):
+        observed.append((vault,batch));return 1
+    monkeypatch.setattr(pass_capacity,'effective',capacity)
+    projection.value['scope']['pause_after']=[]
+    run(projection)
+    assert observed and 'unblock:t3' in projection.events and 'unblock:t4' not in projection.events
 
 
 def test_cancellation_has_no_projection_or_refill_action(projection):

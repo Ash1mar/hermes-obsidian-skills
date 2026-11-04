@@ -950,7 +950,7 @@ class IngestKanbanAdapter:
         with _exclusive_lock(lock):
             value=self.workflow.status(workflow_id)
             if (not self.enable_workers or value['cancel_requested'] or not value['batch_id']
-                    or value['current_stage']!='analyzing' or not value['scope'].get('pause_after')
+                    or value['current_stage']!='analyzing'
                     or not value['kanban']['board_id'] or not hasattr(self.kanban,'task_states')):
                 return
             self.apply_policy(value)
@@ -1023,7 +1023,8 @@ class IngestKanbanAdapter:
                 occupied={'pass-slice:'+s['slice_id'] for s in slices.values() if s['lease']['worker_id']}
                 occupied.update(c['node'] for c in value['kanban']['task_map']
                     if c['node'].startswith('pass-slice:') and states.get(c['task_id'])=='running')
-                slots=max(0,batch['slice_config']['pass_worker_concurrency']-len(occupied))
+                from hermes_source_units.pass_capacity import effective
+                slots=max(0,effective(self.workflow.vault,batch)-len(occupied))
                 for card in value['kanban']['task_map']:
                     if not slots:
                         break
@@ -1138,6 +1139,9 @@ class IngestKanbanAdapter:
                   nodes: list[Node], *, by_name=None) -> bool:
         if workflow.get('cancel_requested') or workflow.get('state') in ('completed','partial','failed','cancelled'):
             return False
+        if node.kind=='vault-finalize-plan':
+            from hermes_source_units.initial_release import needs_preflight
+            if needs_preflight(self.workflow.vault,workflow):return False
         if workflow.get('pass_skip_history') and node.kind=='pass-slice' and node.name.partition(':')[2] in self.workflow.skipped_pass_slices(workflow):
             return False
         if by_name is None:by_name = {item.name: item for item in nodes}
@@ -1975,6 +1979,7 @@ class IngestKanbanAdapter:
                     "state": "paused" if self.workflow.pending_pause(updated) else updated["state"],
                     "pause": self.workflow.pause_status(updated),
                     "revision": updated["revision"], "background_dispatch": active_canary,
+                    "initial_release_pending": __import__('hermes_source_units.initial_release',fromlist=['needs_preflight']).needs_preflight(self.workflow.vault,updated),
                     "program_dispatch": any(not domain_completed(self.workflow, updated, n)
                         and not self._failed_card(workflow_id, n)
                         and self._eligible(updated, n, nodes,by_name=nodes_by_name)
@@ -2130,6 +2135,10 @@ class IngestKanbanAdapter:
             _fail("STALE_INPUT", "batch worker card binding changed")
         if self._execution_blocked(workflow['workflow_id'], node):
             _fail('EXECUTION_BLOCKED', 'batch worker binding requires trusted repair')
+        if node.kind=='vault-finalize-plan':
+            from hermes_source_units.initial_release import needs_preflight
+            if needs_preflight(self.workflow.vault,workflow):
+                _fail('EXECUTION_BLOCKED','initial source/page qualification must precede native planning')
         by_name = {item.name: item for item in nodes}
         if not (self._canary_allows(workflow, node, completing=completing)
                 and all(domain_completed(self.workflow, workflow, by_name[parent]) for parent in node.parents)):

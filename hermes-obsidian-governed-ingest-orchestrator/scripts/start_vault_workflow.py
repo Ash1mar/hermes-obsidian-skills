@@ -34,6 +34,9 @@ def start(request, record, bootstrap_skill):
     cfg=configuration()
     policy={k:cfg[k] for k in ('source_prepare_concurrency','program_worker_concurrency','reduce_page_concurrency','pass_worker_concurrency','reduce_worker_concurrency')}
     policy.update(request.get('execution_policy',{}))
+    from hermes_source_units.recovery_policy import DEFAULT, validate as validate_recovery
+    recovery=validate_recovery(request.get('recovery_policy',{
+        **DEFAULT,'semantic_failure':cfg.get('pass_failure_policy','hold')}))
     from hermes_source_units.validation import validate_record
     validate_record('ingest_workflow_scope',{'source_paths':[],'knowledge_selector':'startup',
         'execution_policy':policy,'canary_policy':request.get('canary_policy','sample')})
@@ -48,7 +51,7 @@ def start(request, record, bootstrap_skill):
         if state is None:
             if vault.exists() and any(vault.iterdir()): raise ValueError('new Vault target is nonempty')
             state={'contract':'vault-startup/v1','input_digest':digest,'operation_id':request['operation_id'],
-                   'vault':str(vault),'execution_policy':policy,'identity':identity,'phase':'bootstrap'}
+                   'vault':str(vault),'execution_policy':policy,'recovery_policy':recovery,'identity':identity,'phase':'bootstrap'}
             _write_atomic(record,_json_bytes(state))
         def save(): _write_atomic(record,_json_bytes(state))
         if state['phase']=='bootstrap':
@@ -87,11 +90,14 @@ def start(request, record, bootstrap_skill):
             'provider_policy_sha256':hashlib.sha256(pp.read_bytes()).hexdigest(),'bootstrap_ref':ref}
         workflow={'workflow_id':'ingest-'+request['operation_id'],'actor':request['actor'],'profile':'compact-5',
                   'scope':scope,'expected_revision':0}
+        # Old startup receipts retain their original scope/digest on replay.
+        if 'recovery_policy' in state:scope['recovery_policy']=state['recovery_policy']
         workflow['input_digest']='sha256:'+fingerprint(workflow)
         # Stable report bytes become workflow evidence; mutable handoff status stays external.
         report={'contract':'vault-startup-report/v1','input_digest':digest,'vault_id':request['vault_id'],
             'workflow_id':workflow['workflow_id'],'bootstrap_output':state.get('bootstrap_output',''),
             'source_hashes':identity['source_hashes'],'execution_policy':state['execution_policy']}
+        if 'recovery_policy' in state:report['recovery_policy']=state['recovery_policy']
         rp=vault/ref
         if rp.exists() and json.loads(rp.read_text())!=report: raise ValueError('startup report conflict')
         if not rp.exists(): _write_atomic(rp,_json_bytes(report))

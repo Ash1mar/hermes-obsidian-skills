@@ -10,6 +10,14 @@ from .validation import ContractError, fingerprint, validate_record
 CONTRACT = 'governed-initial-release-authorization/v1'
 
 
+def needs_preflight(vault, workflow):
+    scope=workflow.get('scope',{})
+    return (scope.get('execution_mode')=='auto_full' and bool(scope.get('bootstrap_ref'))
+        and scope.get('recovery_policy',{}).get('initial_release')=='scoped_bootstrap'
+        and workflow.get('current_stage')=='release_planning' and not workflow.get('release_id')
+        and not admitted_pointer(vault,workflow))
+
+
 def fail(message):
     raise ContractError('PAGE_GOVERNANCE_INVALID', '$', message)
 
@@ -31,7 +39,7 @@ def admitted_pointer(vault, workflow):
             from .page_governance import authorization
             grant = authorization(vault, pointer)
             request = grant['request']
-            if (grant.get('contract') != CONTRACT or q.get('recovery_scope') != 'governance-resolved/v1'
+            if (grant.get('contract') != CONTRACT or q.get('recovery_scope') not in ('governance-resolved/v1','initial-release-preflight/v1')
                     or request.get('workflow_id') != workflow['workflow_id']
                     or request.get('actor') != workflow['actor']
                     or request.get('base_release') != report['blocked_plan']

@@ -1,6 +1,8 @@
 # Automatic QA handling and bounded recovery
 
-`qa_policy` in `config/orchestration.json` fixes the all-stage program rule:
+New short requests pin `scope.recovery_policy`, including the QA rule, before Bootstrap.
+Changing shared configuration does not alter an existing pinned workflow. Legacy
+workflows without the policy retain their documented configuration fallback. The rule is:
 QA/`needs-qa` labels are advisory. Usable evidence continues with its labels;
 concrete blocked work is isolated with its actual dependents. No person or Codex
 adjudicates QA. One additional Hermes check is the maximum, not a mandatory call.
@@ -28,7 +30,10 @@ establish identity. Unresolved sources are logged and their dependent pages stay
 excluded; independently resolved sources can proceed. Zero resolved sources
 remain held, without guessing an organization or asking for per-item human QA.
 
-The supported release recovery seals the exact Bootstrap, rejected draft plan,
+For new pinned workflows the dispatcher holds the first plan before any native
+attempt. A drained program controller creates its deterministic draft preflight
+and admits `initial-release-preflight/v1`; there is no failed native task.
+Legacy workflows keep the supported failure-recovery path. Both seal the exact Bootstrap, draft plan,
 source transaction and receipt. The native planning worker then qualifies only
 current pages in the exact accepted Build delivery closure for internal retrieval.
 Usable pages still require valid acceptance, current evidence and eligible source
@@ -56,16 +61,15 @@ Existing native calls are adopted only with authenticated evidence.
 After the correction fails, the controller uses the supported exclusion operation
 for the unfinished tasks, preserves completed tasks and every original response,
 and writes an auditable coverage-gap report before resuming independent work.
-Partial Canary coverage is reported as partial, never as successful eight-slice
-acceptance. Excluded work is unavailable to Reduce and cannot be published.
+Partial Canary coverage is reported as partial, never as complete sampled acceptance. Excluded work is unavailable to Reduce and cannot be published.
 
 Conversion defects, changed or absent required evidence, permissions, transport
 failures and unknown native completion do not gain an unchanged-material retry.
 Unauthenticated failures stay held. Recovery cannot cross a durable pause.
 
 `scripts/recover_ingest_workflow.py` is the same controller used automatically by
-the watcher; it can also continue a maintenance-stopped workflow without selecting
-individual incidents. Invoke with `python3 "<skill-dir>/scripts/recover_ingest_workflow.py"
+the watcher. A pending controller episode can be continued without selecting
+individual incidents; a user cancellation or durable pause cannot be released by it. Invoke with `python3 "<skill-dir>/scripts/recover_ingest_workflow.py"
 --vault <explicit-path> --workflow-id <id>`. It authors no domain output.
 
 After successful or partial Final Acceptance the watcher remains responsible
@@ -82,3 +86,12 @@ invalid final evidence remains held; transient lock/native-CLI contention is
 polled for at most 60 seconds and recorded in the host runtime's
 `terminal-completion.json`. An unresolved settlement is reported as an error,
 never as successful native completion. No scheduled job or human QA is involved.
+
+The recovery supervisor reserves at most three mechanical attempts in one durable
+episode. It restarts a crashed child and retries only named transient coordination
+failures. Unknown domain calls and uncertain operator mutations stay held. An
+operator cancellation invalidates the saved continuation epoch, including when the
+workflow was already stopped by the controller. Restarting with the same episode
+does not renew either the controller budget or the one-extra-semantic-check limit.
+No reboot service or scheduled job is installed. If the supervisor itself is lost,
+the authorized recovery entry discovers its unfinished episode on reinvocation.
