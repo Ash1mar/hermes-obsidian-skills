@@ -180,7 +180,8 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
     snapshot['startup_execution_policy']=w['scope'].get('execution_policy',{'status':'legacy_unpinned'})
     snapshot['startup_recovery_policy']=w['scope'].get('recovery_policy',{'status':'legacy_unpinned'})
     from hermes_source_units.recovery_policy import effective as effective_recovery
-    snapshot['recovery_policy']=effective_recovery(w,{})
+    snapshot['recovery_policy']=(effective_recovery(w,{}) if 'recovery_policy' in w['scope']
+                                 else {'status':'legacy_unpinned','effective':'unknown'})
     snapshot['recovery_policy_adoptions']=w.get('unknown_isolation_adoptions',[])
     snapshot['source_states']=dict(Counter(s['status'] for s in w.get('source_outcomes',[])))
     snapshot['native_settlement']='unknown; domain terminal state alone does not prove native drain'
@@ -281,7 +282,7 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
             'changed':changed,'missing':missing,'unlisted_new_files':sorted(str(p) for root_path in protected_roots for p in Path(root_path).rglob('*') if p.is_file() and str(p) not in protected) if protected_roots else 'not_checked'},'explicit protected baseline only','provided baseline hashes and current bytes')
     after=service.status(workflow_id)
     return {'contract':'workflow-metrics/v1','collected_at':time.time(),'vault':str(vault),
-        'collector_version':2,'current_snapshot':snapshot,'snapshot_consistent':after['revision']==w['revision'],
+        'collector_version':3,'current_snapshot':snapshot,'snapshot_consistent':after['revision']==w['revision'],
         'revision_after':after['revision'],'historical_windows':history,'usage':usage,
         'registry':registry,'telemetry_diagnostics':diagnostics,'efficiency':detail,
         'observer':{'elapsed_seconds':time.monotonic()-started,'cpu_seconds':time.process_time()-cpu,
