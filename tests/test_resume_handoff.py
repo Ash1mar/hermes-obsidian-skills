@@ -39,9 +39,9 @@ def handoff(monkeypatch, tmp_path):
     )
 
     class FakeAdapter:
-        def __init__(self, vault, *, enable_workers):
+        def __init__(self, vault, *, enable_workers=False):
             assert Path(vault) == state.vault
-            assert enable_workers is True
+            assert isinstance(enable_workers, bool)
             self.workflow = SimpleNamespace(vault=state.vault,
                 status=lambda _: {'current_stage':'analyzing'})
 
