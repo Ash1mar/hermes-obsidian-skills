@@ -4,15 +4,17 @@ from contextvars import ContextVar
 import threading
 import time
 import hashlib
+import uuid
 
 _LEDGER=ContextVar('logical_read_ledger',default=None)
 
 
 class ReadLedger:
     def __init__(self):
+        self.scope_id=uuid.uuid4().hex
         self.rows={};self.boundaries={};self.seen_json={};self.hash_rows={};self.lock=threading.Lock()
 
-    def note_hash(self,path,origin,*,size=0,elapsed=0,reused=False):
+    def note_hash(self,path,origin,*,size=0,elapsed=0,reused=False,digest=None):
         from .runtime_telemetry import _TRACE
         trace=_TRACE.get();key=(str(path),origin,trace.get('read_boundary_name',trace.get('name','unbound')))
         with self.lock:
@@ -20,6 +22,11 @@ class ReadLedger:
                 'hash_calls':0,'hash_bytes':0,'hash_ns':0,'digest_reuses':0})
             if reused:row['digest_reuses']+=1
             else:row['hash_calls']+=1;row['hash_bytes']+=size;row['hash_ns']+=elapsed
+            if digest:
+                versions=row.setdefault('observed_digests',[])
+                if digest not in versions:
+                    if len(versions)<4:versions.append(digest)
+                    else:row['additional_versions_untracked']=True
 
     def note(self,path,size,origin,*,captured=False,failed=False,count=1):
         from .runtime_telemetry import _TRACE
@@ -87,7 +94,7 @@ def read_bytes(path,origin):
 def content_digest(path,data,origin):
     started=time.monotonic_ns();digest=hashlib.sha256(data).hexdigest()
     ledger=_LEDGER.get()
-    if ledger is not None:ledger.note_hash(path,origin,size=len(data),elapsed=time.monotonic_ns()-started)
+    if ledger is not None:ledger.note_hash(path,origin,size=len(data),elapsed=time.monotonic_ns()-started,digest=digest)
     return digest
 
 
@@ -102,7 +109,7 @@ def read_hashed(path,origin):
         result=session.read_hashed(path,origin)
         if result is not None:
             ledger=_LEDGER.get()
-            if ledger is not None:ledger.note_hash(path,origin,reused=True)
+            if ledger is not None:ledger.note_hash(path,origin,reused=True,digest=result[1])
             return result
     from .protected_reader import current as coordinated
     reader=coordinated()

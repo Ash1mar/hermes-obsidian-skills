@@ -9,7 +9,7 @@ from hermes_source_units.source_units import _load_json, _vault_path, _json_byte
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from hermes_source_units.workflow_guard import worker_binding, workflow_write_guard
-from hermes_source_units.runtime_telemetry import measured
+from hermes_source_units.runtime_telemetry import measured, event
 from ingest_kanban import PROGRAM_ASSIGNEE as ASSIGNEE, PROGRAM_KINDS as KINDS, program_template, executor_for
 
 MARKER = '<!-- hermes-program-worker/v1 -->'
@@ -27,7 +27,13 @@ def admission_check(adapter, request):
     slices=adapter.workflow.knowledge._slices(workflow['batch_id'])
     from hermes_source_units.pass_capacity import effective
     capacity=effective(adapter.workflow.vault,adapter.workflow.knowledge._batch(workflow['batch_id']))
-    if sum(bool(s['lease']['worker_id']) for s in slices)>=capacity:
+    occupied=sum(bool(s['lease']['worker_id']) for s in slices)
+    unknown_states=sum('state' not in s for s in slices)
+    event('pass_capacity_observed',vault=adapter.workflow.vault,binding=request,
+          capacity=capacity,occupied=occupied,unknown_slice_states=unknown_states,
+          ready_unleased=None if unknown_states else sum(s['state']=='ready' and not s['lease']['worker_id'] for s in slices),
+          scope='admission instant; readiness does not certify every other task eligible')
+    if occupied>=capacity:
         raise ContractError('PASS_ADMISSION_WAIT','$','Pass waits for domain capacity before native claim')
     return {'ok':True, 'node':request['node'], 'batch_id':workflow['batch_id'], 'slice_id':value['slice_id']}
 

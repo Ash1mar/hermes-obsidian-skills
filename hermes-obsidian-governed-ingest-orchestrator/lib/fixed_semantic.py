@@ -13,7 +13,7 @@ import uuid
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _vault_path, _write_atomic, _json_bytes
 from hermes_source_units.validation import fingerprint, validate_record, record_validation_scope
-from hermes_source_units.runtime_telemetry import measured, span, clock_sample
+from hermes_source_units.runtime_telemetry import measured, span, clock_sample, event
 from native_ingest import worker_action, read_pass_input
 from native_pass_identity import visible_packet, load_context
 from program_worker import canonical_binding
@@ -175,6 +175,9 @@ class HermesCaller:
             def _fixed_api(self,call,api_kwargs,*args,**kwargs):
                 from native_call_state import classify,StopNativeCall,request_identity,checked_response
                 self.fixed_final_request_sha256=request_identity(api_kwargs)
+                event('sdk_transport_entry',session_id=self.session_id,
+                      request_sha256=self.fixed_final_request_sha256,
+                      scope='native SDK boundary; not physical HTTP attempts')
                 self.fixed_final_output_format=copy.deepcopy(api_kwargs.get('text',{}).get('format',api_kwargs.get('response_format')))
                 try:
                     response=call(api_kwargs,*args,**kwargs)
@@ -350,7 +353,7 @@ def _normalized_request_content(value):
     return (normalized[0],tuple(normalized[1])) if normalized is not None else None
 
 
-def wire_prompt(phase,view,output_schema,correction=None):
+def wire_prompt(phase,view,output_schema,correction=None,*,metrics=None):
     # Native task identity is metadata, not a model-built request field.
     body={'phase':phase}
     if phase not in ('candidate','citation'):
@@ -364,8 +367,18 @@ def wire_prompt(phase,view,output_schema,correction=None):
         body['required_result_slots']=[t['task'] for t in view.get('tasks',[])]
     if correction: body['correction'] = _stable_objects(correction)
     system=system_prompt(phase,view,correction)
-    return {'system':system,
-        'user':'Semantic input v1\n'+json.dumps(body,ensure_ascii=False,separators=(',',':'))}
+    if metrics is None:
+        return {'system':system,'user':'Semantic input v1\n'+json.dumps(body,ensure_ascii=False,separators=(',',':'))}
+    # Serialize each top-level section once, preserving the exact original wire.
+    parts=[(k,json.dumps(k)+':'+json.dumps(v,ensure_ascii=False,separators=(',',':'))) for k,v in body.items()]
+    user='Semantic input v1\n'+'{'+','.join(v for _,v in parts)+'}'
+    if metrics is not None:
+        metrics.update(sections={k:{'codepoints':len(v),'utf8_bytes':len(v.encode('utf-8'))} for k,v in parts},
+            system={'codepoints':len(system),'utf8_bytes':len(system.encode('utf-8'))},
+            user={'codepoints':len(user),'utf8_bytes':len(user.encode('utf-8'))},
+            user_framing_codepoints=len(user)-sum(len(v) for _,v in parts),
+            scope='exact fixed messages; input contains material and metadata; API envelope and tokenizer counts separate')
+    return {'system':system,'user':user}
 
 
 def system_prompt(phase,view,correction=None):
@@ -404,7 +417,9 @@ def prepare_request_projection(phase,view,output_schema,images=(),correction=Non
     """Render one complete call; identities and permission checks stay live."""
     images=list(images)
     with span('request_projection',phase=phase,wire_contract=WIRE_CONTRACT):
-        prompt=wire_prompt(phase,view,output_schema,correction)
+        composition={}
+        with span('request_material_render',phase=phase):
+            prompt=wire_prompt(phase,view,output_schema,correction,metrics=composition)
         content=message_content(prompt['user'],images)
         user=_normalized_request_content(content)
         wire={**prompt,'user':user[0]}
@@ -419,6 +434,8 @@ def prepare_request_projection(phase,view,output_schema,images=(),correction=Non
             'input_size':len(json.dumps(wire,ensure_ascii=False,separators=(',',':')))+schema_size,
             'static_size':len(prompt['system'])+len(json.dumps(output_schema,ensure_ascii=False,separators=(',',':'))),
             'images':copy.deepcopy(images),
+            'input_composition':{**composition,'transport_schema_codepoints':schema_size,
+                'image_count':len(images),'image_bytes':sum(i['bytes'] for i in images)},
             'identity':copy.deepcopy({'phase':phase,'view':view,'output_schema':output_schema,
                                      'correction':correction,'images':images}),
             'construction_counts':{'scope':'one_model_call','projection_builds':1,'projection_reuses':0,
@@ -507,6 +524,7 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
             if candidates is not None:options['candidate_paths']=candidates
         recovered = recover_reduce(adapter, binding, phase, wire, output_schema, images, decode_semantic_response,**options)
         if recovered:
+            event('semantic_response_reused',phase=phase,audit_ref=recovered[1],reason='authenticated_saved_response')
             prepared['closed'] = True
             return recovered
         if phase=='resource-reduce' and 'hold_resolution' not in view and 'packet_review' not in view:
@@ -536,7 +554,17 @@ def _dispatch_model_call(adapter,binding,phase,view,caller,limit,correction=None
     check_dispatch(adapter,binding,phase,view,prepared)
     started=time.monotonic()
     input_sha256=fingerprint(wire)
-    with span('model_call',phase=phase,input_sha256=input_sha256) as model_trace:
+    from semantic_output import ACTIVE
+    active=ACTIVE.get()
+    request_id=uuid.uuid4().hex
+    correlation={'request_id':request_id,'input_sha256':input_sha256,
+        'logical_action_id':active[0].stem if active else None,
+        'attempt_ordinal':active[2]+1 if active else None,
+        'call_category':'additional' if correction else 'initial_or_resumed',
+        'correction_reason':correction.get('code') if isinstance(correction,dict) else None,
+        'input_composition':prepared.get('input_composition'),
+        'subject_refs':{k:view[k] for k in ('page_id','page_ref','candidate_refs','proposal_refs','resource_id') if k in view}}
+    with span('model_call',phase=phase,**correlation) as model_trace:
         if isinstance(caller,HermesCaller):
             with caller.request_scope(prepared):
                 raw,metadata=caller(phase,view,output_schema,correction)
@@ -554,7 +582,7 @@ def _dispatch_model_call(adapter,binding,phase,view,caller,limit,correction=None
         'structured_schema_codepoints':schema_size,
         'wire_contract':WIRE_CONTRACT,
         'request_construction':copy.deepcopy(prepared['construction_counts']),
-        'model':metadata,'receipt_refs':[]}
+        'model':metadata,'receipt_refs':[],'output_codepoints':len(raw),'output_utf8_bytes':len(raw.encode('utf-8')),**correlation}
     audit['timeline_span_id']=model_trace['span_id']
     if images:
         audit['image_inputs']=[{k:v for k,v in image.items() if k!='url'} for image in images]
@@ -639,6 +667,10 @@ def attach_receipt_to_vault(vault,ref,receipt):
     if receipt_ref not in record['receipt_refs']:record['receipt_refs'].append(receipt_ref)
     record['validated']=record.get('validated',True) and receipt.get('validated',False)
     if record!=before:_write_atomic(_vault_path(vault,ref),_json_bytes(record))
+    event('semantic_result_attached',vault=vault,workflow_id=record['workflow_id'],
+          request_id=record.get('request_id'),task_id=record.get('native_task_id'),node=record.get('node'),
+          phase=record.get('phase'),audit_ref=ref,receipt_ref=receipt_ref,
+          validated=receipt.get('validated'),domain_ok=receipt.get('ok'))
 
 
 def pass_action(vault,action,payload=None,*,audit_ref=None):

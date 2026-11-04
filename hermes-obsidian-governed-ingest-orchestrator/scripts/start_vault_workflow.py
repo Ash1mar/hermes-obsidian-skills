@@ -16,8 +16,11 @@ from hermes_source_units.source_units import _exclusive_lock, _write_atomic, _js
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.runtime_policy import POLICY_REF
 from orchestration import configuration, dispatch
+from hermes_source_units.runtime_telemetry import measured, event
 
 
+@measured('vault_startup',lambda request,record,bootstrap_skill:{'vault':request.get('vault_path'),
+    'workflow_id':'ingest-'+str(request.get('operation_id','unknown')),'operation_id':request.get('operation_id')})
 def start(request, record, bootstrap_skill):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise ValueError('startup requires a trusted operator')
@@ -68,6 +71,7 @@ def start(request, record, bootstrap_skill):
                 raise ValueError('bootstrap identity mismatch')
             subprocess.run([sys.executable,str(Path(bootstrap_skill)/'scripts/validate_source_unit_vault.py'),'--vault',str(vault)],check=True,capture_output=True)
             state['phase']='import'; save()
+            event('bootstrap_completed',vault_id=request['vault_id'],bootstrap_record=str(record))
         paths=[]
         for source in sources:
             relative='10_Raw/'+source.name; target=vault/relative; data=source.read_bytes()
@@ -118,6 +122,8 @@ def start(request, record, bootstrap_skill):
         else:
             result=dispatch(vault,'start',workflow)
         state.update(phase='workflow_created',workflow_id=workflow['workflow_id'],bootstrap_ref=ref); save()
+        event('startup_workflow_link',vault_id=request['vault_id'],bootstrap_ref=ref,
+              execution_policy=state['execution_policy'])
         return {'startup':state,'workflow':result}
 
 

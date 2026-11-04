@@ -77,13 +77,16 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
             if value['state'] in ('completed','partial'):
                 from terminal_completion import settle
                 settle(adapter,workflow_id,wake,interval)
+                from final_metrics import export
+                export(adapter,workflow_id)
                 return
             if value['current_stage']=='release_planning':
                 from release_readiness import readiness
                 if not readiness(adapter,workflow_id)['ok']:
                     raise ContractError('RELEASE_EXECUTOR_MISMATCH','$','no compatible release program executor; operator migration required')
             try:
-                with span('watch_cycle',vault=vault,workflow_id=workflow_id):
+                with span('watch_cycle',vault=vault,workflow_id=workflow_id,stage=value['current_stage'],
+                          revision=value['revision'],configured_interval=interval):
                     # Existing ready bindings can refill a free slot without
                     # waiting for the full graph projection. Native CLI rereads
                     # authority, settles exact ended grants, then admits claims.
@@ -134,8 +137,9 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                 if exc.code not in ("KANBAN_UNAVAILABLE", "REVISION_CONFLICT", "LOCK_BUSY", "RECONCILIATION_YIELD"):
                     raise
                 delay = 0 if exc.code=='RECONCILIATION_YIELD' else interval
-            with span('reconciliation_wait',vault=vault,workflow_id=workflow_id,requested_seconds=delay):
-                wake.wait(delay)
+            with span('reconciliation_wait',vault=vault,workflow_id=workflow_id,requested_seconds=delay,
+                      reason='reconciliation_yield' if delay==0 else 'periodic_or_backoff') as trace:
+                trace['wake_hint']=wake.wait(delay)
 
 
 def main() -> int:

@@ -3,6 +3,7 @@ import hashlib
 import json
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _json_bytes, _write_atomic
+from hermes_source_units.runtime_telemetry import event, span
 
 
 def recover(candidate, root, source, backend, invoke, check, *, allowed):
@@ -29,7 +30,10 @@ def recover(candidate, root, source, backend, invoke, check, *, allowed):
     if retry.exists():raise ContractError('PREPARATION_RUNTIME_FAILED','$','unowned resource retry output exists')
     check()
     _write_atomic(journal,_json_bytes({'identity':identity,'state':'reserved'}))
-    result=invoke(retry,root/(candidate.name+'-resource-retry.log'))
+    event('source_resource_retry_reserved',source_sha256=source['content_sha256'],backend=backend,additional_attempts=1)
+    with span('source_resource_retry',source_sha256=source['content_sha256'],backend=backend) as trace:
+        result=invoke(retry,root/(candidate.name+'-resource-retry.log'))
+        trace['returncode']=result.returncode
     check()
     _write_atomic(journal,_json_bytes({'identity':identity,'state':'ended','returncode':result.returncode}))
     return retry

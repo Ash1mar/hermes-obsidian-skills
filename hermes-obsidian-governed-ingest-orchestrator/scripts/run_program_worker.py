@@ -18,7 +18,7 @@ from hermes_source_units import ContractError
 from hermes_source_units.source_units import _json_bytes, _write_atomic
 from ingest_kanban import IngestKanbanAdapter
 from program_worker import canonical_binding, execute
-from hermes_source_units.runtime_telemetry import measured, span, notify_reconciler
+from hermes_source_units.runtime_telemetry import measured, span, notify_reconciler, event
 
 
 def cleanup_diagnostic(message):
@@ -67,6 +67,8 @@ def run(vault, binding):
             raise RuntimeError('native run registration missing or superseded')
         time.sleep(.05)
     grant = {'claim_lock':os.environ.get('HERMES_KANBAN_CLAIM_LOCK'), 'worker_pid':registered_pid}
+    event('worker_registered',vault=vault,binding=request,native_run_id=run_id,
+          batch_id=value.get('batch_id'),stage=value.get('current_stage'))
     stop = threading.Event()
     completed = threading.Event()
     def heartbeat():
@@ -104,7 +106,7 @@ def run(vault, binding):
         notify_reconciler(vault,request['workflow_id'])
         # The trusted reconciler acknowledges the durable result and holds
         # successors at pauses. Keep the native PID alive until it does so.
-        with span('completion_acknowledgement',binding=request) as acknowledgement:
+        with span('completion_acknowledgement',binding=request,native_run_id=run_id) as acknowledgement:
             deadline = time.monotonic() + 120
             while own_run() and time.monotonic() < deadline:
                 time.sleep(.5)

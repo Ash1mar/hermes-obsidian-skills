@@ -164,6 +164,7 @@ def test_native_capacity_snapshot_counts_claims_and_leases_once(monkeypatch, tmp
     tasks=[SimpleNamespace(id=f't{i}',status='running' if i<=2 else 'ready',assignee='ingest-program') for i in range(1,5)]
     reads=[]
     kb=SimpleNamespace(list_tasks=lambda _:reads.append('list') or tasks,
+        kanban_db_path=lambda **kwargs:tmp_path/'native-board.db',
         get_task=lambda *args:pytest.fail('full capacity must not inspect or claim candidates'))
     kd=SimpleNamespace(reap_worker_zombies=lambda:None,configured_max_in_progress=lambda:None,
         count_running_tasks=lambda _:2,count_running_tasks_other_boards=lambda _:0,
