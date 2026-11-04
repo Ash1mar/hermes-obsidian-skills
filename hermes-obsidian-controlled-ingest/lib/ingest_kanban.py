@@ -1269,7 +1269,9 @@ class IngestKanbanAdapter:
         with _exclusive_lock(lock), record_validation_scope():
             from native_stop_inventory import verify_cancel_drain
             verify_cancel_drain(self,wid,timeout=0)
-            return self.workflow.skip_pass_slices(request,dry_run=dry_run,budget_check=self._citation_budget_deferral,automatic_check=lambda v,b,i,f,e:__import__("automatic_pass_recovery").verify_isolation(self,v,i,f,e))
+            return self.workflow.skip_pass_slices(request,dry_run=dry_run,budget_check=self._citation_budget_deferral,
+                automatic_check=lambda v,b,i,f,e:__import__("automatic_pass_recovery").verify_isolation(self,v,i,f,e),
+                unknown_check=lambda v,b,i,f,e:__import__("pass_unknown_isolation").verify(self,v,i,f,e))
 
     def skip_reduce_tasks(self, request, *, dry_run=False):
         from hermes_source_units.reduce_task_skip import skip
