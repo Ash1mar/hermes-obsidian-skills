@@ -30,7 +30,11 @@ class ReleaseReads:
                           read_ns=0, hash_ns=0, parse_ns=0)
 
     def accepts(self, path):
-        return path.is_relative_to(self.vault) and not path.is_relative_to(self.vault/'_system/ledgers')
+        if not path.is_relative_to(self.vault):return False
+        relative=path.relative_to(self.vault).parts
+        immutable_review=(len(relative)==6 and relative[:3]==('_system','ledgers','ingest-workflows')
+                          and relative[4]=='semantic-inputs' and path.suffix=='.json')
+        return immutable_review or not path.is_relative_to(self.vault/'_system/ledgers')
 
     def read(self, path):
         if path in self.records:

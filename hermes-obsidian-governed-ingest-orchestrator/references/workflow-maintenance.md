@@ -115,3 +115,41 @@ but operator annotations and explicit protection checks require the external
 read-only export above. Existing historical reports and old workflows are not
 rewritten. Missing new fields in old runs remain unknown. Pass remains 10 and
 MinerU remains 1; no recovery budget, pause, QA rule or deployment default changes.
+
+## TestVaultE2E efficiency maintenance (2026-11-04)
+
+Baseline: `tmp/testvault-e2e-20261104/completion-summary.json` and final metrics.
+120 unique observed SDK requests (119 returned, one unknown), 36 published / 7
+excluded pages, terminal partial. List/show: 461/351. Schema: 5,090 logical reads,
+552,754,850 bytes; one review packet: 74 reads, 80,461,680 bytes. These are logical
+reads, not physical I/O. Operator maintenance prevents a clean wall-time comparison.
+Pass stays 10; MinerU stays 1; QA isolation and at most one additional check remain.
+
+Order implemented: request/audit accounting and effective audited recovery policy;
+native read-only board lists and nested projection reuse; immediate reconciliation
+on revision progress; operation-local installed schema observations; immutable
+review-input reuse inside existing release calculation with final hash confirmation;
+exact RR QA dictionaries; unique Candidate material inspection slots and exact
+missing-reference diagnostics; evidence-block classification; derived page evidence
+manifests; bounded offline two-page preview.
+
+Five investigated additions: Candidate pass-0001/pass-0004 duplicate inspections;
+pass-0003 uninspected support; Resource Reduce unsupported c35 example; page-write
+candidate/evidence identity mismatch. Free-text refusal explanations are not trusted
+reference substitutions. RR permits supported proposals plus explicit omissions.
+The 15-input side investigation estimated JSON 305,795 -> 239,529 characters before
+extra decoder instructions. This is a baseline hypothesis, not token/time savings.
+
+Presentation is frozen per workflow. Existing audits, output journals or reserved
+Pass budgets select legacy presentation; new work gets efficiency-presentation/v1.
+No old reading package, Pass, response or allowance is rewritten. Schemas are cached
+only within an operation with fresh inode/size/mtime/ctime observations; deployment
+must stop code consumers. Live authority/leases/cancellation remain uncached.
+
+Page evidence currently falls back to full related packages when relevance cannot
+be mechanically proved. The derived manifest records exact support, retained refs
+and fingerprints. No reduction in original evidence is claimed. Two-page pairing
+is an offline preview only, requiring identical nonempty source scope, complete
+low-risk pages and a complete request budget. It grants no native dispatch; live
+pairing remains pending an independent per-page durable budget/receipt contract
+and explicit future experiment. No real model or workflow is used for maintenance.

@@ -414,7 +414,10 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
         from hermes_source_units.qa_policy import SEMANTIC_PHASES
         automatic_review=(phase in SEMANTIC_PHASES and error.code=='SEMANTIC_REVIEW_REQUIRED'
             and enabled(adapter.workflow.status(binding['workflow_id'])))
-        eligible=bool(call_ref and (error.code in ELIGIBLE or automatic_review))
+        from efficiency_presentation import classify_block
+        issue=classify_block(draft) if view.get('efficiency_contract')=='efficiency-presentation/v1' else {'automatic_correction':True,'type':'legacy'}
+        eligible=bool(call_ref and issue['automatic_correction'] and (error.code in ELIGIBLE or automatic_review))
+        attempt['issue_classification']=issue
         if automatic_review:record['automatic_policy']='once_then_isolate'
         if call_ref and attempt.get('state')!='rejected':attach_receipt(adapter,call_ref,{'ok':False,'validated':False,'state':'output_contract_rejected' if eligible else 'semantic_output_held','origin':'fixed-output-validation/v1','code':error.code,'reason':str(error)})
         # Historical diagnostics are part of the exact native correction wire.

@@ -178,7 +178,10 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
     snapshot={k:w.get(k) for k in ('workflow_id','batch_id','revision','state','current_stage','release_id','release_plan_id','cancel_requested','pause_control')}
     snapshot['scope_digest']=fingerprint(w['scope'])
     snapshot['startup_execution_policy']=w['scope'].get('execution_policy',{'status':'legacy_unpinned'})
-    snapshot['recovery_policy']=w['scope'].get('recovery_policy',{'status':'legacy_unpinned'})
+    snapshot['startup_recovery_policy']=w['scope'].get('recovery_policy',{'status':'legacy_unpinned'})
+    from hermes_source_units.recovery_policy import effective as effective_recovery
+    snapshot['recovery_policy']=effective_recovery(w,{})
+    snapshot['recovery_policy_adoptions']=w.get('unknown_isolation_adoptions',[])
     snapshot['source_states']=dict(Counter(s['status'] for s in w.get('source_outcomes',[])))
     snapshot['native_settlement']='unknown; domain terminal state alone does not prove native drain'
     batch=service.knowledge._batch(w['batch_id']) if w.get('batch_id') else None

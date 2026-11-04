@@ -540,9 +540,11 @@ def validate_references(kind: str, record: Mapping[str, Any], units: list[dict[s
                     _fail("QA_REQUIRES_DRAFT", "$", "affected output must retain draft status")
     if kind == "knowledge_pass":
         inspected = [item["source_ref"] for item in record["inspections"]]
-        for candidate in record["candidates"]:
-            if not all(covered(ref, inspected) for ref in candidate["support_refs"]):
-                _fail("UNINSPECTED_SUPPORT", "$", "pass candidate cites evidence outside its inspected ranges")
+        for index,candidate in enumerate(record["candidates"]):
+            missing=[ref for ref in candidate["support_refs"] if not covered(ref, inspected)]
+            if missing:
+                _fail("UNINSPECTED_SUPPORT", f"$.candidates[{index}].support_refs",
+                      json.dumps({'candidate_id':candidate.get('candidate_id'),'missing_inspections':missing},ensure_ascii=False))
     if kind == "build_run":
         for page in record["page_revisions"]:
             decision = next(item for item in record["decisions"] if item["page_id"] == page["page_id"])

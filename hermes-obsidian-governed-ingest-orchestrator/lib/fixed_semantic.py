@@ -361,6 +361,9 @@ def wire_prompt(phase,view,output_schema,correction=None,*,metrics=None):
     if phase in ('page-write','page-review') and view.get('evidence_encoding') in ('lossless-page-evidence/v1','lossless-page-evidence/v2'):
         from fixed_page_evidence import present,present_compact
         body['input']=_ordered_view(present_compact(view) if view['evidence_encoding']=='lossless-page-evidence/v2' else present(view))
+    elif phase=='resource-reduce' and view.get('efficiency_contract')=='efficiency-presentation/v1':
+        from efficiency_presentation import qa_present
+        body['input']=_ordered_view(qa_present(view))
     else:body['input']=_ordered_view(view)
     if phase in ('candidate','citation'):
         # The actual request carries the schema once at the API boundary.
@@ -383,6 +386,13 @@ def wire_prompt(phase,view,output_schema,correction=None,*,metrics=None):
 
 def system_prompt(phase,view,correction=None):
     system=COMMON+'\n'+RULES[phase]
+    if view.get('efficiency_contract')=='efficiency-presentation/v1':
+        if phase=='resource-reduce':
+            system+=' candidate_qa_pool stores exact shared QA lists; expand each candidate evidence_qa reference without losing any qualification. Preserve valid supported proposals; explicitly omit unsupported candidates in omitted_candidate_refs with reasons. An unsupported example does not invalidate other proposals. Never complete missing examples from imagination.'
+        if phase in ('candidate','citation'):
+            system+=' Every reference is task-local: tN/mN from another task is forbidden. Each material has at most one inspection slot; put all distinct findings and limitations for that material in that one slot. Candidate support must have actual inspection coverage; do not treat headings or shared text IDs as support. Preserve conditions and exact spans.'
+        if phase=='page-write':
+            system+=' A concrete candidate/evidence identity mismatch is an evidence block. Return blocked_reason; do not replace references or rename the page from a guessed explanation.'
     if phase=='page-review' and view.get('review_scope'):
         from reduce_disposition import PAGE_RULE
         system+=' '+PAGE_RULE+' Review only the explicit review_scope risks and affected claims. Existing citation review is reusable; do not repeat discovery or treat unrelated original-package material as page coverage. Preserve QA and report concrete defects; a program risk is not proof of an error.'
@@ -692,16 +702,20 @@ def heartbeat(vault):
         if not PASS_DONE.is_set() and path.exists(): pass_action(vault,'heartbeat')
 
 
-def pass_packet(adapter,receipt):
+def pass_packet(adapter,receipt,binding=None):
     if 'packet' in receipt:
-        return receipt['packet']
-    workspace=Path(os.environ['HERMES_KANBAN_WORKSPACE'])
-    descriptor=_load_json(workspace/'pass-input-descriptor.json')
-    base=visible_packet(_load_json(_vault_path(adapter.workflow.vault,descriptor['path'])))
-    # read_pass_input has already compared the live material/QA authority. Only
-    # dynamic next_sequence/continuation are refreshed by its checked presentation.
-    tasks=[json.loads(line[5:]) for line in receipt['content'].splitlines() if line.startswith('TASK ')]
-    base['tasks']=tasks
+        base=copy.deepcopy(receipt['packet']);tasks=base['tasks']
+    else:
+        workspace=Path(os.environ['HERMES_KANBAN_WORKSPACE'])
+        descriptor=_load_json(workspace/'pass-input-descriptor.json')
+        base=visible_packet(_load_json(_vault_path(adapter.workflow.vault,descriptor['path'])))
+        tasks=[json.loads(line[5:]) for line in receipt['content'].splitlines() if line.startswith('TASK ')]
+        base['tasks']=tasks
+    if binding:
+        from efficiency_presentation import enabled
+        if enabled(adapter,binding):
+            base['efficiency_contract']='efficiency-presentation/v1'
+            for task in tasks:task['inspection_slots']='unique-material/v1'
     return base
 
 
@@ -957,7 +971,7 @@ def run_pass(adapter,binding,caller):
         receipt=read_pass_input(adapter.workflow.vault,begin=True,program=True)
     if receipt.get('next_action')=='end_worker':
         raise ContractError(receipt.get('code','PASS_ADMISSION_WAIT'),'$',receipt.get('reason','native worker must end'))
-    packet=pass_packet(adapter,receipt)
+    packet=pass_packet(adapter,receipt,binding)
     images=image_catalog(adapter,packet)
     if isinstance(caller,HermesCaller): caller.image_catalog=images
     value=adapter.workflow.status(binding['workflow_id'])
@@ -982,7 +996,7 @@ def run_pass(adapter,binding,caller):
     for phase in ('candidate','citation'):
         if phase=='citation':
             with ACTION_LOCK:
-                packet=pass_packet(adapter,read_pass_input(adapter.workflow.vault,program=True))
+                packet=pass_packet(adapter,read_pass_input(adapter.workflow.vault,program=True),binding)
         pending=[t for t in packet['tasks'] if t['continuation']['action']==('candidate_then_citation' if phase=='candidate' else 'citation')]
         # Fit the actual phase payload, including its schema, rather than repeat
         # complete packets or silently shrink any individual reading window.

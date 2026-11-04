@@ -131,7 +131,8 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                     # when the operator launched this watcher with system python3.
                     dispatch_ready_programs(vault,workflow_id)
                 stamp = (result.get('revision'),result.get('state'),result.get('program_dispatch'))
-                delay = min(delay*2,max(interval,12)) if stamp==prior else interval
+                delay = (0 if result.get('revision')!=value['revision'] else
+                         min(delay*2,max(interval,12)) if stamp==prior else interval)
                 prior = stamp
             except ContractError as exc:
                 if exc.code not in ("KANBAN_UNAVAILABLE", "REVISION_CONFLICT", "LOCK_BUSY", "RECONCILIATION_YIELD"):
