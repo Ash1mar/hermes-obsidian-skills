@@ -1,4 +1,7 @@
 """A scheduled gate remains held across cancellation/resume without reblocking."""
+import sys
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'hermes-obsidian-governed-ingest-orchestrator/lib'))
 from ingest_kanban import KanbanCLI
 
 
