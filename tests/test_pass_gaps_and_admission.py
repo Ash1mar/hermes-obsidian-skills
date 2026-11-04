@@ -91,8 +91,11 @@ def test_duplicate_normalization_preserves_unequal_semantics():
     assert {c['finding'] for c in cleaned['candidates']}=={'A AND B','A OR B'}
     assert len(draft['candidates'])==3
 
-def test_native_busy_error_remains_retryable_contract(monkeypatch):
+def test_native_busy_error_remains_retryable_contract(monkeypatch, tmp_path):
     import orchestration
+    from types import SimpleNamespace
+    monkeypatch.setattr(orchestration, 'IngestKanbanAdapter',
+                        lambda *_: SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path)))
     monkeypatch.setattr(orchestration.subprocess,'run',lambda *a,**k:subprocess.CompletedProcess([],1,
         '{"ok":false,"error":"LOCK_BUSY at $: current atomic commit"}',''))
     with pytest.raises(ContractError,match='LOCK_BUSY'):orchestration.dispatch_ready_programs('/isolated','ingest-test')
