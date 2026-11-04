@@ -577,7 +577,7 @@ def _dispatch_model_call(adapter,binding,phase,view,caller,limit,correction=None
         'call_category':'additional' if correction else 'initial_or_resumed',
         'correction_reason':correction.get('code') if isinstance(correction,dict) else None,
         'input_composition':prepared.get('input_composition'),
-        'subject_refs':{k:view[k] for k in ('page_id','page_ref','candidate_refs','proposal_refs','resource_id') if k in view}}
+        'subject_refs':{k:view[k] for k in ('page_id','page_ref','candidate_refs','proposal_refs','resource_id','page_members') if k in view}}
     with span('model_call',phase=phase,**correlation) as model_trace:
         if isinstance(caller,HermesCaller):
             with caller.request_scope(prepared):

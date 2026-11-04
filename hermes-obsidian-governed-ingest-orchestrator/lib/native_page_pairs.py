@@ -49,6 +49,14 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             yield
     book=PageCalls(root,guard,transaction)
     boundary,_=output_boundary(adapter,binding)
+    legacy=[]
+    for folder in ('output-attempts','semantic-calls'):
+        for path in (root/folder).glob('*.json'):
+            row=_load_json(path)
+            if row.get('phase')=='page-write':legacy.append(path)
+    if legacy:
+        if book.path.exists():raise ContractError('SEMANTIC_OUTPUT_HELD','$','mixed page budget contracts; no new allowance')
+        return None
     items=[]
     for page in state['pages']:
         if boundary or page_permit(adapter,binding,page):
