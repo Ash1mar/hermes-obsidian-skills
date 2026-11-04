@@ -2182,7 +2182,7 @@
             },
             "source_resource_retries": {"const": 1},
             "controller_attempts": {"const": 3},
-            "unknown_completion": {"const": "hold"},
+            "unknown_completion": {"enum": ["hold", "isolate_after_drain"]},
             "initial_release": {"enum": ["hold", "scoped_bootstrap"]}
           },
           "additionalProperties": false
@@ -2358,6 +2358,13 @@
           "report_ref":{"type":"string","format":"vault-relative-path"},
           "report_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}
         },"required":["recovery_id","input_digest","report_ref","report_sha256"],"additionalProperties":false}},
+        "unknown_isolation_adoptions": {"type":"array","items":{"type":"object","properties":{
+          "workflow_id":{"type":"string"},"actor":{"type":"string"},"expected_revision":{"type":"integer"},
+          "operation_id":{"type":"string","minLength":1},"reason":{"type":"string","minLength":1},
+          "unknown_completion":{"const":"isolate_after_drain"},
+          "previous_policy_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"},
+          "input_digest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"}
+        },"required":["workflow_id","actor","expected_revision","operation_id","reason","unknown_completion","previous_policy_sha256","input_digest"],"additionalProperties":false}},
         "pass_skip_history": {"type":"array","items":{"type":"object","properties":{
           "revision_id":{"type":"string","minLength":1},
           "continuation_slice_ids":{"type":"array","uniqueItems":true,"items":{"type":"string","minLength":1}},

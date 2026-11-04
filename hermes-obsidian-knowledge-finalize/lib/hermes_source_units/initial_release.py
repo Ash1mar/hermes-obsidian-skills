@@ -10,6 +10,16 @@ from .validation import ContractError, fingerprint, validate_record
 CONTRACT = 'governed-initial-release-authorization/v1'
 
 
+def native_plan_started(snapshot):
+    """Kanban scheduling rows are bookkeeping, not native execution attempts."""
+    task = snapshot.get('task', {})
+    if any(task.get(k) for k in ('worker_pid', 'current_run_id', 'session_id', 'started_at')):
+        return True
+    return any(not (r.get('status') == 'scheduled' and r.get('outcome') == 'scheduled'
+                    and r.get('ended_at') and not r.get('worker_pid'))
+               for r in snapshot.get('runs', []))
+
+
 def needs_preflight(vault, workflow):
     scope=workflow.get('scope',{})
     return (scope.get('execution_mode')=='auto_full' and bool(scope.get('bootstrap_ref'))

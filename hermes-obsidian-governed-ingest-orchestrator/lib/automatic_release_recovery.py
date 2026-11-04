@@ -17,7 +17,7 @@ def recover(adapter,wid,*,resume=True):
     from hermes_source_units.vault_finalize import FileVaultFinalizeService
     from hermes_source_units.partial_finalize import pin
     from hermes_source_units.page_governance import POLICY
-    from hermes_source_units.initial_release import CONTRACT,admitted_pointer,needs_preflight
+    from hermes_source_units.initial_release import CONTRACT,admitted_pointer,needs_preflight,native_plan_started
     service=adapter.workflow;root=service.vault/f'_system/ledgers/ingest-workflows/{wid}/automatic-release'
     with _exclusive_lock(root/'.controller.lock'):
         w=service.status(wid)
@@ -49,7 +49,7 @@ def recover(adapter,wid,*,resume=True):
             nodes={n.name:n for n in desired_graph(service,w)}
             if not domain_completed(service,w,nodes['build-finalize']):return False
             node=nodes['vault-finalize-plan']
-            if adapter.kanban.task_snapshot_fresh(w['kanban']['board_id'],card['task_id']).get('runs'):
+            if native_plan_started(adapter.kanban.task_snapshot_fresh(w['kanban']['board_id'],card['task_id'])):
                 raise ContractError('STALE_INPUT','$','initial preflight requires an unstarted native plan')
             failure={'input_fingerprint':node.input_fingerprint}
         else:

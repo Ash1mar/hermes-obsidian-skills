@@ -1,7 +1,8 @@
 """Trusted reconciler policy: one known-response correction, then coverage gaps.
 
 This controller changes execution authority only. Native workers remain the
-authors of every semantic result. Unknown calls and unsafe failures stay held.
+authors of every semantic result. Authenticated stopped unknown Pass calls are
+quarantined under the pinned policy, never retried or counted as verified.
 """
 import hashlib,json
 from hermes_source_units import ContractError,mutation_digest
@@ -17,7 +18,14 @@ def enabled(value):
     from hermes_source_units.recovery_policy import effective
     policy=effective(value,configuration())
     return (value.get('scope',{}).get('execution_mode')=='auto_full'
-            and policy['semantic_failure']=='once_then_isolate')
+            and (policy['semantic_failure']=='once_then_isolate'
+                 or policy['unknown_completion']=='isolate_after_drain'))
+
+
+def active_policy(value):
+    from orchestration import configuration
+    from hermes_source_units.recovery_policy import effective
+    return {**POLICY,'unknown_completion_action':effective(value,configuration())['unknown_completion']}
 
 
 def request(adapter,wid,**fields):
@@ -42,7 +50,7 @@ def verify_isolation(adapter,value,item,failure,entry):
 
 
 def actions(adapter,value):
-    """Only authenticate material-local returned failures, never transport guesses."""
+    """Authenticate returned failures or exact stopped unknown calls, never guesses."""
     from ingest_kanban import pass_node
     from pass_local_review import verify,exhaustion_proof
     from hermes_source_units.pass_skips import skippable_failure
@@ -59,8 +67,12 @@ def actions(adapter,value):
         failure=_load_json(path)
         if failure.get('task_id')!=card['task_id']:continue
         budget_failure=failure.get('error_code')=='LOCK_BUSY'
+        unknown_failure=failure.get('error_code')=='NATIVE_COMPLETION_UNKNOWN'
+        from hermes_source_units.recovery_policy import effective
+        from orchestration import configuration
+        if not unknown_failure and effective(value,configuration())['semantic_failure']=='hold':continue
         try:
-            if not budget_failure and skippable_failure(failure)=='UNRESOLVED_NATIVE_MODEL_REQUEST':continue
+            if not (budget_failure or unknown_failure) and skippable_failure(failure)=='UNRESOLVED_NATIVE_MODEL_REQUEST':continue
         except ContractError:continue
         node=pass_node(value,item)
         if failure.get('input_fingerprint')!=node.input_fingerprint:continue
@@ -69,7 +81,11 @@ def actions(adapter,value):
         snapshot=adapter.kanban.task_snapshot(value['kanban']['board_id'],card['task_id'])
         if snapshot.get('task',{}).get('worker_pid') or any(not r.get('ended_at') for r in snapshot.get('runs',[])):continue
         try:
-            if budget_failure:
+            isolation_entry=None
+            if unknown_failure:
+                from pass_unknown_isolation import automatic_entry
+                isolation_entry,proof=automatic_entry(adapter,value,item,failure);kind='quarantine_unknown'
+            elif budget_failure:
                 from pass_budget_recovery import verify as verify_budget
                 proof=verify_budget(adapter,value,binding,failure,snapshot);kind='budget_retry'
             else:
@@ -79,6 +95,7 @@ def actions(adapter,value):
         except ContractError:continue  # Authenticated admission is mandatory, not best effort.
         out.append({'node':name,'task_id':card['task_id'],'failure_ref':ref,
             'failure_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'action':kind,'proof':proof})
+        if isolation_entry:out[-1]['isolation_entry']=isolation_entry
     return out
 
 
@@ -105,13 +122,14 @@ def recover(adapter,wid,*,resume=True):
         if (not enabled(value) or value['current_stage']!='analyzing' or not value['batch_id']
                 or adapter.workflow.pending_pause(value)):return False
         pending=root/'pending.json'
+        policy=active_policy(value)
         if pending.exists():intent=_load_json(pending)
         else:
             selected=actions(adapter,value)
             if not selected:return False
-            intent={'policy':POLICY,'actions':selected,'operation_id':'auto-pass-'+fingerprint(selected)[:24]}
+            intent={'policy':policy,'actions':selected,'operation_id':'auto-pass-'+fingerprint(selected)[:24]}
             _write_atomic(pending,_json_bytes(intent))
-        if intent['policy']!=POLICY:raise ContractError('STALE_INPUT','$','automatic recovery policy changed')
+        if intent['policy']!=policy:raise ContractError('STALE_INPUT','$','automatic recovery policy changed')
         op=intent['operation_id']
         if not value['cancel_requested']:control_workflow(adapter.workflow.vault,wid,'cancel',op+'-stop')
         verify_cancel_drain(adapter,wid,timeout=0)
@@ -124,6 +142,11 @@ def recover(adapter,wid,*,resume=True):
                     reason='Automatic bounded recovery; original evidence and consumed budgets retained',
                     entries=[{k:entry[k] for k in ('node','task_id','failure_sha256')}])))
                 adapter.recover_pass_execution(_load_json(saved_request))
+            elif entry['action']=='quarantine_unknown':
+                if not saved_request.exists():
+                    selected={**entry['isolation_entry'],'evidence':[{'ref':entry['failure_ref'],'sha256':entry['failure_sha256']}]}
+                    _write_atomic(saved_request,_json_bytes(request(adapter,wid,operation_id=rid,entries=[selected])))
+                adapter.skip_pass_slices(_load_json(saved_request))
             else:
                 if not saved_request.exists():_write_atomic(saved_request,_json_bytes(request(adapter,wid,operation_id=rid,
                     entries=[{'slice_id':entry['node'].partition(':')[2],

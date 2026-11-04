@@ -55,7 +55,7 @@ class PassSkipMixin:
                 seen.update(pointer['task_ids']);reports.append(report);continue
             for entry in report['entries']:
                 item=self.knowledge._slice(value['batch_id'],entry['slice_id'])
-                if ((item['task_ids']!=entry['task_ids'] and not (entry.get('automatic_proof') and set(entry['task_ids']).issubset(item['task_ids']) and all(self._task_passes_complete(t) for t in set(item['task_ids'])-set(entry['task_ids'])))) or item['input_fingerprint']!=entry['slice_input_fingerprint']):
+                if ((item['task_ids']!=entry['task_ids'] and not ((entry.get('automatic_proof') or entry.get('unknown_quarantine')) and set(entry['task_ids']).issubset(item['task_ids']) and all(self._task_passes_complete(t) for t in set(item['task_ids'])-set(entry['task_ids'])))) or item['input_fingerprint']!=entry['slice_input_fingerprint']):
                     fail('STALE_INPUT','skipped slice ownership changed')
                 for task_id,expected in entry['target_fingerprints'].items():
                     task=self.knowledge._task(task_id)
@@ -91,7 +91,7 @@ class PassSkipMixin:
                 return {'ok':True,'applied':False,'replayed':True,'revision':value['revision'],'report_ref':old['report_ref']}
             value=self._mutation(request)
             if (value['state']!='cancelled' or not value['cancel_requested'] or value['current_stage']!='analyzing'
-                    or not value['batch_id'] or self.pending_pause(value) or (value['dispatch_policy']['mode']!='full' and not (automatic_check and value['dispatch_policy']['mode']=='canary' and all(e.get('deferral')=='automatic_retry_exhausted' for e in entries)))):
+                    or not value['batch_id'] or self.pending_pause(value) or (value['dispatch_policy']['mode']!='full' and not (automatic_check and value['dispatch_policy']['mode']=='canary' and all(e.get('deferral') in ('automatic_retry_exhausted','automatic_unknown_quarantine') for e in entries)))):
                 fail('INVALID_TRANSITION','skip requires a cancelled released Pass phase')
             if value.get('pass_revision') and value['pass_revision']['state']!='accepted':
                 fail('REVISION_REVIEW_REQUIRED','finish semantic revision review first')
@@ -118,10 +118,11 @@ class PassSkipMixin:
                                 or item['slice_id'] in previously or not entry.get('reason','').strip()):
                             fail('INVALID_TRANSITION','only cancelled unskipped failed work may be excluded')
                         automatic=entry.get('deferral')=='automatic_retry_exhausted'
-                        selected=entry.get('task_ids') if automatic else item['task_ids']
-                        if automatic and (not selected or not set(selected).issubset(item['task_ids']) or any(not self._task_passes_complete(t) for t in set(item['task_ids'])-set(selected))):
+                        unknown_automatic=entry.get('deferral')=='automatic_unknown_quarantine'
+                        selected=entry.get('task_ids') if automatic or unknown_automatic else item['task_ids']
+                        if (automatic or unknown_automatic) and (not selected or not set(selected).issubset(item['task_ids']) or any(not self._task_passes_complete(t) for t in set(item['task_ids'])-set(selected))):
                             fail('SKIP_NOT_ALLOWED','automatic isolation preserves completed tasks and must account for every unfinished task')
-                        proofs=[];covered=set();automatic_proof=None
+                        proofs=[];covered=set();automatic_proof=None;unknown_proof=None
                         for evidence in entry['evidence']:
                             path=_vault_path(self.vault,evidence['ref'])
                             expected_root=self.vault/f'_system/ledgers/ingest-workflows/{wid}/reports'
@@ -134,7 +135,7 @@ class PassSkipMixin:
                                 if automatic_check is None:fail('ACCESS_DENIED','automatic isolation requires native program verification')
                                 automatic_proof=automatic_check(value,batch,item,failure,entry)
                                 category='AUTOMATIC_CORRECTION_EXHAUSTED'
-                            elif entry.get('deferral')=='unknown_native_quarantine':
+                            elif entry.get('deferral') in ('unknown_native_quarantine','automatic_unknown_quarantine'):
                                 if unknown_check is None:fail('ACCESS_DENIED','unknown isolation requires native verification')
                                 unknown_proof=unknown_check(value,batch,item,failure,entry)
                                 category='UNRESOLVED_NATIVE_MODEL_REQUEST'
@@ -175,6 +176,7 @@ class PassSkipMixin:
                         audited.append({'slice_id':item['slice_id'],'slice_input_fingerprint':item['input_fingerprint'],
                             'task_ids':selected,'target_fingerprints':targets,'reason':entry['reason'],'evidence':proofs})
                         if automatic_proof:audited[-1]['automatic_proof']=automatic_proof
+                        if unknown_proof:audited[-1]['unknown_quarantine']=unknown_proof
                         audited[-1].update(known_failure_task_ids=sorted(covered.intersection(selected)),
                             withheld_unverified_task_ids=sorted(set(item['task_ids'])-covered))
                     report={'contract':'pass-coverage-gaps/v1','request':dict(request),'batch_id':value['batch_id'],

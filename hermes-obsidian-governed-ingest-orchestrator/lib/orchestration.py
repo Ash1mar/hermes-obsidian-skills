@@ -72,6 +72,9 @@ def dispatch(vault: str | Path, command: str, request: Mapping[str, Any], *, dry
     if command == 'release-readiness':
         from release_readiness import readiness
         return readiness(adapter, request['workflow_id'],governance=True)
+    if command == 'adopt-unknown-isolation':
+        from unknown_isolation_policy import adopt
+        return adopt(adapter,request,dry_run=dry_run)
     if command in ('resume','continue-workflow'):
         w=adapter.workflow.status(request['workflow_id'])
         if w['current_stage']=='release_planning':

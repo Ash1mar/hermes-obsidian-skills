@@ -66,17 +66,32 @@ Partial Canary coverage is reported as partial, never as complete sampled accept
 Conversion defects, changed or absent required evidence, permissions, transport
 failures and unknown native completion do not gain an unchanged-material retry.
 Unauthenticated failures stay held. Recovery cannot cross a durable pause.
+One additional check is an upper bound, never a prerequisite for isolation.
 
-An explicit user authorization may quarantine an exact stopped unknown Pass call
-through `skip-pass-slices`, with `deferral=unknown_native_quarantine`,
-`acknowledge_unverified_coverage=true`, and a hash-bound `unknown_call` reference.
-The operator request still requires the ordinary bound failure evidence, current
-identities and full cancellation/drain. The program authenticates the native
-request, ended run and exact reserved task set. Existing returned responses must
-be verified first. It records unresolved coverage and leaves the unknown outcome
-and every consumed reservation intact, granting no new call. The pinned default
-`unknown_completion=hold` remains unchanged; no automatic selection uses this
-explicit exception. Downstream work excludes the quarantined tasks and dependents.
+New short requests pin `unknown_completion=isolate_after_drain`. For an exact
+stopped unknown Pass call, the controller persists its intent, cancels/drains the
+workflow and calls `skip-pass-slices` with `deferral=automatic_unknown_quarantine`.
+It authenticates the hash-bound call failure, native request, ended run, current
+binding and exact unfinished reserved task set. A returned response must be
+verified first. Completed tasks survive; unaccounted tasks, live owners, changed
+evidence and foreign/unselected Canary work remain held. No model retry occurs.
+The original unknown outcome and every reservation stay intact; the coverage-gap
+report excludes the tasks and their actual dependents from Reduce/publication.
+Restart replays the same saved exclusion/resume identities, without new quota.
+
+Existing pinned `hold` policies and legacy fallbacks do not change silently.
+After explicit workflow-wide authorization, stop/drain the workflow and invoke
+`python3 "<skill-dir>/scripts/dispatch_ingest_workflow.py" --vault <path>
+adopt-unknown-isolation --request <request.json>` (preview with `--dry-run`).
+The request names workflow/actor/expected_revision, stable operation_id, reason,
+`unknown_completion=isolate_after_drain`, previous_policy_sha256 (the effective
+policy fingerprint), and ordinary mutation input_digest. Adoption appends an
+audited policy overlay, preserves startup scope, and does not resume or release a
+pause. A pending recovery intent must finish before adoption. One adoption covers
+later eligible Pass incidents; no per-incident approval is required. The explicit
+`unknown_native_quarantine` path remains available for an authorized exact scope.
+This contract is for Pass candidate/citation requests; unknown release/Provider
+side effects still require their own authenticated recovery, never blind replay.
 
 Budget-lock contention waits up to five seconds for the atomic ledger operation.
 An ended worker blocked on this exact lock can receive one mechanical recovery,

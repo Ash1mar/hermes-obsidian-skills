@@ -13,7 +13,8 @@ import release_recovery
 import ingest_kanban
 
 
-@pytest.mark.parametrize('runs',[[],[{'ended_at':1,'status':'failed'}],[{'ended_at':None,'status':'running'}]])
+@pytest.mark.parametrize('runs',[[],[{'ended_at':1,'status':'scheduled','outcome':'scheduled','worker_pid':None}],
+    [{'ended_at':1,'status':'failed'}],[{'ended_at':None,'status':'running'}]])
 def test_preflight_admits_only_unstarted_plan_with_exact_closed_evidence(initial,monkeypatch,runs):
     p4,w,grant,plan,run=initial
     w.update(state='cancelled',cancel_requested=True,current_stage='release_planning',release_id=None,revision=7)
@@ -50,7 +51,7 @@ def test_preflight_admits_only_unstarted_plan_with_exact_closed_evidence(initial
     g['request']['input_digest']='sha256:'+fingerprint({k:v for k,v in g['request'].items() if k!='input_digest'})
     q['initial_page_governance']=save(p4.vault,grant['ref'],g)
     q['input_digest']='sha256:'+fingerprint(q)
-    if runs:
+    if runs and runs[0]['status']!='scheduled':
         with pytest.raises(ContractError,match='no native attempt'):release_recovery.recover(adapter,q)
     else:
         result=release_recovery.recover(adapter,q)
@@ -58,5 +59,5 @@ def test_preflight_admits_only_unstarted_plan_with_exact_closed_evidence(initial
         assert admitted_pointer(p4.vault,w)==q['initial_page_governance']
         assert not needs_preflight(p4.vault,w)
         report=json.loads((p4.vault/result['report_ref']).read_text())
-        assert report['failure'] is None and report['native_runs']==[]
+        assert report['failure'] is None and report['native_runs']==runs
         assert release_recovery.recover(adapter,q)['replayed']
