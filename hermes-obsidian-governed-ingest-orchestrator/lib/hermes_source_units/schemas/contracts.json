@@ -2167,7 +2167,19 @@
           "properties": {
             "contract": {"const": "workflow-recovery-policy/v1"},
             "semantic_failure": {"enum": ["hold", "once_then_isolate"]},
-            "qa": {"type": "object"},
+            "qa": {
+              "type": "object",
+              "properties": {
+                "contract": {"const": "automatic-qa-policy/v1"},
+                "labels": {"const": "advisory"},
+                "blocking_action": {"const": "isolate_with_dependents"},
+                "max_additional_hermes_checks": {"const": 1},
+                "human_review_required": {"const": false},
+                "invalid_evidence_accepted": {"const": false}
+              },
+              "required": ["contract", "labels", "blocking_action", "max_additional_hermes_checks", "human_review_required", "invalid_evidence_accepted"],
+              "additionalProperties": false
+            },
             "source_resource_retries": {"const": 1},
             "controller_attempts": {"const": 3},
             "unknown_completion": {"const": "hold"},
