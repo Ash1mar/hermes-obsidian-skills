@@ -1,11 +1,24 @@
 """Native page-call orchestration using the page-owned reservation/receipt ledger."""
-import copy
+import copy,threading
+from concurrent.futures import ThreadPoolExecutor
+from contextvars import copy_context
 from contextlib import contextmanager
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json,_vault_path,_write_atomic,_json_bytes
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.recovery_control import epoch
 from page_pair_calls import PageCalls,ACTIVE,key,CONTRACT
+
+
+def run_groups(groups,submit,capacity):
+    """Use the existing configured model-call bound; no nested dispatch layer."""
+    errors=[]
+    with ThreadPoolExecutor(max_workers=capacity) as pool:
+        futures=[pool.submit(copy_context().run,submit,group) for group in groups]
+        for future in futures:
+            try:future.result()
+            except Exception as exc:errors.append(exc)
+    if errors:raise errors[0]
 
 
 def compatible(left,right):
@@ -36,8 +49,10 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     from semantic_output import output_boundary,check
     from reduce_disposition import page_permit
     root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}"
+    owners=threading.local()
+    def current_owner():return getattr(owners,'adapter',adapter)
     def guard():
-        adapter.worker_check(binding)
+        current_owner().worker_check(binding)
         w=adapter.workflow.status(binding['workflow_id'])
         if w.get('cancel_requested') or w.get('state') in ('cancelled','failed'):
             raise ContractError('WORKFLOW_STOPPED','$','page call cancelled')
@@ -81,7 +96,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         if not path.is_file():return False
         audit=_load_json(path)
         if audit.get('page_request_id')!=q['request_id'] or audit.get('phase')!='page-pair' or audit.get('model')!=response['metadata']:return False
-        proof=native_reply(adapter,binding,path,q['wire'],q['schema'],[])
+        proof=native_reply(current_owner(),binding,path,q['wire'],q['schema'],[])
         return bool(proof and proof[0]==response['raw'])
     def validate(k,draft):return check('page-write',value,None,None,draft)
     def persist(k,draft,request,audit):
@@ -93,7 +108,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     def acknowledge(receipt):
         # Receipt was atomically published before this external, idempotent link.
         if receipt['state']!='valid':
-            attach_receipt(adapter,receipt['audit_ref'],{'ok':False,'validated':False,'state':'page_output_rejected',
+            attach_receipt(current_owner(),receipt['audit_ref'],{'ok':False,'validated':False,'state':'page_output_rejected',
                 'page_receipt_id':receipt['receipt_id'],'page_key':receipt['page_key'],'page_request_id':receipt['request_id'],
                 'code':receipt['code'],'reason':receipt['reason']})
             return
@@ -101,7 +116,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         draft_path=_vault_path(adapter.workflow.vault,receipt['saved']['draft_ref'])
         if draft_path.read_text(encoding='utf-8')!=receipt['result']['content']:
             raise ContractError('SOURCE_CHANGED','$','page receipt body changed')
-        attach_receipt(adapter,receipt['audit_ref'],{'ok':True,'validated':True,'state':'page_body_only',
+        attach_receipt(current_owner(),receipt['audit_ref'],{'ok':True,'validated':True,'state':'page_body_only',
             'page_receipt_id':receipt['receipt_id'],'page_key':receipt['page_key'],'page_request_id':receipt['request_id'],**receipt['saved']})
         written[receipt['page_key']]={**page,'content':receipt['result']['content'],'draft_ref':receipt['saved']['draft_ref'],
             'audit_ref':receipt['audit_ref'],'input_sha256':fingerprint(view)}
@@ -123,6 +138,11 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             p,audit,raw=matches[0];book.capture(request,raw,p.relative_to(adapter.workflow.vault).as_posix(),audit['model'])
         settle(request)
     def submit(group):
+        from fixed_semantic import HermesCaller
+        from ingest_kanban import IngestKanbanAdapter
+        local_caller=caller.fork() if isinstance(caller,HermesCaller) else caller
+        owners.adapter=(IngestKanbanAdapter(adapter.workflow.vault,enable_workers=adapter.enable_workers)
+                        if isinstance(adapter,IngestKanbanAdapter) else adapter)
         # Pair only when originals (including local material handles) are identical.
         evidence=copy.deepcopy(group[0][1].get('original_evidence',{}))
         pages={f'p{i}':{k:copy.deepcopy(v) for k,v in view.items() if k not in ('original_evidence','evidence_encoding')} for i,(p,view) in enumerate(group,1)}
@@ -142,7 +162,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             raise ContractError('READING_WINDOW_OVERSIZE','$','complete durable page request exceeds bound')
         request=book.reserve(group,prepared['wire'],sc)
         token=ACTIVE.set((book,request))
-        try:model_call(adapter,binding,'page-pair',wire_view,caller,30000,attempt_limit=1)
+        try:model_call(current_owner(),binding,'page-pair',wire_view,local_caller,30000,attempt_limit=1)
         finally:ACTIVE.reset(token)
         settle(request)
     # Only new or rejected mechanical outputs can request a call. Completed pages
@@ -153,16 +173,21 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         if row and row.get('receipt'):acknowledge(row['receipt']);continue
         if row and (len(row['attempts'])>=2 or not row['attempts'][-1].get('correctable')):continue
         pending.append((page,view))
+    groups=[]
     while pending:
         first=pending.pop(0);group=[first]
         # Additional checks are isolated to the failed page, never the valid peer.
         if pending and not book.status(*first) and not book.status(*pending[0]) and compatible(first,pending[0]):group.append(pending.pop(0))
-        submit(group)
+        groups.append(group)
+    capacity=min(10,getattr(adapter,'reduce_page_concurrency',2))
+    run_groups(groups,submit,capacity)
+    corrections=[]
     # One bounded correction for remaining mechanical failures, sharing the ledger.
     for page,view in items:
         row=book.status(page,view)
         if row and not row.get('receipt') and len(row['attempts'])==1 and row['attempts'][0].get('correctable'):
-            submit([(page,view)])
+            corrections.append([(page,view)])
+    run_groups(corrections,submit,capacity)
     for page,view in items:
         row=book.status(page,view)
         if row and row.get('receipt'):acknowledge(row['receipt']);continue

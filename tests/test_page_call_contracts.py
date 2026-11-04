@@ -234,3 +234,14 @@ def test_recovery_fingerprint_includes_page_contract_modules(tmp_path,monkeypatc
     for name in names[3:]:
         p=tmp_path/name;old=p.read_text();p.write_text('changed isolated code')
         assert qa_program.execution_code_fingerprint()!=before;p.write_text(old)
+
+def test_page_groups_preserve_configured_concurrency_bound():
+    from native_page_pairs import run_groups
+    import threading
+    lock=threading.Lock();barrier=threading.Barrier(2);counts={'active':0,'peak':0};done=[]
+    def submit(group):
+        with lock:counts['active']+=1;counts['peak']=max(counts['peak'],counts['active'])
+        barrier.wait(timeout=5)
+        with lock:counts['active']-=1;done.append(group)
+    run_groups([1,2,3,4],submit,2)
+    assert counts=={'active':0,'peak':2} and sorted(done)==[1,2,3,4]
