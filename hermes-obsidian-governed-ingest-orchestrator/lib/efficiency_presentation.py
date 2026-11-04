@@ -1,5 +1,6 @@
 """Versioned, capability-free evidence presentation for future native work."""
-import copy
+import copy,os
+from pathlib import Path
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json,_write_atomic,_json_bytes,_exclusive_lock
 from hermes_source_units.validation import fingerprint
@@ -7,7 +8,15 @@ from hermes_source_units.validation import fingerprint
 CONTRACT='efficiency-presentation/v1'
 
 def enabled(adapter,binding):
-    # Callers already checked current native authority; this format pin grants none.
+    checked_binding=binding
+    if binding.get('node','').startswith('pass-slice:'):
+        workspace=os.environ.get('HERMES_KANBAN_WORKSPACE')
+        if workspace:
+            checked_binding=_load_json(Path(workspace)/'worker-request.json')
+            keys=('workflow_id','node','task_id','actor','template_hash','worker_id')
+            if any(k in binding and checked_binding.get(k)!=binding[k] for k in keys):
+                raise ContractError('STALE_INPUT','$','presentation worker identity changed')
+    adapter.worker_check(checked_binding)
     w=adapter.workflow.status(binding['workflow_id'])
     root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}"
     path=root/'presentation-contract.json'
