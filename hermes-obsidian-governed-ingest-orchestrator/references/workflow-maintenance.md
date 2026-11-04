@@ -153,3 +153,39 @@ is an offline preview only, requiring identical nonempty source scope, complete
 low-risk pages and a complete request budget. It grants no native dispatch; live
 pairing remains pending an independent per-page durable budget/receipt contract
 and explicit future experiment. No real model or workflow is used for maintenance.
+
+## Page dependency and durable pair contracts (2026-11-04)
+
+Future untouched workflows pin `durable-page-calls/v1`; existing presentation
+profiles and consumed outputs keep their original contracts and finite journals.
+`page_dependencies.py` binds every candidate, exact support, canonical source
+span/version, heading, required asset, QA and retained/excluded material reason.
+Only complete source/span/payload equivalence permits dropping an unreferenced
+redundant alias. Different text, scope headings, QA, assets or source versions
+remain present. Uncertain context, qualifications and contrary evidence retain
+full related material without another model request. Original packages/Passes
+and shared text/QA notices remain unchanged.
+
+`page_pair_calls.py` atomically reserves a request's one or two page-owned
+ordinals in one ledger write. Identity keys exclude batch peers and request IDs;
+changed inputs/paths cannot reset allowances. Each page has at most an initial
+call and one correctable additional call. Evidence refusals need no automatic
+addition. Unknown calls retain reservations and cannot be automatically resent.
+
+The native text-page bridge shares exact original evidence only for compatible
+scope, fresh dependency manifests, usable QA and no assets/truncation/old parent.
+Each request's original raw response, native audit, member mapping, wire/schema
+and cancellation epoch are retained. Each slot is validated and durably settled
+independently before its receipt is linked to the native audit. A valid page is
+never re-reserved; interruption between body persistence and receipt publication
+replays saved raw response mechanically and uses idempotent persistence.
+Current worker checks and the existing workflow write guard serialize page
+settlement against cancellation. Cancellation changes the epoch and blocks old
+continuation; it never authorizes a new request. Unsupported disposition, asset
+or oversized plans fall back before any durable reservation, or hold if a page
+ledger already exists. No migration of consumed old page journals is attempted.
+
+Isolated mechanical contract checks are the acceptance scope of this change;
+actual two-page model behavior and end-to-end timing await a future authorized
+run. Test fixtures create no formal Vault/domain outputs. Pass remains 10,
+MinerU 1, with QA isolation and at most one additional check unchanged.

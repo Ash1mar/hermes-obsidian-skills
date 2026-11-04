@@ -52,8 +52,9 @@ def _snapshot(adapter,binding,checked,*,presentation=True):
     eligible = {key:pair for key,pair in candidates.items()
         if pair[0]['pass_kind']=='citation' and (kind=='resource-reduce' or key in proposed)}
     view = {'phase':kind,'candidates':[]}
-    from efficiency_presentation import enabled
-    if presentation and enabled(adapter,binding):view['efficiency_contract']='efficiency-presentation/v1'
+    from efficiency_presentation import enabled,observed_profile,CONTRACT as PRESENTATION
+    profile=observed_profile(adapter,binding) if not presentation else None
+    if (enabled(adapter,binding) if presentation else profile['contract']==PRESENTATION):view['efficiency_contract']='efficiency-presentation/v1'
     if workflow.get('pass_skip_history'):
         view['coverage_limitations']={'excluded_task_count':len(adapter.workflow.skipped_pass_tasks(workflow)),
             'note':'Some planned source ranges were explicitly skipped. They provide no evidence and must not be inferred or described as fully covered.'}
@@ -107,6 +108,11 @@ def _snapshot(adapter,binding,checked,*,presentation=True):
             view['existing_pages'].append({'identity':{k:subject[k] for k in ('kind','identity_key','canonical_name','aliases')},
                 'path':subject['current_path'],
                 'qa_status':page['qa_status'],'business_status':page['business_status'],'visibility':page['visibility']})
+    from efficiency_presentation import page_contract
+    if (page_contract(adapter,binding) if presentation else profile.get('page_call_contract')=='durable-page-calls/v1'):
+        from page_dependencies import provenance
+        backend['page_dependency_proof']=provenance(packet,readings)
+        view['page_call_contract']='durable-page-calls/v1'
     result = {'contract':'fixed-reduce-input/v1','binding':dict(binding),'view':view,'backend':backend}
     if kind=='resource-reduce':
         from source_hold_recovery import rebind_view
@@ -208,7 +214,11 @@ def page_view(adapter, value, page):
         view['original_evidence']=fixed_evidence.selected(value['view']['original_evidence'],readings)
         if value['view'].get('efficiency_contract'):
             from efficiency_presentation import page_evidence_view
-            view['original_evidence'],view['evidence_selection']=page_evidence_view(view['original_evidence'],candidates)
+            proof=value['backend'].get('page_dependency_proof')
+            if proof:
+                if proof['packet_sha256']!=fingerprint(value['view']['original_evidence']):fail('SOURCE_CHANGED','dependency packet changed')
+                proof={**proof,'packet_sha256':fingerprint(view['original_evidence'])}
+            view['original_evidence'],view['evidence_selection']=page_evidence_view(view['original_evidence'],candidates,provenance=proof)
             view['efficiency_contract']=value['view']['efficiency_contract']
     return view
 

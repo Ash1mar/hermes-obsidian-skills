@@ -63,7 +63,7 @@ def calls_report(calls, events, attempts):
     for call in calls:
         event=models.get(call.get('timeline_span_id'),{})
         ref=call.get('evidence_ref');attempt=attempts_by_audit.get(ref,{})
-        row={k:call.get(k) for k in ('request_id','native_task_id','native_run_id','node','phase','input_sha256',
+        row={k:call.get(k) for k in ('request_id','page_request_id','native_task_id','native_run_id','node','phase','input_sha256',
             'schema_sha256','logical_action_id','attempt_ordinal','call_category','correction_reason',
             'task_identities','subject_refs','receipt_refs','validated','error_code','input_composition','output_attempt_id',
             'output_codepoints','output_utf8_bytes')}

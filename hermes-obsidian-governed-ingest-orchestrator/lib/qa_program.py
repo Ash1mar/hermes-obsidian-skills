@@ -12,7 +12,8 @@ SCOPE='qa-policy/v1'
 def execution_code_fingerprint():
     root=Path(__file__).parent
     return fingerprint({n:hashlib.sha256((root/n).read_bytes()).hexdigest()
-        for n in ('qa_program.py','fixed_page_work.py','fixed_semantic.py')})
+        for n in ('qa_program.py','fixed_page_work.py','fixed_semantic.py',
+                  'native_page_pairs.py','page_pair_calls.py','page_dependencies.py')})
 
 
 def isolate_plan(adapter,binding,value,state,packet,error):

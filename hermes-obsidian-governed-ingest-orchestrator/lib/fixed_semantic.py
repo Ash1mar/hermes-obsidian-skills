@@ -385,7 +385,9 @@ def wire_prompt(phase,view,output_schema,correction=None,*,metrics=None):
 
 
 def system_prompt(phase,view,correction=None):
-    system=COMMON+'\n'+RULES[phase]
+    system=COMMON+'\n'+(RULES['page-write'] if phase=='page-pair' else RULES[phase])
+    if phase=='page-pair':
+        system+=' Return exactly the fixed page result slots independently. original_evidence is shared by these pages; all conditions, exceptions, contrary evidence, QA and limits remain required for each assigned claim. Keep distinct identities and scope; one blocked page must not suppress another valid page. Return content or blocked_reason in each slot; never merge pages or reassign candidates.'
     if view.get('efficiency_contract')=='efficiency-presentation/v1':
         if phase=='resource-reduce':
             system+=' candidate_qa_pool stores exact shared QA lists; expand each candidate evidence_qa reference without losing any qualification. Preserve valid supported proposals; explicitly omit unsupported candidates in omitted_candidate_refs with reasons. An unsupported example does not invalidate other proposals. Never complete missing examples from imagination.'
@@ -499,7 +501,7 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
                 prepared['closed']=True
                 return model_call(adapter,binding,phase,clarified,caller,limit,policy=policy,attempt_limit=attempt_limit)
         raise ContractError('READING_WINDOW_OVERSIZE','$','fixed task instructions/schema/materials exceed the bound; no truncation or model call')
-    page_entry=phase=='page-write' and binding['node']=='global-reduce'
+    page_entry=phase in ('page-write','page-pair') and binding['node']=='global-reduce'
     build_entry=(phase=='page-review' and binding['node']=='build-finalize'
         and _checked is not None and correction is None and isinstance(caller,HermesCaller))
     with span('semantic_entry_authority',vault=adapter.workflow.vault,binding=binding,phase=phase,
@@ -567,13 +569,15 @@ def _dispatch_model_call(adapter,binding,phase,view,caller,limit,correction=None
     from semantic_output import ACTIVE
     active=ACTIVE.get()
     request_id=uuid.uuid4().hex
-    correlation={'request_id':request_id,'input_sha256':input_sha256,
+    from page_pair_calls import ACTIVE as PAGE_ACTIVE
+    page_request=PAGE_ACTIVE.get()
+    correlation={'page_request_id':page_request[1] if page_request else None,'request_id':request_id,'input_sha256':input_sha256,
         'logical_action_id':active[0].stem if active else None,
         'attempt_ordinal':active[2]+1 if active else None,
         'call_category':'additional' if correction else 'initial_or_resumed',
         'correction_reason':correction.get('code') if isinstance(correction,dict) else None,
         'input_composition':prepared.get('input_composition'),
-        'subject_refs':{k:view[k] for k in ('page_id','page_ref','candidate_refs','proposal_refs','resource_id') if k in view}}
+        'subject_refs':{k:view[k] for k in ('page_id','page_ref','candidate_refs','proposal_refs','resource_id','page_members') if k in view}}
     with span('model_call',phase=phase,**correlation) as model_trace:
         if isinstance(caller,HermesCaller):
             with caller.request_scope(prepared):
@@ -612,6 +616,10 @@ def _dispatch_model_call(adapter,binding,phase,view,caller,limit,correction=None
     if attempt_id():audit['output_attempt_id']=attempt_id()
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(audit))
     note_audit(ref)
+    if phase=='page-pair':
+        from page_pair_calls import capture
+        capture(adapter,binding,raw,ref,metadata)
+        return raw,ref
     try:
         value,normalization=decode_semantic_response(raw)
         if normalization:

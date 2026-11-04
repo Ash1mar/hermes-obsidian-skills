@@ -97,6 +97,14 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     if scope:
         if planning_failure:raise ContractError('COVERAGE_SCOPE_INVALID','$','approved scope requires full native planning')
         return scoped_execute(adapter,binding,value,state,scope)
+    from fixed_semantic import HermesCaller
+    durable_ledger=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/page-call-budget.json"
+    if durable_ledger.exists() and (planning_failure or value['view'].get('page_call_contract')!='durable-page-calls/v1'):
+        raise ContractError('SEMANTIC_OUTPUT_HELD','$','existing page budget cannot fall back to new legacy allowances')
+    if not planning_failure and isinstance(caller,HermesCaller):
+        from native_page_pairs import execute as durable_pages
+        durable=durable_pages(adapter,binding,value,state,caller,model_call,attach_receipt,project,measure)
+        if durable is not None:return durable
     from semantic_output import execute as checked_output,check,stop_at_output_boundary
     from fixed_global_targets import select
     original_plan_sha=fingerprint(state);working=copy.deepcopy(state);written=[];calls=[];held=[]
