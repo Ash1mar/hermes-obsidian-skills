@@ -42,7 +42,8 @@ def handoff(monkeypatch, tmp_path):
         def __init__(self, vault, *, enable_workers):
             assert Path(vault) == state.vault
             assert enable_workers is True
-            self.workflow = SimpleNamespace(vault=state.vault)
+            self.workflow = SimpleNamespace(vault=state.vault,
+                status=lambda _: {'current_stage':'analyzing'})
 
         def resume(self, request):
             events.append("resume-sync")

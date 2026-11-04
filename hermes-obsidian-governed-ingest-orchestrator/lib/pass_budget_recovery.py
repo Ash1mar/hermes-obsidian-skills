@@ -68,9 +68,17 @@ def verify(adapter, value, binding, failure, snapshot):
             authenticated.append({'ref': ref, 'sha256': hashlib.sha256(path.read_bytes()).hexdigest()})
             for task in view['tasks']:
                 tid = audit['task_identities'][task['task']]
-                key = fingerprint({'node': binding['node'], 'task': tid, 'phase': phase, 'input': task_content(view, task)})
-                row = ledger['tasks'].get(key)
-                if not row: fail('native call has no durable reservation')
+                # Budget keys include internal sequence/continuation fields which
+                # are deliberately absent from the model wire. Never reconstruct
+                # or replace that key from the presentation. Match the exact
+                # consumed owner/task/phase, rejecting ambiguous material epochs.
+                matching = [(k,r) for k,r in ledger['tasks'].items()
+                            if r['task_id'] == tid and r['phase'] == phase
+                            and any(a.get('native_task_id') == binding['task_id'] for a in r['attempts'])]
+                if len(matching) != 1: fail('native call has no unique durable reservation')
+                key, row = matching[0]
+                if any(a.get('audit_ref') == ref and a['state'] == 'returned' for a in row['attempts']):
+                    continue
                 reserved = [a for a in row['attempts'] if a.get('native_task_id') == binding['task_id'] and a['state'] == 'reserved']
                 if reserved:
                     if len(reserved) != 1 or key in proofs: fail('ambiguous budget completion')
