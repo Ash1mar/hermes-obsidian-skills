@@ -114,6 +114,8 @@ def test_explicit_refusal_held_without_correction_preserves_valid_slots(stopped,
                 refused.append(alias);results[alias]={'blocked_reason':'Unreadable converted text; required table is missing.'}
             elif phase=='candidate':
                 item=semantic_draft({**task,'input_id':'fixture-only','next_sequence':0},alias)
+                if task.get('inspection_slots'):
+                    item['inspections']={i['source_ref']:{k:v for k,v in i.items() if k!='source_ref'} for i in item['inspections']}
                 results[alias]={k:v for k,v in item.items() if k not in ('task','input_id','sequence')}
             else:
                 results[alias]={'decision':'confirmed_unchanged','review_note':'Isolated source fidelity checked.'}
@@ -271,7 +273,10 @@ def test_fixed_pass_preserves_partial_and_controls_phases(stopped,vault,monkeypa
                 assert not {'next_sequence','continuation'} & set(task)
                 assert 'limits' in task
                 draft=semantic_draft({**task,'input_id':'fixture-only','next_sequence':0},task['task'])
-                draft.pop('input_id'); draft.pop('sequence'); drafts.append(draft)
+                draft.pop('input_id'); draft.pop('sequence')
+                if task.get('inspection_slots'):
+                    draft['inspections']={i['source_ref']:{k:v for k,v in i.items() if k!='source_ref'} for i in draft['inspections']}
+                drafts.append(draft)
             return fixture_response({'drafts':drafts})
         assert phase=='citation'
         if citation_changes:

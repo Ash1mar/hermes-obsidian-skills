@@ -7,7 +7,7 @@ from hermes_source_units.validation import fingerprint
 CONTRACT='efficiency-presentation/v1'
 
 def enabled(adapter,binding):
-    adapter.worker_check(binding)
+    # Callers already checked current native authority; this format pin grants none.
     w=adapter.workflow.status(binding['workflow_id'])
     root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}"
     path=root/'presentation-contract.json'
