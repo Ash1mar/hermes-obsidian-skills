@@ -28,8 +28,10 @@ def admission_check(adapter, request):
     from hermes_source_units.pass_capacity import effective
     capacity=effective(adapter.workflow.vault,adapter.workflow.knowledge._batch(workflow['batch_id']))
     occupied=sum(bool(s['lease']['worker_id']) for s in slices)
+    unknown_states=sum('state' not in s for s in slices)
     event('pass_capacity_observed',vault=adapter.workflow.vault,binding=request,
-          capacity=capacity,occupied=occupied,ready_unleased=sum(s['state']=='ready' and not s['lease']['worker_id'] for s in slices),
+          capacity=capacity,occupied=occupied,unknown_slice_states=unknown_states,
+          ready_unleased=None if unknown_states else sum(s['state']=='ready' and not s['lease']['worker_id'] for s in slices),
           scope='admission instant; readiness does not certify every other task eligible')
     if occupied>=capacity:
         raise ContractError('PASS_ADMISSION_WAIT','$','Pass waits for domain capacity before native claim')
