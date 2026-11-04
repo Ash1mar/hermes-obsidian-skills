@@ -86,6 +86,9 @@ def recover(adapter,wid,*,resume=True):
     """
     from native_ingest import control_workflow
     from native_stop_inventory import verify_cancel_drain
+    if adapter.workflow.status(wid)['current_stage']=='release_planning':
+        from automatic_release_recovery import recover as recover_release
+        return recover_release(adapter,wid,resume=resume)
     if adapter.workflow.status(wid)['current_stage']=='build_finalizing':
         from qa_build_recovery import recover as recover_build
         return recover_build(adapter,wid,resume=resume)

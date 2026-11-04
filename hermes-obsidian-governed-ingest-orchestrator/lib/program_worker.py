@@ -133,11 +133,19 @@ def execute(adapter, binding):
             from hermes_source_units.delivery_scope import closure_refs
             delivery=closure_refs(adapter.workflow.knowledge,batch['run_ids'])
             governance = None
+            from hermes_source_units.initial_release import admitted_pointer
+            initial_governance = admitted_pointer(service.vault,value)
             if value.get('release_refresh_history'):
                 from hermes_source_units.page_governance import create
                 from hermes_source_units.release_reads import operation
                 with operation(service.vault,'page_governance_reads') as reads:
                     governance = create(service,value['release_refresh_history'][-1]['authorization'])
+                    reads.confirm()
+            elif initial_governance:
+                from hermes_source_units.page_governance import create
+                from hermes_source_units.release_reads import operation
+                with operation(service.vault,'initial_page_governance_reads') as reads:
+                    governance = create(service,initial_governance)
                     reads.confirm()
             plan = _load_json(path) if path.is_file() else service.plan({
                 'actor':value['actor'], 'release_id':release_id,

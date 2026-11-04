@@ -20,6 +20,24 @@ links when excluding dependents. Build uses existing native partial-commit and
 delivery-closure controls: accepted pages survive, deferred pages are excluded,
 and every original review remains. These transitions are program controlled.
 
+First-Vault release planning also runs under program control. For a short-request
+Bootstrap workflow whose first draft has no deliverable pages, the drained
+controller previews and applies the existing source-governance transaction.
+Only hash-valid registered sources and closed organization declarations can
+establish identity. Unresolved sources are logged and their dependent pages stay
+excluded; independently resolved sources can proceed. Zero resolved sources
+remain held, without guessing an organization or asking for per-item human QA.
+
+The supported release recovery seals the exact Bootstrap, rejected draft plan,
+source transaction and receipt. The native planning worker then qualifies only
+current pages in the exact accepted Build delivery closure for internal retrieval.
+Usable pages still require valid acceptance, current evidence and eligible source
+governance. QA pages and actual dependents remain excluded. This initial path
+does not fabricate a previous applied release, clear QA, change Provider scope,
+or add a pause. It grants zero additional model calls; the existing maximum of
+one extra Hermes check is unchanged. Recovery cannot grant another initial
+qualification after a newly failed plan, and interruption reuses the same intent.
+
 New short requests pin source-Reduce worker concurrency 10 independently from
 other program workers 2 and page-call concurrency 10. Pass remains 10 and source
 preparation 2. Host capacity/memory guards continue to limit actual dispatch.
