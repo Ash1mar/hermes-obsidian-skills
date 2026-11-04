@@ -48,7 +48,7 @@ def test_workflow_status_sees_cancel_without_revision_bump_and_scope_expires(tmp
     monkeypatch.setattr(workflow,'validate_record',validate)
     service=object.__new__(FileIngestWorkflowService);service.vault=tmp_path
     path=service._path(wid);path.parent.mkdir(parents=True)
-    state={'workflow_id':wid,'revision':1,'cancel_requested':False};path.write_text(json.dumps(state))
+    state={'workflow_id':wid,'revision':1,'cancel_requested':False,'scope':{}};path.write_text(json.dumps(state))
     with service.read_projection():
         a=service.status(wid);a['cancel_requested']=True
         assert service.status(wid)['cancel_requested'] is False and len(checks)==1
@@ -154,3 +154,4 @@ def test_compact_native_owners_do_not_copy_review_payload(tmp_path):
     assert owners['old']=={'previous_task_id':'old','ended_run_ids':['1']}
     owners['old']['ended_run_ids'].append('pollution')
     assert recovery.permitted_tasks(adapter,binding,compact=True)['old']['ended_run_ids']==['1']
+

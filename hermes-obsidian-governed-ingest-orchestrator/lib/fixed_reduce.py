@@ -29,10 +29,10 @@ def preview_snapshot(adapter,binding):
     if not any(c['task_id']==binding['task_id'] and c['node']==binding['node']
                for c in workflow['kanban']['task_map']):
         fail('STALE_INPUT','preview must name the current native binding')
-    return _snapshot(adapter,binding,{'batch_id':workflow['batch_id']})
+    return _snapshot(adapter,binding,{'batch_id':workflow['batch_id']},presentation=False)
 
 
-def _snapshot(adapter,binding,checked):
+def _snapshot(adapter,binding,checked,*,presentation=True):
     workflow = adapter.workflow.status(binding['workflow_id'])
     service = adapter.workflow.knowledge
     batch = service._batch(checked['batch_id'])
@@ -52,6 +52,8 @@ def _snapshot(adapter,binding,checked):
     eligible = {key:pair for key,pair in candidates.items()
         if pair[0]['pass_kind']=='citation' and (kind=='resource-reduce' or key in proposed)}
     view = {'phase':kind,'candidates':[]}
+    from efficiency_presentation import enabled
+    if presentation and enabled(adapter,binding):view['efficiency_contract']='efficiency-presentation/v1'
     if workflow.get('pass_skip_history'):
         view['coverage_limitations']={'excluded_task_count':len(adapter.workflow.skipped_pass_tasks(workflow)),
             'note':'Some planned source ranges were explicitly skipped. They provide no evidence and must not be inferred or described as fully covered.'}
@@ -204,6 +206,10 @@ def page_view(adapter, value, page):
     if 'original_evidence' in value['view']:
         readings={r['reading'] for c in candidates for r in c['source_evidence']}
         view['original_evidence']=fixed_evidence.selected(value['view']['original_evidence'],readings)
+        if value['view'].get('efficiency_contract'):
+            from efficiency_presentation import page_evidence_view
+            view['original_evidence'],view['evidence_selection']=page_evidence_view(view['original_evidence'],candidates)
+            view['efficiency_contract']=value['view']['efficiency_contract']
     return view
 
 

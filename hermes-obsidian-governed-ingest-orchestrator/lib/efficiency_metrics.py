@@ -80,7 +80,26 @@ def calls_report(calls, events, attempts):
     sdk=[e for e in events if e['name']=='sdk_model_request'];starts=[e for e in events if e['name']=='sdk_request_start']
     sessions={r.get('session_id') for r in rows if r.get('session_id')}
     request_ids={r.get('request_id') for r in rows if r.get('request_id')}
-    return {'rows':rows,'by_phase':dict(Counter(c.get('phase','unknown') for c in calls)),
+    actual={}
+    for e in sdk:
+        identity=e.get('request_id')
+        if identity:actual.setdefault(identity,[]).append(e)
+    for e in starts:
+        if e.get('request_id'):actual.setdefault(e['request_id'],[])
+    requests=[{'request_id':key,'phase':(v[0].get('phase') if v else next((e.get('phase') for e in starts if e.get('request_id')==key),None)),
+        'outcome':('unknown' if len(v)!=1 or any(e.get('error') for e in v) else 'returned'),
+        'finish_span_ids':[e['span_id'] for e in v]} for key,v in actual.items()]
+    audit_sessions=Counter(r.get('session_id') for r in rows if r.get('session_id'))
+    for row in rows:
+        row['request_accounting']='audit_not_new_request'
+        row['shared_session_audits']=audit_sessions.get(row.get('session_id'),0)
+    return {'actual_sdk_requests':len(requests),'requests':requests,
+        'actual_by_phase':dict(Counter(r.get('phase','unknown') for r in requests)),
+        'unknown_requests':sum(r['outcome']=='unknown' for r in requests),
+        'unidentified_sdk_finish_span_ids':[e['span_id'] for e in sdk if not e.get('request_id')],
+        'audit_rows':len(calls),'transport_accounting':'nested entry events are not physical HTTP requests',
+        'rows':rows,'by_phase':dict(Counter(r.get('phase','unknown') for r in requests)),
+        'audit_by_phase':dict(Counter(c.get('phase','unknown') for c in calls)),
         'by_category':dict(Counter(c.get('call_category') or 'unknown' for c in calls)),
         'sdk_starts':len(starts),'sdk_finishes':len(sdk),
         'sdk_unlinked_span_ids':[e['span_id'] for e in sdk if e.get('request_id') not in request_ids and e.get('session_id') not in sessions],

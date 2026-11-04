@@ -19,6 +19,7 @@ class VerifiedJsonReads:
     def __init__(self, limit=128):
         self.limit=limit;self.entries=OrderedDict();self.lock=threading.RLock()
         self.schema_sha=None
+        self.schema_observation=None
         self.stats={name:0 for name in ('reads','bytes','parses','validations','hits','projections',
             'read_hash_ns','parse_ns','validation_ns','projection_ns','copy_ns','index_ns',
             'index_builds','full_copies','projected_copies','copied_value_nodes','full_copy_ns','projected_copy_ns',
@@ -58,8 +59,21 @@ class VerifiedJsonReads:
         schema=None
         if kind is not None:
             from . import validation
-            _,schema=read_hashed(Path(validation.__file__).with_name('schemas').joinpath('contracts.json'),
-                'verified_json.schema')
+            schema_path=Path(validation.__file__).with_name('schemas').joinpath('contracts.json')
+            from .read_reuse_policy import schema_reuse
+            stat=schema_path.stat()
+            observed=(stat.st_dev,stat.st_ino,stat.st_size,stat.st_mtime_ns,stat.st_ctime_ns)
+            with self.lock:
+                if self.schema_observation is not None and observed!=self.schema_observation:
+                    raise ContractError('SOURCE_CHANGED','$','schema changed during verified JSON scope')
+                if (self.schema_sha is None or not schema_reuse() or
+                        not schema_path.is_relative_to(Path.home()/'.hermes/skills/domain')):
+                    _,schema=read_hashed(schema_path,'verified_json.schema')
+                    after=schema_path.stat()
+                    if observed!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
+                        raise ContractError('SOURCE_CHANGED','$','schema changed while reading')
+                    self.schema_observation=observed
+                else:schema=self.schema_sha
         key=(str(path.resolve()),kind,id(validator),schema)
         with self.lock:
             if schema is not None:

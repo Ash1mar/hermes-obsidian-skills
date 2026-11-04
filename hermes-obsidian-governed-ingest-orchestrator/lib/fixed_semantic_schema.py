@@ -100,6 +100,14 @@ def slot_schema(phase, tasks):
     authored=[b for b in branches if b.get('properties',{}).get('decision',{}).get('const')!='confirmed_unchanged']
     definitions={'result':{'anyOf':[*(authored if len(revisions)==len(tasks) else branches),blocked]}}
     if revisions and len(revisions)!=len(tasks):definitions['revision']={'anyOf':[*authored,blocked]}
+    if phase=='candidate' and tasks and all(t.get('inspection_slots')=='unique-material/v1' for t in tasks):
+        slots={}
+        for task in tasks:
+            branch=copy.deepcopy(branches[0]);inspection=branch['properties']['inspections']['items']
+            inspection['properties'].pop('source_ref');inspection['required'].remove('source_ref')
+            branch['properties']['inspections']=closed({m['ref']:copy.deepcopy(inspection) for m in task['materials']})
+            slots[task['task']]={'anyOf':[branch,blocked]}
+        return closed({'results':closed(slots)})
     return {**closed({'results':closed({t['task']:{'$ref':'#/$defs/'+
         ('revision' if t['task'] in revisions and len(revisions)!=len(tasks) else 'result')} for t in tasks})}),
             '$defs':definitions}
@@ -140,6 +148,14 @@ def slot_results(phase, value, tasks):
         if isinstance(slot,dict) and set(slot)=={'blocked_reason'}:
             failures.append({'task':alias,'code':'SEMANTIC_REVIEW_REQUIRED','message':slot['blocked_reason']})
             continue
+        if phase=='candidate' and next(t for t in tasks if t['task']==alias).get('inspection_slots')=='unique-material/v1' and isinstance(slot,dict):
+            slot=copy.deepcopy(slot);inspections=slot.get('inspections')
+            expected_refs={m['ref'] for t in tasks if t['task']==alias for m in t['materials']}
+            if (not isinstance(inspections,dict) or set(inspections)!=expected_refs or
+                    any(not isinstance(v,dict) or 'source_ref' in v for v in inspections.values())):
+                failures.append({'task':alias,'code':'INCOMPLETE_COVERAGE','message':'inspection slots must equal exact task materials'})
+                continue
+            slot['inspections']=[{'source_ref':ref,**body} for ref,body in inspections.items()]
         item={'task':alias,**slot} if isinstance(slot,dict) else slot
         try:
             validate(phase,{'drafts' if phase=='candidate' else 'reviews':[item]})

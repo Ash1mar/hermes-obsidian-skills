@@ -102,6 +102,13 @@ def select(adapter,binding,phase,view,project):
     from semantic_output import path_for
     from fixed_semantic_schema import schema_for
     if view.get(MARKER) in (CONTRACT,COMPACT_CONTRACT):return view
+    from efficiency_presentation import enabled,page_evidence_view
+    if 'evidence_selection' not in view and enabled(adapter,binding):
+        view=copy.deepcopy(view)
+        view['efficiency_contract']='efficiency-presentation/v1'
+        evidence=view.get('candidates',view.get('citation_evidence',[]))
+        if 'original_evidence' in view:
+            view['original_evidence'],view['evidence_selection']=page_evidence_view(view['original_evidence'],evidence)
     encoded={**view,MARKER:CONTRACT}
     compact={**view,MARKER:COMPACT_CONTRACT}
     if has_legacy_history(adapter,binding,phase,view):

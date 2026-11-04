@@ -310,6 +310,7 @@ def board_slug(workflow_id: str) -> str:
 class KanbanCLI:
     def __init__(self, invoke: Callable[[list[str]], subprocess.CompletedProcess[str]] | None = None):
         self.invoke = invoke or self._invoke
+        self._native_reads = invoke is None
         self._projection_board = None
         self._projection_rows = {}
         self._projection_snapshots = {}
@@ -346,6 +347,9 @@ class KanbanCLI:
     @contextmanager
     def projection(self, slug):
         """One read projection only; native mutations and claims remain live."""
+        if self._projection_board == slug:
+            yield
+            return
         previous = (self._projection_board,self._projection_rows,self._projection_snapshots)
         self._projection_board,self._projection_rows,self._projection_snapshots = slug,{},{}
         try:
@@ -488,8 +492,17 @@ class KanbanCLI:
     def task_states(self, slug: str) -> dict[str, str]:
         # Native default lists omit archived cards; status projection needs them
         # too, otherwise every old held binding falls back to its own show call.
-        result = json.loads(self.command('kanban', '--board', slug, 'list', '--archived', '--json'))
-        rows = result.get('tasks', []) if isinstance(result, dict) else result
+        if self._native_reads:
+            if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
+                _fail('ACCESS_DENIED','native projection requires a trusted reconciler')
+            from hermes_cli import kanban_db as kb, kanban_db_connect as kc
+            from dataclasses import asdict
+            with span('native_state_read',operation='list',board_id=slug):
+                with closing(kc.connect(board=slug)) as conn:
+                    rows=[asdict(t) for t in kb.list_tasks(conn,include_archived=True)]
+        else:
+            result = json.loads(self.command('kanban', '--board', slug, 'list', '--archived', '--json'))
+            rows = result.get('tasks', []) if isinstance(result, dict) else result
         if self._projection_board == slug:
             self._projection_rows = {row['id']:row for row in rows}
         return {row['id']: row['status'] for row in rows}
