@@ -63,6 +63,12 @@ def recover(adapter,request,*,dry_run=False):
         resources={r['resource_id'] for r in receipt['rows'] if r['resolved']}
         p4=FileVaultFinalizeService(service.vault);eligibility=p4._source_eligibility(p4._current_sets(),{})
         if not resources or not resources<={e['resource_id'] for e in eligibility} or any(not e['eligible'] for e in eligibility if e['resource_id'] in resources):fail('resolved sources still ineligible')
+        if request.get('initial_page_governance'):
+            if scope!='governance-resolved/v1':fail('initial page scope requires source-governance recovery')
+            from hermes_source_units.initial_release import validate as validate_initial,admitted_pointer
+            if admitted_pointer(service.vault,w):fail('initial page authority was already admitted')
+            validate_initial(p4,w,request['initial_page_governance'],blocked_plan=request['blocked_plan'],
+                governance_receipt=request['governance_receipt'])
         if any(r.get('previous_task_id')==card['task_id'] for r in [_load_json(_vault_path(service.vault,h['report_ref'])) for h in history]):fail('same failed work already recovered')
         ref=f'_system/ledgers/ingest-workflows/{wid}/release-recoveries/{rid}.json'
         report={'request':dict(request),'previous_task_id':card['task_id'],'failure':failure,'native_runs':native['runs'],

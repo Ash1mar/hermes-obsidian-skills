@@ -219,6 +219,8 @@ class ExecutionPlanMixin:
                 if hashlib.sha256(_vault_path(self.vault,pointer['ref']).read_bytes()).hexdigest()!=pointer['sha256']:
                     fail('STALE_INPUT','release recovery evidence changed')
         from .page_governance import historical_plan_ids
+        from .initial_release import admitted_pointer
+        admitted_pointer(self.vault,workflow)
         validated_plan_ids = historical_plan_ids(self,workflow)
         for recovery in workflow.get('release_validation_history',[]):
             data=_vault_path(self.vault,recovery['report_ref']).read_bytes()

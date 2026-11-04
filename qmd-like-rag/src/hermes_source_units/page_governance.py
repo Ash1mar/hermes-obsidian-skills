@@ -79,8 +79,17 @@ def create(service, authorization_pointer):
             or binding['node']!='vault-finalize-plan' or active['workflow_id']!=q['workflow_id']
             or active['actor']!=q['actor'] or active['vault']!=str(service.vault)):
         fail('governance writes require the bound native planning worker')
-    base = pinned(service.vault, q['base_release'])
-    service.validate(base['release_id'])
+    from .initial_release import CONTRACT, admitted_pointer, validate as validate_initial
+    initial = grant.get('contract') == CONTRACT
+    if initial:
+        from .ingest_workflow import FileIngestWorkflowService
+        workflow = FileIngestWorkflowService(service.vault).status(q['workflow_id'])
+        if admitted_pointer(service.vault, workflow) != authorization_pointer:
+            fail('initial page qualification requires admitted recovery authority')
+        base = validate_initial(service, workflow, authorization_pointer)
+    else:
+        base = pinned(service.vault, q['base_release'])
+        service.validate(base['release_id'])
     if q['retrieval_scope'] != service.source.vault_manifest['vault']['id']:
         fail('retrieval authorization belongs to another Vault')
     from .delivery_scope import release_closures
@@ -93,6 +102,10 @@ def create(service, authorization_pointer):
     for row in scopes.values():
         for item in row['closure']['pages']:
             accepted[item['page']['page_id']] = row, item['page']
+    # A blocked first plan has no publishable subjects yet. Its exact native
+    # Build closure, rather than that empty list, defines qualification scope.
+    subjects = ([identities[pid] for pid in sorted(accepted) if pid in identities]
+                if initial else base['subjects'])
     runs = {}
     for rid in {r['run_id'] for r in base['build_runs']}:
         run = _load_json(service.build._run_path(rid))
@@ -100,7 +113,7 @@ def create(service, authorization_pointer):
         runs[rid] = run, candidates, {d['page_id']:d for d in run['decisions']}
     rows = []
     with span('page_governance_preflight', vault=service.vault):
-        for subject in base['subjects']:
+        for subject in subjects:
             pid = subject['page_id']
             page = service._page_revision(pid, subject['current_revision_id'])
             reasons = []
