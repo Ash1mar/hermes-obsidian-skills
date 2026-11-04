@@ -224,3 +224,13 @@ def test_cancel_before_atomic_publication_reserves_nothing(tmp_path):
     b=PageCalls(tmp_path,guard)
     with pytest.raises(ContractError,match='WORKFLOW_STOPPED'):reserve(b,item('a'),item('b'))
     assert not b.path.exists()
+
+def test_recovery_fingerprint_includes_page_contract_modules(tmp_path,monkeypatch):
+    import qa_program
+    names=('qa_program.py','fixed_page_work.py','fixed_semantic.py','native_page_pairs.py','page_pair_calls.py','page_dependencies.py')
+    for name in names:(tmp_path/name).write_text('isolated code '+name)
+    monkeypatch.setattr(qa_program,'__file__',str(tmp_path/'qa_program.py'))
+    before=qa_program.execution_code_fingerprint()
+    for name in names[3:]:
+        p=tmp_path/name;old=p.read_text();p.write_text('changed isolated code')
+        assert qa_program.execution_code_fingerprint()!=before;p.write_text(old)
