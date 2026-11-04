@@ -60,6 +60,8 @@ RULES['global-detail']+=' This phase explicitly authorizes proposing a NEW knowl
 class HermesCaller:
     """One-turn native sessions, fixed configured runtime, no tools/context files."""
     def __init__(self):
+        from native_stream_policy import configure
+        self.stream_policy=configure()
         from hermes_cli.config import load_config_readonly
         from hermes_cli.runtime_provider import resolve_runtime_provider
         cfg = load_config_readonly().get('model', {})
@@ -302,6 +304,7 @@ class HermesCaller:
                 raise RuntimeError('native SDK bypassed the fixed request boundary')
             completed=clock_sample()
             return raw,{'origin':'hermes_native_model','session_id':agent.session_id,
+                'stream_watchdog_policy':self.stream_policy,
                 'model':agent.model,'provider':agent.provider,
                 'api_calls':result.get('api_calls'),'response_sha256':fingerprint(raw),
                 'fixed_request_checks':agent.fixed_request_checks,'tools':0,
@@ -1151,6 +1154,14 @@ def run_reduce(adapter,binding,caller):
         drafts=[];calls=[];deferred=[]
         for packet in packets:
             adapter.worker_check(binding)
+            from source_unknown_recovery import packet_disposition
+            isolation=packet_disposition(adapter,binding,input_value,packet)
+            if isolation:
+                reason='Stopped native completion remains unknown; program quarantined this exact packet without another request; evidence: '+isolation['call_failure_ref']
+                drafts.append({'proposals':[],'omitted_candidate_refs':packet['candidate_refs'],'reason':reason})
+                deferred.append({'candidate_refs':packet['candidate_refs'],'audit_ref':None,
+                    'code':'NATIVE_COMPLETION_UNKNOWN','reason':reason,'isolation':isolation})
+                continue
             call_ref=None
             try:
                 from source_result_review import review_view

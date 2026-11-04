@@ -93,6 +93,32 @@ later eligible Pass incidents; no per-incident approval is required. The explici
 This contract is for Pass candidate/citation requests; unknown release/Provider
 side effects still require their own authenticated recovery, never blind replay.
 
+Stopped Resource Reduce unknowns use the same pinned `isolate_after_drain` policy
+through ordinary `reduce-cancel/v1` admission with `source_unknown_isolation=true`
+and the exact `source_unknown_recovery.contract_hash()` target. The program seals
+the original complete source snapshot, current packet membership, native request,
+ended run, unknown report and unchanged finite journal. A possible returned answer,
+changed input, live owner, foreign scope or missing proof remains held. No unknown
+request is resent and no attempt is released. Only a subsequent native worker can
+record exact packet coverage omissions, reuse valid packets and process untouched
+packets with their original allowance. Global Reduce receives those explicit gaps;
+this grants neither verified coverage nor approval of excluded evidence. Unknown
+global planning, page calls and publication/Provider effects retain their own holds.
+
+An old `no_action` controller episode may be reconsidered when this corrected
+source-unknown contract makes an exact source failure newly eligible. The episode,
+cancel epoch, stable operation identities and consumed mechanical attempts remain;
+the three-attempt ceiling and semantic budgets are not reset. User cancellation
+and latched pauses still prohibit automatic continuation. Installing this code
+does not invoke the controller or resume an existing workflow.
+
+Fixed semantic workers default to a 120-second SSE event-idle window through the
+native `HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS` interface. Explicit process/host
+settings are preserved and effective values are retained in native call metadata.
+The native first-event policy and 600-second fixed-call run budget remain. This
+mitigates the small-request 12-second default; it does not prove an upstream stall
+or resolve unknown completion. A watchdog timeout still grants no duplicate call.
+
 Budget-lock contention waits up to five seconds for the atomic ledger operation.
 An ended worker blocked on this exact lock can receive one mechanical recovery,
 including within the selected Canary. Admission pairs every observed request with

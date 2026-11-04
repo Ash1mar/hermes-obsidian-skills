@@ -109,6 +109,7 @@ def start(request, record, bootstrap_skill):
         service=FileIngestWorkflowService(vault)
         # Once a workflow exists, retries observe it; resume is a distinct operation.
         existing=service._path(workflow['workflow_id'])
+        handoff=False
         if existing.exists():
             value=service.status(workflow['workflow_id'])
             if value['start_digest']!=workflow['input_digest']: raise ValueError('workflow request conflict')
@@ -118,9 +119,17 @@ def start(request, record, bootstrap_skill):
             result=service.status(workflow['workflow_id'],compact=True)
             if state['phase']!='workflow_created' and value['state'] not in ('cancelled','completed','partial','failed') and not service.pending_pause(value):
                 from orchestration import _mutation
-                result=dispatch(vault,'sync',_mutation(service.status(workflow['workflow_id'])))
+                from watcher_runtime import coordinator_pid
+                pid=coordinator_pid(vault,workflow['workflow_id'])
+                result=({**result,'reconciler_pid':pid} if pid else
+                    dispatch(vault,'resume',_mutation(service.status(workflow['workflow_id']))))
+                handoff=True
         else:
             result=dispatch(vault,'start',workflow)
+            handoff=True
+        if handoff and (result.get('background_dispatch') or result.get('initial_release_pending')):
+            from watcher_runtime import confirm_handoff
+            state['handoff']=confirm_handoff(vault,workflow['workflow_id'],result.get('reconciler_pid'))
         state.update(phase='workflow_created',workflow_id=workflow['workflow_id'],bootstrap_ref=ref); save()
         event('startup_workflow_link',vault_id=request['vault_id'],bootstrap_ref=ref,
               execution_policy=state['execution_policy'])
@@ -128,6 +137,8 @@ def start(request, record, bootstrap_skill):
 
 
 def main():
+    from watcher_runtime import ensure_native_runtime
+    ensure_native_runtime()
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--request',required=True,type=Path)
     parser.add_argument('--record',required=True,type=Path)
