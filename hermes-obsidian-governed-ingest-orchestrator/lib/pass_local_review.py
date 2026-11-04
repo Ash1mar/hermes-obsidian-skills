@@ -122,7 +122,7 @@ def reserve(adapter,binding,grant,phase,view,tasks,ids):
         if task_content(view,exposed)!=grant['task_input_fingerprints'][tid]:fail('review material changed')
     ref=f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}/local-review-calls/{grant["recovery_id"]}-{fingerprint(binding["node"])[:16]}.json'
     path=_vault_path(adapter.workflow.vault,ref)
-    with _exclusive_lock(path.with_suffix('.lock')):
+    with _exclusive_lock(path.with_suffix('.lock'), timeout=5):
         if path.exists():fail('the one additional request is already reserved; authenticate completion or isolate, never resend')
         record={'contract':SCOPE,'state':'reserved','phase':phase,'task_ids':real,'native_task_id':binding['task_id'],
             'recovery_ref':grant['recovery_ref'],'original_call_ref':grant['original_call_ref'],
@@ -142,7 +142,7 @@ def reserve_budget(adapter,binding,phase,view,tasks,ids,grant=None,limit=2):
     from fixed_semantic_recovery import task_content
     if not enabled(adapter.workflow.status(binding['workflow_id'])):return None
     path=adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}/pass-call-budget.json'
-    with _exclusive_lock(path.with_suffix('.lock')):
+    with _exclusive_lock(path.with_suffix('.lock'), timeout=5):
         ledger=_load_json(path) if path.exists() else {'contract':'durable-pass-call-budget/v1','tasks':{}}
         keys=[]
         for t in tasks:
@@ -163,7 +163,7 @@ def reserve_budget(adapter,binding,phase,view,tasks,ids,grant=None,limit=2):
 def finish_budget(reservation,audit_ref):
     if not reservation:return
     path,keys=reservation
-    with _exclusive_lock(path.with_suffix('.lock')):
+    with _exclusive_lock(path.with_suffix('.lock'), timeout=5):
         ledger=_load_json(path)
         for key in keys:ledger['tasks'][key]['attempts'][-1].update(state='returned',audit_ref=audit_ref)
         _write_atomic(path,_json_bytes(ledger))

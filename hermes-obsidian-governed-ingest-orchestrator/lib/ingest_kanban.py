@@ -1354,7 +1354,7 @@ class IngestKanbanAdapter:
             _fail('INVALID_SCHEMA', 'describe the corrected mechanical cause')
         entries = request.get('entries')
         scope=request.get('recovery_scope','mechanical/v1')
-        if scope not in ('mechanical/v1','phase-packet-grouping/v1','correction-reserve-admission/v1','legacy-slice-config/v1','revision-citation-packet/v1','amendment-native-result/v1','pass-local-review/v1'):
+        if scope not in ('mechanical/v1','phase-packet-grouping/v1','correction-reserve-admission/v1','legacy-slice-config/v1','revision-citation-packet/v1','amendment-native-result/v1','pass-local-review/v1','pass-budget-lock/v1'):
             _fail('INVALID_SCHEMA','unknown recovery scope')
         if (not isinstance(entries, list) or not entries or any(not isinstance(e, dict) for e in entries)
                 or len({e.get('node') for e in entries}) != len(entries)):
@@ -1382,7 +1382,7 @@ class IngestKanbanAdapter:
                 and request.get('revision_id')==value['pass_revision']['revision_id'])
             if (value['state'] != 'cancelled' or not value['cancel_requested'] or not value['batch_id']
                     or (value['current_stage'] != 'analyzing' and not legacy_revision) or self.workflow.pending_pause(value)
-                    or (value['dispatch_policy']['mode'] != 'full' and not (scope=='pass-local-review/v1' and value['dispatch_policy']['mode']=='canary'))):
+                    or (value['dispatch_policy']['mode'] != 'full' and not (scope in ('pass-local-review/v1','pass-budget-lock/v1') and value['dispatch_policy']['mode']=='canary'))):
                 _fail('INVALID_TRANSITION', 'recovery requires a cancelled authorized Pass batch')
             if scope in ('legacy-slice-config/v1','revision-citation-packet/v1') and not legacy_revision:
                 _fail('INVALID_TRANSITION','historical slice recovery requires the current dependency revision')
@@ -1461,6 +1461,8 @@ class IngestKanbanAdapter:
                         codes=['AUTHENTICATED_NATIVE_RESULT_REPLAY']  # No model request or CLI permission.
                     elif scope=='pass-local-review/v1':
                         codes=['BOUNDED_LOCAL_REVIEW']
+                    elif scope=='pass-budget-lock/v1':
+                        codes=['LOCK_BUSY']
                     else:
                         codes = mechanical_failure_codes(report,scope,input_limit=batch['slice_config']['slice_max_input_codepoints'])
                     if scope in ('phase-packet-grouping/v1','correction-reserve-admission/v1'):
@@ -1496,6 +1498,12 @@ class IngestKanbanAdapter:
                     packet_identity=None
                     native_replay=None
                     local_review=None
+                    budget_proof=None
+                    if scope=='pass-budget-lock/v1':
+                        if value['dispatch_policy']['mode']=='canary' and item['slice_id'] not in value['dispatch_policy']['slice_ids']:
+                            _fail('ACCESS_DENIED','budget recovery is outside the selected Canary')
+                        from pass_budget_recovery import verify
+                        budget_proof=verify(self,value,binding,report,snapshot)
                     if scope=='pass-local-review/v1':
                         if value['dispatch_policy']['mode']=='canary' and item['slice_id'] not in value['dispatch_policy']['slice_ids']:
                             _fail('ACCESS_DENIED','local review is outside the selected Canary')
@@ -1514,6 +1522,7 @@ class IngestKanbanAdapter:
                     audited.append({'node':name, 'previous_task_id':card['task_id'],
                         'previous_input_fingerprint':node.input_fingerprint, 'failure_ref':ref,
                         'failure_sha256':hashlib.sha256(data).hexdigest(), 'failure':report, 'codes':codes})
+                    if budget_proof:audited[-1]['budget_proof']=budget_proof
                     if local_review:audited[-1]['local_review']=local_review
                     if legacy_identity:audited[-1]['legacy_identity']=legacy_identity
                     if packet_identity:audited[-1]['revision_packet_identity']=packet_identity
@@ -1522,6 +1531,10 @@ class IngestKanbanAdapter:
                           'nodes':[e['node'] for e in audited], 'state':'cancelled', 'resumed':False}
                 if dry_run:
                     return {**result, 'revision':value['revision'], 'entries':audited}
+                for entry in audited:
+                    if entry.get('budget_proof'):
+                        from pass_budget_recovery import settle
+                        settle(self,wid,entry['budget_proof'])
                 ref = f'_system/ledgers/ingest-workflows/{wid}/execution-recoveries/{rid}.json'
                 report = {'request':dict(request), 'entries':audited, 'batch_id':value['batch_id'],
                           'domain_inputs_changed':False, 'semantic_retry_authorized':scope=='pass-local-review/v1'}
