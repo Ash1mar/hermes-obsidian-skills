@@ -519,6 +519,10 @@ class KanbanCLI:
             state = 'scheduled'
         if row['status'] in (state, "done", "archived"):
             return
+        # Cancellation also schedules non-worker gate cards. Scheduled is already
+        # a durable hold; native Kanban does not allow scheduled -> blocked.
+        if state == 'blocked' and row['status'] == 'scheduled':
+            return
         if row['status'] == 'triage':
             _fail('NATIVE_ROUTING_CONFLICT', 'triage card requires trusted isolation recovery')
         operation = "schedule" if state == "scheduled" else "block"

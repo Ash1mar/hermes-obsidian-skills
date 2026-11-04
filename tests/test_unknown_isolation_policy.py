@@ -1,6 +1,9 @@
 """Old immutable startup scope requires one audited, drained policy adoption."""
 from copy import deepcopy
 from types import SimpleNamespace as NS
+import sys
+from pathlib import Path
+sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'hermes-obsidian-governed-ingest-orchestrator/lib'))
 import pytest
 from hermes_source_units import ContractError, mutation_digest
 from hermes_source_units.recovery_policy import DEFAULT, effective

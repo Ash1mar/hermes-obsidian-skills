@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Supervise finite workflow recovery; unknown domain completion remains held."""
+"""Supervise bounded recovery and authenticated stopped-unknown Pass isolation."""
 import argparse,json,sys,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
