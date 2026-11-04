@@ -111,7 +111,7 @@ def invoke(handoff, command="resume"):
 def test_resume_handoff_dispatches_before_watcher_without_authority_snapshot(handoff):
     returned = invoke(handoff)
     assert handoff.events == ["resume-sync", "lock-enter", "native-cli", "lock-exit", "watcher"]
-    assert returned["initial_program_dispatch"]["state"] == "dispatched"
+    assert returned["initial_program_dispatch"]["state"] == "handoff_checked"
     assert returned["reconciler_pid"] == 4242
     assert handoff.calls[0][0] == [
         "hermes", "ingest-program-dispatch", "--vault", str(handoff.vault),
