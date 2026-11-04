@@ -48,12 +48,12 @@ def derive(packet,candidates,proof):
                 'required_dependency':bool(m.get('required_dependency')),'assets':copy.deepcopy(m.get('asset'))})
             if not exclude:retained.append(m);equivalents[signature]=ref
         keep={m['ref'] for m in retained};task['materials']=[m for m in task['materials'] if m['ref'] in keep]
-        rows.append({'reading':reading,'reading_package_id':p.get('reading_package_id'),
+        rows.append({'reading':reading,'reading_package_id':p.get('reading_package_id'),'source_mapping_complete':complete,
                      'exact_support':support.get(reading,[]),'context_closed':False,
                      'fallback':'full_context' if not any(d['decision']=='exclude' for d in decisions) else 'lossless_source_equivalence_only',
                      'decisions':decisions})
     # All headings, text pools, QA and truncation/missing notices remain untouched.
-    manifest={'contract':CONTRACT,'original_sha256':original,'candidates_sha256':fingerprint(candidates),
+    manifest={'contract':CONTRACT,'provenance_valid':valid,'original_sha256':original,'candidates_sha256':fingerprint(candidates),
               'candidate_scope':copy.deepcopy(candidates),'provenance_sha256':fingerprint(proof),
               'readings':rows,'view_sha256':fingerprint(result)}
     manifest['proof_sha256']=fingerprint(manifest)

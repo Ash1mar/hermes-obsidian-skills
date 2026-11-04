@@ -29,7 +29,8 @@ def compatible(left,right):
     if not scope(a) or None in scope(a) or scope(a)!=scope(b):return False
     for v in (a,b):
         proof=v.get('evidence_selection',{})
-        if (proof.get('contract')!='page-dependencies/v1' or v.get('coverage_limitations') or
+        if (proof.get('contract')!='page-dependencies/v1' or not proof.get('provenance_valid') or
+                not all(r.get('source_mapping_complete') for r in proof.get('readings',[])) or v.get('coverage_limitations') or
                 proof.get('view_sha256')!=fingerprint(v.get('original_evidence')) or
                 proof.get('candidates_sha256')!=fingerprint(v.get('candidates',[])) or
                 proof.get('proof_sha256')!=fingerprint({k:x for k,x in proof.items() if k!='proof_sha256'})):

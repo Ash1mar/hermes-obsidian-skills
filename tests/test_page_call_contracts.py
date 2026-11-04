@@ -168,7 +168,8 @@ def test_page_ack_is_published_before_second_page_failure(system):
     assert b.status(*a)['receipt']==acks[0] and 'receipt' not in b.status(*c)
 
 
-def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypatch):
+@pytest.mark.parametrize('cancel_after_first',[False,True])
+def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypatch,cancel_after_first):
     from types import SimpleNamespace as NS
     import native_page_pairs as native
     import semantic_output,reduce_disposition,fixed_semantic_recovery,fixed_global_packets
@@ -200,8 +201,18 @@ def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypa
         _write_atomic(tmp_path/ref,_json_bytes({'fixture':True,'phase':'page-pair','page_request_id':__import__('page_pair_calls').ACTIVE.get()[1],'model':{'origin':'isolated_fixture'}}));raw_by[str(tmp_path/ref)]=raw
         capture(adapter,binding,raw,ref,{'origin':'isolated_fixture'});return raw,ref
     monkeypatch.setattr(fixed_semantic_recovery,'native_reply',lambda a,b,path,*_,**kw:(raw_by[str(path)],{}))
-    args=(adapter,binding,value,state,object(),model,lambda a,r,x:receipts.append(x),lambda *a:None,
+    cancelled=[]
+    def ack(a,r,x):
+        receipts.append(x)
+        if cancel_after_first and not cancelled:
+            cancelled.append(True);w['cancel_requested']=True
+    args=(adapter,binding,value,state,object(),model,ack,lambda *a:None,
           lambda a,v,p,c,pr:(views[p['path']],100))
+    if cancel_after_first:
+        with pytest.raises(ContractError,match='WORKFLOW_STOPPED'):native.execute(*args)
+        root=tmp_path/'_system/ledgers/ingest-workflows/isolated'
+        assert sum('receipt' in r for r in PageCalls(root,lambda:None).read()['pages'].values())==1
+        w['cancel_requested']=False
     result,refs=native.execute(*args)
     assert len(calls)==1 and len(calls[0]['pages'])==2 and len(result['pages'])==2
     assert len({r['page_receipt_id'] for r in receipts})==2
