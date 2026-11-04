@@ -102,6 +102,17 @@ def select(adapter,binding,phase,view,project):
     from semantic_output import path_for
     from fixed_semantic_schema import schema_for
     if view.get(MARKER) in (CONTRACT,COMPACT_CONTRACT):return view
+    # Resolve the exact consumed format before considering new presentation metadata.
+    prior_encoded={**view,MARKER:CONTRACT};prior_compact={**view,MARKER:COMPACT_CONTRACT}
+    original_history=has_legacy_history(adapter,binding,phase,view)
+    old_encoded=path_for(adapter,binding,phase,prior_encoded).exists()
+    old_compact=path_for(adapter,binding,phase,prior_compact).exists()
+    if original_history:
+        if old_encoded or old_compact:raise ContractError('SEMANTIC_OUTPUT_HELD','$','both page evidence encodings have consumed history; no allowance reset')
+        return view
+    if old_encoded and old_compact:raise ContractError('SEMANTIC_OUTPUT_HELD','$','both lossless encodings have history; allowance cannot reset')
+    if old_encoded:return prior_encoded
+    if old_compact:return prior_compact
     from efficiency_presentation import enabled,page_evidence_view
     if 'evidence_selection' not in view and enabled(adapter,binding):
         view=copy.deepcopy(view)

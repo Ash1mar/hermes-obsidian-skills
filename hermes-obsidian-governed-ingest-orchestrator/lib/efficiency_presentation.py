@@ -108,3 +108,14 @@ def page_contract(adapter,binding):
     if not enabled(adapter,binding):return False
     path=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/presentation-contract.json"
     return _load_json(path).get('page_call_contract')=='durable-page-calls/v1'
+
+
+def observed_profile(adapter,binding):
+    """Read an already fixed format for stopped previews; never create a pin."""
+    path=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/presentation-contract.json"
+    if not path.exists():return {'contract':'legacy'}
+    w=adapter.workflow.status(binding['workflow_id']);record=_load_json(path)
+    if (record.get('workflow_id')!=w['workflow_id'] or record.get('scope_sha256')!=fingerprint(w['scope'])
+            or record.get('contract') not in ('legacy',CONTRACT)):
+        raise ContractError('STALE_INPUT','$','observed presentation identity changed')
+    return record

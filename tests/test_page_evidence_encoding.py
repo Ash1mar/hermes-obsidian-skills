@@ -81,3 +81,10 @@ def test_review_uses_identical_encoding_without_rewriting_draft_or_parent():
     assert p['content']==v['content'] and p['existing_page']==v['existing_page']
     assert p['citation_evidence'][0]['evidence_qa'] in p['candidate_qa_pool']
     assert e.INSTRUCTION in wire_prompt('page-review',{**v,e.MARKER:e.CONTRACT},schema('page-review'))['system']
+
+
+@pytest.fixture(autouse=True)
+def legacy_presentation_fixture(monkeypatch):
+    # These fixtures intentionally exercise the pre-profile lossless formats.
+    import efficiency_presentation
+    monkeypatch.setattr(efficiency_presentation,'enabled',lambda *_:False)

@@ -43,7 +43,7 @@ class PageCalls:
                     if len(row['attempts'])>=2:fail('SEMANTIC_OUTPUT_HELD','page additional-check budget exhausted')
                     if row['attempts'] and not row['attempts'][-1].get('correctable'):fail('SEMANTIC_REVIEW_REQUIRED','evidence block is not correctable')
                 else:row={'path':page['path'],'identity':copy.deepcopy(page['identity']),'input_sha256':fingerprint(view),'attempts':[]};r['pages'][k]=row
-                members.append((k,len(row['attempts'])+1))
+                members.append([k,len(row['attempts'])+1])
             request=fingerprint({'contract':CONTRACT,'members':members,'wire':wire,'schema':schema,'epoch':epoch})
             record={'request_id':request,'epoch':epoch,'members':{f'p{i}':{'page_key':k,'ordinal':n} for i,(k,n) in enumerate(members,1)},
                     'state':'reserved','wire':copy.deepcopy(wire),'schema':copy.deepcopy(schema)}
@@ -63,7 +63,7 @@ class PageCalls:
             q['response']=value;q['state']='returned';self.save(r)
     def settle(self,request,validate,persist,authenticate,*,after_page=None,on_receipt=None):
         q=self.read()['requests'][request]
-        members=[(m['page_key'],m['ordinal']) for m in q['members'].values()]
+        members=[[m['page_key'],m['ordinal']] for m in q['members'].values()]
         if fingerprint({'contract':CONTRACT,'members':members,'wire':q['wire'],'schema':q['schema'],'epoch':q['epoch']})!=request:
             fail('SOURCE_CHANGED','request member/wire identity changed')
         if 'response' not in q:fail('SEMANTIC_OUTPUT_HELD','unknown request; reservation retained')
