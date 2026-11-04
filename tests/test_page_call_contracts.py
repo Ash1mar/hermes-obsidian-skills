@@ -211,7 +211,7 @@ def test_concurrent_reservations_cannot_double_spend(system):
     from concurrent.futures import ThreadPoolExecutor
     b,*_=system;a,c=item('a'),item('c')
     def attempt(_):
-        try:return reserve(b,a,c)
+        try:return reserve(PageCalls(b.root,b.guard),a,c)
         except ContractError:return None
     with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(attempt,range(2)))
     assert sum(r is not None for r in results)==1

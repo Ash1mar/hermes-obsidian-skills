@@ -4,7 +4,7 @@ One write publishes a reservation for every page. Returned raw wire is durable
 before settlement; each page/receipt is committed separately under the same lock.
 Unknown reservations never authorize resend. Group identities cannot mint budget.
 """
-import copy,json
+import copy,json,threading
 from contextvars import ContextVar
 from contextlib import nullcontext
 from hermes_source_units import ContractError
@@ -19,7 +19,7 @@ def key(page):return fingerprint({'kind':page['identity']['kind'],'identity_key'
 
 class PageCalls:
     def __init__(self,root,guard,transaction=nullcontext):
-        self.transaction=transaction
+        self.transaction=transaction;self.mutex=threading.RLock()
         self.root=root;self.path=root/'page-call-budget.json';self.guard=guard
     def read(self):
         record=_load_json(self.path) if self.path.exists() else {'contract':CONTRACT,'pages':{},'requests':{}}
@@ -32,7 +32,7 @@ class PageCalls:
         return copy.deepcopy(row)
     def reserve(self,items,wire,schema):
         if not 1<=len(items)<=2 or len({key(p) for p,v in items})!=len(items):fail('INVALID_SCHEMA','one or two unique page identities required')
-        with self.transaction(), _exclusive_lock(self.path.with_suffix('.lock'),timeout=5):
+        with self.mutex, self.transaction(), _exclusive_lock(self.path.with_suffix('.lock'),timeout=5):
             epoch=self.guard();r=self.read();members=[]
             for page,view in items:
                 k=key(page);row=r['pages'].get(k)
@@ -54,7 +54,7 @@ class PageCalls:
             self.save(r);return request
     def capture(self,request,raw,audit_ref,metadata):
         # Retaining a returned response after cancellation grants no execution.
-        with _exclusive_lock(self.path.with_suffix('.lock'),timeout=5):
+        with self.mutex, _exclusive_lock(self.path.with_suffix('.lock'),timeout=5):
             r=self.read();q=r['requests'][request]
             value={'raw':raw,'raw_sha256':fingerprint(raw),'audit_ref':audit_ref,'metadata':copy.deepcopy(metadata)}
             if 'response' in q:
@@ -76,7 +76,7 @@ class PageCalls:
         if not isinstance(slots,dict) or set(slots)-set(q['members']):slots={}
         results={}
         for slot,member in q['members'].items():
-            with self.transaction(), _exclusive_lock(self.path.with_suffix('.lock'),timeout=5):
+            with self.mutex, self.transaction(), _exclusive_lock(self.path.with_suffix('.lock'),timeout=5):
                 if self.guard()!=q['epoch']:fail('WORKFLOW_STOPPED','cancel superseded page settlement')
                 r=self.read();page=r['pages'][member['page_key']];attempt=page['attempts'][member['ordinal']-1]
                 if attempt['state']=='rejected':

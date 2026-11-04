@@ -53,7 +53,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     def current_owner():return getattr(owners,'adapter',adapter)
     def guard():
         current_owner().worker_check(binding)
-        w=adapter.workflow.status(binding['workflow_id'])
+        w=current_owner().workflow.status(binding['workflow_id'])
         if w.get('cancel_requested') or w.get('state') in ('cancelled','failed'):
             raise ContractError('WORKFLOW_STOPPED','$','page call cancelled')
         return epoch(adapter.workflow.vault,binding['workflow_id'])
