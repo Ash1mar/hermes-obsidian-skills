@@ -120,14 +120,26 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
     calls=list(calls.values())
     snapshot={k:w.get(k) for k in ('workflow_id','batch_id','revision','state','current_stage','release_id','release_plan_id','cancel_requested','pause_control')}
     snapshot['scope_digest']=fingerprint(w['scope'])
-    snapshot['execution_policy']=w['scope'].get('execution_policy',{'status':'legacy_unpinned'})
+    snapshot['startup_execution_policy']=w['scope'].get('execution_policy',{'status':'legacy_unpinned'})
     snapshot['recovery_policy']=w['scope'].get('recovery_policy',{'status':'legacy_unpinned'})
     snapshot['source_states']=dict(Counter(s['status'] for s in w.get('source_outcomes',[])))
     snapshot['native_settlement']='unknown; domain terminal state alone does not prove native drain'
     batch=service.knowledge._batch(w['batch_id']) if w.get('batch_id') else None
     if batch:
+        from hermes_source_units.pass_capacity import effective
+        snapshot['current_pass_capacity']={'limit':effective(vault,batch),
+            'basis':batch.get('pass_capacity_control') or {'original_slice_config':batch['slice_config']['pass_worker_concurrency']}}
         slices=service.knowledge._slices(w['batch_id'])
         snapshot['plan']={'tasks':len(batch['task_ids']),'slices':len(slices),'slice_states':dict(Counter(s['state'] for s in slices))}
+        snapshot['task_states']=dict(Counter(service.knowledge._task(t)['state'] for t in batch['task_ids']))
+        snapshot['pass_records']=sum(len(list((vault/f'_system/knowledge-builds/{t}/passes').glob('*.json'))) for t in batch['task_ids'])
+    sources=[]
+    for outcome in w.get('source_outcomes',[]):
+        row={k:outcome.get(k) for k in ('path','status','resource_id','unit_set_id','content_sha256')}
+        if outcome.get('status')=='ready' and outcome.get('unit_set_id'):
+            _,units,_=service.knowledge.source._load_set(outcome['resource_id'],outcome['unit_set_id'])
+            row['source_units']=len(units)
+        sources.append(row)
     chosen=list(windows)
     if events:
         chosen.insert(0,{'start':min(e['started_at'] for e in events),
@@ -141,10 +153,15 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
         registry[key].pop('reason',None)
     measured('S04',snapshot,'current_snapshot','workflow ledger at recorded revision')
     measured('A01',snapshot['source_states'],'current_snapshot','source_outcomes')
+    if sources:measured('W01',sources,'current registered SourceUnits; PDF page counts not inferred','source outcomes and exact UnitSet records')
     if batch:
         measured('W02',snapshot['plan'],'current_snapshot','current batch and slices')
-        measured('W04',snapshot['plan']['slice_states'],'current_snapshot; slices only, not individual Pass records','current slices')
-    if calls:measured('M01',dict(Counter(c['phase'] for c in calls)),'historical recorded call files','semantic-calls/*.json; content deduplicated')
+        measured('W04',{'slices':snapshot['plan']['slice_states'],'tasks':snapshot['task_states'],'pass_records':snapshot['pass_records'],
+            'new_reused_or_restored_breakdown':'unknown'},'current_snapshot; current batch membership only','current slices/tasks and Pass record files')
+        measured('E01',snapshot['plan'],'current plan; model call groups not inferred','current batch and slices')
+    if calls:
+        measured('M01',dict(Counter(c['phase'] for c in calls)),'historical recorded call files','semantic-calls/*.json; content deduplicated')
+        measured('MP01',{p:sum(c['phase']==p for c in calls) for p in ('candidate','citation')},'historical recorded calls; completion and correctness not inferred','semantic-calls/*.json')
     if usage['unique_sessions']:measured('C01',usage,'historical recorded sessions; partial when unknown_samples > 0','native state.db read-only')
     mapping={'M07':('sdk_model_request','semantic_call','request_construct'),
              'P03':('full_reconciliation',),'P04':('native_cli',),
@@ -173,6 +190,9 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
                 if matching and provider.get('sync_metrics'):
                     measured('I02',provider['sync_metrics'].get('seconds',{}),'recorded sync for exact current release',str(pp))
                     measured('I04',{k:v for k,v in provider['sync_metrics'].items() if k.endswith('_documents')},'recorded sync for exact current release',str(pp))
+                    measured('I03',{'completed_batches':provider['sync_metrics'].get('completed_batches'),
+                        'configuration':{k:provider.get('configuration',{}).get(k) for k in ('embedding_batch_size','index_batch_size','embedding_batch_max_tokens','embedding_dimension')},
+                        'actual_batch_token_distribution':'unknown'},'recorded sync for exact current release',str(pp))
     if protected is not None:
         changed=[];missing=[]
         for name,expected in protected.items():

@@ -199,6 +199,17 @@ def test_latched_pause_acknowledges_completed_current_run_without_refill(project
     assert not any(event.startswith(('admission:', 'unblock:')) for event in projection.events)
 
 
+def test_fast_refill_uses_verified_capacity_amendment(projection,monkeypatch):
+    from hermes_source_units import pass_capacity
+    observed=[]
+    def capacity(vault,batch):
+        observed.append((vault,batch));return 1
+    monkeypatch.setattr(pass_capacity,'effective',capacity)
+    projection.value['scope']['pause_after']=[]
+    run(projection)
+    assert observed and 'unblock:t3' in projection.events and 'unblock:t4' not in projection.events
+
+
 def test_cancellation_has_no_projection_or_refill_action(projection):
     projection.value['cancel_requested'] = True
     run(projection)

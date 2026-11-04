@@ -1023,7 +1023,8 @@ class IngestKanbanAdapter:
                 occupied={'pass-slice:'+s['slice_id'] for s in slices.values() if s['lease']['worker_id']}
                 occupied.update(c['node'] for c in value['kanban']['task_map']
                     if c['node'].startswith('pass-slice:') and states.get(c['task_id'])=='running')
-                slots=max(0,batch['slice_config']['pass_worker_concurrency']-len(occupied))
+                from hermes_source_units.pass_capacity import effective
+                slots=max(0,effective(self.workflow.vault,batch)-len(occupied))
                 for card in value['kanban']['task_map']:
                     if not slots:
                         break

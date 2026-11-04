@@ -39,6 +39,20 @@ def test_manual_cancel_invalidates_automatic_continuation_after_restart(tmp_path
         with automatic(tmp_path,'w',before):check(tmp_path,'w')
 
 
+def test_operator_stop_blocks_supported_mutation_before_reading_domain(tmp_path):
+    from hermes_source_units.ingest_workflow import FileIngestWorkflowService
+    service=object.__new__(FileIngestWorkflowService);service.vault=tmp_path
+    service._check_request=lambda _:None
+    service._load=lambda _:pytest.fail('cancelled controller must not enter domain mutation')
+    with automatic(tmp_path,'w',None):
+        # Simulate an independently authenticated operator cancellation.
+        from hermes_source_units.recovery_control import stop_path
+        path=stop_path(tmp_path,'w');path.parent.mkdir(parents=True)
+        path.write_text(json.dumps({'input_digest':'stop'}))
+        with pytest.raises(ContractError,match='WORKFLOW_STOPPED'):
+            service._mutation({'workflow_id':'w'})
+
+
 def adapter(tmp_path):
     w={'workflow_id':'w','current_stage':'analyzing','state':'analyzing','revision':7,
        'scope':{'recovery_policy':copy.deepcopy(DEFAULT)},'cancel_requested':False,

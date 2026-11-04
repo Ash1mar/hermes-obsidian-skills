@@ -24,7 +24,7 @@
   "file_locks.py": "974b0c5ef141f7deac35306c6c5065b786f32763e6949cf71159120312e193bb",
   "finalize_revision_state.py": "bc946a06fdce4b00281ed8c486ee8d852fe3004460175a86518bfe9be1aaa122",
   "ingest_pauses.py": "e6018ddb605d8c6afb22a6949fa33a4a8027c389f2aa8bf0b4a428974fe7e754",
-  "ingest_workflow.py": "4bdfea79b9689de55955e57756a8d3bfb00d5360c0ba7d04e28d1b5a5583a9f2",
+  "ingest_workflow.py": "9817b9749d79363a900b85aca93c58e1f6ea647dd4d9e7dad5a13830c6e89348",
   "initial_release.py": "1795b372b0ce107aa294ea64324d06726d65b88bdf583880ad8f4462cacef20d",
   "interfaces.py": "5d824d42fbea30efc0608260bbd21089d8b170816c85b43bb0dc6d45edb36373",
   "knowledge_build.py": "9ebacba3a68c9cbfd55390836985e39fda556f681ced83831b8623d3eef82979",

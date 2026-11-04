@@ -35,6 +35,8 @@ def operator_guard(repo,request):
     from native_stop_inventory import verify_cancel_drain
     lock=_vault_path(repo.vault,f'{WORKFLOW_ROOT}/.dispatch-locks/{wid}.lock')
     with _exclusive_lock(lock),_exclusive_lock(service._lock(wid)):
+        from hermes_source_units.recovery_control import check
+        check(repo.vault,wid)
         w=service.status(wid);service.assert_execution_ready(w)
         if (w['actor']!=request['actor'] or w['revision']!=request.get('expected_workflow_revision')
                 or not w['cancel_requested'] or w['state']!='cancelled' or w['current_stage']!='release_planning'
