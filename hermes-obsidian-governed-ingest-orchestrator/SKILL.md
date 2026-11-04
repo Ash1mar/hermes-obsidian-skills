@@ -26,6 +26,12 @@ Existing recover-reduce-execution/reduce-cancel/v1 may admit a fresh native owne
 only after authenticating ended runs, original request/transcript and durable
 call evidence; PROGRAM_EXECUTION_FAILED alone or zero token usage is insufficient.
 Rejected/unknown reservations remain held, with no automatic retry or new quota.
+New short requests pin `unknown_completion=isolate_after_drain`: the controller
+authenticates stopped unknown Pass calls, drains consumers, quarantines unfinished
+tasks and their downstream scope, then resumes valid work. Reservations stay held
+and outcomes remain unknown. No correction call is required before quarantine.
+Existing pinned `hold` workflows need one explicit workflow-wide adoption through
+`adopt-unknown-isolation`; see `references/automatic-recovery.md`.
 
 An explicit user-authorized `recover-reduce-execution` scope
 `reduce-disposition/v1` may seal a stopped output's original journal and grant

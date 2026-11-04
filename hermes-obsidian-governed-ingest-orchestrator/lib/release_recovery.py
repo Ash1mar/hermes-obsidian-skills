@@ -38,7 +38,8 @@ def recover(adapter,request,*,dry_run=False):
         if proactive:
             from hermes_source_units.initial_release import needs_preflight
             if not needs_preflight(service.vault,w) or not request.get('initial_page_governance'):fail('explicit initial release policy and grant required')
-            if path.exists():fail('unstarted preflight cannot recover an existing failure')
+            if path.exists() and _load_json(path).get('task_id')==card['task_id']:
+                fail('unstarted preflight cannot recover an existing failure')
         else:
             data=path.read_bytes();failure=_load_json(path)
             if hashlib.sha256(data).hexdigest()!=request.get('failure_sha256') or failure.get('task_id')!=card['task_id'] or failure.get('error_code')!='STALE_INPUT':fail('exact rejected plan failure required')
@@ -59,7 +60,8 @@ def recover(adapter,request,*,dry_run=False):
                 if any(raw.strip().casefold() in labels for raw in _WIKILINK.findall(data.decode('utf-8'))):fail('an ambiguous label is actually referenced')
         native=adapter.kanban.task_snapshot_fresh(w['kanban']['board_id'],card['task_id'])
         if proactive:
-            if native['runs']:fail('initial preflight requires no native attempt')
+            from hermes_source_units.initial_release import native_plan_started
+            if native_plan_started(native):fail('initial preflight requires no native attempt')
         elif not native['runs'] or any(not r.get('ended_at') for r in native['runs']):fail('native attempts must be ended')
         receipt_path=_vault_path(service.vault,request['governance_receipt']['ref']);receipt_data=receipt_path.read_bytes();receipt=_load_json(receipt_path)
         if hashlib.sha256(receipt_data).hexdigest()!=request['governance_receipt']['sha256'] or not receipt.get('applied') or not receipt.get('resolved'):fail('completed governance resolution required')

@@ -13,6 +13,14 @@ def fail(message):
 
 
 def verify(adapter, value, item, failure, entry):
+    if entry.get('deferral') == 'automatic_unknown_quarantine':
+        from hermes_source_units.recovery_policy import effective
+        from orchestration import configuration
+        if (value['scope'].get('execution_mode') != 'auto_full'
+                or effective(value,configuration())['unknown_completion'] != 'isolate_after_drain'
+                or (value['dispatch_policy']['mode']=='canary'
+                    and item['slice_id'] not in value['dispatch_policy']['slice_ids'])):
+            fail('automatic unknown isolation is outside the effective workflow policy')
     if entry.get('acknowledge_unverified_coverage') is not True:
         fail('unknown isolation requires explicit acknowledgement of lost coverage')
     if failure.get('error_code') != 'NATIVE_COMPLETION_UNKNOWN':
@@ -63,9 +71,30 @@ def verify(adapter, value, item, failure, entry):
     budget = _load_json(root/'pass-call-budget.json')
     reserved = {r['task_id'] for r in budget['tasks'].values() if r['phase'] == call['phase']
                 and any(a.get('native_task_id') == card['task_id'] and a['state'] == 'reserved' for a in r['attempts'])}
-    if reserved != set(item['task_ids']): fail('unknown reservation must match the exact unfinished slice')
+    pending = {t for t in item['task_ids'] if not adapter.workflow._task_passes_complete(t)}
+    selected = set(entry.get('task_ids', item['task_ids']))
+    if not reserved or reserved != pending or selected != pending:
+        fail('unknown reservation must match the exact unfinished tasks; completed tasks are preserved')
     return {'contract':'pass-unknown-quarantine/v1','session_id':call['session_id'],
             'native_task_id':card['task_id'],'native_run_id':call['run_id'],
             'call_ref':evidence['ref'],'call_sha256':evidence['sha256'],
-            'task_ids':item['task_ids'],'original_outcome':'completion_unknown',
+            'task_ids':[t for t in item['task_ids'] if t in pending],'original_outcome':'completion_unknown',
             'reserved_budget_preserved':True,'new_calls_granted':0,'verification_success':False}
+
+
+def automatic_entry(adapter, value, item, failure):
+    """Select authenticated stopped unknown work without another model call."""
+    prefix='NATIVE_COMPLETION_UNKNOWN at $: '
+    reason=failure.get('reason','')
+    if not reason.startswith(prefix):fail('structured unknown outcome is required')
+    try:path=Path(json.loads(reason[len(prefix):])['report'])
+    except (ValueError,KeyError,TypeError):fail('unknown report reference is invalid')
+    root=adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{value["workflow_id"]}/call-failures'
+    if path.parent!=root:fail('unknown report belongs to another workflow')
+    entry={'slice_id':item['slice_id'],'deferral':'automatic_unknown_quarantine',
+           'acknowledge_unverified_coverage':True,
+           'task_ids':[t for t in item['task_ids'] if not adapter.workflow._task_passes_complete(t)],
+           'unknown_call':{'ref':path.relative_to(adapter.workflow.vault).as_posix(),
+                           'sha256':hashlib.sha256(path.read_bytes()).hexdigest()},
+           'reason':'Program quarantine of stopped uncertain execution; no retry, budget reset or verified coverage claim'}
+    return entry, verify(adapter,value,item,failure,entry)
