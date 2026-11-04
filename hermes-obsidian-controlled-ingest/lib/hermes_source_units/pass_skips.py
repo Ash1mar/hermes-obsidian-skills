@@ -64,7 +64,7 @@ class PassSkipMixin:
             seen.update(pointer['task_ids']);reports.append(report)
         return reports
 
-    def skip_pass_slices(self,request,*,dry_run=False,budget_check=None,automatic_check=None):
+    def skip_pass_slices(self,request,*,dry_run=False,budget_check=None,automatic_check=None,unknown_check=None):
         if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
             fail('ACCESS_DENIED','Pass skipping requires a trusted operator')
         self._check_request(request);wid=str(request['workflow_id']);op=request.get('operation_id','')
@@ -129,11 +129,15 @@ class PassSkipMixin:
                                 fail('ACCESS_DENIED','skip evidence must be this workflow failure report')
                             data=path.read_bytes();failure=json.loads(data)
                             if hashlib.sha256(data).hexdigest()!=evidence['sha256']:fail('STALE_INPUT','skip failure changed')
-                            budget_proof=None
+                            budget_proof=None;unknown_proof=None
                             if automatic:
                                 if automatic_check is None:fail('ACCESS_DENIED','automatic isolation requires native program verification')
                                 automatic_proof=automatic_check(value,batch,item,failure,entry)
                                 category='AUTOMATIC_CORRECTION_EXHAUSTED'
+                            elif entry.get('deferral')=='unknown_native_quarantine':
+                                if unknown_check is None:fail('ACCESS_DENIED','unknown isolation requires native verification')
+                                unknown_proof=unknown_check(value,batch,item,failure,entry)
+                                category='UNRESOLVED_NATIVE_MODEL_REQUEST'
                             elif entry.get('deferral')=='bounded_input':
                                 if failure.get('error_code')!='READING_WINDOW_OVERSIZE' or budget_check is None:
                                     fail('SKIP_NOT_ALLOWED','budget deferral requires current bounded-input verification')
@@ -155,6 +159,7 @@ class PassSkipMixin:
                             covered.update(set(item['task_ids']).intersection(old_slice['task_ids']))
                             proofs.append({'ref':evidence['ref'],'sha256':evidence['sha256'],'category':category,'failure':failure})
                             if budget_proof:proofs[-1]['budget_proof']=budget_proof
+                            if unknown_proof:proofs[-1]['unknown_quarantine']=unknown_proof
                         if not proofs or not covered or (covered!=set(item['task_ids']) and entry.get('scope')!='whole_failed_slice'):
                             fail('INCOMPLETE_COVERAGE','partial failure evidence requires an explicit whole unfinished slice exclusion')
                         targets={}

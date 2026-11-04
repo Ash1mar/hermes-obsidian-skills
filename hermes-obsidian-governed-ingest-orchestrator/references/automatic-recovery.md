@@ -67,6 +67,17 @@ Conversion defects, changed or absent required evidence, permissions, transport
 failures and unknown native completion do not gain an unchanged-material retry.
 Unauthenticated failures stay held. Recovery cannot cross a durable pause.
 
+An explicit user authorization may quarantine an exact stopped unknown Pass call
+through `skip-pass-slices`, with `deferral=unknown_native_quarantine`,
+`acknowledge_unverified_coverage=true`, and a hash-bound `unknown_call` reference.
+The operator request still requires the ordinary bound failure evidence, current
+identities and full cancellation/drain. The program authenticates the native
+request, ended run and exact reserved task set. Existing returned responses must
+be verified first. It records unresolved coverage and leaves the unknown outcome
+and every consumed reservation intact, granting no new call. The pinned default
+`unknown_completion=hold` remains unchanged; no automatic selection uses this
+explicit exception. Downstream work excludes the quarantined tasks and dependents.
+
 Budget-lock contention waits up to five seconds for the atomic ledger operation.
 An ended worker blocked on this exact lock can receive one mechanical recovery,
 including within the selected Canary. Admission pairs every observed request with
