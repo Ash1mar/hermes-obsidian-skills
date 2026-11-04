@@ -52,6 +52,11 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
     if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', rid):
         fail('INVALID_SCHEMA', 'invalid recovery ID')
     scope=request.get('recovery_scope')
+    source_unknown=any(e.get('source_unknown_isolation') is True for e in (request.get('entries') or []) if isinstance(e,dict))
+    if source_unknown:
+        from source_unknown_recovery import contract_hash
+        if scope!='reduce-cancel/v1' or request.get('target_contract_sha256')!=contract_hash():
+            fail('STALE_INPUT','source unknown isolation requires its exact cancellation contract')
     if scope == 'reduce-citation-revision/v1':
         from citation_amendment_control import recover
         return recover(adapter,request,dry_run=dry_run)
@@ -225,6 +230,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 if call_failure:
                     from native_call_state import recovery_evidence
                     audited[-1].update(recovery_evidence(adapter,value,binding,runs))
+                if entry.get('source_unknown_isolation') is True:
+                    from source_unknown_recovery import verify
+                    audited[-1].update(verify(adapter,value,node,binding,entry,report,runs,audited[-1]))
                 if scope=='build-native/v1':
                     from build_execution_recovery import verify,graph_interruption as verify_graph_interruption,storage_interruption,empty_lock_interruption
                     checked_entry=dict(entry)

@@ -110,6 +110,21 @@ def test_supervisor_consumes_completed_child_receipt_after_parent_crash(tmp_path
     assert result['state']=='applied' and result['attempts']==1
 
 
+@pytest.mark.parametrize('attempts',[1,3])
+def test_corrected_unknown_contract_reuses_no_action_episode_without_budget_reset(tmp_path,monkeypatch,attempts):
+    a,w=adapter(tmp_path);w['current_stage']='reducing';w['scope']['execution_mode']='auto_full'
+    key=controller.prepare(a,'w');path=tmp_path/f'_system/ledgers/ingest-workflows/w/automatic-control/{key}.json'
+    row=json.loads(path.read_text());row.update(state='no_action',attempts=attempts);path.write_text(json.dumps(row))
+    monkeypatch.setattr('source_unknown_recovery.select',lambda *_:[{'node':'resource-reduce:r'}])
+    monkeypatch.setattr('source_unknown_recovery.contract_hash',lambda:'corrected-contract')
+    assert controller.prepare(a,'w')==key
+    result=json.loads(path.read_text());assert result['attempts']==attempts
+    assert result['state']==('pending' if attempts==1 else 'no_action')
+    if attempts==1:
+        result['state']='no_action';path.write_text(json.dumps(result))
+        controller.prepare(a,'w');assert json.loads(path.read_text())['state']=='no_action'
+
+
 def diagnostic(path,**changes):
     path.mkdir(parents=True,exist_ok=True)
     row={'schema_version':'hermes-conversion-result/v1','source_sha256':'a'*64,'backend':'hybrid-engine',

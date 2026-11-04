@@ -169,6 +169,7 @@ def sdk(monkeypatch):
     caller.runtime = {'provider': 'isolated-provider'}
     caller.input_limit = 100000
     caller.images = []
+    caller.stream_policy = {'contract':'fixed-native-stream-policy/v1','idle_seconds':120}
     return SimpleNamespace(caller=caller, agents=agents, databases=databases, requests=requests)
 
 

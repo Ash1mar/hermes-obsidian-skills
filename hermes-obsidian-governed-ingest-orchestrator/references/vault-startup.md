@@ -14,6 +14,13 @@ The operation ID also determines `ingest-<operation_id>`. Preserve the request
 and receipt on retries. New targets must be empty; existing Vault ingestion
 continues through the existing workflow entry, without bootstrap.
 
+The CLI selects the installed Hermes Python before any Vault mutation. An
+interrupted initial handoff resumes only the same active, unpaused startup;
+cancelled, failed, terminal and latched-paused workflows are observation only.
+The receipt remains pending until the actual coordinator process and its matching
+ownership marker are observed. A live coordinator is reused, never duplicated.
+An already completed startup receipt does not authorize a fresh resume.
+
 Optional `execution_policy` overrides the four positive integer limits:
 `pass_worker_concurrency` (default 10), `source_prepare_concurrency` (2),
 `program_worker_concurrency` (2), `reduce_page_concurrency` (10).

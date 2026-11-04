@@ -44,6 +44,19 @@ def prepare(adapter,wid):
             _write_atomic(path,_json_bytes({'contract':'recovery-controller/v1','workflow_id':wid,'episode':key,
                 'operator_stop_epoch':epoch(adapter.workflow.vault,wid),'policy':policy,
                 'state':'pending','attempts':0,'history':[],'created_revision':w['revision']}))
+        else:
+            state=_load_json(path)
+            # A prior no_action did not authorize or attempt source quarantine.
+            # Re-evaluate only corrected, newly eligible source-unknown handling;
+            # retain this episode, operation lineage and remaining attempt count.
+            if (state['state']=='no_action' and w['current_stage']=='reducing'
+                    and state['attempts']<state['policy']['controller_attempts']):
+                from source_unknown_recovery import enabled,select,contract_hash
+                code=contract_hash()
+                if enabled(w) and state.get('source_unknown_contract_sha256')!=code and select(adapter,w):
+                    state['state']='pending';state['source_unknown_contract_sha256']=code
+                    state['history'].append({'event':'corrected_source_unknown_contract','new_attempts_granted':0})
+                    _write_atomic(path,_json_bytes(state))
     return key
 
 

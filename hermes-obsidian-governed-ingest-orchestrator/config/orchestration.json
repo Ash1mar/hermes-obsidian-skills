@@ -2,6 +2,7 @@
   "contract": "hermes-governed-ingest-orchestration/v1",
   "template_version": "v12",
   "worker_dispatch_enabled": true,
+  "native_stream_idle_seconds": 120,
   "source_prepare_concurrency": 2,
   "program_worker_concurrency": 2,
   "reduce_page_concurrency": 10,
