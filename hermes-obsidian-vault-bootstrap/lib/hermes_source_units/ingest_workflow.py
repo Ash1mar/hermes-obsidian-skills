@@ -153,6 +153,7 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
                         trace['snapshot_origins']=dict(cache.snapshot_origins)
                         trace['snapshot_versions']=sorted(cache.snapshot_versions,key=repr)
                         trace['logical_read_sources']=list(ledger.rows.values())
+                        trace['read_accounting_scope_id']=ledger.scope_id
                         trace['logical_read_boundaries']=list(ledger.boundaries.values())
                         trace['content_hash_sources']=list(ledger.hash_rows.values())
         finally:
@@ -162,6 +163,11 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
         validate_record("ingest_workflow", value)
         from .workflow_storage import write
         write(self._path(str(value["workflow_id"])),value)
+        from .runtime_telemetry import event
+        event('workflow_state_committed',vault=self.vault,workflow_id=value['workflow_id'],
+              batch_id=value.get('batch_id'),stage=value.get('current_stage'),state=value.get('state'),
+              revision=value.get('revision'),cancel_requested=value.get('cancel_requested'),
+              pause_boundary=(value.get('pause_control') or {}).get('boundary'))
 
     def migrate_storage(self, request):
         """Explicit stopped representation migration; no logical revision or resume."""

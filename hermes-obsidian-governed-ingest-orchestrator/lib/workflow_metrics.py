@@ -28,12 +28,21 @@ def distribution(values):
             'quantiles':'linear interpolation',**({'samples':values} if len(values)<5 else {})}
 
 
-def events_from(root, vault, workflow_id):
-    events = {}; invalid = duplicates = 0
+def _lines(path,io):
+    with path.open('rb') as stream:
+        if io is not None:io['files']+=1
+        for raw in stream:
+            if io is not None:io['bytes']+=len(raw)
+            yield raw.decode('utf-8',errors='replace')
+
+
+def events_from(root, vault, workflow_id, *, io=None):
+    events = {}; invalid = duplicates = 0; conflicts=set()
     for path in sorted(Path(root).glob('*.jsonl')):
-        for line in path.read_text(encoding='utf-8').splitlines():
+        for line in _lines(path,io):
             try:
                 row = json.loads(line)
+                if not isinstance(row,dict):raise ValueError('event must be an object')
                 if row.get('workflow_id') != workflow_id or Path(row.get('vault','')).resolve()!=Path(vault).resolve():
                     continue
                 if not row.get('span_id') or not isinstance(row.get('name'),str):
@@ -43,13 +52,16 @@ def events_from(root, vault, workflow_id):
                         raise ValueError('invalid time')
                 if row['elapsed_ms']<0 or row['finished_at']<row['started_at']:
                     raise ValueError('invalid interval')
+                if row['span_id'] in conflicts:raise ValueError('conflicting event identity')
                 if row['span_id'] in events:
-                    if events[row['span_id']]!=row:raise ValueError('conflicting event identity')
+                    if events[row['span_id']]!=row:
+                        conflicts.add(row['span_id']);events.pop(row['span_id'])
+                        raise ValueError('conflicting event identity')
                     duplicates+=1
                 else:events[row['span_id']]=row
             except (ValueError,TypeError,KeyError):
                 invalid+=1
-    return list(events.values()), {'invalid_rows':invalid,'duplicate_rows_ignored':duplicates}
+    return list(events.values()), {'invalid_rows':invalid,'duplicate_rows_ignored':duplicates,**({'conflicting_span_ids':sorted(conflicts)} if conflicts else {})}
 
 
 def window(events, lower, upper, label):
@@ -61,11 +73,12 @@ def window(events, lower, upper, label):
     spans={name:{'successful_ms':distribution([e['elapsed_ms'] for e in rows if not e.get('error')]),
         'failed_ms':distribution([e['elapsed_ms'] for e in rows if e.get('error')]),
         'errors':dict(Counter(e['error'] for e in rows if e.get('error'))),
+        'outcomes':dict(Counter(e.get('outcome','unknown') for e in rows)),
         'sample_span_ids':[e['span_id'] for e in rows]} for name,rows in sorted(grouped.items())}
     # Pair exact sessions; ambiguous repeated starts are unknown, not fabricated.
     starts=defaultdict(list);ends=defaultdict(list)
     for e in events:
-        key=(e.get('session_id'),e.get('phase'),e.get('pid'),e.get('clock_domain'))
+        key=(e.get('request_id') or e.get('session_id'),e.get('phase'),e.get('pid'),e.get('clock_domain'))
         if e['name']=='sdk_request_start':starts[key].append(e)
         if e['name']=='sdk_model_request':ends[key].append(e)
     intervals=[];unknown=0
@@ -110,14 +123,57 @@ def usage_for(calls, database):
         'cost_currency':'unknown','scope':'whole-workflow recorded sessions, including recorded failures; cache is an input subset'}
 
 
-def collect(service, workflow_id, *, timeline=None, database=None, windows=(), protected=None):
-    started=time.monotonic();w=service.status(workflow_id);vault=service.vault
+def collect(service, workflow_id, *, timeline=None, database=None, windows=(), protected=None, observations=(), protected_roots=()):
+    started=time.monotonic();cpu=time.process_time();w=service.status(workflow_id);vault=service.vault
+    io={'files':0,'bytes':0};file_cache={}
+    def read(path):
+        path=Path(path)
+        if path not in file_cache:
+            raw=path.read_bytes();io['files']+=1;io['bytes']+=len(raw)
+            file_cache[path]=json.loads(raw)
+        return file_cache[path]
     root=vault/f'_system/ledgers/ingest-workflows/{workflow_id}'
-    events,diagnostics=events_from(timeline or runtime_directory(vault,workflow_id),vault,workflow_id)
+    events,diagnostics=events_from(timeline or runtime_directory(vault,workflow_id),vault,workflow_id,io=io)
     calls={}
     for p in sorted((root/'semantic-calls').glob('*.json')):
-        row=json.loads(p.read_text(encoding='utf-8'));calls[fingerprint(row)]=row
+        row=read(p);calls[fingerprint(row)]={**row,'evidence_ref':p.relative_to(vault).as_posix()}
     calls=list(calls.values())
+    from efficiency_metrics import reads,calls_report,coordination,stages,writer_cost
+    attempts=[{**read(p),'evidence_ref':p.relative_to(vault).as_posix()} for p in sorted((root/'output-attempts').glob('*.json'))]
+    recovery=[{**read(p),'evidence_ref':p.relative_to(vault).as_posix()} for p in sorted((root/'automatic-control').glob('*.json'))]
+    receipts={ref:read(vault/ref) for ref in {r for c in calls for r in c.get('receipt_refs',[])}
+        if (vault/ref).resolve().is_relative_to(vault.resolve()) and (vault/ref).is_file()}
+    phase_windows=stages(events)
+    detail={'model_calls':calls_report(calls,events,attempts),'reads':reads(events),
+        'coordination':coordination(events,distribution),'stage_windows':phase_windows,
+        'recovery':recovery,'domain_receipts':receipts,'runtime_writer':writer_cost(events)}
+    for o in observations:
+        if o.get('workflow_id')!=workflow_id or Path(o.get('vault','')).resolve()!=vault.resolve():
+            raise ValueError('observation identity differs from workflow')
+        if o.get('kind') not in ('observation','controller_reentry','manual_repair','maintenance'):
+            raise ValueError('unknown observation kind')
+        if not isinstance(o.get('event_id'),str) or not o['event_id']:
+            raise ValueError('observation event_id required')
+    seen_observations={}
+    for o in observations:
+        if o['event_id'] in seen_observations and seen_observations[o['event_id']]!=o:
+            raise ValueError('conflicting observation event')
+        seen_observations[o['event_id']]=o
+    detail['operator_observations']={'status':'supplied' if observations else 'unknown',
+        'rows':list(seen_observations.values()),'scope':'external observer evidence; absent does not mean zero interventions'}
+    startup=w.get('scope',{}).get('bootstrap_ref')
+    if startup and (vault/startup).resolve().is_relative_to(vault.resolve()) and (vault/startup).is_file():
+        detail['startup']=read(vault/startup)
+    terminal=(timeline or runtime_directory(vault,workflow_id))/'terminal-completion.json'
+    detail['native_settlement']=read(terminal) if terminal.is_file() else {'state':'unknown'}
+    detail['recovery_events']=[e for e in events if e['name'] in ('recovery_supervisor','recovery_controller_attempt',
+        'source_resource_retry_reserved','source_resource_retry','terminal_completion_settlement')]
+    detail['phase_activity']=[{'phase':phase,'samples':len(rows),
+        'first_start':min(e['started_at'] for e in rows),'last_finish':max(e['finished_at'] for e in rows),
+        'scope':'observed semantic spans, includes gaps; not active duration'}
+        for phase in sorted({e['phase'] for e in events if e.get('phase') and e['name']=='semantic_call'})
+        for rows in [[e for e in events if e.get('phase')==phase and e['name']=='semantic_call']]]
+
     snapshot={k:w.get(k) for k in ('workflow_id','batch_id','revision','state','current_stage','release_id','release_plan_id','cancel_requested','pause_control')}
     snapshot['scope_digest']=fingerprint(w['scope'])
     snapshot['startup_execution_policy']=w['scope'].get('execution_policy',{'status':'legacy_unpinned'})
@@ -140,7 +196,7 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
             _,units,_=service.knowledge.source._load_set(outcome['resource_id'],outcome['unit_set_id'])
             row['source_units']=len(units)
         sources.append(row)
-    chosen=list(windows)
+    chosen=list(windows)+[x for x in phase_windows if x['cutoff'] is not None and x['cutoff']>x['start']]
     if events:
         chosen.insert(0,{'start':min(e['started_at'] for e in events),
             'cutoff':max(e['finished_at'] for e in events)+.000001,'window_id':'historical_including_pauses_and_maintenance'})
@@ -170,6 +226,19 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
         rows=[{'window_id':h['window_id'],'components':{n:h['program_span_ms'][n] for n in names if n in h['program_span_ms']}} for h in history]
         rows=[r for r in rows if r['components']]
         if rows:measured(key,rows,'historical windows; components not additive end-to-end latency','telemetry span IDs')
+    if detail['reads']['status']=='measured':
+        for key in ('P06','P07','P08','P09'):
+            measured(key,{'report_ref':'efficiency.reads','status':'measured'},'instrumented operation scopes; submetrics incomplete and overlapping','existing read/cache telemetry')
+    if calls:
+        measured('M05',{'report_ref':'efficiency.model_calls'},'recorded request and validation outcomes; not quality accuracy','call audits and SDK spans')
+        compositions=[{'audit_ref':c['evidence_ref'],**c['input_composition']} for c in calls if c.get('input_composition')]
+        if compositions:
+            for key in ('M02','M03'):measured(key,compositions,'fixed message sections; token and complete API envelope separate','fixed request boundary')
+        outputs=[{'audit_ref':c['evidence_ref'],'codepoints':c['output_codepoints'],'utf8_bytes':c.get('output_utf8_bytes')}
+            for c in calls if 'output_codepoints' in c]
+        if outputs:measured('M04',outputs,'output size only; semantic restatement ratio unknown','native response already in memory')
+    if detail['coordination']['chains']:
+        measured('P02',{'report_ref':'efficiency.coordination'},'observed ready/worker/receipt/ack; exact native claim transaction unknown','paired task/run/clock spans')
     if history:measured('M09',[{'window_id':h['window_id'],**h['sdk']} for h in history],'historical paired requests; missing pairs explicitly unknown','telemetry')
     if w['state'] in ('completed','partial'):measured('Z01',snapshot,'current domain terminal state; native settlement separate','workflow ledger')
     if w.get('release_id'):
@@ -201,13 +270,15 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
             if not path.is_file():missing.append(name)
             elif hashlib.sha256(path.read_bytes()).hexdigest()!=expected:changed.append(name)
         measured('W07',{'baseline_files':len(protected),'unchanged':len(protected)-len(changed)-len(missing),
-            'changed':changed,'missing':missing,'unlisted_new_files':'not_checked'},'explicit protected baseline only','provided baseline hashes and current bytes')
+            'changed':changed,'missing':missing,'unlisted_new_files':sorted(str(p) for root_path in protected_roots for p in Path(root_path).rglob('*') if p.is_file() and str(p) not in protected) if protected_roots else 'not_checked'},'explicit protected baseline only','provided baseline hashes and current bytes')
     after=service.status(workflow_id)
     return {'contract':'workflow-metrics/v1','collected_at':time.time(),'vault':str(vault),
-        'current_snapshot':snapshot,'snapshot_consistent':after['revision']==w['revision'],
+        'collector_version':2,'current_snapshot':snapshot,'snapshot_consistent':after['revision']==w['revision'],
         'revision_after':after['revision'],'historical_windows':history,'usage':usage,
-        'registry':registry,'telemetry_diagnostics':diagnostics,
-        'observer':{'elapsed_seconds':time.monotonic()-started,'model_calls':0,'domain_mutations':0},
+        'registry':registry,'telemetry_diagnostics':diagnostics,'efficiency':detail,
+        'observer':{'elapsed_seconds':time.monotonic()-started,'cpu_seconds':time.process_time()-cpu,
+            'direct_evidence_reads':io,'read_scope':'direct telemetry/audit reads; domain service and optional protected hash reads not included',
+            'model_calls':0,'domain_mutations':0},
         'limitations':['Telemetry may be incomplete; missing samples are not zero.',
             'Historic whole-span concurrency includes maintenance; supply explicit windows for comparisons.',
             'Quality, hash preservation, Provider readiness and query accuracy require separate evidence.']}

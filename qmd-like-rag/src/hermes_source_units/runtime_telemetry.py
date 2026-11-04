@@ -1,7 +1,7 @@
 """Best-effort host timelines and wake hints, never workflow authority."""
 from contextlib import contextmanager
 from contextvars import ContextVar
-from functools import wraps
+from functools import wraps, lru_cache
 import hashlib
 import json
 import os
@@ -10,8 +10,14 @@ import signal
 import tempfile
 import time
 import uuid
+import threading
 
 _TRACE = ContextVar('ingest_runtime_trace', default={})
+_WRITE_LOCK = threading.Lock()
+_WRITER = {'events':0,'bytes':0,'elapsed_ns':0,'failures':0}
+_CONTEXT = ('vault','workflow_id','task_id','node','native_run_id','slice_id','batch_id',
+            'phase','stage','operation_id','request_id','input_sha256','logical_action_id',
+            'read_boundary_id','read_boundary_name','episode')
 try:
     _CLOCK_DOMAIN = 'linux-boot:'+Path('/proc/sys/kernel/random/boot_id').read_text().strip()
 except OSError:
@@ -39,6 +45,7 @@ def remaining_ns(deadline, current=None):
     return max(0,deadline['deadline_monotonic_ns']-current['monotonic_ns'])
 
 
+@lru_cache(maxsize=128)
 def runtime_directory(vault, workflow_id):
     root = (Path.home()/'.cache/hermes-skill-runtime/timelines' if os.name == 'posix'
             else Path(tempfile.gettempdir())/'hermes-skill-runtime/timelines')
@@ -50,7 +57,9 @@ def runtime_directory(vault, workflow_id):
 def span(name, *, vault=None, workflow_id=None, binding=None, **fields):
     parent = _TRACE.get()
     binding = binding or {}
-    identity = {**parent, **{k:binding[k] for k in ('workflow_id','task_id','node') if k in binding}}
+    # Inherit correlation only, never a parent's large read/cache counters.
+    identity = {**{k:parent[k] for k in _CONTEXT if k in parent},
+                **{k:binding[k] for k in ('workflow_id','task_id','node') if k in binding}}
     identity.update(vault=str(vault or identity.get('vault') or os.environ.get('TERMINAL_CWD','')),
         workflow_id=workflow_id or identity.get('workflow_id') or os.environ.get('HERMES_INGEST_WORKFLOW_ID'),
         task_id=identity.get('task_id') or os.environ.get('HERMES_KANBAN_TASK'),
@@ -63,6 +72,8 @@ def span(name, *, vault=None, workflow_id=None, binding=None, **fields):
              'name':name, 'started_at':started['wall_time_ns']/1_000_000_000,
              'started_monotonic_ns':started['monotonic_ns'],
              'clock_domain':started['clock_domain'], 'pid':os.getpid(), **fields}
+    trace.setdefault('operation_id',trace['span_id'])
+    trace['telemetry_version']=2
     if name in ('worker_authority_check','worker_live_control_check','native_output_authentication'):
         trace.update(read_boundary_id=trace['span_id'],read_boundary_name=name)
     else:
@@ -77,6 +88,7 @@ def span(name, *, vault=None, workflow_id=None, binding=None, **fields):
         raise
     finally:
         _TRACE.reset(token)
+        write_started=time.monotonic_ns()
         try:
             if trace['workflow_id'] and trace['vault']:
                 finished = clock_sample()
@@ -85,10 +97,20 @@ def span(name, *, vault=None, workflow_id=None, binding=None, **fields):
                        'elapsed_ms':round((finished['monotonic_ns']-started['monotonic_ns'])/1_000_000,3), 'error':error}
                 root = runtime_directory(trace['vault'],trace['workflow_id'])
                 root.mkdir(parents=True,exist_ok=True)
-                with (root/f'{os.getpid()}.jsonl').open('a',encoding='utf-8') as stream:
-                    stream.write(json.dumps(row,separators=(',',':'))+'\n')
+                with _WRITE_LOCK:
+                    # Cumulative snapshots are max-selected by the collector, never summed.
+                    row['observer_prior_write_totals']=dict(_WRITER)
+                    data=(json.dumps(row,separators=(',',':'))+'\n').encode('utf-8')
+                    with (root/f'{os.getpid()}.jsonl').open('ab') as stream:stream.write(data)
+                    _WRITER['events']+=1;_WRITER['bytes']+=len(data)
+                    _WRITER['elapsed_ns']+=time.monotonic_ns()-write_started
         except (OSError, ValueError, TypeError):
-            pass
+            _WRITER['failures']+=1
+
+
+def event(name, **fields):
+    """Small best-effort point; no domain reads and no authority."""
+    with span(name,event='point',**fields):pass
 
 
 def measured(name, identity=None):

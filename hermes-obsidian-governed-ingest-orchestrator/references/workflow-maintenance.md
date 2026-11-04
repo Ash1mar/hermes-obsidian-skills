@@ -72,3 +72,46 @@ Unlisted new files are not checked. Provider data is read from the portable
 manifest and matched to the current release bytes; no model, index load or
 Provider sync occurs. A ready manifest is reported as recorded state, not fresh
 verification of host index contents.
+
+## Efficiency collection before the next native run
+
+Collector version 2 reads each timeline once, streams JSONL and reuses audit and
+receipt bytes within its invocation. `efficiency` contains call-to-receipt and
+durable-attempt links, logical read/hash/parse/cache costs, cache pre-hit scans,
+acknowledgement outcomes, task/run/clock-matched completion chains, committed
+stage windows, phase activity, recovery records and process writer overhead.
+Existing registry IDs remain stable; several entries reference these sections.
+Nested shared read ledgers are counted once. Repeated path access is not labelled
+redundant without compatible version and authority evidence. Raw disk I/O,
+exact native claim/lease transaction times and physical HTTP retries remain unknown.
+
+New native requests carry a request ID through model/SDK spans and the existing
+audit. Actual fixed-message sections are counted during their existing rendering;
+SDK payload fingerprints reuse the existing boundary hash. No full prompt copies,
+extra model calls or document rereads are introduced for these measurements.
+`input` is an exact combined material/metadata section, not a guessed semantic
+breakdown. Character/byte sizes are not token usage. Provider-envelope size and
+unavailable token detail are not inferred. Successful persistence, native grant
+release and timeout have distinct evidence. Release-to-next-worker intervals
+alone do not prove eligible idle capacity or wasted time.
+
+Only correlation fields propagate into child spans. Large parent read counters
+are not copied into every child event. Writer totals are cumulative per process
+and max-selected, not summed; they exclude the final write and include other
+workflows in that same process. Metrics are best-effort observation, never an
+execution or retry authority. No polling or periodic whole-Vault scan was added.
+
+`--observations <json>` accepts an external list with `event_id`, `vault`,
+`workflow_id`, `kind` (observation/controller_reentry/manual_repair/maintenance),
+and observer-provided time/evidence fields. A missing list means unknown manual
+interventions, not zero. `--protected-root <path>` together with the explicit
+hash baseline inventories new files in that scope; protection hashing is an
+explicit final audit cost, not part of the normal telemetry loop.
+
+After successful native terminal settlement the watcher attempts one external
+final report under its host timeline directory. Export failure is observable and
+never reopens domain work. This automatic report uses available native usage,
+but operator annotations and explicit protection checks require the external
+read-only export above. Existing historical reports and old workflows are not
+rewritten. Missing new fields in old runs remain unknown. Pass remains 10 and
+MinerU remains 1; no recovery budget, pause, QA rule or deployment default changes.

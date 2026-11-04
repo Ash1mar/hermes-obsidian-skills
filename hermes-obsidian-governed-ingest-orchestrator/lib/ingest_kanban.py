@@ -464,6 +464,8 @@ class KanbanCLI:
         self.command("kanban", "--board", slug, "complete", task_id,
                      "--force", "--result", result)
         self._refresh_projection(slug)
+        from hermes_source_units.runtime_telemetry import event
+        event('native_completion_applied',task_id=task_id,board_id=slug)
 
     def task_status(self, slug: str, task_id: str) -> str:
         if self._projection_board == slug and task_id in self._projection_rows:
@@ -520,6 +522,8 @@ class KanbanCLI:
         if row['status'] == 'triage':
             _fail('NATIVE_ROUTING_CONFLICT', 'triage card requires trusted isolation recovery')
         operation = "schedule" if state == "scheduled" else "block"
+        from hermes_source_units.runtime_telemetry import event
+        event('dispatch_hold',task_id=task_id,board_id=slug,reason=reason,projected_state=state)
         self.command("kanban", "--board", slug, operation, task_id, reason)
         self._refresh_projection(slug)
 
@@ -528,6 +532,8 @@ class KanbanCLI:
             self.command("kanban", "--board", slug, "unblock", task_id,
                          "--reason", "Vault slice ready")
             self._refresh_projection(slug)
+            from hermes_source_units.runtime_telemetry import event
+            event('dispatch_ready',task_id=task_id,board_id=slug)
 
 
 def finalized_build_refs(knowledge,batch):

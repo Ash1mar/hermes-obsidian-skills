@@ -9,6 +9,7 @@ from hermes_source_units.source_units import _exclusive_lock,_load_json,_json_by
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.recovery_control import epoch,automatic,check
 from hermes_source_units.recovery_policy import effective
+from hermes_source_units.runtime_telemetry import span, measured
 
 RETRYABLE={'LOCK_BUSY','REVISION_CONFLICT','KANBAN_UNAVAILABLE','WORKER_ACTIVE','RECOVERY_DRAIN_PENDING'}
 
@@ -61,6 +62,7 @@ def attempt(adapter,wid,record):
         return recover(adapter,wid)
 
 
+@measured('recovery_supervisor',lambda adapter,wid,key,script:{'vault':adapter.workflow.vault,'workflow_id':wid,'episode':key})
 def supervise(adapter,wid,key,script):
     root=adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{wid}/automatic-control'
     path=root/(key+'.json')
@@ -92,7 +94,10 @@ def supervise(adapter,wid,key,script):
                      '--episode',key,'--attempt-output',str(result_path)]
             # No artificial timeout may kill a controller halfway through a commit.
             # The child uses bounded waits/locks and holds no model request.
-            result=subprocess.run(command,stdin=subprocess.DEVNULL,check=False)
+            with span('recovery_controller_attempt',episode=key,attempt_ordinal=state['attempts'],
+                      operator_stop_epoch=state['operator_stop_epoch']) as trace:
+                result=subprocess.run(command,stdin=subprocess.DEVNULL,check=False)
+                trace['returncode']=result.returncode
             outcome=_load_json(result_path) if result_path.exists() else {'code':'CONTROLLER_INTERRUPTED','returncode':result.returncode}
             state['history'].append(outcome)
             if outcome.get('ok'):
