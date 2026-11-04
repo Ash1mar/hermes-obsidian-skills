@@ -189,3 +189,16 @@ def test_metrics_report_detects_snapshot_change(tmp_path):
     w={'workflow_id':'w','batch_id':None,'revision':1,'state':'planning','current_stage':'planning','scope':{},'source_outcomes':[]}
     states=iter([w,{**w,'revision':2}]);s=NS(vault=tmp_path,status=lambda _:next(states))
     assert metrics.collect(s,'w',timeline=tmp_path)['snapshot_consistent'] is False
+
+
+def test_metrics_task_status_and_pass_records_are_scoped_to_current_batch(tmp_path):
+    for tid in ('one','other-workflow'):
+        p=tmp_path/f'_system/knowledge-builds/task-{tid}/passes/p.json';p.parent.mkdir(parents=True);p.write_text('{}')
+    batch={'task_ids':['one','two'],'slice_config':{'pass_worker_concurrency':5}}
+    w={'workflow_id':'w','batch_id':'batch','revision':1,'state':'analyzing','scope':{},'source_outcomes':[]}
+    knowledge=NS(_batch=lambda _:batch,_slices=lambda _:[],
+        _task=lambda tid:{'status':'completed' if tid=='one' else 'failed'})
+    report=metrics.collect(NS(vault=tmp_path,status=lambda _:w,knowledge=knowledge),'w',timeline=tmp_path)
+    value=report['registry']['W04']['value']
+    assert value['tasks']=={'completed':1,'failed':1} and value['pass_records']==1
+    assert report['current_snapshot']['current_pass_capacity']['limit']==5

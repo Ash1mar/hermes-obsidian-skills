@@ -131,8 +131,8 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
             'basis':batch.get('pass_capacity_control') or {'original_slice_config':batch['slice_config']['pass_worker_concurrency']}}
         slices=service.knowledge._slices(w['batch_id'])
         snapshot['plan']={'tasks':len(batch['task_ids']),'slices':len(slices),'slice_states':dict(Counter(s['state'] for s in slices))}
-        snapshot['task_states']=dict(Counter(service.knowledge._task(t)['state'] for t in batch['task_ids']))
-        snapshot['pass_records']=sum(len(list((vault/f'_system/knowledge-builds/{t}/passes').glob('*.json'))) for t in batch['task_ids'])
+        snapshot['task_states']=dict(Counter(service.knowledge._task(t)['status'] for t in batch['task_ids']))
+        snapshot['pass_records']=sum(len(list((vault/f'_system/knowledge-builds/task-{t}/passes').glob('*.json'))) for t in batch['task_ids'])
     sources=[]
     for outcome in w.get('source_outcomes',[]):
         row={k:outcome.get(k) for k in ('path','status','resource_id','unit_set_id','content_sha256')}
