@@ -197,7 +197,7 @@ def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypa
     def model(adapter,binding,phase,view,caller,limit,**kw):
         calls.append(view);raw=json.dumps({'results':{k:{'content':'isolated mechanical slot '+k} for k in view['pages']}})
         ref=f"_system/ledgers/ingest-workflows/isolated/semantic-calls/{len(calls)}.json"
-        _write_atomic(tmp_path/ref,_json_bytes({'fixture':True}));raw_by[str(tmp_path/ref)]=raw
+        _write_atomic(tmp_path/ref,_json_bytes({'fixture':True,'phase':'page-pair','page_request_id':__import__('page_pair_calls').ACTIVE.get()[1],'model':{'origin':'isolated_fixture'}}));raw_by[str(tmp_path/ref)]=raw
         capture(adapter,binding,raw,ref,{'origin':'isolated_fixture'});return raw,ref
     monkeypatch.setattr(fixed_semantic_recovery,'native_reply',lambda a,b,path,*_,**kw:(raw_by[str(path)],{}))
     args=(adapter,binding,value,state,object(),model,lambda a,r,x:receipts.append(x),lambda *a:None,
@@ -206,3 +206,21 @@ def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypa
     assert len(calls)==1 and len(calls[0]['pages'])==2 and len(result['pages'])==2
     assert len({r['page_receipt_id'] for r in receipts})==2
     native.execute(*args);assert len(calls)==1
+
+def test_concurrent_reservations_cannot_double_spend(system):
+    from concurrent.futures import ThreadPoolExecutor
+    b,*_=system;a,c=item('a'),item('c')
+    def attempt(_):
+        try:return reserve(b,a,c)
+        except ContractError:return None
+    with ThreadPoolExecutor(max_workers=2) as pool:results=list(pool.map(attempt,range(2)))
+    assert sum(r is not None for r in results)==1
+    assert all(len(r['attempts'])==1 for r in b.read()['pages'].values())
+
+
+def test_cancel_before_atomic_publication_reserves_nothing(tmp_path):
+    calls=[]
+    def guard():calls.append(1);return str(len(calls))
+    b=PageCalls(tmp_path,guard)
+    with pytest.raises(ContractError,match='WORKFLOW_STOPPED'):reserve(b,item('a'),item('b'))
+    assert not b.path.exists()

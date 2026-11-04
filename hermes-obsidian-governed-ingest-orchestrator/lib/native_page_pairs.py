@@ -79,6 +79,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     def authenticate(q,response):
         ref=response['audit_ref'];path=_vault_path(adapter.workflow.vault,ref)
         if not path.is_file():return False
+        audit=_load_json(path)
+        if audit.get('page_request_id')!=q['request_id'] or audit.get('phase')!='page-pair' or audit.get('model')!=response['metadata']:return False
         proof=native_reply(adapter,binding,path,q['wire'],q['schema'],[])
         return bool(proof and proof[0]==response['raw'])
     def validate(k,draft):return check('page-write',value,None,None,draft)
@@ -126,6 +128,12 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         pages={f'p{i}':{k:copy.deepcopy(v) for k,v in view.items() if k not in ('original_evidence','evidence_encoding')} for i,(p,view) in enumerate(group,1)}
         wire_view={'contract':CONTRACT,'pages':pages,'original_evidence':evidence,
                    'page_members':{f'p{i}':key(p) for i,(p,v) in enumerate(group,1)}}
+        diagnostics={}
+        for i,(page,view) in enumerate(group,1):
+            prior=book.status(page,view)
+            if prior and prior['attempts']:
+                last=prior['attempts'][-1];diagnostics[f'p{i}']={'code':last.get('code'),'reason':last.get('reason')}
+        if diagnostics:wire_view['page_validation_diagnostics']=diagnostics
         sc=schema_for('page-pair',wire_view);prepared=prepare_request_projection('page-pair',wire_view,sc,[])
         if prepared['input_size']>30000:
             if len(group)==2:

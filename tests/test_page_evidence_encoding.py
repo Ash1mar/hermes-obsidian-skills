@@ -44,9 +44,10 @@ def test_encoding_roundtrips_full_materials_missing_vs_null_and_candidate_qa():
 def test_only_marked_page_wires_change_and_full_instruction_is_metered(tmp_path):
     a,b,v=fixture(tmp_path);raw=prepare_request_projection('page-write',v,schema('page-write'),[])
     selected=e.select(a,b,'page-write',v,prepare_request_projection)
-    assert selected[e.MARKER]==e.CONTRACT
+    assert selected[e.MARKER] in (e.CONTRACT,e.COMPACT_CONTRACT)
     packed=prepare_request_projection('page-write',selected,schema('page-write'),[])
-    assert packed['input_size']<raw['input_size'] and e.INSTRUCTION in packed['wire']['system']
+    instruction=e.INSTRUCTION if selected[e.MARKER]==e.CONTRACT else e.COMPACT_INSTRUCTION
+    assert packed['input_size']<raw['input_size'] and instruction in packed['wire']['system']
     assert json.loads(raw['wire']['user'].split('\n',1)[1])['input']==v
     body=json.loads(packed['wire']['user'].split('\n',1)[1])['input']
     assert decoded_table(body['original_evidence']['tasks'][0]['materials'])==v['original_evidence']['tasks'][0]['materials']
