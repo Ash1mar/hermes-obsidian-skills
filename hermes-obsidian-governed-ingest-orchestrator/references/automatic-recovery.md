@@ -67,6 +67,16 @@ Conversion defects, changed or absent required evidence, permissions, transport
 failures and unknown native completion do not gain an unchanged-material retry.
 Unauthenticated failures stay held. Recovery cannot cross a durable pause.
 
+Budget-lock contention waits up to five seconds for the atomic ledger operation.
+An ended worker blocked on this exact lock can receive one mechanical recovery,
+including within the selected Canary. Admission pairs every observed request with
+its returned native transcript and durable audit. It settles only authenticated
+reserved budget entries, preserving their ordinals; unknown calls remain held.
+The next native worker reuses saved responses through ordinary evidence checks.
+This grants no extra semantic allowance and does not recreate accepted Passes.
+The watcher selects the installed Hermes interpreter before taking its ownership
+lock when the short-entry system Python cannot import the native runtime.
+
 `scripts/recover_ingest_workflow.py` is the same controller used automatically by
 the watcher. A pending controller episode can be continued without selecting
 individual incidents; a user cancellation or durable pause cannot be released by it. Invoke with `python3 "<skill-dir>/scripts/recover_ingest_workflow.py"

@@ -39,10 +39,11 @@ def handoff(monkeypatch, tmp_path):
     )
 
     class FakeAdapter:
-        def __init__(self, vault, *, enable_workers):
+        def __init__(self, vault, *, enable_workers=False):
             assert Path(vault) == state.vault
-            assert enable_workers is True
-            self.workflow = SimpleNamespace(vault=state.vault)
+            assert isinstance(enable_workers, bool)
+            self.workflow = SimpleNamespace(vault=state.vault,
+                status=lambda _: {'current_stage':'analyzing'})
 
         def resume(self, request):
             events.append("resume-sync")
@@ -110,7 +111,7 @@ def invoke(handoff, command="resume"):
 def test_resume_handoff_dispatches_before_watcher_without_authority_snapshot(handoff):
     returned = invoke(handoff)
     assert handoff.events == ["resume-sync", "lock-enter", "native-cli", "lock-exit", "watcher"]
-    assert returned["initial_program_dispatch"]["state"] == "dispatched"
+    assert returned["initial_program_dispatch"]["state"] == "handoff_checked"
     assert returned["reconciler_pid"] == 4242
     assert handoff.calls[0][0] == [
         "hermes", "ingest-program-dispatch", "--vault", str(handoff.vault),

@@ -58,8 +58,9 @@ def actions(adapter,value):
         if not path.exists():continue
         failure=_load_json(path)
         if failure.get('task_id')!=card['task_id']:continue
+        budget_failure=failure.get('error_code')=='LOCK_BUSY'
         try:
-            if skippable_failure(failure)=='UNRESOLVED_NATIVE_MODEL_REQUEST':continue
+            if not budget_failure and skippable_failure(failure)=='UNRESOLVED_NATIVE_MODEL_REQUEST':continue
         except ContractError:continue
         node=pass_node(value,item)
         if failure.get('input_fingerprint')!=node.input_fingerprint:continue
@@ -68,9 +69,13 @@ def actions(adapter,value):
         snapshot=adapter.kanban.task_snapshot(value['kanban']['board_id'],card['task_id'])
         if snapshot.get('task',{}).get('worker_pid') or any(not r.get('ended_at') for r in snapshot.get('runs',[])):continue
         try:
-            proof=exhaustion_proof(adapter,value,item,binding,failure,snapshot)
-            kind='isolate' if proof else 'retry'
-            if not proof:proof=verify(adapter,value,item,binding,failure,snapshot)
+            if budget_failure:
+                from pass_budget_recovery import verify as verify_budget
+                proof=verify_budget(adapter,value,binding,failure,snapshot);kind='budget_retry'
+            else:
+                proof=exhaustion_proof(adapter,value,item,binding,failure,snapshot)
+                kind='isolate' if proof else 'retry'
+                if not proof:proof=verify(adapter,value,item,binding,failure,snapshot)
         except ContractError:continue  # Authenticated admission is mandatory, not best effort.
         out.append({'node':name,'task_id':card['task_id'],'failure_ref':ref,
             'failure_sha256':hashlib.sha256(path.read_bytes()).hexdigest(),'action':kind,'proof':proof})
@@ -113,9 +118,10 @@ def recover(adapter,wid,*,resume=True):
         for entry in intent['actions']:
             rid=op+'-'+fingerprint(entry['node'])[:8]
             saved_request=root/(rid+'.request.json')
-            if entry['action']=='retry':
+            if entry['action'] in ('retry','budget_retry'):
                 if not saved_request.exists():_write_atomic(saved_request,_json_bytes(request(adapter,wid,recovery_id=rid,
-                    recovery_scope='pass-local-review/v1',reason='Automatic one-correction program policy; original evidence retained',
+                    recovery_scope='pass-budget-lock/v1' if entry['action']=='budget_retry' else 'pass-local-review/v1',
+                    reason='Automatic bounded recovery; original evidence and consumed budgets retained',
                     entries=[{k:entry[k] for k in ('node','task_id','failure_sha256')}])))
                 adapter.recover_pass_execution(_load_json(saved_request))
             else:

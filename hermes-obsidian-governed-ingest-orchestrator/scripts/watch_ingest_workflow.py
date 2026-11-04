@@ -149,6 +149,8 @@ def main() -> int:
     parser.add_argument("--interval", type=float, default=3)
     args = parser.parse_args()
     try:
+        from watcher_runtime import ensure_native_runtime
+        ensure_native_runtime()
         watch(args.vault, args.workflow_id, args.interval)
     except (ContractError, OSError, RuntimeError) as exc:
         print(str(exc), file=sys.stderr)
