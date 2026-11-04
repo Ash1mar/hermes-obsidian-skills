@@ -72,7 +72,11 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
             # during this cycle remains set and prevents the following sleep.
             wake.clear()
             value = adapter.workflow.status(workflow_id)
-            if value["cancel_requested"] or value["state"] in ("completed", "partial", "failed"):
+            if value["cancel_requested"] or value["state"] == 'failed':
+                return
+            if value['state'] in ('completed','partial'):
+                from terminal_completion import settle
+                settle(adapter,workflow_id,wake,interval)
                 return
             if value['current_stage']=='release_planning':
                 from release_readiness import readiness

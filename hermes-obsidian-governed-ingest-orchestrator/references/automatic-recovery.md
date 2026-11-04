@@ -67,3 +67,18 @@ Unauthenticated failures stay held. Recovery cannot cross a durable pause.
 the watcher; it can also continue a maintenance-stopped workflow without selecting
 individual incidents. Invoke with `python3 "<skill-dir>/scripts/recover_ingest_workflow.py"
 --vault <explicit-path> --workflow-id <id>`. It authors no domain output.
+
+After successful or partial Final Acceptance the watcher remains responsible
+for native completion acknowledgement. It verifies the final release and
+acceptance artifacts, runs supported reconciliation, then waits for native
+consumers, runnable cards and leases to drain before exiting. Restarting that
+watcher repeats the same idempotent mechanical operation. Terminal workflows
+cannot dispatch new workers through graph eligibility or the native dispatcher.
+
+This bounded settlement does not execute acceptance, synchronize the Provider,
+reset semantic budgets or grant a retry. QA, coverage gaps and valid results stay
+unchanged. Cancelled and failed workflows retain their stop behavior. Unknown or
+invalid final evidence remains held; transient lock/native-CLI contention is
+polled for at most 60 seconds and recorded in the host runtime's
+`terminal-completion.json`. An unresolved settlement is reported as an error,
+never as successful native completion. No scheduled job or human QA is involved.

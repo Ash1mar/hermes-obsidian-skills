@@ -40,7 +40,7 @@ def _dispatch_programs(adapter, workflow_id):
     from hermes_cli import kanban_db as kb, kanban_db_connect as kc, kanban_db_dispatch as kd, kanban_db_workspace as kw
     from hermes_cli.profiles import profile_exists
     value = adapter.workflow.status(workflow_id)
-    if value['cancel_requested']:
+    if value['cancel_requested'] or value.get('state') in ('completed','partial','failed','cancelled'):
         return []
     # A profile with this name would allow Gateway to launch a model instead.
     if profile_exists(ASSIGNEE):
