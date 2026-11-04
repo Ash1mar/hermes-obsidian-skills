@@ -13,8 +13,7 @@ from fixed_semantic_schema import schema
 from semantic_output import path_for
 
 def fixture(vault,monkeypatch,tmp_path):
-    a,w,card,req,fr=stopped_reducer(vault,monkeypatch)
-    w=a.workflow.status(w['workflow_id']);w['scope']['recovery_policy']={**DEFAULT,'unknown_completion':'isolate_after_drain'};a.workflow._write(w)
+    a,w,card,req,fr=stopped_reducer(vault,monkeypatch,recovery_policy={**DEFAULT,'unknown_completion':'isolate_after_drain'})
     binding=json.loads(Path(a.kanban.by_id[card['task_id']]['body']['worker_binding']).read_text())
     value=fixed_reduce._snapshot(a,binding,{'batch_id':w['batch_id']},presentation=False)
     root=vault/f"_system/ledgers/ingest-workflows/{w['workflow_id']}";sp=root/'semantic-inputs/original.json';sp.parent.mkdir(exist_ok=True);sp.write_text(json.dumps(value))

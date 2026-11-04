@@ -6,6 +6,29 @@ import shutil
 import subprocess
 import sys
 import time,json
+import shlex
+
+
+def native_interpreter(executable):
+    """Resolve console scripts or literal shell exec wrappers without shell eval."""
+    cli=Path(executable).resolve();seen=set()
+    for _ in range(4):
+        if cli in seen:break
+        seen.add(cli)
+        python=cli.parent/'python'
+        if python.is_file():return python
+        try:lines=cli.read_text(encoding='utf-8').splitlines()
+        except (OSError,UnicodeError):break
+        targets=[]
+        for line in lines:
+            try:words=shlex.split(line)
+            except ValueError:continue
+            if (len(words)==3 and words[0]=='exec' and words[2]=='$@'
+                    and Path(words[1]).is_absolute() and Path(words[1]).name=='hermes'
+                    and Path(words[1]).is_file()):targets.append(Path(words[1]).resolve())
+        if len(targets)!=1:break
+        cli=targets[0]
+    raise RuntimeError('Hermes CLI has no verifiable native runtime interpreter')
 
 
 def coordinator_pid(vault,workflow_id):
@@ -37,9 +60,7 @@ def ensure_native_runtime():
     if not executable:
         raise RuntimeError('Hermes CLI is required for native completion coordination')
     # Supports the installed venv console script, including uv shell launchers.
-    python = Path(executable).resolve().parent / 'python'
-    if not python.is_file():
-        raise RuntimeError('Hermes CLI has no adjacent runtime interpreter')
+    python = native_interpreter(executable)
     subprocess.run([str(python), '-c', 'import hermes_cli'], check=True, timeout=10,
                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
     os.execv(str(python), [str(python), *sys.argv])

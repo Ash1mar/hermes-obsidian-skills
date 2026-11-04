@@ -47,13 +47,15 @@ def resource_fixture(adapter, card):
     assert adapter.worker_complete(binding)['ok']
 
 
-def stopped_reducer(vault, monkeypatch, kind='resource-reduce'):
+def stopped_reducer(vault, monkeypatch, kind='resource-reduce',*,recovery_policy=None):
     prepare_layered_reduce_batch(vault, 'recovery-batch')
     adapter = IngestKanbanAdapter(vault, EndedKanban(), enable_workers=True)
-    value = start_and_pin(vault, workflow_request(workflow_id='ingest-reduce-recovery', actor='agent',
-        expected_revision=0, profile='compact-3', batch_id='recovery-batch', scope={
+    scope={
             'source_paths':[], 'knowledge_selector':'all-current', 'execution_mode':'auto_full',
-            'provider':'skip', 'pause_after':['checkpoint_1']}))
+            'provider':'skip', 'pause_after':['checkpoint_1']}
+    if recovery_policy is not None:scope['recovery_policy']=recovery_policy
+    value = start_and_pin(vault, workflow_request(workflow_id='ingest-reduce-recovery', actor='agent',
+        expected_revision=0, profile='compact-3', batch_id='recovery-batch', scope=scope))
     value['dispatch_policy'] = {'mode':'full', 'slice_ids':[], 'selection_digest':None}
     adapter.workflow._write(value)
     value = sync(adapter, value['workflow_id'])

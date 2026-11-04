@@ -42,6 +42,14 @@ def test_start_cli_selects_native_interpreter_before_parsing_or_writing(monkeypa
     with pytest.raises(SystemExit) as e:module.main()
     assert e.value.code==0 and seen==['native']
 
+def test_native_runtime_resolves_literal_shell_launcher_and_rejects_dynamic_exec(tmp_path):
+    bindir=tmp_path/'venv/bin';bindir.mkdir(parents=True)
+    python=bindir/'python';python.write_text('native');cli=bindir/'hermes';cli.write_text('console')
+    wrapper=tmp_path/'launcher';wrapper.write_text('#!/usr/bin/env bash\nunset PYTHONPATH\nexec "'+str(cli)+'" "$@"\n')
+    assert runtime.native_interpreter(wrapper)==python
+    wrapper.write_text('exec "$(find-runtime)" "$@"')
+    with pytest.raises(RuntimeError):runtime.native_interpreter(wrapper)
+
 @pytest.mark.parametrize('live,marker',[(True,True),(False,True),(True,False)])
 def test_handoff_requires_actual_owner_and_matching_marker(tmp_path,monkeypatch,live,marker):
     monkeypatch.setattr('hermes_source_units.runtime_telemetry.runtime_directory',lambda *_:tmp_path)
