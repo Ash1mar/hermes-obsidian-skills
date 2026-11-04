@@ -66,7 +66,8 @@ class VerifiedJsonReads:
             with self.lock:
                 if self.schema_observation is not None and observed!=self.schema_observation:
                     raise ContractError('SOURCE_CHANGED','$','schema changed during verified JSON scope')
-                if self.schema_sha is None or not schema_reuse():
+                if (self.schema_sha is None or not schema_reuse() or
+                        not schema_path.is_relative_to(Path.home()/'.hermes/skills/domain')):
                     _,schema=read_hashed(schema_path,'verified_json.schema')
                     after=schema_path.stat()
                     if observed!=(after.st_dev,after.st_ino,after.st_size,after.st_mtime_ns,after.st_ctime_ns):
