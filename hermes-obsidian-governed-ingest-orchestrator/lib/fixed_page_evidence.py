@@ -8,6 +8,7 @@ from hermes_source_units import ContractError
 
 CONTRACT='lossless-page-evidence/v1'
 COMPACT_CONTRACT='lossless-page-evidence/v2'
+PAIR_CONTRACT='lossless-page-pair/v1'
 MARKER='evidence_encoding'
 INSTRUCTION=' Evidence encoding lossless-page-evidence/v1: a materials table has columns and ordered rows; each row cell uses its column key. missing lists [row,column] cells whose key is absent, not null. Candidate evidence_qa may name an exact list in candidate_qa_pool. Expand these local representations when reading support refs, source spans, core/context roles, dependencies and QA. All original text, images, limits and qualifications remain required; representation is not evidence selection or semantic approval.'
 COMPACT_INSTRUCTION=' Evidence encoding lossless-page-evidence/v2: tables contain columns and ordered rows; missing [row,column] means absent, not null. Expand citation_evidence tables and materials tables. Candidate evidence_qa and source_evidence strings name exact values in candidate_qa_pool and source_evidence_pool. Preserve every field, text, condition, limit, source span and image after expansion. This is lossless representation, never evidence removal or approval.'
@@ -71,6 +72,25 @@ def restore_compact(view):
         for key,pool in (('evidence_qa','candidate_qa_pool'),('source_evidence','source_evidence_pool')):
             if pool in result and isinstance(candidate.get(key),str):candidate[key]=result[pool][candidate[key]]
     result.pop('candidate_qa_pool',None);result.pop('source_evidence_pool',None)
+    return result
+
+
+def present_pair(view):
+    """One exact evidence/QA/source pool across the fixed independent slots."""
+    result=copy.deepcopy(view);all_candidates=[]
+    for page in result['pages'].values():
+        candidates=page.pop('candidates');start=len(all_candidates)
+        all_candidates.extend(candidates);page['candidate_rows']=list(range(start,len(all_candidates)))
+    shared=present_compact({'original_evidence':result.pop('original_evidence'),'candidates':all_candidates})
+    result['shared_evidence']=shared
+    return result
+
+
+def restore_pair(view):
+    result=copy.deepcopy(view);shared=restore_compact(result.pop('shared_evidence'))
+    result['original_evidence']=shared['original_evidence']
+    for page in result['pages'].values():
+        page['candidates']=[copy.deepcopy(shared['candidates'][i]) for i in page.pop('candidate_rows')]
     return result
 
 def review_scope(assessment):

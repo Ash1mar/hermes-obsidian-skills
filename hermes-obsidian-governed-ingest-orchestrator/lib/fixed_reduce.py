@@ -113,6 +113,9 @@ def _snapshot(adapter,binding,checked,*,presentation=True):
         from page_dependencies import provenance
         backend['page_dependency_proof']=provenance(packet,readings)
         view['page_call_contract']='durable-page-calls/v1'
+        from efficiency_presentation import observed_profile
+        dispatch=observed_profile(adapter,binding).get('page_dispatch_contract')
+        if dispatch:view['page_dispatch_contract']=dispatch
     result = {'contract':'fixed-reduce-input/v1','binding':dict(binding),'view':view,'backend':backend}
     if kind=='resource-reduce':
         from source_hold_recovery import rebind_view

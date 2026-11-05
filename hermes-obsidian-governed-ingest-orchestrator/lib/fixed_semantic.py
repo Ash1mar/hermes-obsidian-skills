@@ -386,7 +386,10 @@ def wire_prompt(phase,view,output_schema,correction=None,*,metrics=None):
     body={'phase':phase}
     if phase not in ('candidate','citation'):
         body['output_schema']=_stable_objects(output_schema)
-    if phase in ('page-write','page-review') and view.get('evidence_encoding') in ('lossless-page-evidence/v1','lossless-page-evidence/v2'):
+    if phase=='page-pair' and view.get('evidence_encoding')=='lossless-page-pair/v1':
+        from fixed_page_evidence import present_pair
+        body['input']=_ordered_view(present_pair(view))
+    elif phase in ('page-write','page-review') and view.get('evidence_encoding') in ('lossless-page-evidence/v1','lossless-page-evidence/v2'):
         from fixed_page_evidence import present,present_compact
         body['input']=_ordered_view(present_compact(view) if view['evidence_encoding']=='lossless-page-evidence/v2' else present(view))
     elif phase=='resource-reduce' and view.get('efficiency_contract')=='efficiency-presentation/v1':
@@ -416,6 +419,9 @@ def system_prompt(phase,view,correction=None):
     system=COMMON+'\n'+(RULES['page-write'] if phase=='page-pair' else RULES[phase])
     if phase=='page-pair':
         system+=' Return exactly the fixed page result slots independently. original_evidence is shared by these pages; all conditions, exceptions, contrary evidence, QA and limits remain required for each assigned claim. Keep distinct identities and scope; one blocked page must not suppress another valid page. Return content or blocked_reason in each slot; never merge pages or reassign candidates.'
+        if view.get('evidence_encoding')=='lossless-page-pair/v1':
+            from fixed_page_evidence import COMPACT_INSTRUCTION
+            system+=COMPACT_INSTRUCTION+' shared_evidence holds the exact common original_evidence and candidate table; each page candidate_rows selects its ordered zero-based rows. Expand these references independently for every page, including all proof, QA and context fields.'
     if view.get('efficiency_contract')=='efficiency-presentation/v1':
         if phase=='resource-reduce':
             system+=' candidate_qa_pool stores exact shared QA lists; expand each candidate evidence_qa reference without losing any qualification. Preserve valid supported proposals; explicitly omit unsupported candidates in omitted_candidate_refs with reasons. An unsupported example does not invalidate other proposals. Never complete missing examples from imagination.'

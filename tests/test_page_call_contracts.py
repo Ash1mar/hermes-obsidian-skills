@@ -169,7 +169,8 @@ def test_page_ack_is_published_before_second_page_failure(system):
 
 
 @pytest.mark.parametrize('cancel_after_first',[False,True])
-def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypatch,cancel_after_first):
+@pytest.mark.parametrize('dispatch',[None,'per-page-dispatch/v2'])
+def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypatch,cancel_after_first,dispatch):
     from types import SimpleNamespace as NS
     import native_page_pairs as native
     import semantic_output,reduce_disposition,fixed_semantic_recovery,fixed_global_packets
@@ -191,6 +192,10 @@ def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypa
     state={'pages':pages};value={'view':{'page_call_contract':'durable-page-calls/v1',
         'candidates':[{'candidate':p['candidate_refs'][0],'source_evidence':[]} for p in pages],
         'original_evidence':{'tasks':[]}},'backend':{'existing_pages':{}}}
+    if dispatch:value['view']['page_dispatch_contract']=dispatch
+    adapter.workflow.knowledge=NS()
+    import hermes_source_units.delivery_scope as delivery
+    monkeypatch.setattr(delivery,'guard_page',lambda *_:None)
     monkeypatch.setattr(semantic_output,'output_boundary',lambda *_:(None,None))
     monkeypatch.setattr(reduce_disposition,'page_permit',lambda *_:None)
     original=PageCalls

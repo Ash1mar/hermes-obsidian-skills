@@ -44,9 +44,10 @@ def compatible(left,right):
     return True
 
 
-def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project,measure):
+def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project,measure,*,preheld=(),prior_calls=(),planning_failure=None):
     """Return None only before any durable page budget exists, for legacy fallback."""
     from page_execution_diagnostics import observe
+    per_page=value['view'].get('page_dispatch_contract')=='per-page-dispatch/v2'
     if value['view'].get('page_call_contract')!=CONTRACT:
         observe(binding,'contract_not_pinned');return None
     from semantic_output import output_boundary,check
@@ -73,37 +74,58 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             row=_load_json(path)
             if row.get('phase')=='page-write':legacy.append(path)
     if legacy:
-        if book.path.exists():raise ContractError('SEMANTIC_OUTPUT_HELD','$','mixed page budget contracts; no new allowance')
+        if book.path.exists() or per_page:raise ContractError('SEMANTIC_OUTPUT_HELD','$','mixed page budget contracts; no new allowance')
         observe(binding,'legacy_page_history',history_count=len(legacy));return None
-    items=[]
+    items=[];held=copy.deepcopy(list(preheld));held_paths={p['path'] for p in held}
     for page in state['pages']:
-        if boundary or page_permit(adapter,binding,page):
+        if page['path'] in held_paths:continue
+        if per_page:
+            from hermes_source_units.delivery_scope import guard_page
+            guard_page(adapter.workflow.knowledge,binding['workflow_id'],page['path'])
+        if boundary or (not per_page and page_permit(adapter,binding,page)):
+            if per_page:raise ContractError('SEMANTIC_OUTPUT_HELD','$','explicit output boundary requires supported continuation')
             if book.path.exists():raise ContractError('SEMANTIC_OUTPUT_HELD','$','durable page calls require exact supported continuation')
             observe(binding,'output_boundary_or_disposition',page_path=page['path']);return None
         view,n=measure(adapter,value,page,caller,project)
+        if per_page:view={k:v for k,v in view.items() if k!='evidence_encoding'}
         if n>30000:
+            if per_page:
+                held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':'page-write',
+                    'code':'READING_WINDOW_OVERSIZE','reason':'complete evidence still exceeds page budget'})
+                observe(binding,'complete_input_oversize',page_path=page['path'],input_codepoints=n);continue
             if book.path.exists():raise ContractError('SEMANTIC_OUTPUT_HELD','$','changed page budget; retain existing outcomes')
             observe(binding,'complete_input_oversize',page_path=page['path'],input_codepoints=n);return None
-        if any(m.get('asset') for t in view.get('original_evidence',{}).get('tasks',[]) for m in t['materials']):
+        if not per_page and any(m.get('asset') for t in view.get('original_evidence',{}).get('tasks',[]) for m in t['materials']):
             if book.path.exists():raise ContractError('SEMANTIC_OUTPUT_HELD','$','asset call cannot replace an existing text-only reservation')
             observe(binding,'asset_requires_single',page_path=page['path']);return None
         items.append((page,view))
     from fixed_semantic_schema import schema_for
     from fixed_semantic_recovery import native_reply
     from fixed_semantic import prepare_request_projection
-    by_key={key(p):(p,v) for p,v in items};calls=[];written={};held=[]
+    by_key={key(p):(p,v) for p,v in items};calls=list(prior_calls);written={}
     if len(by_key)!=len(items):raise ContractError('IDENTITY_CONFLICT','$','duplicate durable page identities')
     for page,view in items:book.status(page,view)  # Fail before persisting any changed-input result.
+    def request_images(q):
+        if not q.get('image_inputs'):return []
+        from fixed_semantic_media import image_catalog,select_images
+        view=by_key[next(iter(q['members'].values()))['page_key']][1]
+        evidence=view['original_evidence'];images=select_images(evidence['tasks'],image_catalog(current_owner(),evidence))
+        if [{k:v for k,v in i.items() if k!='url'} for i in images]!=q['image_inputs']:
+            raise ContractError('SOURCE_CHANGED','$','reserved image evidence changed')
+        return images
     def authenticate(q,response):
         ref=response['audit_ref'];path=_vault_path(adapter.workflow.vault,ref)
         if not path.is_file():return False
         audit=_load_json(path)
         if audit.get('page_request_id')!=q['request_id'] or audit.get('phase')!='page-pair' or audit.get('model')!=response['metadata']:return False
-        proof=native_reply(current_owner(),binding,path,q['wire'],q['schema'],[])
+        proof=native_reply(current_owner(),binding,path,q['wire'],q['schema'],request_images(q))
         return bool(proof and proof[0]==response['raw'])
     def validate(k,draft):return check('page-write',value,None,None,draft)
     def persist(k,draft,request,audit):
         page,view=by_key[k];ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/page-drafts/{fingerprint(view)}.md"
+        if per_page:
+            from hermes_source_units.delivery_scope import guard_page
+            guard_page(current_owner().workflow.knowledge,binding['workflow_id'],page['path'])
         raw=draft['content'].encode('utf-8');p=_vault_path(adapter.workflow.vault,ref)
         if p.exists() and p.read_bytes()!=raw:raise ContractError('SOURCE_CHANGED','$','durable native page body changed')
         if not p.exists():_write_atomic(p,raw)
@@ -125,7 +147,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             'audit_ref':receipt['audit_ref'],'input_sha256':fingerprint(view)}
         if receipt['audit_ref'] not in calls:calls.append(receipt['audit_ref'])
     def settle(request):
-        book.settle(request,validate,persist,authenticate,on_receipt=acknowledge)
+        book.settle(request,validate,persist,authenticate,on_receipt=acknowledge,
+            **({'recovery_epoch':guard()} if per_page else {}))
     # Saved raw responses settle pages one at a time; no model call on this path.
     for request,q in book.read()['requests'].items():
         if not set(m['page_key'] for m in q['members'].values())<=set(by_key):
@@ -135,7 +158,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             for p in (root/'semantic-calls').glob('*.json'):
                 audit=_load_json(p)
                 if audit.get('page_request_id')==request:
-                    proof=native_reply(adapter,binding,p,q['wire'],q['schema'],[])
+                    proof=native_reply(adapter,binding,p,q['wire'],q['schema'],request_images(q))
                     if proof:matches.append((p,audit,proof[0]))
             if len(matches)!=1:raise ContractError('SEMANTIC_OUTPUT_HELD','$','unknown page request; no automatic resend')
             p,audit,raw=matches[0];book.capture(request,raw,p.relative_to(adapter.workflow.vault).as_posix(),audit['model'])
@@ -157,13 +180,45 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             if prior and prior['attempts']:
                 last=prior['attempts'][-1];diagnostics[f'p{i}']={'code':last.get('code'),'reason':last.get('reason')}
         if diagnostics:wire_view['page_validation_diagnostics']=diagnostics
-        sc=schema_for('page-pair',wire_view);prepared=prepare_request_projection('page-pair',wire_view,sc,[])
+        images=[]
+        if per_page:
+            from fixed_semantic_media import image_catalog,select_images,require_images_fit
+            if any(m.get('asset') for t in evidence.get('tasks',[]) for m in t.get('materials',[])):
+                images=select_images(evidence['tasks'],image_catalog(current_owner(),evidence));require_images_fit(images)
+        sc=schema_for('page-pair',wire_view);prepared=prepare_request_projection('page-pair',wire_view,sc,images)
+        if per_page:
+            from request_cost import rank
+            encoded={**wire_view,'evidence_encoding':'lossless-page-pair/v1'}
+            packed=prepare_request_projection('page-pair',encoded,sc,images)
+            if packed['input_size']<=30000 and rank(packed)<rank(prepared):wire_view,prepared=encoded,packed
+            if len(group)==2:
+                singles=[]
+                for page,view in group:
+                    single={'contract':CONTRACT,'pages':{'p1':{k:copy.deepcopy(v) for k,v in view.items() if k not in ('original_evidence','evidence_encoding')}},
+                        'original_evidence':view.get('original_evidence',{}),'page_members':{'p1':key(page)}}
+                    single_schema=schema_for('page-pair',single)
+                    options=[prepare_request_projection('page-pair',v,single_schema,[]) for v in
+                        (single,{**single,'evidence_encoding':'lossless-page-pair/v1'})]
+                    singles.append(min(options,key=rank))
+                costs=[prepared,*singles]
+                metric='text_tokens' if all(p['request_cost'].get('text_tokens') is not None for p in costs) else 'utf8_bytes'
+                pair_cost=prepared['request_cost'][metric];single_cost=sum(p['request_cost'][metric] for p in singles)
+                observe(binding,'pair_cost_comparison',metric=metric,pair_cost=pair_cost,two_single_cost=single_cost,
+                    net_saving=single_cost-pair_cost,billable_saving_verified=False)
+                if pair_cost>=single_cost:
+                    for item in group:submit([item])
+                    return
+            observe(binding,'pair' if len(group)==2 else 'single',page_paths=[p['path'] for p,v in group],
+                request_cost=prepared['request_cost'],encoding=wire_view.get('evidence_encoding','original'))
         if prepared['input_size']>30000:
             if len(group)==2:
                 for item in group:submit([item])
                 return
+            if per_page:
+                page=group[0][0];held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':'page-write',
+                    'code':'READING_WINDOW_OVERSIZE','reason':'complete slot request exceeds bound; no reservation consumed'});return
             raise ContractError('READING_WINDOW_OVERSIZE','$','complete durable page request exceeds bound')
-        request=book.reserve(group,prepared['wire'],sc)
+        request=book.reserve(group,prepared['wire'],sc,images)
         token=ACTIVE.set((book,request))
         try:model_call(current_owner(),binding,'page-pair',wire_view,local_caller,30000,attempt_limit=1)
         finally:ACTIVE.reset(token)
@@ -180,7 +235,15 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     while pending:
         first=pending.pop(0);group=[first]
         # Additional checks are isolated to the failed page, never the valid peer.
-        if pending and not book.status(*first) and not book.status(*pending[0]) and compatible(first,pending[0]):group.append(pending.pop(0))
+        if pending and not book.status(*first) and not book.status(*pending[0]) and compatible(first,pending[0]):
+            # Output headroom is an explicitly labelled heuristic, not a proof
+            # of semantic length. High-volume pages stay single.
+            import json
+            estimates=[max(512,len(json.dumps(v.get('candidates',[]),ensure_ascii=False).encode('utf-8'))//3+1024) for p,v in (first,pending[0])]
+            if not per_page or sum(estimates)<=7168:group.append(pending.pop(0))
+            else:observe(binding,'output_headroom_requires_single',page_path=first[0]['path'],estimated_output_tokens=estimates)
+        elif pending and per_page:
+            observe(binding,'incompatible_evidence_or_scope',page_path=first[0]['path'],peer_path=pending[0][0]['path'])
         groups.append(group)
     capacity=min(10,getattr(adapter,'reduce_page_concurrency',2))
     run_groups(groups,submit,capacity)
@@ -195,15 +258,16 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         row=book.status(page,view)
         if row and row.get('receipt'):acknowledge(row['receipt']);continue
         last=row['attempts'][-1] if row and row['attempts'] else {}
+        if any(h['path']==page['path'] for h in held):continue
         held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':'page-write',
             'code':'SEMANTIC_REVIEW_REQUIRED' if last.get('state')=='rejected' else 'SEMANTIC_OUTPUT_HELD','validation_code':last.get('code'),'reason':last.get('reason','page outcome pending'),
             'audit_ref':book.read()['requests'][last['request_id']].get('response',{}).get('audit_ref') if last else None})
     working=copy.deepcopy(state)
     from qa_program import page_link_failures
     held.extend(page_link_failures(value,working,list(written.values())))
-    if held:
+    if held or planning_failure:
         from qa_program import isolate_pages
-        outcome=isolate_pages(adapter,binding,value,working,list(written.values()),held,None)
+        outcome=isolate_pages(adapter,binding,value,working,list(written.values()),held,planning_failure)
         if not outcome:raise ContractError('SEMANTIC_REVIEW_REQUIRED','$','durable pages retained; unresolved pages held')
         working,_=outcome
     import fixed_global_packets as g

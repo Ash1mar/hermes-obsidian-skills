@@ -18,7 +18,12 @@ def enabled(adapter,binding):
                 raise ContractError('STALE_INPUT','$','presentation worker identity changed')
     adapter.worker_check(checked_binding)
     w=adapter.workflow.status(binding['workflow_id'])
-    root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}"
+    return pin(adapter.workflow,w)['contract']==CONTRACT
+
+
+def pin(workflow,w):
+    """Fix a new workflow's representation before sync can dispatch consumers."""
+    root=workflow.vault/f"_system/ledgers/ingest-workflows/{w['workflow_id']}"
     path=root/'presentation-contract.json'
     identity={'workflow_id':w['workflow_id'],'scope_sha256':fingerprint(w['scope'])}
     with _exclusive_lock(path.with_suffix('.lock'),timeout=5):
@@ -28,11 +33,14 @@ def enabled(adapter,binding):
             budget=root/'pass-call-budget.json'
             if budget.exists():consumed=consumed or any(r.get('attempts') for r in _load_json(budget).get('tasks',{}).values())
             record={**identity,'contract':'legacy' if consumed else CONTRACT}
-            if not consumed:record['page_call_contract']='durable-page-calls/v1'
+            if not consumed:
+                record['page_call_contract']='durable-page-calls/v1'
+                record['page_dispatch_contract']='per-page-dispatch/v2'
+                record['fixed_before_consumption']=True
             _write_atomic(path,_json_bytes(record))
     if any(record.get(k)!=v for k,v in identity.items()) or record.get('contract') not in ('legacy',CONTRACT):
         raise ContractError('STALE_INPUT','$','presentation identity changed')
-    return record['contract']==CONTRACT
+    return record
 
 def qa_present(view):
     """Share identical QA only; keep every other field byte-for-byte in value terms."""
