@@ -101,7 +101,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     durable_ledger=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/page-call-budget.json"
     if durable_ledger.exists() and (planning_failure or value['view'].get('page_call_contract')!='durable-page-calls/v1'):
         raise ContractError('SEMANTIC_OUTPUT_HELD','$','existing page budget cannot fall back to new legacy allowances')
-    if not planning_failure and isinstance(caller,HermesCaller):
+    per_page=value['view'].get('page_dispatch_contract')=='per-page-dispatch/v2'
+    if not per_page and not planning_failure and isinstance(caller,HermesCaller):
         from native_page_pairs import execute as durable_pages
         durable=durable_pages(adapter,binding,value,state,caller,model_call,attach_receipt,project,measure)
         if durable is not None:return durable
@@ -152,7 +153,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         except BaseException:halt.set();raise
     from fixed_semantic import HermesCaller
     restored=set()
-    if isinstance(caller,HermesCaller):
+    if isinstance(caller,HermesCaller) and not per_page:
         from fixed_page_replay import restore
         from fixed_semantic_recovery import authenticated_replay
         with span('historical_page_restore',vault=adapter.workflow.vault,binding=binding):
@@ -223,6 +224,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                           page_path=child['path'],reused_measure=prepared is not None):
                     child_view,n=prepared if prepared is not None else measure(adapter,value,child,caller,project)
                 if n>LIMIT:raise ContractError('READING_WINDOW_OVERSIZE','$','complete page input exceeds bound')
+                if per_page:continue  # All body requests use the single page-owned ledger below.
                 if len(pending)>=capacity:drain()
                 if halt.is_set():drain(True);raise RuntimeError('independent page work stopped by a shared failure')
                 pending.add(pool.submit(copy_context().run,body,child,child_view,1 if scope_revision else 2))
@@ -232,6 +234,10 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         halt.set()
         for future in pending:future.cancel()
         pool.shutdown(wait=True,cancel_futures=True)
+    if per_page:
+        from native_page_pairs import execute as durable_pages
+        return durable_pages(adapter,binding,value,working,caller,model_call,attach_receipt,project,measure,
+            preheld=held,prior_calls=calls,planning_failure=planning_failure)
     from qa_program import page_link_failures
     link_holds=page_link_failures(value,working,written)
     held.extend(h for h in link_holds if not any(old['path']==h['path'] for old in held))

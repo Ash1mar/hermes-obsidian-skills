@@ -169,7 +169,10 @@ def test_page_ack_is_published_before_second_page_failure(system):
 
 
 @pytest.mark.parametrize('cancel_after_first',[False,True])
-def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypatch,cancel_after_first):
+@pytest.mark.parametrize('dispatch',[None,'per-page-dispatch/v2'])
+@pytest.mark.parametrize('special',[None,'oversize','asset'])
+def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypatch,cancel_after_first,dispatch,special):
+    if special and (not dispatch or cancel_after_first):pytest.skip('mixed-page cases use future dispatch without interruption')
     from types import SimpleNamespace as NS
     import native_page_pairs as native
     import semantic_output,reduce_disposition,fixed_semantic_recovery,fixed_global_packets
@@ -191,6 +194,22 @@ def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypa
     state={'pages':pages};value={'view':{'page_call_contract':'durable-page-calls/v1',
         'candidates':[{'candidate':p['candidate_refs'][0],'source_evidence':[]} for p in pages],
         'original_evidence':{'tasks':[]}},'backend':{'existing_pages':{}}}
+    if dispatch:value['view']['page_dispatch_contract']=dispatch
+    adapter.workflow.knowledge=NS()
+    import hermes_source_units.delivery_scope as delivery
+    monkeypatch.setattr(delivery,'guard_page',lambda *_:None)
+    if special:
+        extra={'identity':{'kind':'entity','identity_key':'extra'},'path':'extra.md','candidate_refs':['extra']}
+        pages.insert(0,extra);views['extra.md']=copy.deepcopy(views['a.md']);views['extra.md']['path']='extra.md'
+        if special=='asset':
+            import fixed_semantic_media as media
+            views['extra.md']['original_evidence']['tasks'][0]['materials'][0]['asset']={'path':'isolated.png'}
+            image={'url':'data:image/png;base64,AA==','sha256':'isolated','bytes':1,'references':[{'task':'t1','material':'m1'}]}
+            monkeypatch.setattr(media,'image_catalog',lambda *_:{})
+            monkeypatch.setattr(media,'select_images',lambda *_:[image])
+        import qa_program
+        monkeypatch.setattr(qa_program,'page_link_failures',lambda *_:[])
+        monkeypatch.setattr(qa_program,'isolate_pages',lambda a,b,v,s,w,h,p:({**s,'pages':[x for x in s['pages'] if x['path'] not in {r['path'] for r in h}]},'fixture-gap'))
     monkeypatch.setattr(semantic_output,'output_boundary',lambda *_:(None,None))
     monkeypatch.setattr(reduce_disposition,'page_permit',lambda *_:None)
     original=PageCalls
@@ -209,16 +228,17 @@ def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypa
         if cancel_after_first and not cancelled:
             cancelled.append(True);w['cancel_requested']=True
     args=(adapter,binding,value,state,object(),model,ack,lambda *a:None,
-          lambda a,v,p,c,pr:(views[p['path']],100))
+          lambda a,v,p,c,pr:(copy.deepcopy(views[p['path']]),30001 if special=='oversize' and p['path']=='extra.md' else 100))
     if cancel_after_first:
         with pytest.raises(ContractError,match='WORKFLOW_STOPPED'):native.execute(*args)
         root=tmp_path/'_system/ledgers/ingest-workflows/isolated'
         assert sum('receipt' in r for r in PageCalls(root,lambda:None).read()['pages'].values())==1
         w['cancel_requested']=False
     result,refs=native.execute(*args)
-    assert len(calls)==1 and len(calls[0]['pages'])==2 and len(result['pages'])==2
-    assert len({r['page_receipt_id'] for r in receipts})==2
-    native.execute(*args);assert len(calls)==1
+    expected_calls=2 if special=='asset' else 1;expected_pages=3 if special=='asset' else 2
+    assert len(calls)==expected_calls and any(len(c['pages'])==2 for c in calls) and len(result['pages'])==expected_pages
+    assert len({r['page_receipt_id'] for r in receipts})==expected_pages
+    native.execute(*args);assert len(calls)==expected_calls
 
 def test_concurrent_reservations_cannot_double_spend(system):
     from concurrent.futures import ThreadPoolExecutor

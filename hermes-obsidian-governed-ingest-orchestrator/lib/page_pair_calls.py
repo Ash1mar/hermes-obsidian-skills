@@ -30,7 +30,7 @@ class PageCalls:
         r=self.read();row=r['pages'].get(key(page))
         if row and row['input_sha256']!=fingerprint(view):fail('STALE_INPUT','page inputs changed; budget cannot reset')
         return copy.deepcopy(row)
-    def reserve(self,items,wire,schema):
+    def reserve(self,items,wire,schema,images=()):
         if not 1<=len(items)<=2 or len({key(p) for p,v in items})!=len(items):fail('INVALID_SCHEMA','one or two unique page identities required')
         with self.mutex, self.transaction(), _exclusive_lock(self.path.with_suffix('.lock'),timeout=5):
             epoch=self.guard();r=self.read();members=[]
@@ -44,9 +44,12 @@ class PageCalls:
                     if row['attempts'] and not row['attempts'][-1].get('correctable'):fail('SEMANTIC_REVIEW_REQUIRED','evidence block is not correctable')
                 else:row={'path':page['path'],'identity':copy.deepcopy(page['identity']),'input_sha256':fingerprint(view),'attempts':[]};r['pages'][k]=row
                 members.append([k,len(row['attempts'])+1])
-            request=fingerprint({'contract':CONTRACT,'members':members,'wire':wire,'schema':schema,'epoch':epoch})
+            identity={'contract':CONTRACT,'members':members,'wire':wire,'schema':schema,'epoch':epoch}
+            if images:identity['image_inputs']=[{k:v for k,v in i.items() if k!='url'} for i in images]
+            request=fingerprint(identity)
             record={'request_id':request,'epoch':epoch,'members':{f'p{i}':{'page_key':k,'ordinal':n} for i,(k,n) in enumerate(members,1)},
                     'state':'reserved','wire':copy.deepcopy(wire),'schema':copy.deepcopy(schema)}
+            if images:record['image_inputs']=copy.deepcopy(identity['image_inputs'])
             if request in r['requests']:fail('INVALID_TRANSITION','request already reserved')
             r['requests'][request]=record
             for k,n in members:r['pages'][k]['attempts'].append({'ordinal':n,'request_id':request,'state':'reserved'})
@@ -61,14 +64,20 @@ class PageCalls:
                 if q['response']!=value:fail('SOURCE_CHANGED','returned response changed')
                 return
             q['response']=value;q['state']='returned';self.save(r)
-    def settle(self,request,validate,persist,authenticate,*,after_page=None,on_receipt=None):
+    def settle(self,request,validate,persist,authenticate,*,after_page=None,on_receipt=None,recovery_epoch=None):
         q=self.read()['requests'][request]
         members=[[m['page_key'],m['ordinal']] for m in q['members'].values()]
-        if fingerprint({'contract':CONTRACT,'members':members,'wire':q['wire'],'schema':q['schema'],'epoch':q['epoch']})!=request:
+        identity={'contract':CONTRACT,'members':members,'wire':q['wire'],'schema':q['schema'],'epoch':q['epoch']}
+        if 'image_inputs' in q:identity['image_inputs']=q['image_inputs']
+        if fingerprint(identity)!=request:
             fail('SOURCE_CHANGED','request member/wire identity changed')
         if 'response' not in q:fail('SEMANTIC_OUTPUT_HELD','unknown request; reservation retained')
         response=q['response']
         if fingerprint(response['raw'])!=response['raw_sha256'] or not authenticate(q,response):fail('SOURCE_CHANGED','response lacks exact native proof')
+        # The native bridge supplies a fresh current epoch only after supported
+        # recovery has admitted this worker and authenticated the ended producer.
+        # This grants settlement of this saved response, never another model call.
+        settlement_epoch=q['epoch'] if recovery_epoch is None else recovery_epoch
         from fixed_semantic import decode_semantic_response
         try:
             decoded,_=decode_semantic_response(response['raw']);slots=decoded.get('results',{}) if isinstance(decoded,dict) else {}
@@ -77,7 +86,7 @@ class PageCalls:
         results={}
         for slot,member in q['members'].items():
             with self.mutex, self.transaction(), _exclusive_lock(self.path.with_suffix('.lock'),timeout=5):
-                if self.guard()!=q['epoch']:fail('WORKFLOW_STOPPED','cancel superseded page settlement')
+                if self.guard()!=settlement_epoch:fail('WORKFLOW_STOPPED','cancel superseded page settlement')
                 r=self.read();page=r['pages'][member['page_key']];attempt=page['attempts'][member['ordinal']-1]
                 if attempt['state']=='rejected':
                     results[member['page_key']]=copy.deepcopy(attempt['failure_receipt'])
@@ -105,7 +114,7 @@ class PageCalls:
                 else:
                     # Deterministic persist is idempotent if interrupted before receipt.
                     saved=persist(member['page_key'],value,request,response['audit_ref'])
-                    if self.guard()!=q['epoch']:fail('WORKFLOW_STOPPED','cancel before page receipt')
+                    if self.guard()!=settlement_epoch:fail('WORKFLOW_STOPPED','cancel before page receipt')
                     receipt={'state':'valid','page_key':member['page_key'],'request_id':request,'ordinal':member['ordinal'],
                              'input_sha256':page['input_sha256'],'response_sha256':response['raw_sha256'],
                              'audit_ref':response['audit_ref'],'result':value,'saved':saved}
