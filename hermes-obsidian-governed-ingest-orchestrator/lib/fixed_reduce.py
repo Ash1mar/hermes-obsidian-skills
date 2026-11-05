@@ -116,6 +116,8 @@ def _snapshot(adapter,binding,checked,*,presentation=True):
         from efficiency_presentation import observed_profile
         dispatch=observed_profile(adapter,binding).get('page_dispatch_contract')
         if dispatch:view['page_dispatch_contract']=dispatch
+        planning=observed_profile(adapter,binding).get('planning_budget_contract')
+        if planning:view['planning_budget_contract']=planning
     result = {'contract':'fixed-reduce-input/v1','binding':dict(binding),'view':view,'backend':backend}
     if kind=='resource-reduce':
         from source_hold_recovery import rebind_view

@@ -11,6 +11,7 @@ import copy
 import hashlib
 import json
 import time
+import re
 from functools import wraps
 
 from .validation import ContractError
@@ -33,7 +34,8 @@ class ReleaseReads:
         if not path.is_relative_to(self.vault):return False
         relative=path.relative_to(self.vault).parts
         immutable_review=(len(relative)==6 and relative[:3]==('_system','ledgers','ingest-workflows')
-                          and relative[4]=='semantic-inputs' and path.suffix=='.json')
+                          and relative[4]=='semantic-inputs' and
+                          re.fullmatch(r'(?:review-)?[0-9a-f]{64}\.json',path.name) is not None)
         return immutable_review or not path.is_relative_to(self.vault/'_system/ledgers')
 
     def read(self, path):
@@ -77,7 +79,7 @@ class ReleaseReads:
 @contextmanager
 def operation(vault, name):
     existing = _CURRENT.get()
-    if existing is not None:
+    if existing is not None and existing.vault==vault:
         yield existing
         return
     reads = ReleaseReads(vault)
@@ -107,7 +109,8 @@ def calculation(name):
     def decorate(function):
         @wraps(function)
         def invoke(self, *args, **kwargs):
-            owner = _CURRENT.get() is None
+            existing=_CURRENT.get()
+            owner = existing is None or existing.vault!=self.vault
             with operation(self.vault,name) as reads:
                 result = function(self,*args,**kwargs)
                 if owner:

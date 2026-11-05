@@ -576,6 +576,33 @@ authorization. Real two-page/native usage and end-to-end efficiency acceptance
 remain pending a separately authorized future run; synthetic slots are not native
 results and publication counts are not equal units of coverage.
 
+New workflows pin `per-page-dispatch/v2` before the initial sync. Existing pins
+are never upgraded. Planning/refinement retains ordinary finite journals; all
+subsequent single/pair body requests share the page-owned ledger, including assets.
+An oversize or explicitly deferred page remains held without suppressing other
+pages. Pairing requires exact dependency, scope and original-evidence checks,
+complete input fit, conservative output headroom and a positive full-request
+cost comparison. Without an explicit offline tokenizer the comparison uses bytes
+and must not be described as token savings. Saved responses can settle after a
+supported resume only with fresh worker/epoch checks and original native proof;
+unknown reservations cannot automatically resend. Network retries retain their
+separate existing reservation and network-cost accounting.
+
+Future planning also pins `shared-reading-page-budget/v1`. It receives measured
+complete-page cost examples, including the single-slot schema and decoding rules.
+Shared reading packages are counted once. A provisional identity reserve leaves
+room for semantic names; final identities, parents and image transport are still
+checked before writing. Examples never dictate semantic groups or authorize
+omissions. Measure extra planning input against avoided budget-refinement calls
+and total writing/review work; no reduction is claimed before native evidence.
+
+Delivery completion, closure collection and release-closure validation share
+static bytes/JSON only inside their operation. Fresh confirmation precedes return;
+workflow authority and mutable progress stay uncached. Nested foreign-Vault
+operations have independent sessions and confirmations. Mechanical read benchmarks
+report identical result hashes, read/byte counts, CPU and wall time separately;
+they do not establish end-to-end recovery speed or native model latency.
+
 The optional [Linux sealed evidence protocol](sealed-evidence-reads.md) replaces
 repeated static evidence content reads only after actual kernel write protection
 and a live protector are verified. Full workflow, batch, budgets and journals stay

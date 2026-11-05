@@ -28,7 +28,9 @@ def planning_scope(value):
         for handle in p['candidate_refs']:by_candidate.setdefault(handle,set()).add(i)
     index={'value':value,'proposals':proposals,'by_candidate':by_candidate}
     token=_INDEX.set(index)
-    try:yield
+    try:
+        from page_planning_budget import operation
+        with operation(value):yield
     finally:_INDEX.reset(token)
 
 
@@ -94,7 +96,7 @@ def heading_anchors(value):
     return anchors
 
 
-def packet_view(value,chosen,state,*,detail=False,reader_topics=False):
+def packet_view(value,chosen,state,*,detail=False,reader_topics=False,project=None):
     handles={h for g in chosen for h in g['handles']}
     proposals=[{**p,'_detail_unit':g['unit']} for g in chosen for p in g['proposals']]
     hints=[h for p in proposals for h in p['identity_hints']]
@@ -133,6 +135,12 @@ def packet_view(value,chosen,state,*,detail=False,reader_topics=False):
     if reader_topics:
         view['page_organization']=READER_TOPICS
         view['coordination']['rule']+=' Same-source section matches add comparison candidates only; shared headings do not prove equivalence, applicability, facts or completeness. Choose independently readable topics, not one page per proposal, time interval or diagram fragment. Keep compatible conditions as explicit sections; preserve distinct versions, scope, exceptions, conflicts and QA. Never force a merge to reduce page count.'
+    if value['view'].get('planning_budget_contract')=='shared-reading-page-budget/v1':
+        from page_planning_budget import hints
+        if project is None:
+            from fixed_semantic import prepare_request_projection
+            project=prepare_request_projection
+        view['page_budget_hints']=hints(value,handles,project)
     return view
 
 
@@ -144,7 +152,7 @@ def next_packet(value,remaining,state,project,*,view_transform=None,reader_topic
         if count>PROPOSAL_OUTPUT_SLOTS:
             if not chosen:fail('READING_WINDOW_OVERSIZE','one indivisible proposal unit exceeds the fixed output slots')
             break
-        view=packet_view(value,[*chosen,group],state,reader_topics=reader_topics)
+        view=packet_view(value,[*chosen,group],state,reader_topics=reader_topics,project=project)
         if view_transform is not None:view=view_transform(view)
         projected=project('global-plan',view,schema_for('global-plan',view),[])
         if projected['input_size']>LIMIT:
