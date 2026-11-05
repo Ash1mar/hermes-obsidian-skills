@@ -46,7 +46,9 @@ def compatible(left,right):
 
 def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project,measure):
     """Return None only before any durable page budget exists, for legacy fallback."""
-    if value['view'].get('page_call_contract')!=CONTRACT:return None
+    from page_execution_diagnostics import observe
+    if value['view'].get('page_call_contract')!=CONTRACT:
+        observe(binding,'contract_not_pinned');return None
     from semantic_output import output_boundary,check
     from reduce_disposition import page_permit
     root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}"
@@ -72,19 +74,19 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             if row.get('phase')=='page-write':legacy.append(path)
     if legacy:
         if book.path.exists():raise ContractError('SEMANTIC_OUTPUT_HELD','$','mixed page budget contracts; no new allowance')
-        return None
+        observe(binding,'legacy_page_history',history_count=len(legacy));return None
     items=[]
     for page in state['pages']:
         if boundary or page_permit(adapter,binding,page):
             if book.path.exists():raise ContractError('SEMANTIC_OUTPUT_HELD','$','durable page calls require exact supported continuation')
-            return None
+            observe(binding,'output_boundary_or_disposition',page_path=page['path']);return None
         view,n=measure(adapter,value,page,caller,project)
         if n>30000:
             if book.path.exists():raise ContractError('SEMANTIC_OUTPUT_HELD','$','changed page budget; retain existing outcomes')
-            return None
+            observe(binding,'complete_input_oversize',page_path=page['path'],input_codepoints=n);return None
         if any(m.get('asset') for t in view.get('original_evidence',{}).get('tasks',[]) for m in t['materials']):
             if book.path.exists():raise ContractError('SEMANTIC_OUTPUT_HELD','$','asset call cannot replace an existing text-only reservation')
-            return None
+            observe(binding,'asset_requires_single',page_path=page['path']);return None
         items.append((page,view))
     from fixed_semantic_schema import schema_for
     from fixed_semantic_recovery import native_reply

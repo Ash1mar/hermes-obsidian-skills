@@ -467,7 +467,9 @@ def prepare_request_projection(phase,view,output_schema,images=(),correction=Non
                           if 'results' in output_schema.get('properties',{}) else None)
         schema_size=(len(json.dumps(transport_schema,ensure_ascii=False,separators=(',',':')))
                      if transport_schema is not None else len(json.dumps(JSON_OBJECT_SCHEMA,separators=(',',':'))))
+        from request_cost import measure as request_cost
         return {'prompt':prompt,'content':content,'wire':wire,
+            'request_cost':request_cost(wire,transport_schema if transport_schema is not None else JSON_OBJECT_SCHEMA,images),
             'closed':False,'consumed':False,
             'expected':(('system',_normalized_request_content(prompt['system'])),('user',user)),
             'transport_schema':transport_schema,'schema_size':schema_size,
@@ -629,6 +631,8 @@ def _dispatch_model_call(adapter,binding,phase,view,caller,limit,correction=None
         'structured_schema_codepoints':schema_size,
         'wire_contract':WIRE_CONTRACT,
         'request_construction':copy.deepcopy(prepared['construction_counts']),
+        'request_cost':prepared['request_cost'],
+        'detail_reason_class':__import__('request_cost').detail_reason(phase,view,correction),
         'model':metadata,'receipt_refs':[],'output_codepoints':len(raw),'output_utf8_bytes':len(raw.encode('utf-8')),**correlation}
     audit['timeline_span_id']=model_trace['span_id']
     if images:

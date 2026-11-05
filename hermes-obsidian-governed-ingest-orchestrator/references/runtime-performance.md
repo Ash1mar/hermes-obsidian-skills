@@ -557,6 +557,25 @@ after capture cannot introduce unverified interpretation; the next query rejects
 the changed hash. The exact finite attempts, grants and request projection remain.
 # Revocable read-volume reduction
 
+## Three-batch maintenance after the third run
+
+1. Record ordered route blockers, Global Detail reason classes and complete
+   message/schema representation costs. Character bounds remain separate from
+   tokenizer measurement. `HERMES_INPUT_TOKEN_ENCODING` explicitly selects an
+   already available local tiktoken encoding; absent tokenizer counts are unknown,
+   never zero or inferred savings. Text counts exclude provider/image framing;
+   native returned usage remains authoritative for billed input.
+2. Fix future page dispatch at page granularity, preserving legacy histories,
+   page-owned allowances and independently acknowledged results through recovery.
+3. Move measured shared-reading volume into future planning and reduce repeated
+   reads only inside one guarded operation, with fresh precommit verification.
+
+Each batch is committed and deployed while consumers are stopped, then checked
+in isolation. No new or existing real workflow is run under this maintenance
+authorization. Real two-page/native usage and end-to-end efficiency acceptance
+remain pending a separately authorized future run; synthetic slots are not native
+results and publication counts are not equal units of coverage.
+
 The optional [Linux sealed evidence protocol](sealed-evidence-reads.md) replaces
 repeated static evidence content reads only after actual kernel write protection
 and a live protector are verified. Full workflow, batch, budgets and journals stay
