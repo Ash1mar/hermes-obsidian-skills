@@ -15,7 +15,7 @@ from fixed_semantic_schema import schema_for
 from semantic_output import path_for
 
 @pytest.fixture
-def stopped(held,vault,monkeypatch):
+def stopped(held,vault,monkeypatch,request):
     a,w,adopt=held;a.adopt_build_acceptance(adopt);w=a.workflow.status(w['workflow_id'])
     a.workflow.continue_workflow(workflow_request(workflow_id=w['workflow_id'],actor=w['actor'],expected_revision=w['revision'],
         boundary='checkpoint_1',continue_id='isolated-build',evidence_digest=w['pause_control']['evidence_digest']))
@@ -36,6 +36,8 @@ def stopped(held,vault,monkeypatch):
     monkeypatch.setattr(a.kanban,'task_snapshot',a.kanban.task_snapshot_fresh,raising=False)
     snapshot=fixed_review.read_snapshot(a,binding,{'batch_id':w['batch_id']},True)
     sp=root/f'semantic-inputs/review-{snapshot["input_id"]}.json';sp.parent.mkdir(exist_ok=True);sp.write_bytes(_json_bytes(snapshot))
+    if getattr(request,'param',None)=='efficiency':
+        monkeypatch.setattr('efficiency_presentation.enabled',lambda *_:True)
     view=recovery.view_for(a,binding,snapshot['views'][0],snapshot['backend']['pages']['e1']['assessment'])
     schema=schema_for('page-review',view);wire=prepare_request_projection('page-review',view,schema,[])['wire']
     jp=path_for(a,binding,'page-review',view);jp.parent.mkdir(exist_ok=True)
@@ -91,6 +93,17 @@ def test_multiple_consumed_exact_encodings_are_accounted_without_new_grants(stop
     assert len(result['reviews'])==2 and result['additional_calls_granted']==0
     assert all(r['unknown'] and r['additional_calls']==0 for r in result['reviews'])
     assert before==(jp.read_bytes(),other.read_bytes())
+
+@pytest.mark.parametrize('stopped',['efficiency'],indirect=True)
+def test_derived_efficiency_review_is_matched_without_new_budget(stopped,vault):
+    a,w,b,req,jp,journal,view=stopped
+    assert view['efficiency_contract']=='efficiency-presentation/v1' and view['evidence_selection']['contract']=='page-evidence-view/v1'
+    before=jp.read_bytes()
+    proof=recovery.verify(a,w,None,b,req['entries'][0],a.kanban.runs['old-build'])['build_review_recovery']
+    assert len(proof['reviews'])==1 and proof['reviews'][0]['journal_name']==jp.name
+    assert proof['additional_calls_granted']==0 and proof['reviews'][0]['additional_calls']==0
+    assert jp.read_bytes()==before
+
 
 def test_default_admission_preserves_unknown_and_does_not_resume(stopped,vault):
     a,w,b,req,jp,journal,view=stopped;before=files(vault)

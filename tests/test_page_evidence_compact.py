@@ -4,6 +4,21 @@ from types import SimpleNamespace as NS
 import pytest
 from fixed_page_evidence import present_compact,restore_compact,COMPACT_CONTRACT
 
+@pytest.mark.parametrize('marker',[None,'lossless-page-evidence/v1',COMPACT_CONTRACT])
+@pytest.mark.parametrize('risks',[[],['condition/exception check']])
+def test_exact_derived_review_variants_preserve_native_wire_identity(marker,risks):
+    from test_page_evidence_encoding import view
+    from fixed_page_evidence import review_variants,review_scope
+    from efficiency_presentation import page_evidence_view
+    source=view();source['citation_evidence']=source.pop('candidates');source['content']='# Immutable native draft'
+    before=copy.deepcopy(source);assessment={'policy':'fixture','risk_reasons':risks}
+    consumed={**source,'efficiency_contract':'efficiency-presentation/v1'}
+    consumed['original_evidence'],consumed['evidence_selection']=page_evidence_view(source['original_evidence'],source['citation_evidence'])
+    if marker:consumed['evidence_encoding']=marker
+    if risks:consumed['review_scope']=review_scope(assessment)
+    assert consumed in review_variants(source,assessment)
+    assert consumed['original_evidence']==source['original_evidence'] and source==before
+
 def test_compact_round_trip_preserves_absence_null_conditions_and_supports():
     evidence=[{'source':'r','span':{'start':0,'end':10},'condition':'only when supported'}]*4
     view={'evidence_encoding':COMPACT_CONTRACT,'identity':{'name':'page'},
