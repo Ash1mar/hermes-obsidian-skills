@@ -5,6 +5,7 @@ from urllib.parse import unquote
 from .source_units import _load_json,_vault_path,_write_atomic,_json_bytes
 from .validation import ContractError,fingerprint
 from .partial_finalize import pin,pinned
+from .release_reads import calculation
 
 CONTRACT='finalize-delivery-scope/v1'
 CLOSURE='finalize-delivery-closure/v1'
@@ -181,9 +182,11 @@ def completed(service,run):
     if not pointer or not closure_path(service.vault,pointer).exists():return False
     verify(service,pointer);return True
 
+@calculation('delivery_completion_reads')
 def batch_complete(service,batch):
     return bool(batch['run_ids']) and all(completed(service,_load_json(service._run_path(r))) for r in batch['run_ids'])
 
+@calculation('delivery_closure_reads')
 def closure_refs(service,run_ids):
     result=[]
     for rid in run_ids:
@@ -194,6 +197,7 @@ def closure_refs(service,run_ids):
         if p not in result:result.append(p)
     return result
 
+@calculation('release_closure_reads')
 def release_closures(service,pointers,run_ids,*,historical=False):
     result={}
     for pointer in pointers:

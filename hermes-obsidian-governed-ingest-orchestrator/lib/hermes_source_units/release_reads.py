@@ -11,12 +11,20 @@ import copy
 import hashlib
 import json
 import time
+import re
 from functools import wraps
 
 from .validation import ContractError
 from .runtime_telemetry import span
 
 _CURRENT = ContextVar('release_operation_reads', default=None)
+
+
+def _copy_json(value):
+    """Parsed JSON has no aliases or custom copy hooks; detach containers only."""
+    if isinstance(value,dict):return {k:_copy_json(v) for k,v in value.items()}
+    if isinstance(value,list):return [_copy_json(v) for v in value]
+    return value
 
 
 class ReleaseReads:
@@ -33,7 +41,8 @@ class ReleaseReads:
         if not path.is_relative_to(self.vault):return False
         relative=path.relative_to(self.vault).parts
         immutable_review=(len(relative)==6 and relative[:3]==('_system','ledgers','ingest-workflows')
-                          and relative[4]=='semantic-inputs' and path.suffix=='.json')
+                          and relative[4]=='semantic-inputs' and
+                          re.fullmatch(r'(?:review-)?[0-9a-f]{64}\.json',path.name) is not None)
         return immutable_review or not path.is_relative_to(self.vault/'_system/ledgers')
 
     def read(self, path):
@@ -61,7 +70,7 @@ class ReleaseReads:
             self.stats['json_parses'] += 1
         else:
             self.stats['json_reuses'] += 1
-        return copy.deepcopy(self.parsed[path])
+        return _copy_json(self.parsed[path])
 
     def confirm(self):
         from .read_accounting import _raw_read_bytes
@@ -77,7 +86,7 @@ class ReleaseReads:
 @contextmanager
 def operation(vault, name):
     existing = _CURRENT.get()
-    if existing is not None:
+    if existing is not None and existing.vault==vault:
         yield existing
         return
     reads = ReleaseReads(vault)
@@ -107,7 +116,8 @@ def calculation(name):
     def decorate(function):
         @wraps(function)
         def invoke(self, *args, **kwargs):
-            owner = _CURRENT.get() is None
+            existing=_CURRENT.get()
+            owner = existing is None or existing.vault!=self.vault
             with operation(self.vault,name) as reads:
                 result = function(self,*args,**kwargs)
                 if owner:

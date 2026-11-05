@@ -23,24 +23,8 @@ def enabled(adapter,binding):
 
 def pin(workflow,w):
     """Fix a new workflow's representation before sync can dispatch consumers."""
-    root=workflow.vault/f"_system/ledgers/ingest-workflows/{w['workflow_id']}"
-    path=root/'presentation-contract.json'
-    identity={'workflow_id':w['workflow_id'],'scope_sha256':fingerprint(w['scope'])}
-    with _exclusive_lock(path.with_suffix('.lock'),timeout=5):
-        if path.exists():record=_load_json(path)
-        else:
-            consumed=any((root/'semantic-calls').glob('*.json')) or any((root/'output-attempts').glob('*.json'))
-            budget=root/'pass-call-budget.json'
-            if budget.exists():consumed=consumed or any(r.get('attempts') for r in _load_json(budget).get('tasks',{}).values())
-            record={**identity,'contract':'legacy' if consumed else CONTRACT}
-            if not consumed:
-                record['page_call_contract']='durable-page-calls/v1'
-                record['page_dispatch_contract']='per-page-dispatch/v2'
-                record['fixed_before_consumption']=True
-            _write_atomic(path,_json_bytes(record))
-    if any(record.get(k)!=v for k,v in identity.items()) or record.get('contract') not in ('legacy',CONTRACT):
-        raise ContractError('STALE_INPUT','$','presentation identity changed')
-    return record
+    from hermes_source_units.presentation_contract import pin as canonical_pin
+    return canonical_pin(workflow,w)
 
 def qa_present(view):
     """Share identical QA only; keep every other field byte-for-byte in value terms."""

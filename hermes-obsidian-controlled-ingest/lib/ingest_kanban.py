@@ -1174,6 +1174,8 @@ class IngestKanbanAdapter:
 
     def start(self, request: Mapping[str, Any]) -> dict[str, Any]:
         created = self.workflow.start(request)
+        from hermes_source_units.presentation_contract import pin
+        pin(self.workflow,created)
         followup = {"workflow_id": created["workflow_id"],
                     "actor": created["actor"],
                     "expected_revision": created["revision"]}
