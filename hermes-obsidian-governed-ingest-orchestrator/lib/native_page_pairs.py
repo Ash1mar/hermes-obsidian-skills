@@ -197,6 +197,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             'code':'SEMANTIC_REVIEW_REQUIRED' if last.get('state')=='rejected' else 'SEMANTIC_OUTPUT_HELD','validation_code':last.get('code'),'reason':last.get('reason','page outcome pending'),
             'audit_ref':book.read()['requests'][last['request_id']].get('response',{}).get('audit_ref') if last else None})
     working=copy.deepcopy(state)
+    from qa_program import page_link_failures
+    held.extend(page_link_failures(value,working,list(written.values())))
     if held:
         from qa_program import isolate_pages
         outcome=isolate_pages(adapter,binding,value,working,list(written.values()),held,None)

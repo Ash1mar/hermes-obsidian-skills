@@ -14,7 +14,8 @@ def execution_code_fingerprint():
     return fingerprint({n:hashlib.sha256((root/n).read_bytes()).hexdigest()
         for n in ('qa_program.py','fixed_page_work.py','fixed_semantic.py',
                   'native_page_pairs.py','page_pair_calls.py','page_dependencies.py',
-                  'source_unknown_recovery.py','native_stream_policy.py','returned_native_output.py')})
+                  'source_unknown_recovery.py','native_stream_policy.py','returned_native_output.py',
+                  'network_connection_retry.py')})
 
 
 def isolate_plan(adapter,binding,value,state,packet,error):
@@ -66,12 +67,26 @@ def isolate_pages(adapter,binding,value,state,written,held,planning_failure):
     return result,ref
 
 
+def page_link_failures(value,state,written):
+    """Classify native authored-link failures without editing prose or guessing assets."""
+    from fixed_destinations import routes,compile_content
+    destinations=routes(value,state['pages']);held=[]
+    for p in written:
+        try:compile_content(value,p,destinations)
+        except ContractError as error:
+            if error.code!='INVALID_OUTPUT_PATH':raise
+            held.append({'path':p['path'],'candidate_refs':p['candidate_refs'],'phase':'page-write',
+                'code':'SEMANTIC_REVIEW_REQUIRED','reason':str(error),'audit_ref':p['audit_ref'],
+                'origin':'native-page-destination-check/v1'})
+    return held
+
+
 def verify_recovery(adapter,w,node,binding,entry,failure,runs):
     """Authenticate current immutable inputs and ended known native responses."""
     from fixed_reduce import preview_snapshot
     from fixed_semantic import system_prompt
     from fixed_semantic_recovery import _request_text
-    if not enabled(w) or node.name!='global-reduce' or failure.get('error_code')!='SEMANTIC_REVIEW_REQUIRED':
+    if not enabled(w) or node.name!='global-reduce' or failure.get('error_code') not in ('SEMANTIC_REVIEW_REQUIRED','INVALID_OUTPUT_PATH'):
         raise ContractError('RECOVERY_NOT_ALLOWED','$','only a known global QA hold may use automatic continuation')
     path=_vault_path(adapter.workflow.vault,entry['snapshot_ref']);old=_load_json(path)
     if (hashlib.sha256(path.read_bytes()).hexdigest()!=entry['snapshot_sha256'] or old.get('binding')!=binding
@@ -115,10 +130,34 @@ def verify_recovery(adapter,w,node,binding,entry,failure,runs):
         for a in _load_json(p).get('attempts',[]):
             if a.get('task_id')==binding['task_id'] and a.get('state')=='reserved' and not a.get('audit_ref'):
                 raise ContractError('RECOVERY_NOT_ALLOWED','$','unknown completion is not a QA failure')
+    link_proof={}
+    if failure.get('error_code')=='INVALID_OUTPUT_PATH':
+        from fixed_page_work import measure
+        from fixed_semantic import HermesCaller,prepare_request_projection
+        from fixed_page_replay import read_outcome
+        from fixed_semantic_recovery import native_proof,permitted_tasks
+        from fixed_semantic_media import select_images,image_catalog
+        wp=root/f'semantic-inputs/page-work-{old["input_id"]}.json';work=_load_json(wp)
+        if work['binding']!=binding or work.get('planning_failure') or work.get('formal_global_submitted'):
+            raise ContractError('RECOVERY_NOT_ALLOWED','$','link recovery needs exact unsubmitted native page work')
+        written=[{**p,'content':_vault_path(adapter.workflow.vault,p['draft_ref']).read_text()} for p in work['written']]
+        bad=page_link_failures(old,{'pages':written},written)
+        if not bad:raise ContractError('RECOVERY_NOT_ALLOWED','$','no reproducible authored-link failure')
+        permitted=permitted_tasks(adapter,binding);permitted[binding['task_id']]={'ended_run_ids':[str(r['id']) for r in runs]}
+        prove=lambda p,wire,sc,images:native_proof(adapter,binding,p,wire,sc,images,permitted)
+        for bad_page in bad:
+            row=next(p for p in written if p['path']==bad_page['path'])
+            page={k:row[k] for k in ('identity','path','candidate_refs')};view,size=measure(adapter,old,page,HermesCaller(),prepare_request_projection)
+            images=select_images(view['original_evidence']['tasks'],image_catalog(adapter,view['original_evidence']))
+            result=read_outcome(adapter,binding,view,prove,images)
+            if not result or result['kind']!='valid' or result['ref']!=row['audit_ref'] or result['draft']['content']!=row['content']:
+                raise ContractError('RECOVERY_NOT_ALLOWED','$','invalid link body lacks exact native finite proof')
+        link_proof={'page_link_failures':bad,'native_page_work_ref':wp.relative_to(adapter.workflow.vault).as_posix(),
+            'native_page_work_sha256':hashlib.sha256(wp.read_bytes()).hexdigest()}
     return {'qa_policy':{'contract':SCOPE,'policy':POLICY,'snapshot_ref':entry['snapshot_ref'],
         'execution_code_fingerprint':code,
         'snapshot_sha256':entry['snapshot_sha256'],'native_calls':calls,'domain_inputs_preserved':True,
-        'original_attempts_preserved':True,'new_call_budget_granted':0,'unknown_completion_allowed':False}}
+        'original_attempts_preserved':True,'new_call_budget_granted':0,'unknown_completion_allowed':False,**link_proof}}
 
 
 def recover_global(adapter,wid,*,resume=True):
@@ -134,7 +173,7 @@ def recover_global(adapter,wid,*,resume=True):
         fp=root/f'reports/failed-{fingerprint("global-reduce")[:16]}.json'
         if not card or not fp.exists():return False
         failure=_load_json(fp)
-        if failure.get('task_id')!=card['task_id'] or failure.get('error_code') not in ('SEMANTIC_REVIEW_REQUIRED','REDUCTION_FAILED'):return False
+        if failure.get('task_id')!=card['task_id'] or failure.get('error_code') not in ('SEMANTIC_REVIEW_REQUIRED','REDUCTION_FAILED','INVALID_OUTPUT_PATH'):return False
         coverage=failure.get('error_code')=='REDUCTION_FAILED'
         candidates=[p for p in (root/'semantic-inputs').glob('*.json')
             if (v:=_load_json(p)).get('contract')=='fixed-reduce-input/v1' and v.get('binding',{}).get('task_id')==card['task_id']]
