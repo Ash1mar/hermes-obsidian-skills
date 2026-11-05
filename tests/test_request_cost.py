@@ -20,3 +20,18 @@ def test_detail_reason_separates_budget_ambiguity_and_correction():
     assert cost.detail_reason('global-detail',{'page_budget':{}})=='page_input_budget'
     assert cost.detail_reason('global-detail',{'coordination':{'detail_reason':'split'}})=='grouping_ambiguity'
     assert cost.detail_reason('global-detail',{}, {'code':'INVALID_SCHEMA'})=='semantic_correction'
+
+def test_comparison_includes_final_page_scope_rule(tmp_path,monkeypatch):
+    import fixed_page_evidence as evidence,fixed_global_targets,semantic_output,efficiency_presentation
+    monkeypatch.setattr(fixed_global_targets,'has_legacy_history',lambda *_:False)
+    monkeypatch.setattr(semantic_output,'path_for',lambda *_:tmp_path/'missing')
+    monkeypatch.setattr(efficiency_presentation,'enabled',lambda *_:False)
+    from fixed_semantic import prepare_request_projection
+    observed=[]
+    def project(phase,view,sc,images):
+        assert view['page_scope_contract']=='assigned-candidates/v1'
+        result=prepare_request_projection(phase,view,sc,images);observed.append(result);return result
+    chosen=evidence.select(None,{},'page-write',{'candidates':[],'original_evidence':{'tasks':[]}},project)
+    assert len(observed)==3 and all('Assigned citation evidence' in r['wire']['system'] or
+        r['identity']['view']['page_scope_contract']=='assigned-candidates/v1' for r in observed)
+    assert chosen['page_scope_contract']=='assigned-candidates/v1'

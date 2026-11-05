@@ -156,6 +156,12 @@ def select(adapter,binding,phase,view,project):
         raise ContractError('SEMANTIC_OUTPUT_HELD','$','both lossless encodings have history; allowance cannot reset')
     if path_for(adapter,binding,phase,encoded).exists():return encoded
     if path_for(adapter,binding,phase,compact).exists():return compact
+    if phase=='page-write':
+        # Scope rules alter the system prompt too. Compare the final requests,
+        # not presentations measured before the mandatory rule was attached.
+        view={**view,'page_scope_contract':'assigned-candidates/v1'}
+        encoded={**encoded,'page_scope_contract':'assigned-candidates/v1'}
+        compact={**compact,'page_scope_contract':'assigned-candidates/v1'}
     sc=schema_for(phase,view)
     # Includes the decoding instruction and schema, not just a smaller JSON body.
     from request_cost import rank
@@ -166,5 +172,4 @@ def select(adapter,binding,phase,view,project):
     event('page_representation_cost',binding=binding,phase=phase,selected=chosen.get(MARKER,'original'),
         variants=[{'representation':v.get(MARKER,'original'),'input_codepoints':p['input_size'],
                    'request_cost':p.get('request_cost')} for v,p in projections])
-    if phase=='page-write':chosen={**chosen,'page_scope_contract':'assigned-candidates/v1'}
     return chosen
