@@ -215,8 +215,10 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                 for item in group:submit([item])
                 return
             if per_page:
+                from page_budget_hold import proof
                 page=group[0][0];held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':'page-write',
-                    'code':'READING_WINDOW_OVERSIZE','reason':'complete slot request exceeds bound; no reservation consumed'});return
+                    'code':'READING_WINDOW_OVERSIZE','reason':'complete slot request exceeds bound; no reservation consumed',
+                    'origin':'complete-slot-budget/v1','budget_proof':proof(current_owner(),value,page)});return
             raise ContractError('READING_WINDOW_OVERSIZE','$','complete durable page request exceeds bound')
         request=book.reserve(group,prepared['wire'],sc,images)
         token=ACTIVE.set((book,request))

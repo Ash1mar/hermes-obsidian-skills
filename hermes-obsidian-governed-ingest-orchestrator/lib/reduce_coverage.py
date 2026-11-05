@@ -13,7 +13,7 @@ def contract_hash():
     names=['reduce_coverage.py','reduce_coverage_reopen.py','fixed_page_work.py','fixed_reduce.py',
            'reduce_execution_recovery.py','hermes_source_units/execution_plan.py',
            'hermes_source_units/reduce_coverage.py','hermes_source_units/knowledge_build.py',
-           'hermes_source_units/schemas/contracts.json','qa_scope.py']
+           'hermes_source_units/schemas/contracts.json','qa_scope.py','durable_page_replay.py','page_budget_hold.py']
     return fingerprint({n:hashlib.sha256((root/n).read_bytes()).hexdigest() for n in names})
 
 

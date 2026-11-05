@@ -13,7 +13,7 @@ def execution_code_fingerprint():
     root=Path(__file__).parent
     return fingerprint({n:hashlib.sha256((root/n).read_bytes()).hexdigest()
         for n in ('qa_program.py','fixed_page_work.py','fixed_semantic.py',
-                  'native_page_pairs.py','page_pair_calls.py','page_dependencies.py','durable_page_replay.py',
+                  'native_page_pairs.py','page_pair_calls.py','page_dependencies.py','durable_page_replay.py','page_budget_hold.py',
                   'source_unknown_recovery.py','native_stream_policy.py','returned_native_output.py',
                   'network_connection_retry.py')})
 
@@ -42,7 +42,12 @@ def apply_plan_exclusion(state,packet,ref):
 def isolate_pages(adapter,binding,value,state,written,held,planning_failure):
     if not enabled(adapter.workflow.status(binding['workflow_id'])):return None
     if planning_failure:return None  # Planning owns its own packet isolation.
-    if any(h.get('code')!='SEMANTIC_REVIEW_REQUIRED' or not h.get('audit_ref') for h in held):return None
+    from page_budget_hold import verified
+    by_path={p['path']:p for p in state['pages']}
+    for h in held:
+        if h.get('code')=='SEMANTIC_REVIEW_REQUIRED' and h.get('audit_ref'):continue
+        if h.get('path') in by_path and verified(adapter,value,by_path[h['path']],h):continue
+        return None
     from hermes_source_units.delivery_scope import dependency_partition
     bodies={p['path']:p for p in written};seed={h['path']:{'category':'qa_unresolved','reason':h['reason']} for h in held}
     pages=[{'page_id':p['path'],'path':p['path'],'identity':p['identity'],

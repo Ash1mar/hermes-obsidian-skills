@@ -260,7 +260,7 @@ def test_cancel_before_atomic_publication_reserves_nothing(tmp_path):
 
 def test_recovery_fingerprint_includes_page_contract_modules(tmp_path,monkeypatch):
     import qa_program
-    names=('qa_program.py','fixed_page_work.py','fixed_semantic.py','native_page_pairs.py','page_pair_calls.py','page_dependencies.py','durable_page_replay.py',
+    names=('qa_program.py','fixed_page_work.py','fixed_semantic.py','native_page_pairs.py','page_pair_calls.py','page_dependencies.py','durable_page_replay.py','page_budget_hold.py',
         'source_unknown_recovery.py','native_stream_policy.py','returned_native_output.py','network_connection_retry.py')
     for name in names:(tmp_path/name).write_text('isolated code '+name)
     monkeypatch.setattr(qa_program,'__file__',str(tmp_path/'qa_program.py'))
