@@ -59,7 +59,7 @@ def test_handoff_requires_actual_owner_and_matching_marker(tmp_path,monkeypatch,
     else:
         with pytest.raises(RuntimeError,match='ownership'):runtime.confirm_handoff(tmp_path,'w',7,timeout=0)
 
-@pytest.mark.parametrize('value',[None,'45','0','bad','nan'])
+@pytest.mark.parametrize('value',[None,'45','45.5','0','bad','nan'])
 def test_fixed_stream_default_preserves_explicit_host_policy(monkeypatch,value):
     monkeypatch.setattr('orchestration.configuration',lambda:{'native_stream_idle_seconds':120})
     if value is None:monkeypatch.delenv(stream.IDLE_ENV,raising=False)
@@ -67,5 +67,7 @@ def test_fixed_stream_default_preserves_explicit_host_policy(monkeypatch,value):
     if value in ('bad','nan'):
         with pytest.raises(ValueError):stream.configure()
     else:
-        result=stream.configure();assert result['idle_seconds']==(120 if value is None else float(value))
+        result=stream.configure();assert float(result['idle_seconds'])==(120 if value is None else float(value))
+        from hermes_source_units.validation import fingerprint
+        fingerprint(result)
         assert result['retries_granted']==0 and result['total_budget_seconds']==600

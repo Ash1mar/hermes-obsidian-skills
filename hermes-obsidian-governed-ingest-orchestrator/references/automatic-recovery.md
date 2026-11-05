@@ -119,6 +119,18 @@ The native first-event policy and 600-second fixed-call run budget remain. This
 mitigates the small-request 12-second default; it does not prove an upstream stall
 or resolve unknown completion. A watchdog timeout still grants no duplicate call.
 
+Audit metadata uses canonical integers or decimal strings for timeout values;
+native transport still receives the original numeric environment setting. For an
+ended Resource Reduce call whose returned response was lost only at canonical
+audit serialization, existing `reduce-cancel/v1` may select
+`restore_native_output=true` with the exact `returned_native_output.contract_hash()`.
+Admission authenticates complete current source input, original finite ordinal,
+ended native owner, exact user/request/schema and native transcript plus one
+successful SDK return. Unknown calls, missing/ambiguous responses, tool use and
+changed inputs remain held. The new native worker writes only the mechanical
+audit link and re-enters ordinary native proof and domain validation; admission
+grants zero model calls, never rewrites the response or resets an ordinal.
+
 Budget-lock contention waits up to five seconds for the atomic ledger operation.
 An ended worker blocked on this exact lock can receive one mechanical recovery,
 including within the selected Canary. Admission pairs every observed request with

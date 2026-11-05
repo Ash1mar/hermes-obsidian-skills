@@ -1154,6 +1154,8 @@ def run_reduce(adapter,binding,caller):
         drafts=[];calls=[];deferred=[]
         for packet in packets:
             adapter.worker_check(binding)
+            from returned_native_output import restore_packet
+            restore_packet(adapter,binding,input_value,packet)
             from source_unknown_recovery import packet_disposition
             isolation=packet_disposition(adapter,binding,input_value,packet)
             if isolation:

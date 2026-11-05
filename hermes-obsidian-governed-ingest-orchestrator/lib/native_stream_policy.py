@@ -13,6 +13,7 @@ def configure():
     try:seconds=float(value)
     except ValueError as exc:raise ValueError('invalid explicit native stream idle timeout') from exc
     if not math.isfinite(seconds):raise ValueError('native stream idle timeout must be finite')
-    return {'contract':'fixed-native-stream-policy/v1','idle_seconds':seconds,
-            'configured_default_seconds':default,'source':'environment' if explicit else 'fixed_worker_default',
+    canonical=lambda n:int(n) if float(n).is_integer() else str(n)
+    return {'contract':'fixed-native-stream-policy/v1','idle_seconds':canonical(seconds),
+            'configured_default_seconds':canonical(default),'source':'environment' if explicit else 'fixed_worker_default',
             'ttfb_policy':'native_unchanged','total_budget_seconds':600,'retries_granted':0}

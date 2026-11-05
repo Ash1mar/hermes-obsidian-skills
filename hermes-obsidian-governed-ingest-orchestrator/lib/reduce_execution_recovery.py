@@ -52,6 +52,11 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
     if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', rid):
         fail('INVALID_SCHEMA', 'invalid recovery ID')
     scope=request.get('recovery_scope')
+    restore_returned=any(e.get('restore_native_output') is True for e in (request.get('entries') or []) if isinstance(e,dict))
+    if restore_returned:
+        from returned_native_output import contract_hash
+        if scope!='reduce-cancel/v1' or request.get('target_contract_sha256')!=contract_hash():
+            fail('STALE_INPUT','returned native output restoration requires its exact contract')
     source_unknown=any(e.get('source_unknown_isolation') is True for e in (request.get('entries') or []) if isinstance(e,dict))
     if source_unknown:
         from source_unknown_recovery import contract_hash
@@ -172,6 +177,7 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 allowed=(('SEMANTIC_REVIEW_REQUIRED',) if scope=='qa-policy/v1' else ('SEMANTIC_REVIEW_REQUIRED','SEMANTIC_OUTPUT_HELD','INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','NATIVE_COMPLETION_UNKNOWN','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED') if scope in ('reduce-disposition/v1','reduce-coverage/v1') else ('INVALID_SCHEMA','DUPLICATE','INCOMPLETE_COVERAGE','UNRESOLVED_REFERENCE','IDENTITY_CONFLICT','INVALID_TRANSITION','READING_WINDOW_OVERSIZE') if scope=='semantic-output/v1' else ('DEPENDENCY_EXECUTION_BLOCKED',) if scope=='dependency-resolved/v1' else ('SEMANTIC_REVIEW_REQUIRED',) if scope=='source-format/v1' else ('SEMANTIC_REVIEW_REQUIRED','PROGRAM_EXECUTION_FAILED') if scope in ('source-hold/v1','source-hold/v2','source-hold/v3') else
                     ('READING_WINDOW_OVERSIZE',) if scope=='source-packets/v1' else ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED'))
                 if scope=='reduce-coverage/v1':allowed=(*allowed,'REDUCTION_FAILED')
+                if scope=='reduce-cancel/v1' and entry.get('restore_native_output') is True:allowed=(*allowed,'INVALID_CANONICAL_VALUE')
                 local_amendment=scope=='reduce-cancel/v1' and bool(request.get('amendment_id'))
                 if local_amendment:allowed=(*allowed,'RECOVERY_NOT_ALLOWED','CITATION_AMENDMENT_HELD')
                 if scope=='reduce-validation/v1':allowed=('COVERAGE_SCOPE_INVALID','VALIDATION_FAILED','PROGRAM_EXECUTION_FAILED','NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED')
@@ -230,6 +236,9 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 if call_failure:
                     from native_call_state import recovery_evidence
                     audited[-1].update(recovery_evidence(adapter,value,binding,runs))
+                if entry.get('restore_native_output') is True:
+                    from returned_native_output import verify
+                    audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))
                 if entry.get('source_unknown_isolation') is True:
                     from source_unknown_recovery import verify
                     audited[-1].update(verify(adapter,value,node,binding,entry,report,runs,audited[-1]))
