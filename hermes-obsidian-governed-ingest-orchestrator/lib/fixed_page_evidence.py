@@ -138,6 +138,13 @@ def select(adapter,binding,phase,view,project):
     if path_for(adapter,binding,phase,compact).exists():return compact
     sc=schema_for(phase,view)
     # Includes the decoding instruction and schema, not just a smaller JSON body.
-    chosen=min((view,encoded,compact),key=lambda v:project(phase,v,sc,[])['input_size'])
+    from request_cost import rank
+    projections=[(v,project(phase,v,sc,[])) for v in (view,encoded,compact)]
+    fitting=[pair for pair in projections if pair[1]['input_size']<=30000] or projections
+    chosen,prepared=min(fitting,key=lambda pair:rank(pair[1]))
+    from hermes_source_units.runtime_telemetry import event
+    event('page_representation_cost',binding=binding,phase=phase,selected=chosen.get(MARKER,'original'),
+        variants=[{'representation':v.get(MARKER,'original'),'input_codepoints':p['input_size'],
+                   'request_cost':p.get('request_cost')} for v,p in projections])
     if phase=='page-write':chosen={**chosen,'page_scope_contract':'assigned-candidates/v1'}
     return chosen
