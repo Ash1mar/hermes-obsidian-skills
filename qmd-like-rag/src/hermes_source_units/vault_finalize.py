@@ -252,11 +252,9 @@ class FileVaultFinalizeService:
                        if path.parent.name not in state["applied_build_runs"]]
         from .delivery_scope import release_closures
         scopes=release_closures(self.build,request.get('delivery_scopes',[]),run_ids)
-        if request.get('page_governance') and not scopes:
-            _fail('INVALID_STATE','page governance requires an exact scoped delivery')
         assert_release_ready(self.build,run_ids,scopes)
         runs = self._runs(run_ids,scopes)
-        if scopes:
+        if scopes or request.get('page_governance'):
             from .scoped_release import build_plan
             return build_plan(self,request,state,runs,scopes)
         current = self._current_sets()
@@ -426,8 +424,9 @@ class FileVaultFinalizeService:
                    "navigation_sha256": _sha(navigation_bytes),
                    "index_eligibility": plan["index_eligibility"],
                    "blockers": plan["blockers"], "reason": plan["reason"]}
-        if plan.get('delivery_scopes'):
-            release.update(delivery_scopes=plan['delivery_scopes'],delivery=plan['delivery'])
+        if 'delivery' in plan:
+            release['delivery']=plan['delivery']
+            if plan.get('delivery_scopes'):release['delivery_scopes']=plan['delivery_scopes']
         if plan.get('page_governance'):
             release['page_governance'] = plan['page_governance']
         validate_record("knowledge_release", release)
@@ -461,7 +460,7 @@ class FileVaultFinalizeService:
             actual = _load_json(_vault_path(self.vault, f"{BUILD_ROOT}/{run['run_id']}/manifest.json"))
             if actual.get("revision") != run["revision"] or (actual.get("state") != "completed" and run['run_id'] not in scopes):
                 _fail("SOURCE_CHANGED", f"pinned build changed: {run['run_id']}")
-        if release.get('delivery_scopes'):
+        if 'delivery' in release:
             from .scoped_release import validate_manifest
             validate_manifest(self,plan,release,scopes=scopes)
         state = self._state()

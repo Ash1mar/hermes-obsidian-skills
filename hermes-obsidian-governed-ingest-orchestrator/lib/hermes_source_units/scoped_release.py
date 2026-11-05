@@ -81,7 +81,8 @@ def build_plan(service,request,state,runs,scopes):
         'included_page_ids':sorted(included),'excluded':[{'page_id':k,'path':v.get('path') or next(p['path'] for p in candidates if p['page_id']==k),
             'category':v['category'],'reason':v['reason'],'reopen_condition':v['reopen_condition'],
             'depends_on':v.get('depends_on',[]),'original_scope':source_by_page.get(k)} for k,v in sorted(partition['excluded'].items())],
-        'inherited_coverage_gaps':list({r['closure']['authorization']['ref']:r['closure']['authorization'] for r in scopes.values()}.values()),
+        'inherited_coverage_gaps':list({r['closure']['authorization']['ref']:r['closure']['authorization'] for r in scopes.values()}.values())
+            + [r['coverage_scope'] for r in runs if r.get('coverage_scope')],
         'coverage_gap_summaries':[{'scope_id':r['scope']['scope_id'],'held_page_count':r['scope']['coverage_gaps'].get('held_page_count',0),
             'deferred_candidate_occurrences':r['scope']['coverage_gaps'].get('deferred_candidate_occurrences',0)} for r in scopes.values()],
         'raw_source_indexing':False,'dependencies':[{'page_id':k,'depends_on':v} for k,v in partition['dependencies'].items()]}
@@ -91,7 +92,8 @@ def build_plan(service,request,state,runs,scopes):
         'source_changes':changes,'subjects':[rows[p] for p in sorted(included)],'redirects':redirects,
         'navigation':navigation,'index_eligibility':[eligible[p] for p in sorted(included)],
         'blockers':sorted(set(blockers)),'reason':str(request.get('reason','')),
-        'delivery_scopes':request['delivery_scopes'],'delivery':delivery}
+        'delivery':delivery}
+    if request.get('delivery_scopes'):plan['delivery_scopes']=request['delivery_scopes']
     if governance:plan['page_governance']=governance
     plan['plan_id']=fingerprint({k:v for k,v in plan.items() if k not in ('revision','state')})
     validate_record('vault_finalize_plan',plan);return plan
@@ -106,8 +108,15 @@ def validate_manifest(service,plan,release,*,scopes=None):
     if fingerprint({k:v for k,v in plan.items() if k not in ('revision','state','plan_id')})!=plan['plan_id']:
         fail('scoped plan content differs from its identity','SOURCE_CHANGED')
     from .delivery_scope import release_closures
-    if scopes is None:scopes=release_closures(service.build,release['delivery_scopes'],[r['run_id'] for r in release['build_runs']],historical=True)
+    if scopes is None:scopes=release_closures(service.build,release.get('delivery_scopes',[]),[r['run_id'] for r in release['build_runs']],historical=True)
     allowed={p['page']['page_id'] for row in scopes.values() for p in row['closure']['pages']}
+    for ref in release['build_runs']:
+        if ref['run_id'] in scopes:continue
+        run=_load_json(service.build._run_path(ref['run_id']))
+        if run['state']!='completed' or run['revision']!=ref['revision']:
+            fail('complete delivery Build changed','SOURCE_CHANGED')
+        service.build.validate_run(ref['run_id'])
+        allowed.update(p['page_id'] for p in run['page_revisions'])
     required_exclusions={p['page_id'] for row in scopes.values() for p in row['scope']['excluded']}
     if release['delivery'].get('base_release'):
         from .partial_finalize import pinned

@@ -126,7 +126,11 @@ def test_completed_native_build_qualifies_without_partial_closure(completed_init
         'page_governance':pointer})['plan']
     pages = [r for r in plan['index_eligibility'] if r['kind'] == 'knowledge_page']
     assert len(pages) == 2 and all(r['eligible'] for r in pages)
+    assert plan['delivery']['raw_source_indexing'] is False
     assert all(p.read_bytes() == raw for p,raw in before.items())
+    service.apply({'release_id':plan['release_id'],'actor':'agent','plan_id':plan['plan_id'],
+        'expected_revision':plan['revision']})
+    assert service.validate(plan['release_id'])['ok']
 
 
 @pytest.mark.parametrize('change',['other-blocker','eligible','sidecar','run-revision','body'])
