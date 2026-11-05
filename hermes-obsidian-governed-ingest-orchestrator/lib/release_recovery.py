@@ -46,7 +46,9 @@ def recover(adapter,request,*,dry_run=False):
         oldpath=_vault_path(service.vault,request['blocked_plan']['ref']);olddata=oldpath.read_bytes();plan=_load_json(oldpath)
         expected=FileVaultFinalizeService(service.vault)._plan_path('release-'+fingerprint({'workflow_id':wid,'node':node.name,'input_fingerprint':node.input_fingerprint})[:24])
         scope=request.get('recovery_scope','governance-resolved/v1')
-        allowed=(plan['blockers']==['no-deliverable-pages'] if scope in ('governance-resolved/v1','initial-release-preflight/v1') else
+        from hermes_source_units.initial_release import unqualified_plan
+        initial_scope=bool(request.get('initial_page_governance')) and scope in ('governance-resolved/v1','initial-release-preflight/v1')
+        allowed=(unqualified_plan(plan) if initial_scope else plan['blockers']==['no-deliverable-pages'] if scope in ('governance-resolved/v1','initial-release-preflight/v1') else
             bool(plan['blockers']) and all(b.startswith('ambiguous-alias:') for b in plan['blockers']) if scope=='unused-navigation-alias/v1' else False)
         if oldpath!=expected or hashlib.sha256(olddata).hexdigest()!=request['blocked_plan']['sha256'] or not allowed or plan['state']!='draft':fail('exact blocked plan and supported cause required')
         if scope=='unused-navigation-alias/v1':
