@@ -10,6 +10,19 @@ from .validation import ContractError, fingerprint, validate_record
 CONTRACT = 'governed-initial-release-authorization/v1'
 
 
+def unqualified_plan(plan):
+    """Only a first draft lacking page qualification can enter preflight."""
+    if plan.get('state') != 'draft' or plan.get('page_governance'):
+        return False
+    if plan.get('blockers') == ['no-deliverable-pages']:
+        return True
+    subjects = {p['page_id'] for p in plan.get('subjects', [])}
+    pages = [r for r in plan.get('index_eligibility', []) if r['kind'] == 'knowledge_page']
+    return (plan.get('blockers') == [] and bool(subjects)
+            and {r['id'] for r in pages} == subjects
+            and all(r.get('eligible') is False for r in pages))
+
+
 def native_plan_started(snapshot):
     """Kanban scheduling rows are bookkeeping, not native execution attempts."""
     task = snapshot.get('task', {})
@@ -93,7 +106,7 @@ def validate(service, workflow, pointer, *, blocked_plan=None, governance_receip
     validate_record('vault_finalize_plan', base)
     if (q['base_release']['ref'] != service._plan_path(base['release_id']).relative_to(service.vault).as_posix()
             or base['state'] != 'draft' or base['actor'] != workflow['actor']
-            or base['blockers'] != ['no-deliverable-pages'] or base.get('page_governance')
+            or not unqualified_plan(base)
             or base['plan_id'] != fingerprint({k:v for k,v in base.items() if k not in ('revision','state','plan_id')})
             or {r['run_id'] for r in base['build_runs']} != set(service.build._batch(workflow['batch_id'])['run_ids'])):
         fail('initial draft plan or Build scope changed')
