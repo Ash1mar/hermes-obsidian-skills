@@ -5,12 +5,14 @@ from hermes_source_units.source_units import _load_json,_vault_path
 from hermes_source_units.validation import fingerprint
 
 
-def read_outcome(adapter,binding,view,prove,images):
+def read_outcome(adapter,binding,view,prove,images,*,value=None):
     from semantic_output import path_for,CONTRACT,ELIGIBLE,check,eligible_error
     from fixed_semantic import prepare_request_projection,decode_semantic_response
     from fixed_semantic_schema import schema_for
     path=path_for(adapter,binding,'page-write',view)
-    if not path.is_file():return None
+    if not path.is_file():
+        from durable_page_replay import read_outcome as durable
+        return durable(adapter,binding,view,prove,images,value=value)
     journal=_load_json(path);attempts=journal.get('attempts',[]);schema=schema_for('page-write',view)
     from reduce_disposition import output_permit,read_recovery
     permit=output_permit(adapter,binding,path,journal)

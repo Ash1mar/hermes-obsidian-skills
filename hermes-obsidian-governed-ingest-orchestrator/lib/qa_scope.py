@@ -75,6 +75,9 @@ def planning(adapter,binding,value,permitted):
         state=updated;calls.append(call)
     consume_gaps()
     if remaining or pending:fail('unaccounted planning cannot be declared complete')
+    if value['view'].get('page_dispatch_contract')=='per-page-dispatch/v2':
+        from fixed_page_work import replay_local_plan
+        state,local_calls=replay_local_plan(adapter,binding,value,state,prove);calls.extend(local_calls)
     return state,calls,prove,used_gaps
 
 

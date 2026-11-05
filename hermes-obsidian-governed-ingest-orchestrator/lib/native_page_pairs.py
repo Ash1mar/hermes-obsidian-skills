@@ -44,7 +44,7 @@ def compatible(left,right):
     return True
 
 
-def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project,measure,*,preheld=(),prior_calls=(),planning_failure=None):
+def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project,measure,*,preheld=(),prior_calls=(),planning_failure=None,progress=None):
     """Return None only before any durable page budget exists, for legacy fallback."""
     from page_execution_diagnostics import observe
     per_page=value['view'].get('page_dispatch_contract')=='per-page-dispatch/v2'
@@ -265,6 +265,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     working=copy.deepcopy(state)
     from qa_program import page_link_failures
     held.extend(page_link_failures(value,working,list(written.values())))
+    if progress:progress(list(written.values()),held,calls)
     if held or planning_failure:
         from qa_program import isolate_pages
         outcome=isolate_pages(adapter,binding,value,working,list(written.values()),held,planning_failure)

@@ -32,6 +32,15 @@ def journal_seals(adapter,manifest):
     seals=[]
     for row in manifest['allowed_pages']:
         found=by_input.get(row['input_sha256'],[])
+        durable=root.parent/'page-call-budget.json'
+        if not found and durable.exists():
+            record=_load_json(durable)
+            pages=[p for p in record['pages'].values() if p.get('input_sha256')==row['input_sha256']]
+            if len(pages)!=1 or pages[0].get('receipt',{}).get('audit_ref')!=row['audit_ref']:fail('durable native body lacks unique receipt')
+            audit=_load_json(_vault_path(adapter.workflow.vault,row['audit_ref']))
+            seals.append({'ref':durable.relative_to(adapter.workflow.vault).as_posix(),'sha256':hashlib.sha256(durable.read_bytes()).hexdigest(),
+                'audit_ref':row['audit_ref'],'audit_semantic_sha256':fingerprint({k:v for k,v in audit.items() if k not in ('receipt_refs','validated')})})
+            continue
         if len(found)!=1:fail('native body lacks a unique finite journal')
         p,journal=found[0];last=journal['attempts'][-1]
         if last.get('state')!='valid' or last.get('audit_ref')!=row['audit_ref']:fail('accepted native outcome changed')
@@ -91,9 +100,10 @@ def verify_pages(adapter,binding,value,manifest,prove):
     for row in manifest['allowed_pages']:
         page={k:copy.deepcopy(row[k]) for k in ('identity','path','candidate_refs')}
         view,size=measure(adapter,value,page,HermesCaller(),prepare_request_projection)
+        if value['view'].get('page_dispatch_contract')=='per-page-dispatch/v2':view={k:v for k,v in view.items() if k!='evidence_encoding'}
         if size>30000 or fingerprint(view)!=row['input_sha256']:fail('page authority changed')
         images=select_images(view['original_evidence']['tasks'],image_catalog(adapter,view['original_evidence'])) if 'original_evidence' in view else []
-        result=read_outcome(adapter,binding,view,prove,images)
+        result=read_outcome(adapter,binding,view,prove,images,value=value)
         if not result or result['kind']!='valid' or result['ref']!=row['audit_ref']:fail('missing trusted native body')
         content=result['draft']['content'];raw=content.encode('utf-8')
         expected=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/page-drafts/{fingerprint(view)}.md"
