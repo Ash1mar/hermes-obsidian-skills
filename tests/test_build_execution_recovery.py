@@ -36,8 +36,10 @@ def stopped(held,vault,monkeypatch,request):
     monkeypatch.setattr(a.kanban,'task_snapshot',a.kanban.task_snapshot_fresh,raising=False)
     snapshot=fixed_review.read_snapshot(a,binding,{'batch_id':w['batch_id']},True)
     sp=root/f'semantic-inputs/review-{snapshot["input_id"]}.json';sp.parent.mkdir(exist_ok=True);sp.write_bytes(_json_bytes(snapshot))
-    if getattr(request,'param',None)=='efficiency':
-        monkeypatch.setattr('efficiency_presentation.enabled',lambda *_:True)
+    # These fake native cards have no installed worker templates. Presentation
+    # choice is fixture data; recovery still authenticates every consumed wire.
+    use_efficiency=getattr(request,'param',None)=='efficiency'
+    monkeypatch.setattr('efficiency_presentation.enabled',lambda *_:use_efficiency)
     view=recovery.view_for(a,binding,snapshot['views'][0],snapshot['backend']['pages']['e1']['assessment'])
     schema=schema_for('page-review',view);wire=prepare_request_projection('page-review',view,schema,[])['wire']
     jp=path_for(a,binding,'page-review',view);jp.parent.mkdir(exist_ok=True)
