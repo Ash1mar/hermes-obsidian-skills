@@ -20,6 +20,13 @@ from .runtime_telemetry import span
 _CURRENT = ContextVar('release_operation_reads', default=None)
 
 
+def _copy_json(value):
+    """Parsed JSON has no aliases or custom copy hooks; detach containers only."""
+    if isinstance(value,dict):return {k:_copy_json(v) for k,v in value.items()}
+    if isinstance(value,list):return [_copy_json(v) for v in value]
+    return value
+
+
 class ReleaseReads:
     def __init__(self, vault):
         self.vault = vault
@@ -63,7 +70,7 @@ class ReleaseReads:
             self.stats['json_parses'] += 1
         else:
             self.stats['json_reuses'] += 1
-        return copy.deepcopy(self.parsed[path])
+        return _copy_json(self.parsed[path])
 
     def confirm(self):
         from .read_accounting import _raw_read_bytes

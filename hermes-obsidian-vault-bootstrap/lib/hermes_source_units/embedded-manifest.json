@@ -53,7 +53,7 @@
   "reduce_dependency_revision.py": "43373e4078ab7566c20d7280ce3fcc352b46ba8778757d9c099d044910ff8c02",
   "reduce_task_skip.py": "3d9e5383e2ded91e219a16e0502810b53c06ace0fc7fd5c6494d1b3e6527f3e8",
   "release_lint.py": "761699220c4a69a0e293cb4a8081d248f9c0df86f467cba9762179caa8decdb5",
-  "release_reads.py": "6b9fd528a73fbd9798f51de80d8d0e7f0b65b06ac86c512b2ff5c47a0bf5ff1f",
+  "release_reads.py": "56b19d187662288cfdc0a0f5276aff6021a8b69dd0ccedf2dc8a0a83ef3f1ae7",
   "resource_amendment.py": "df52e47b17f244e9e32f5ca86181d2413155ada46b32bb9e0640103a22e5430e",
   "runtime_policy.py": "52ef9c3b6f128cf31d1c62d164f1bf3960d7c48c855fbc7cfc275b593d17fb17",
   "runtime_telemetry.py": "ad7ace2a91266206f24081dd39bcb723cab224d3c50c9f206e0c52ea64638df7",

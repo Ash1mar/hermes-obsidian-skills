@@ -54,7 +54,8 @@ def test_sdk_identity_not_transport_or_audits():
 
 def test_only_immutable_review_ledger_is_cacheable(tmp_path):
     reads=ReleaseReads(tmp_path)
-    assert reads.accepts(tmp_path/'_system/ledgers/ingest-workflows/w/semantic-inputs/review.json')
+    assert reads.accepts(tmp_path/('_system/ledgers/ingest-workflows/w/semantic-inputs/review-'+'a'*64+'.json'))
+    assert not reads.accepts(tmp_path/'_system/ledgers/ingest-workflows/w/semantic-inputs/review.json')
     assert not reads.accepts(tmp_path/'_system/ledgers/ingest-workflows/w.json')
     assert not reads.accepts(tmp_path/'_system/ledgers/ingest-workflows/w/automatic-control/x.json')
     path=tmp_path/'data.json';path.write_text('{"x":1}')

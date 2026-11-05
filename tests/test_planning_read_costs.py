@@ -67,3 +67,11 @@ def test_mutable_progress_is_never_cached_and_foreign_vault_is_independent(tmp_p
         assert body(p)==b'old';p.write_bytes(b'new');assert body(p)==b'new'
         with pytest.raises(ContractError,match='SOURCE_CHANGED'):Service().inspect()
         assert reads.records=={}
+
+def test_parsed_read_copies_cannot_modify_cached_evidence(tmp_path):
+    p=tmp_path/'manifest.json';p.write_text('{"pages":[{"conditions":["A OR B"],"exceptions":null}]}')
+    with operation(tmp_path,'copy-isolation') as reads:
+        first=_load_json(p);first['pages'][0]['conditions'][0]='changed';first['pages'].append({})
+        assert _load_json(p)=={'pages':[{'conditions':['A OR B'],'exceptions':None}]}
+        assert reads.stats['json_parses']==1 and reads.stats['json_reuses']==1
+        reads.confirm()
