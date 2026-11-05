@@ -59,6 +59,10 @@ def initial(scoped, vault, monkeypatch):
         plan = service.plan({'release_id':'blocked-first','actor':'agent','expected_state_revision':0,
             'build_run_ids':[run['run_id']],'delivery_scopes':closure_refs(k,[run['run_id']])})['plan']
     assert plan['subjects']==[] and plan['blockers']==['no-deliverable-pages']
+    return authority(service, run, plan, vault, monkeypatch)
+
+
+def authority(service, run, plan, vault, monkeypatch):
     source_registry = json.loads((vault/'_system/metadata/document-registry.json').read_text())
     outcomes = [{'resource_id':r['resource_id'],'content_sha256':r['content_sha256'],'status':'ready'}
                 for r in source_registry['records']]
@@ -93,6 +97,58 @@ def initial(scoped, vault, monkeypatch):
     w['release_recovery_history']=[{'recovery_id':'initial','input_digest':recovery_q['input_digest'],
         'report_ref':report['ref'],'report_sha256':report['sha256']}]
     return service,w,grant,plan,run
+
+
+@pytest.fixture
+def completed_initial(ready, vault, monkeypatch):
+    k, run, reviews, req = ready
+    final = {key:value for key,value in req.items() if key != 'partial_manifest'}
+    final['reviews'] = reviews
+    result = k.finalize(final)
+    service = FileVaultFinalizeService(vault)
+    plan = service.plan({'release_id':'completed-first','actor':'agent',
+        'expected_state_revision':0,'build_run_ids':[run['run_id']]})['plan']
+    assert plan['subjects'] and plan['blockers'] == [] and not plan.get('delivery_scopes')
+    return authority(service,result['run'],plan,vault,monkeypatch)
+
+
+def test_completed_native_build_qualifies_without_partial_closure(completed_initial):
+    service,w,grant,base,run = completed_initial
+    before = {p:p.read_bytes() for p in service.vault.rglob('*') if p.is_file()}
+    with planner(service.vault):
+        pointer = create(service,grant)
+        assert create(service,grant) == pointer
+    record = json.loads((service.vault/pointer['ref']).read_text())
+    assert len(record['pages']) == 2 and all(r['eligible'] for r in record['pages'])
+    assert record['new_model_calls'] == 0
+    plan = service.plan({'release_id':'qualified-completed','actor':'agent',
+        'expected_state_revision':0,'build_run_ids':[run['run_id']],
+        'page_governance':pointer})['plan']
+    pages = [r for r in plan['index_eligibility'] if r['kind'] == 'knowledge_page']
+    assert len(pages) == 2 and all(r['eligible'] for r in pages)
+    assert all(p.read_bytes() == raw for p,raw in before.items())
+
+
+@pytest.mark.parametrize('change',['other-blocker','eligible','sidecar','run-revision','body'])
+def test_completed_initial_rejects_changed_or_already_qualified_input(completed_initial,change):
+    from hermes_source_units.initial_release import unqualified_plan
+    service,w,grant,base,run = completed_initial
+    if change in ('other-blocker','eligible'):
+        altered = copy.deepcopy(base)
+        if change == 'other-blocker': altered['blockers'] = ['unrelated-blocker']
+        else:
+            next(r for r in altered['index_eligibility'] if r['kind']=='knowledge_page')['eligible'] = True
+        assert not unqualified_plan(altered)
+        return
+    if change == 'run-revision':
+        run['revision'] += 1
+        service.build._run_path(run['run_id']).write_bytes(_json_bytes(run))
+    elif change == 'sidecar':
+        page = run['page_revisions'][0]
+        p = service.vault/f"_system/knowledge-builds/page-revisions/{page['page_id']}/{page['revision_id']}.json"
+        value=json.loads(p.read_text());value['authored_sha256']='0'*64;p.write_bytes(_json_bytes(value))
+    else: (service.vault/run['page_revisions'][0]['path']).write_text('changed')
+    with planner(service.vault),pytest.raises(ContractError):create(service,grant)
 
 
 def test_first_plan_qualifies_exact_closed_page_and_leaves_originals_unchanged(initial):

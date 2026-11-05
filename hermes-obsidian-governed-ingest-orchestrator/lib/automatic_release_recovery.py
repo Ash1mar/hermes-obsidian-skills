@@ -17,7 +17,7 @@ def recover(adapter,wid,*,resume=True):
     from hermes_source_units.vault_finalize import FileVaultFinalizeService
     from hermes_source_units.partial_finalize import pin
     from hermes_source_units.page_governance import POLICY
-    from hermes_source_units.initial_release import CONTRACT,admitted_pointer,needs_preflight,native_plan_started
+    from hermes_source_units.initial_release import CONTRACT,admitted_pointer,needs_preflight,native_plan_started,unqualified_plan
     service=adapter.workflow;root=service.vault/f'_system/ledgers/ingest-workflows/{wid}/automatic-release'
     with _exclusive_lock(root/'.controller.lock'):
         w=service.status(wid)
@@ -71,7 +71,7 @@ def recover(adapter,wid,*,resume=True):
             p4.plan({'actor':w['actor'],'release_id':release,'expected_state_revision':p4._state()['revision'],
                 'build_run_ids':batch['run_ids'],**({'delivery_scopes':delivery} if delivery else {})})
         plan=_load_json(pp)
-        if plan.get('blockers')!=['no-deliverable-pages']:return False
+        if not unqualified_plan(plan):return False
         # Exact registered content and role-labelled declarations establish source
         # identity. The program never guesses owners from filenames or directories.
         scripts=Path(__file__).resolve().parents[2]/'hermes-obsidian-controlled-ingest/scripts';sys.path.insert(0,str(scripts))

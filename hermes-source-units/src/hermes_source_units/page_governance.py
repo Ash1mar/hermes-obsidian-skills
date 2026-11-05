@@ -102,15 +102,28 @@ def create(service, authorization_pointer):
     for row in scopes.values():
         for item in row['closure']['pages']:
             accepted[item['page']['page_id']] = row, item['page']
-    # A blocked first plan has no publishable subjects yet. Its exact native
-    # Build closure, rather than that empty list, defines qualification scope.
-    subjects = ([identities[pid] for pid in sorted(accepted) if pid in identities]
-                if initial else base['subjects'])
     runs = {}
-    for rid in {r['run_id'] for r in base['build_runs']}:
+    for ref in base['build_runs']:
+        rid = ref['run_id']
         run = _load_json(service.build._run_path(rid))
         candidates, _ = service.build._pass_index([t['task_id'] for t in run['tasks']])
         runs[rid] = run, candidates, {d['page_id']:d for d in run['decisions']}
+        if run['state'] == 'completed':
+            if run['revision'] != ref['revision']:
+                fail('completed Build revision changed')
+            service.build.validate_run(rid)
+            proof = {'completed_run':rid, 'manifest':pin(service.vault,
+                service.build._run_path(rid).relative_to(service.vault).as_posix())}
+            for page in run['page_revisions']:
+                if service._page_revision(page['page_id'],page['revision_id']) != page:
+                    fail('completed Build page differs from its committed revision')
+                if page['page_id'] in accepted and accepted[page['page_id']][1] != page:
+                    fail('Build acceptance names conflicting revisions')
+                accepted[page['page_id']] = proof, page
+    # Both native partial closures and fully committed Builds are exact bases.
+    # No synthetic closure or change to original page governance is needed.
+    subjects = ([identities[pid] for pid in sorted(accepted) if pid in identities]
+                if initial else base['subjects'])
     rows = []
     with span('page_governance_preflight', vault=service.vault):
         for subject in subjects:
@@ -133,7 +146,8 @@ def create(service, authorization_pointer):
             if not acceptance:
                 reasons.append('missing-program-acceptance')
             if bound:
-                run_id = next(r['run_id'] for r in bound[0]['closure']['pages'] if r['page']['page_id']==pid)
+                run_id = bound[0].get('completed_run') or next(
+                    r['run_id'] for r in bound[0]['closure']['pages'] if r['page']['page_id']==pid)
                 run, candidates, decisions = runs[run_id]
                 selected = [candidates[(r['pass_id'],r['candidate_id'])] for r in decisions[pid]['candidate_refs']]
                 issues = qa_issues(service,page,selected) if page['qa_status']!='usable' else []
@@ -152,11 +166,12 @@ def create(service, authorization_pointer):
             evidence = []
             if bound:
                 row, _ = bound
-                evidence = [row['pointer'], row['closure']['authorization']]
+                evidence = ([row['manifest']] if row.get('completed_run')
+                            else [row['pointer'], row['closure']['authorization']])
                 # Native closure already validates exact acceptance. Pin the
                 # unchanged inputs that made this acceptance reusable.
-                evidence.extend(row['scope']['runs'][i]['manifest']
-                                for i in range(len(row['scope']['runs'])))
+                if not row.get('completed_run'):
+                    evidence.extend(r['manifest'] for r in row['scope']['runs'])
                 for citation, _ in selected:
                     evidence.append(pin(service.vault,
                         f"_system/knowledge-builds/task-{citation['task_id']}/passes/{citation['sequence']:04d}-{citation['pass_id']}.json"))
