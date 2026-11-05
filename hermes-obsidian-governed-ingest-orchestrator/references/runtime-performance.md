@@ -1,5 +1,16 @@
 # Runtime timing and incremental projection
 
+## Current capacity rule (2026-11-05)
+
+Pass defaults to 10. Independent TestVault end-to-end tests inherit current
+configured capacity unless the user explicitly requests another value. The
+HBTest2 five-round notes and their concurrency-2 statements below are historical
+observations, not current execution instructions. Do not override a new test's
+capacity from those notes. Change existing workflow capacity only through the
+supported stopped `set_pass_capacity.py` operation; preserve results, task/slice
+identities and cumulative budgets. Completed execution history is not rewritten
+or rerun merely to make a capacity comparison look consistent.
+
 ## Build workflow/history parsing reuse (2026-10-27)
 
 Within a fixed executor, trusted recovery or sync invocation, freshly read each
@@ -61,7 +72,7 @@ or different diagnostics, owners, states and sessions retain the existing block.
 
 The user explicitly raised independent Reduce page-body concurrency to a fixed
 maximum of 10. `reduce_page_concurrency` is persisted separately from program-worker
-and Pass capacity, which remain 2. Earlier concurrency-2 observations below are
+capacity (2) and current Pass capacity (10). Earlier concurrency-2 observations below are
 historical baselines. Do not auto-tune this setting. Preserve unknown calls and
 finite journals, reuse valid results, and stop on sustained ineffective consumption
 or a severe shared defect. Acceptance still requires the durable `checkpoint_1`;
