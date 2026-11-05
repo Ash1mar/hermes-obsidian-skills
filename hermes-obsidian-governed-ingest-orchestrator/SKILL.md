@@ -224,3 +224,8 @@ each page's separate publication conditions.
 `auto_full` 的有限自动恢复与覆盖缺口规则见 [automatic-recovery.md](references/automatic-recovery.md)。
 
 For read-only metrics use `python3 "<skill-dir>/scripts/report_workflow_metrics.py" --vault "<vault>" --workflow-id "<id>" --output "<new-external-report.json>"`. Read `references/workflow-maintenance.md` for metric windows, pinned recovery policy, resource retry and controller continuity. These commands do not authorize a new run or a pause release.
+
+For an explicitly authorized independent downstream test reusing existing MinerU
+conversion material, read [post-mineru-tests.md](references/post-mineru-tests.md)
+and use `python3 "<skill-dir>/scripts/start_post_mineru_test.py"`. This is a separate
+test entry; ordinary startup does not import another Vault's Bundles.

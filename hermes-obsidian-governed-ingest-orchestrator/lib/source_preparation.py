@@ -57,7 +57,8 @@ def prepare_source(adapter, request):
 
         # A supplied Bundle is explicit resumption; automatic reuse is restricted
         # to this workflow/source's deterministic attempt directories.
-        bundle_ref = request.get("bundle") or _repaired_bundle(adapter, request, source)
+        from post_mineru_test import imported_bundle
+        bundle_ref = request.get("bundle") or imported_bundle(adapter, bound, source) or _repaired_bundle(adapter, request, source)
         if bundle_ref:
             bundle = _vault_path(vault, str(bundle_ref))
             if not any(bundle.is_relative_to(_vault_path(vault, location))
