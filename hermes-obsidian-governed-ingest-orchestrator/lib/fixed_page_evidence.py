@@ -80,6 +80,12 @@ def review_scope(assessment):
 def review_variants(view,assessment):
     """Known exact historical presentations; never substitute evidence bytes."""
     variants=[view,{**view,MARKER:CONTRACT},{**view,MARKER:COMPACT_CONTRACT}]
+    if 'original_evidence' in view and 'evidence_selection' not in view:
+        from efficiency_presentation import page_evidence_view
+        derived=copy.deepcopy(view);derived['efficiency_contract']='efficiency-presentation/v1'
+        evidence=derived.get('candidates',derived.get('citation_evidence',[]))
+        derived['original_evidence'],derived['evidence_selection']=page_evidence_view(derived['original_evidence'],evidence)
+        variants.extend((derived,{**derived,MARKER:CONTRACT},{**derived,MARKER:COMPACT_CONTRACT}))
     if assessment['risk_reasons']:
         variants.extend({**v,'review_scope':review_scope(assessment)} for v in list(variants))
     from hermes_source_units.validation import fingerprint
