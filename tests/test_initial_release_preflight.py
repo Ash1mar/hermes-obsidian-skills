@@ -3,7 +3,7 @@ import copy
 from contextlib import nullcontext
 from types import SimpleNamespace as NS
 import pytest
-from test_initial_release import initial,scoped,ready,vault,writer,material_quality,save,grant_request
+from test_initial_release import initial,completed_initial,scoped,ready,vault,writer,material_quality,save,grant_request
 from hermes_source_units import ContractError
 from hermes_source_units.partial_finalize import pin
 from hermes_source_units.initial_release import needs_preflight,admitted_pointer
@@ -13,10 +13,15 @@ import release_recovery
 import ingest_kanban
 
 
+@pytest.fixture(params=['initial','completed_initial'])
+def release_basis(request):
+    return request.getfixturevalue(request.param)
+
+
 @pytest.mark.parametrize('runs',[[],[{'ended_at':1,'status':'scheduled','outcome':'scheduled','worker_pid':None}],
     [{'ended_at':1,'status':'failed'}],[{'ended_at':None,'status':'running'}]])
-def test_preflight_admits_only_unstarted_plan_with_exact_closed_evidence(initial,monkeypatch,runs):
-    p4,w,grant,plan,run=initial
+def test_preflight_admits_only_unstarted_plan_with_exact_closed_evidence(release_basis,monkeypatch,runs):
+    p4,w,grant,plan,run=release_basis
     w.update(state='cancelled',cancel_requested=True,current_stage='release_planning',release_id=None,revision=7)
     w['scope']['recovery_policy']=copy.deepcopy(DEFAULT)
     w['release_recovery_history']=[]
