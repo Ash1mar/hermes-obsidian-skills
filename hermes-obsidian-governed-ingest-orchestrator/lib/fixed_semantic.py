@@ -302,7 +302,7 @@ class HermesCaller:
             agent.fixed_live_control_check=prepared.get('live_control_check')
             context=prepared.get('audit_context')
             agent.fixed_network_context=({**context,'wire_sha256':fingerprint(prepared['wire']),
-                'control_check':lambda:agent._fixed_preflight(agent.fixed_network_payload,apply=False),
+                'control_check':prepared.get('live_control_check') or prepared['fresh_control_check'],
                 'fresh_check':prepared['fresh_control_check']} if context and prepared.get('fresh_control_check') else None)
             agent.fixed_network_retry_refs=[];agent.fixed_network_wait_ms=0
             from native_call_state import StopNativeCall,record
@@ -556,8 +556,6 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
         # backoff; the cheap live guard remains available during the wait.
         fresh_binding=live if binding['node'].startswith('pass-slice:') else binding
         prepared['fresh_control_check']=lambda:adapter.worker_check(fresh_binding)
-        if not prepared.get('live_control_check'):
-            prepared['live_control_check']=prepared['fresh_control_check']
     if isinstance(caller,HermesCaller): caller.input_limit=limit
     from citation_amendment_calls import active as amendment_active
     local_amendment=amendment_active(adapter,binding)
