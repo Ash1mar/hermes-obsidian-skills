@@ -43,6 +43,20 @@ def authenticated_call_recovery(entry):
             for r in rows))
 
 
+def authenticated_returned_output(entry):
+    proof=entry.get('returned_native_output',{});rows=proof.get('outputs')
+    return (entry.get('failure',{}).get('error_code')=='INVALID_CANONICAL_VALUE'
+        and entry.get('node','').startswith('resource-reduce:') and bool(entry.get('ended_run_ids'))
+        and proof.get('contract')=='returned-native-output/v1' and proof.get('new_model_calls_granted')==0
+        and proof.get('original_attempts_preserved') is True and proof.get('unknown_completion_allowed') is False
+        and isinstance(proof.get('snapshot_ref'),str) and len(proof.get('snapshot_sha256',''))==64
+        and isinstance(rows,list) and bool(rows) and all(isinstance(r,dict) and r.get('original_attempt',{}).get('session_id')
+            and r.get('audit',{}).get('output_attempt_id')==r.get('original_attempt',{}).get('attempt_id')
+            and r.get('audit',{}).get('response_sha256')==r.get('response_sha256')
+            and r.get('audit',{}).get('model',{}).get('origin')=='hermes_native_model'
+            and isinstance(r.get('journal_sha256'),str) and len(r['journal_sha256'])==64 for r in rows))
+
+
 def authenticated_local_amendment_recovery(request,entry):
     """Recognize a hash-sealed, operator-admitted local repair, never new quota."""
     proof=entry.get('local_amendment_execution',{})
@@ -266,7 +280,8 @@ class ExecutionPlanMixin:
                     cause=entry.get('previous_task_id')
                     if (not isinstance(cause,str) or not cause or (entry.get('failure',{}).get('error_code')
                             not in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED')
-                            and not authenticated_call_recovery(entry) and not authenticated_local_amendment_recovery(request,entry))):
+                            and not authenticated_call_recovery(entry) and not authenticated_returned_output(entry)
+                            and not authenticated_local_amendment_recovery(request,entry))):
                         fail('STALE_INPUT','Reduce cancellation recovery lacks its exact ended native identity')
                 if scope=='build-native/v1':
                     proof=entry.get('build_review_recovery',{})

@@ -14,7 +14,7 @@ def execution_code_fingerprint():
     return fingerprint({n:hashlib.sha256((root/n).read_bytes()).hexdigest()
         for n in ('qa_program.py','fixed_page_work.py','fixed_semantic.py',
                   'native_page_pairs.py','page_pair_calls.py','page_dependencies.py',
-                  'source_unknown_recovery.py','native_stream_policy.py')})
+                  'source_unknown_recovery.py','native_stream_policy.py','returned_native_output.py')})
 
 
 def isolate_plan(adapter,binding,value,state,packet,error):
