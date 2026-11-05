@@ -36,9 +36,11 @@ def fixture(vault,monkeypatch,tmp_path):
     req['input_digest']=mutation_digest(req)
     return a,w,card,binding,value,packet,req,jp,rp,home
 
-@pytest.mark.parametrize('change',[None,'snapshot','journal','answer','policy','contract','run'])
+@pytest.mark.parametrize('change',[None,'rejected','snapshot','journal','answer','policy','contract','run'])
 def test_source_unknown_admission_is_exact_and_does_not_consume_budget(vault,monkeypatch,tmp_path,change):
     a,w,c,b,value,packet,req,jp,rp,home=fixture(vault,monkeypatch,tmp_path)
+    if change=='rejected':
+        j=json.loads(jp.read_text());j['attempts'][0].update(state='rejected',correctable=False,diagnostic={'code':'NATIVE_COMPLETION_UNKNOWN'});jp.write_text(json.dumps(j))
     if change=='snapshot':req['entries'][0]['snapshot_sha256']='0'*64
     if change=='journal':
         j=json.loads(jp.read_text());j['attempts'][0]['wire_sha256']='changed';jp.write_text(json.dumps(j))
@@ -49,13 +51,18 @@ def test_source_unknown_admission_is_exact_and_does_not_consume_budget(vault,mon
     if change=='contract':req['target_contract_sha256']='0'*64
     if change=='run':a.kanban.ended.clear()
     req['input_digest']=mutation_digest(req);before=jp.read_bytes()
-    if change:
+    if change not in (None,'rejected'):
         with pytest.raises(ContractError):a.recover_reduce_execution(req,dry_run=True)
     else:
         preview=a.recover_reduce_execution(req,dry_run=True);proof=preview['entries'][0]['source_unknown_isolation']
         assert proof['new_model_calls_granted']==0 and proof['unknowns_preserved'] and not proof['coverage_complete']
         result=a.recover_reduce_execution(req);assert not result['resumed']
         assert a.recover_reduce_execution(req)['replayed']
+        intent={'entries':req['entries']}
+        reuse=recovery.admitted_intent(a,a.workflow.status(w['workflow_id']),intent)
+        assert reuse['reused_admission_refs']==[result['report_ref']] and reuse['new_model_calls_granted']==0
+        changed=copy.deepcopy(intent);changed['entries'][0]['snapshot_sha256']='different'
+        assert recovery.admitted_intent(a,a.workflow.status(w['workflow_id']),changed) is None
         # Read the sealed omission without starting a worker or calling a model.
         isolated=recovery.packet_disposition(a,b,value,packet)
         assert isolated['candidate_refs']==packet['candidate_refs'] and isolated['reserved_ordinal']==1

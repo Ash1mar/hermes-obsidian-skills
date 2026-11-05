@@ -61,7 +61,7 @@ def verify(adapter,workflow,node,binding,entry,failure,runs,proof):
             if (sha(jp)!=outcome['journal_sha256'] or sha(rp)!=outcome['evidence_sha256']
                     or rp.parent!=root/'call-failures' or report.get('phase')!='resource-reduce'
                     or report.get('view')!=view or journal['input_sha256']!=fingerprint(view)
-                    or last.get('attempt_id')!=outcome['attempt_id'] or last.get('state')!='reserved'
+                    or last.get('attempt_id')!=outcome['attempt_id'] or last.get('state') not in ('reserved','rejected')
                     or last.get('audit_ref') or last.get('session_id')!=outcome['session_id']):
                 fail('unknown reservation or exact current packet differs')
             response=report.get('response_evidence',{})
@@ -121,6 +121,33 @@ def select(adapter,workflow):
             'snapshot_ref':sp.relative_to(adapter.workflow.vault).as_posix(),'snapshot_sha256':sha(sp),'source_unknown_isolation':True})
     return selected
 
+def admitted_intent(adapter,workflow,intent):
+    """Settle an old intent after exact supported admission under corrected code.
+
+    The original saved request remains immutable. Only hash-verified recovery
+    reports for every original task/failure/snapshot can replace its missing
+    receipt; a changed contract alone never grants execution or fresh budget.
+    """
+    from fixed_history import checked_report
+    matches=[]
+    for selected in intent['entries']:
+        found=[]
+        for pointer in workflow.get('execution_recovery_history',[]):
+            report=checked_report(adapter.workflow,pointer)
+            if report['request'].get('recovery_scope')!='reduce-cancel/v1':continue
+            for entry in report['entries']:
+                proof=entry.get('source_unknown_isolation',{})
+                if (entry.get('node')==selected['node'] and entry.get('previous_task_id')==selected['task_id']
+                        and entry.get('failure_sha256')==selected['failure_sha256']
+                        and proof.get('contract')==CONTRACT and proof.get('snapshot_ref')==selected['snapshot_ref']
+                        and proof.get('snapshot_sha256')==selected['snapshot_sha256']
+                        and proof.get('new_model_calls_granted')==0 and proof.get('unknowns_preserved') is True):
+                    found.append(pointer['report_ref'])
+        if not found:return None
+        if len(found)!=1:fail('multiple admissions for one original unknown intent')
+        matches.extend(found)
+    return {'ok':True,'applied':False,'reused_admission_refs':matches,'new_model_calls_granted':0}
+
 def recover(adapter,wid,*,resume=True):
     from automatic_pass_recovery import request
     from native_ingest import control_workflow
@@ -141,11 +168,13 @@ def recover(adapter,wid,*,resume=True):
         op=intent['operation_id']
         if not w['cancel_requested']:control_workflow(adapter.workflow.vault,wid,'cancel',op+'-stop')
         verify_cancel_drain(adapter,wid,timeout=0)
-        rp=root/(op+'.request.json')
-        if not rp.exists():_write_atomic(rp,_json_bytes(request(adapter,wid,recovery_id=op,
-            recovery_scope='reduce-cancel/v1',target_contract_sha256=contract_hash(),
-            reason='Quarantine exact stopped unknown source packets; preserve reservations and all valid results; zero retry grants',entries=intent['entries'])))
-        result=adapter.recover_reduce_execution(_load_json(rp))
+        result=admitted_intent(adapter,adapter.workflow.status(wid),intent)
+        if result is None:
+            rp=root/(op+'.request.json')
+            if not rp.exists():_write_atomic(rp,_json_bytes(request(adapter,wid,recovery_id=op,
+                recovery_scope='reduce-cancel/v1',target_contract_sha256=contract_hash(),
+                reason='Quarantine exact stopped unknown source packets; preserve reservations and all valid results; zero retry grants',entries=intent['entries'])))
+            result=adapter.recover_reduce_execution(_load_json(rp))
         _write_atomic(root/(op+'.json'),_json_bytes({**intent,'state':'applied','result':result,'new_model_calls_granted':0}))
         if resume:control_workflow(adapter.workflow.vault,wid,'resume',op+'-resume')
         pending.unlink();return True
