@@ -217,6 +217,11 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                 # Only reuse within this iteration; later/refined plans remeasure.
                 prepared=(view,size)
         except ContractError as exc:
+            if per_page and getattr(exc,'semantic_audit_ref',None) and 'packet' in locals():
+                h=exhausted_plan(adapter,binding,packet,exc)
+                if h:
+                    with progress_lock:held.append({**h,'path':page['path'],'candidate_refs':page['candidate_refs']});save()
+                    continue
             defer(page,'page-plan',exc);continue
         for child in children:
             try:
@@ -237,7 +242,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     if per_page:
         from native_page_pairs import execute as durable_pages
         return durable_pages(adapter,binding,value,working,caller,model_call,attach_receipt,project,measure,
-            preheld=held,prior_calls=calls,planning_failure=planning_failure)
+            preheld=held,prior_calls=calls,planning_failure=planning_failure,progress=save_durable_progress(adapter,binding,value,working,original_plan_sha))
     from qa_program import page_link_failures
     link_holds=page_link_failures(value,working,written)
     held.extend(h for h in link_holds if not any(old['path']==h['path'] for old in held))
@@ -257,3 +262,65 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     draft=g.complete(value,working)
     for p in draft['pages']:p['content']=bodies[p['path']]
     return draft,calls
+
+
+def exhausted_plan(adapter,binding,packet,error):
+    """A known exhausted mechanical plan becomes an explicit gap, not a retry."""
+    from semantic_output import path_for
+    from hermes_source_units.source_units import _load_json
+    path=path_for(adapter,binding,'global-detail',packet['view'])
+    if not path.exists():return None
+    attempts=_load_json(path).get('attempts',[])
+    if (len(attempts)!=2 or any(a.get('state')!='rejected' or not a.get('audit_ref') for a in attempts)
+            or attempts[-1]['audit_ref']!=getattr(error,'semantic_audit_ref',None)
+            or error.code not in ('INVALID_SCHEMA','INCOMPLETE_COVERAGE','IDENTITY_CONFLICT','DUPLICATE','UNRESOLVED_REFERENCE')):return None
+    return {'phase':'page-plan','code':'SEMANTIC_REVIEW_REQUIRED','validation_code':error.code,'reason':str(error),
+        'audit_ref':attempts[-1]['audit_ref'],'origin':'exhausted-native-page-plan/v1',
+        'journal_ref':path.relative_to(adapter.workflow.vault).as_posix(),'attempts_preserved':2,'new_calls_granted':0}
+
+
+def save_durable_progress(adapter,binding,value,state,original_sha):
+    def save(written,held,calls):
+        ref=f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}/semantic-inputs/page-work-{value["input_id"]}.json'
+        _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes({'contract':'native-page-work/v1','binding':binding,
+            'original_plan_sha256':original_sha,'current_plan_sha256':fingerprint(state),'planned_state':state,
+            'written':[{k:v for k,v in p.items() if k!='content'} for p in written],'held':held,
+            'planning_failure':None,'successful_call_refs':calls,'formal_global_submitted':False,'page_call_contract':'durable-page-calls/v1'}))
+    return save
+
+
+def replay_local_plan(adapter,binding,value,state,prove):
+    """Reconstruct local refinements/gaps from exact native finite attempts."""
+    from fixed_semantic import HermesCaller,prepare_request_projection,decode_semantic_response
+    from fixed_global_targets import select
+    from semantic_output import path_for
+    from fixed_semantic_schema import schema_for
+    from hermes_source_units.source_units import _load_json
+    caller=HermesCaller();working=copy.deepcopy(state);calls=[]
+    for page in list(state['pages']):
+        _,size=measure(adapter,value,page,caller,prepare_request_projection)
+        if size<=LIMIT:continue
+        base,packet=refinement(adapter,value,working,page,caller,prepare_request_projection)
+        packet=select(adapter,binding,'global-detail',packet,prepare_request_projection)
+        path=path_for(adapter,binding,'global-detail',packet['view'])
+        if not path.exists():raise ContractError('COVERAGE_SCOPE_INVALID','$','missing native local page plan')
+        journal=_load_json(path);attempts=journal.get('attempts',[]);sc=schema_for('global-detail',packet['view'])
+        if not 1<=len(attempts)<=2:raise ContractError('COVERAGE_SCOPE_INVALID','$','local plan allowance changed')
+        last=None;updated=None
+        for index,attempt in enumerate(attempts,1):
+            prepared=prepare_request_projection('global-detail',packet['view'],sc,[],attempt.get('correction'))
+            if attempt.get('attempt')!=index or attempt.get('wire_sha256')!=fingerprint(prepared['wire']) or not attempt.get('audit_ref'):
+                raise ContractError('COVERAGE_SCOPE_INVALID','$','unknown or changed local plan')
+            native=prove(_vault_path(adapter.workflow.vault,attempt['audit_ref']),prepared['wire'],sc,[])
+            if native is None:raise ContractError('COVERAGE_SCOPE_INVALID','$','local plan lacks ended native proof')
+            draft,_=decode_semantic_response(native[0]);error=None
+            try:updated=accept_refinement(adapter,value,base,packet,draft,caller,prepare_request_projection)
+            except ContractError as exc:error=exc
+            if (error is None)!=(attempt['state']=='valid'):raise ContractError('COVERAGE_SCOPE_INVALID','$','local plan validation changed')
+            if error is None and index!=len(attempts):raise ContractError('COVERAGE_SCOPE_INVALID','$','valid local plan was resent')
+            if error:error.semantic_audit_ref=attempt['audit_ref']
+            last=error;calls.append(attempt['audit_ref'])
+        if last:
+            if not exhausted_plan(adapter,binding,packet,last):raise ContractError('COVERAGE_SCOPE_INVALID','$','local plan is unresolved without finite exclusion')
+        else:working=updated
+    return working,calls

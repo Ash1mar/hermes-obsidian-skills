@@ -13,7 +13,7 @@ def execution_code_fingerprint():
     root=Path(__file__).parent
     return fingerprint({n:hashlib.sha256((root/n).read_bytes()).hexdigest()
         for n in ('qa_program.py','fixed_page_work.py','fixed_semantic.py',
-                  'native_page_pairs.py','page_pair_calls.py','page_dependencies.py',
+                  'native_page_pairs.py','page_pair_calls.py','page_dependencies.py','durable_page_replay.py',
                   'source_unknown_recovery.py','native_stream_policy.py','returned_native_output.py',
                   'network_connection_retry.py')})
 
@@ -112,8 +112,19 @@ def verify_recovery(adapter,w,node,binding,entry,failure,runs):
             call=_load_json(p)
             if call.get('native_task_id') not in allowed or call.get('reused_from_audit'):continue
             phase=call['phase'];sid=call['model']['session_id']
-            if phase not in ('global-plan','global-detail','page-write') or str(call.get('native_run_id')) not in allowed[call['native_task_id']]:
+            if phase not in ('global-plan','global-detail','page-write','page-pair') or str(call.get('native_run_id')) not in allowed[call['native_task_id']]:
                 raise ContractError('RECOVERY_NOT_ALLOWED','$','unrecognized QA native call')
+            if phase=='page-pair':
+                from durable_page_replay import authenticate_request
+                from fixed_semantic_recovery import native_proof
+                permitted={task:{'ended_run_ids':list(ids)} for task,ids in allowed.items()}
+                prove=lambda p,wire,sc,images:native_proof(adapter,binding,p,wire,sc,images,permitted)
+                ledger,q,view=authenticate_request(adapter,binding,old,call['page_request_id'],prove)
+                if q['response']['audit_ref']!=p.relative_to(adapter.workflow.vault).as_posix():
+                    raise ContractError('RECOVERY_NOT_ALLOWED','$','page native audit differs')
+                calls.append({'ref':p.relative_to(adapter.workflow.vault).as_posix(),
+                    'semantic_sha256':fingerprint({k:v for k,v in call.items() if k not in ('receipt_refs','validated')})})
+                continue
             rows=list(db.execute('select role,content,tool_calls from messages where session_id=?',(sid,)))
             users=[c for r,c,_ in rows if r=='user' and fingerprint(c)==call['user_sha256']]
             body=json.loads(_request_text(users[0])) if len(users)==1 else {}
