@@ -71,3 +71,22 @@ def test_short_entry_fixes_future_profile_before_any_sync(tmp_path,monkeypatch):
     orchestration.start_and_pin(tmp_path,{})
     pin=json.loads((tmp_path/'_system/ledgers/ingest-workflows/future/presentation-contract.json').read_text())
     assert pin['page_dispatch_contract']=='per-page-dispatch/v2' and pin['planning_budget_contract']=='shared-reading-page-budget/v1'
+
+def test_full_start_wrapper_accepts_and_pins_test_callback(tmp_path,monkeypatch):
+    from test_startup_unknown_fix import startup,ROOT
+    from orchestration import start_and_pin
+    module=startup();source=tmp_path/'source.md';source.write_text('isolated original')
+    q={'operation_id':'callback','actor':'agent','vault_path':str(tmp_path/'new'),'vault_id':'new','vault_name':'New',
+       'security_domain':'test','sources':[str(source)]}
+    pointer={'contract':CONTRACT,'ref':'_system/reports/isolated-import.json','sha256':'a'*64};seen=[]
+    def imported(v,r):
+        assert (v/'10_Raw/source.md').read_text()=='isolated original'
+        assert not (v/'_system/ledgers/ingest-workflows/ingest-callback.json').exists()
+        seen.append('import');return pointer
+    def dispatch(v,cmd,r):
+        report=json.loads((v/r['scope']['bootstrap_ref']).read_text())
+        assert report['test_bundle_import']==pointer and seen==['import']
+        seen.append('dispatch');start_and_pin(v,r);return {'ok':True}
+    monkeypatch.setattr(module,'dispatch',dispatch)
+    result=module.start(q,tmp_path/'receipt.json',ROOT/'hermes-obsidian-vault-bootstrap',before_workflow=imported)
+    assert result['workflow']['ok'] and seen==['import','dispatch']

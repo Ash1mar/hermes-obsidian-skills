@@ -19,7 +19,7 @@ from orchestration import configuration, dispatch
 from hermes_source_units.runtime_telemetry import measured, event
 
 
-@measured('vault_startup',lambda request,record,bootstrap_skill:{'vault':request.get('vault_path'),
+@measured('vault_startup',lambda request,record,bootstrap_skill,**kwargs:{'vault':request.get('vault_path'),
     'workflow_id':'ingest-'+str(request.get('operation_id','unknown')),'operation_id':request.get('operation_id')})
 def start(request, record, bootstrap_skill, *, before_workflow=None):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
