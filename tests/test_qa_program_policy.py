@@ -36,6 +36,20 @@ def test_qa_isolates_only_actual_page_dependents_preserving_native_bodies(tmp_pa
     with pytest.raises(ContractError,match='QA gap evidence changed'):reports(tmp_path,'ingest-qa')
 
 
+def test_unregistered_native_asset_links_are_local_holds_not_source_repairs():
+    from qa_program import page_link_failures
+    from test_global_plan_inputs import fixture_value
+    from test_incremental_global_reduce import page
+    value=fixture_value()
+    bad={**page('c1','bad'),'path':'topic/bad.md','content':'![source](invented.jpg)','audit_ref':'native-bad.json'}
+    good={**page('c2','good'),'path':'topic/good.md','content':'# Verified independent prose','audit_ref':'native-good.json'}
+    before=json.dumps([bad,good],sort_keys=True)
+    held=page_link_failures(value,{'pages':[bad,good]},[bad,good])
+    assert len(held)==1 and held[0]['path']==bad['path'] and held[0]['audit_ref']=='native-bad.json'
+    assert held[0]['origin']=='native-page-destination-check/v1' and held[0]['code']=='SEMANTIC_REVIEW_REQUIRED'
+    assert json.dumps([bad,good],sort_keys=True)==before
+
+
 @pytest.mark.parametrize('host_cap,expected',[ (None,12),(10,10) ])
 def test_reduce_ten_is_separate_from_other_program_two_and_respects_host_cap(refill,monkeypatch,host_cap,expected):
     import native_program_dispatch as d

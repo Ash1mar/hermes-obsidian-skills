@@ -1,5 +1,15 @@
 # Automatic QA handling and bounded recovery
 
+Connection-only retries are separate from semantic recovery and isolation.
+Exact SDK APIConnectionError with no partial/returned data persists each
+ambiguous failure and waits/retries the same fixed reservation until connection
+returns or control stops. Backoff caps at60 seconds; no semantic ordinal is
+added. SSE idle/other timeouts, invalid frames, permissions, partial responses and
+semantic failures keep their existing limits. See fixed-semantic.md. Historical
+stopped unknown reservations still require their supported admission; never
+silently relabel them or reset budgets. Connection errors alone do not justify
+coverage exclusion.
+
 New short requests pin `scope.recovery_policy`, including the QA rule, before Bootstrap.
 Changing shared configuration does not alter an existing pinned workflow. Legacy
 workflows without the policy retain their documented configuration fallback. The rule is:

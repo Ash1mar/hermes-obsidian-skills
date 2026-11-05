@@ -148,6 +148,15 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
         'coordination':coordination(events,distribution),'stage_windows':phase_windows,
         'recovery':recovery,'domain_receipts':receipts,'runtime_writer':writer_cost(events),
         'attempt_yield':attempt_yield(attempts)}
+    network_failures=[e for e in events if e['name']=='network_connection_failure']
+    network_dispatches=[e for e in events if e['name']=='network_retry_dispatch']
+    detail['network_retries']={'connection_failures':len(network_failures),'retry_dispatches':len(network_dispatches),
+        'failure_evidence_refs':[e['evidence_ref'] for e in network_failures],
+        'wait_ms':sum(e['elapsed_ms'] for e in events if e['name']=='network_retry_wait'),
+        'semantic_request_reservations':detail['model_calls']['actual_sdk_requests'],
+        'sdk_boundary_dispatches_including_network_retries':detail['model_calls']['actual_sdk_requests']+len(network_dispatches),
+        'physical_http_attempts':None,'unknown_transport_usage':'not inferred as zero',
+        'scope':'same semantic reservation; each connection-only retry separately observed; no repeated valid response'}
     for o in observations:
         if o.get('workflow_id')!=workflow_id or Path(o.get('vault','')).resolve()!=vault.resolve():
             raise ValueError('observation identity differs from workflow')

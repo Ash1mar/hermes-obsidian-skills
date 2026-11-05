@@ -232,6 +232,9 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         halt.set()
         for future in pending:future.cancel()
         pool.shutdown(wait=True,cancel_futures=True)
+    from qa_program import page_link_failures
+    link_holds=page_link_failures(value,working,written)
+    held.extend(h for h in link_holds if not any(old['path']==h['path'] for old in held))
     save()
     if held or planning_failure:
         from qa_program import isolate_pages

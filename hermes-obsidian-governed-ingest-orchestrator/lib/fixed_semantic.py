@@ -176,20 +176,36 @@ class HermesCaller:
 
             def _fixed_api(self,call,api_kwargs,*args,**kwargs):
                 from native_call_state import classify,StopNativeCall,request_identity,checked_response
+                self.fixed_network_payload=api_kwargs
                 self.fixed_final_request_sha256=request_identity(api_kwargs)
+                exact_request_sha256=self.fixed_final_request_sha256
                 event('sdk_transport_entry',session_id=self.session_id,
                       request_sha256=self.fixed_final_request_sha256,
                       scope='native SDK boundary; not physical HTTP attempts')
                 self.fixed_final_output_format=copy.deepcopy(api_kwargs.get('text',{}).get('format',api_kwargs.get('response_format')))
-                try:
-                    response=call(api_kwargs,*args,**kwargs)
-                    pending=getattr(self,'fixed_thread_stop',None)
-                    if pending is not None:raise pending
-                    return checked_response(self,response)
-                except Exception as exc:
-                    outcome=classify(exc)
-                    if outcome['retryable']:raise
-                    raise StopNativeCall(outcome) from exc
+                while True:
+                    try:
+                        response=call(api_kwargs,*args,**kwargs)
+                        pending=getattr(self,'fixed_thread_stop',None)
+                        if pending is not None:raise pending
+                        return checked_response(self,response)
+                    except Exception as exc:
+                        from network_connection_retry import retry
+                        if retry(self,exc,self.fixed_final_request_sha256):
+                            # Same immutable payload/reservation; never resend a
+                            # returned response or a semantic/timeout failure.
+                            self._fixed_preflight(api_kwargs,apply=False)
+                            if request_identity(api_kwargs)!=exact_request_sha256:
+                                raise StopNativeCall({'contract':'native-call-outcome/v1','state':'request_rejected',
+                                    'retryable':False,'source':'local_request_guard',
+                                    'error':{'class':'ChangedNativeRequest','message':'exact network retry payload changed'}})
+                            event('network_retry_dispatch',session_id=self.session_id,
+                                request_sha256=self.fixed_final_request_sha256,
+                                network_failure_ordinal=len(self.fixed_network_retry_refs))
+                            continue
+                        outcome=classify(exc)
+                        if outcome['retryable']:raise
+                        raise StopNativeCall(outcome) from exc
 
             def _apply_fixed_format(self, api_kwargs):
                 output=({'type':'json_schema','name':'semantic_task_slots','strict':True,
@@ -284,6 +300,11 @@ class HermesCaller:
             agent.fixed_input_size=prepared['input_size']
             agent.fixed_construction_counts=prepared['construction_counts']
             agent.fixed_live_control_check=prepared.get('live_control_check')
+            context=prepared.get('audit_context')
+            agent.fixed_network_context=({**context,'wire_sha256':fingerprint(prepared['wire']),
+                'control_check':lambda:agent._fixed_preflight(agent.fixed_network_payload,apply=False),
+                'fresh_check':prepared['fresh_control_check']} if context and prepared.get('fresh_control_check') else None)
+            agent.fixed_network_retry_refs=[];agent.fixed_network_wait_ms=0
             from native_call_state import StopNativeCall,record
             try:
                 with span('sdk_model_request',phase=phase,session_id=agent.session_id):
@@ -319,6 +340,9 @@ class HermesCaller:
                     'first_event_clock':'SDK wall only; monotonic unavailable',
                     'physical_attempts':None,'backend_revision':None,
                     'scope':'paired clocks at native entry/guard/delta/return; SDK first event is wall only; not physical HTTP timing'},
+                'network_retries':{'contract':'native-connection-retry/v1','failure_evidence':copy.deepcopy(agent.fixed_network_retry_refs),
+                    'connection_retries':len(agent.fixed_network_retry_refs),'wait_ms':agent.fixed_network_wait_ms,
+                    'semantic_ordinals_granted':0,'physical_http_attempts':None},
                 'request_construction':copy.deepcopy(prepared['construction_counts'])}
         finally:
             try:
@@ -330,7 +354,8 @@ class HermesCaller:
                 # No request, schema or construction scope survives this SDK session.
                 for name in ('fixed_request','fixed_text_request','fixed_expected_request',
                              'fixed_images','fixed_output_schema','fixed_transport_schema',
-                             'fixed_construction_counts','fixed_live_control_check','fixed_stream_timing'):
+                             'fixed_construction_counts','fixed_live_control_check','fixed_stream_timing',
+                             'fixed_network_context','fixed_network_payload','fixed_network_retry_refs'):
                     if hasattr(agent,name): delattr(agent,name)
 
 
@@ -526,6 +551,13 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
     if (page_entry or build_entry) and isinstance(caller,HermesCaller):
         control=getattr(adapter,'worker_control_check',None)
         prepared['live_control_check']=(lambda:control(binding,checked=checked)) if control else lambda:adapter.worker_check(binding)
+    if isinstance(caller,HermesCaller):
+        # Full input/lease authorization is rechecked after each connection
+        # backoff; the cheap live guard remains available during the wait.
+        fresh_binding=live if binding['node'].startswith('pass-slice:') else binding
+        prepared['fresh_control_check']=lambda:adapter.worker_check(fresh_binding)
+        if not prepared.get('live_control_check'):
+            prepared['live_control_check']=prepared['fresh_control_check']
     if isinstance(caller,HermesCaller): caller.input_limit=limit
     from citation_amendment_calls import active as amendment_active
     local_amendment=amendment_active(adapter,binding)
