@@ -21,7 +21,7 @@ from hermes_source_units.runtime_telemetry import measured, event
 
 @measured('vault_startup',lambda request,record,bootstrap_skill:{'vault':request.get('vault_path'),
     'workflow_id':'ingest-'+str(request.get('operation_id','unknown')),'operation_id':request.get('operation_id')})
-def start(request, record, bootstrap_skill):
+def start(request, record, bootstrap_skill, *, before_workflow=None):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise ValueError('startup requires a trusted operator')
     required={'operation_id','actor','vault_path','vault_id','vault_name','security_domain','sources'}
@@ -87,6 +87,7 @@ def start(request, record, bootstrap_skill):
         if pp.exists() and json.loads(pp.read_text())!=provider: raise ValueError('Provider policy conflict')
         if not pp.exists(): _write_atomic(pp,_json_bytes(provider))
         vault_provider_config({},vault,'sync')
+        test_import=before_workflow(vault,request) if before_workflow is not None else None
         ref='_system/reports/vault-startup/'+request['operation_id']+'.json'
         scope={'source_paths':paths,'knowledge_selector':'Complete the scoped sources through Final Acceptance using native workers.',
             'execution_mode':'auto_full','pause_after':request.get('pause_after',[]),'canary_policy':request.get('canary_policy','sample'),
@@ -102,6 +103,7 @@ def start(request, record, bootstrap_skill):
             'workflow_id':workflow['workflow_id'],'bootstrap_output':state.get('bootstrap_output',''),
             'source_hashes':identity['source_hashes'],'execution_policy':state['execution_policy']}
         if 'recovery_policy' in state:report['recovery_policy']=state['recovery_policy']
+        if test_import is not None:report['test_bundle_import']=test_import
         rp=vault/ref
         if rp.exists() and json.loads(rp.read_text())!=report: raise ValueError('startup report conflict')
         if not rp.exists(): _write_atomic(rp,_json_bytes(report))
