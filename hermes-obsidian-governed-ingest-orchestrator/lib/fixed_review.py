@@ -124,6 +124,11 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
         from hermes_source_units.partial_finalize import progress
         for run in value['backend']['runs']:
             committed.update(progress(adapter.workflow.knowledge,run)['committed'])
+    batched={}
+    from fixed_semantic import HermesCaller
+    from paired_reviews import enabled as paired_enabled,execute as review_pairs
+    if program and isinstance(caller,HermesCaller) and paired_enabled(adapter,binding):
+        batched=review_pairs(adapter,binding,value,caller,model_call,attach_receipt,committed)
     for view in value['views']:
         from fixed_semantic import HermesCaller,prepare_request_projection
         from finalize_revision import work_for
@@ -139,7 +144,7 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
             from build_disposition import item
             dispositions.append(item(adapter,binding,value,view,state='ready',audit_ref=review['acceptance'].get('review_audit_ref')))
             continue
-        if isinstance(caller,HermesCaller) and not controlled_revision:
+        if isinstance(caller,HermesCaller) and not controlled_revision and view['page'] not in batched:
             from fixed_page_evidence import select,select_review
             try:
                 view=select_review(adapter,binding,view,assessment,prepare_request_projection) if program else select(adapter,binding,'page-review',view,prepare_request_projection)
@@ -170,8 +175,12 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
         try:
             from finalize_revision import controlled_result
             controlled=controlled_result(adapter,binding,value,view) if program else None
-            result,call_ref,_=controlled or checked_output(adapter,binding,'page-review',view,caller,model_call,
-                lambda d:check('page-review',None,None,None,d))
+            if view['page'] in batched:
+                slot=batched[view['page']];call_ref=slot['audit_ref'];result=slot['result']
+                if slot['error']:raise slot['error']
+            else:
+                result,call_ref,_=controlled or checked_output(adapter,binding,'page-review',view,caller,model_call,
+                    lambda d:check('page-review',None,None,None,d))
             if result['decision']!='approved':fail('SEMANTIC_REVIEW_REQUIRED',result['review_note'])
         except ContractError as exc:
             from fixed_page_work import LOCAL
@@ -183,7 +192,8 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
                     audit_ref=call_ref or getattr(exc,'semantic_audit_ref',None)))
             continue
         reviews[view['page']]=result['review_note']; call_refs.append(call_ref)
-        if program:acceptances[view['page']]=record(assessment,review_audit_ref=call_ref)
+        if program:acceptances[view['page']]=record(assessment,review_audit_ref=call_ref,
+            review_receipt=batched.get(view['page'],{}).get('receipt'))
         if program:
             from build_disposition import item
             dispositions.append(item(adapter,binding,value,view,state='ready',result=result,audit_ref=call_ref))

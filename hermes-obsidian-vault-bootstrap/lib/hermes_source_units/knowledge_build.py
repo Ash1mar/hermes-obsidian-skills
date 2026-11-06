@@ -2747,6 +2747,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                     "terminal_exceptions": sorted(task["task_id"] for task in tasks
                                                   if task["status"] in ("blocked", "failed", "skipped"))}
 
+    from .review_receipts import verification_scope as _review_receipt_scope
+    @_review_receipt_scope()
     def finalize_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Finalize approved runs under one lock, committing each legacy run idempotently."""
         self.source.enable_session_cache()
@@ -2824,6 +2826,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                     "failures": failures, "all_runs_completed": all_runs_completed,
                     "batch_completed": completed}
 
+    @_review_receipt_scope()
     def finalize_partial_batch(self, request: Mapping[str, Any]) -> dict[str, Any]:
         """Native ready-page commits; original manifests/tasks remain unfinished."""
         from .partial_finalize import authority

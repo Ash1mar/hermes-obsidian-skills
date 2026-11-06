@@ -41,6 +41,7 @@ def pin(workflow,w):
             if not consumed:
                 from .input_budget import profile,CONTRACT as BUDGET
                 record.update(input_budget_contract=BUDGET,input_budget=profile(w['scope'].get('execution_policy',{}).get('input_budget_profile')))
+                record['review_call_contract']='independent-page-review/v1'
                 record.update(page_call_contract='durable-page-calls/v1',page_dispatch_contract='per-page-dispatch/v2',
                     planning_budget_contract='shared-reading-page-budget/v1',fixed_before_consumption=True,
                     page_execution_contract='unified-page-execution/v3',page_budget_contract='page-budget-index/v2')

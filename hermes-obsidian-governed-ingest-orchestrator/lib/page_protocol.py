@@ -27,3 +27,10 @@ def preflight(profile):
         raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','request/budget/receipt/recovery/publication support is incomplete; no consumption permitted')
     schema_for('page-pair',{'pages':{'p1':{}},'page_execution_contract':CONTRACT})
     schema_for('page-pair',{'pages':{'p1':{},'p2':{}},'page_execution_contract':CONTRACT})
+    if profile.get('review_call_contract'):
+        from paired_reviews import execute as review_execute,history
+        from hermes_source_units.review_receipts import validate_receipt,CONTRACT as REVIEW
+        if (profile['review_call_contract']!=REVIEW or not profile.get('input_budget')
+                or not all(callable(f) for f in (review_execute,history,validate_receipt))):
+            raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','review request, budget, recovery and publication must support the same contract')
+        schema_for('page-review-pair',{'pages':{'p1':{},'p2':{}}})

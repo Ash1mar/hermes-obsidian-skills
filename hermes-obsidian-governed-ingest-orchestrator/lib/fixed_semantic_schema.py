@@ -75,6 +75,8 @@ def schema_for(phase,view):
     """Old packets keep their exact schema; only new routing uses short targets."""
     if phase=='page-pair':
         return closed({'results':closed({slot:schema('page-write') for slot in view['pages']})})
+    if phase=='page-review-pair':
+        return closed({'results':closed({slot:schema('page-review') for slot in view['pages']})})
     result=schema(phase)
     if view.get('output_contract')!='global-target-refs/v1':return result
     if phase not in ('global-plan','global-detail'):raise ValueError('target refs require a routing phase')
