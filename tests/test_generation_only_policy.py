@@ -10,13 +10,13 @@ from hermes_source_units.build_acceptance import assess,record,validate_acceptan
 from test_p3_knowledge_build import vault
 from test_build_acceptance import draft,request,execution
 
-def pin(vault,actor='agent'):
-    w={'workflow_id':'new-test','actor':actor,'scope':{'source_paths':[],'knowledge_selector':'all-current'}}
+def pin(vault,actor='agent',workflow_id='new-test'):
+    w={'workflow_id':workflow_id,'actor':actor,'scope':{'source_paths':[],'knowledge_selector':'all-current'}}
     identity=vault/'_system/vault.json';v=json.loads(identity.read_text());v['vault']['security_domain']='isolated-test';identity.write_text(json.dumps(v))
-    p=vault/'_system/metadata/retrieval-policy.json';r=json.loads(p.read_text());r['query_enabled']=False;p.write_text(json.dumps(r))
-    root=vault/'_system/ledgers/ingest-workflows';path=root/'new-test/presentation-contract.json'
-    presentation={'workflow_id':'new-test','scope_sha256':fingerprint(w['scope']),'page_semantics_policy':POLICY}
-    _write_atomic(path,_json_bytes(presentation));_write_atomic(root/'new-test.json',_json_bytes(w))
+    p=vault/'_system/metadata/retrieval-policy.json';r=json.loads(p.read_text()) if p.exists() else {};r['query_enabled']=False;_write_atomic(p,_json_bytes(r))
+    root=vault/'_system/ledgers/ingest-workflows';path=root/workflow_id/'presentation-contract.json'
+    presentation={'workflow_id':workflow_id,'scope_sha256':fingerprint(w['scope']),'page_semantics_policy':POLICY}
+    _write_atomic(path,_json_bytes(presentation));_write_atomic(root/(workflow_id+'.json'),_json_bytes(w))
     return w,path
 
 def test_default_is_disabled_only_for_new_query_disabled_test_scope(vault):
@@ -88,3 +88,18 @@ def test_only_unconsumed_presentation_gets_disabled_default(vault):
     # A new environment/default cannot reinterpret a saved immutable pin.
     identity=vault/'_system/vault.json';v=json.loads(identity.read_text());v['vault']['security_domain']='production';identity.write_text(json.dumps(v))
     assert pin_presentation(service,w)==p
+
+def test_actual_partial_commit_accepts_unreviewed_policy_and_keeps_remaining_gaps(vault,monkeypatch):
+    from test_partial_finalize import ready,writer
+    from hermes_source_units import generation_policy,partial_finalize
+    w,_=pin(vault,workflow_id='fixture');pointer=capture(vault,w,w['actor'])
+    # Isolated constructor oracle supplies exactly the already-captured policy.
+    monkeypatch.setattr(generation_policy,'new_run',lambda *_:pointer)
+    service,run,reviews,req=ready.__wrapped__(vault)
+    assert run['page_review_policy']==pointer
+    with writer(service):result=service.finalize(req)
+    assert result['newly_committed_page_count']==1 and result['source_tasks_completed'] is False
+    saved=next(iter(partial_finalize.progress(service,run)['committed'].values()))
+    assert saved['review']['acceptance']['policy']==POLICY
+    assert saved['review']['acceptance']['independent_review']=='not_performed'
+    assert service.validate_run(run['run_id'])['state']=='draft'
