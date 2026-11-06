@@ -129,8 +129,14 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     def defer(page,phase,exc):
         if exc.code not in LOCAL:raise exc
         with progress_lock:
-            held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':phase,
-                'code':exc.code,'reason':str(exc),'audit_ref':getattr(exc,'semantic_audit_ref',None)})
+            h={'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':phase,
+                'code':exc.code,'reason':str(exc),'audit_ref':getattr(exc,'semantic_audit_ref',None)}
+            if per_page and exc.code=='READING_WINDOW_OVERSIZE' and not h['audit_ref']:
+                from page_budget_hold import proof
+                checked=proof(adapter,value,page)
+                if checked['minimum_complete_input_codepoints']>checked['limit']:
+                    h.update(origin='complete-slot-budget/v1',budget_proof=checked)
+            held.append(h)
             save()
     def write(page,view,owner,local_caller,attempt_limit=2):
         if halt.is_set():return
@@ -311,7 +317,15 @@ def replay_local_plan(adapter,binding,value,state,prove):
     for page in list(state['pages']):
         _,size=measure(adapter,value,page,caller,prepare_request_projection)
         if size<=LIMIT:continue
-        base,packet=refinement(adapter,value,working,page,caller,prepare_request_projection)
+        try:base,packet=refinement(adapter,value,working,page,caller,prepare_request_projection)
+        except ContractError as exc:
+            if exc.code!='READING_WINDOW_OVERSIZE':raise
+            from page_budget_hold import proof
+            checked=proof(adapter,value,page)
+            if checked['minimum_complete_input_codepoints']<=checked['limit']:raise
+            # No model reservation exists for this deterministic input hold.
+            # Keep the original planned page; its explicit proof owns exclusion.
+            continue
         packet=select(adapter,binding,'global-detail',packet,prepare_request_projection)
         path=path_for(adapter,binding,'global-detail',packet['view'])
         if not path.exists():raise ContractError('COVERAGE_SCOPE_INVALID','$','missing native local page plan')
