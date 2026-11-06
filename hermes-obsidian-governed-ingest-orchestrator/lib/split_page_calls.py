@@ -24,6 +24,12 @@ class SplitPageCalls:
         # only fresh small indexes and immutable writes below.
         current=load_index(self.root,fresh=True)
         if current['contract']==WIRE:_write_atomic(self.path,_json_bytes(r));return
+        if set(r['pages'])!=set(current['pages']) or set(r['requests'])!=set(current['requests']):deny('STALE_INPUT','inspection cannot add or remove budget identities')
+        for k,row in r['pages'].items():
+            prior=current['pages'][k]
+            if (row['input_sha256']!=prior['input_sha256'] or row['path']!=prior['path']
+                    or [{f:a[f] for f in ('ordinal','request_id','state')} for a in row['attempts']]
+                    !=[{f:a[f] for f in ('ordinal','request_id','state')} for a in prior['attempts']]):deny('STALE_INPUT','inspection cannot refresh consumed page allowance')
         index={'contract':INDEX,'version':current['version'],'pages':{},'requests':{}}
         for k,row in r['pages'].items():
             small=copy.deepcopy(row)
@@ -99,6 +105,10 @@ class SplitPageCalls:
                 with self.mutex,self.transaction(),_exclusive_lock(self.path.with_suffix('.lock'),timeout=5):
                     if self.guard()!=epoch:deny('WORKFLOW_STOPPED','cancel superseded page settlement')
                     r=load_index(self.root,fresh=True);page=r['pages'][k];attempt=page['attempts'][ordinal-1]
+                    changed=False
+                    if not r['requests'][request].get('response'):
+                        r['requests'][request]['response']=orphan(self.root,'responses',request)
+                        r['requests'][request]['state']='returned';changed=True
                     if attempt['request_id']!=request:fail('page attempt request mapping changed')
                     pointer=attempt.get('failure_receipt') or page.get('receipt') or orphan(self.root,'receipts',receipt_key)
                     if pointer:
@@ -122,10 +132,13 @@ class SplitPageCalls:
                         receipt['receipt_id']=fingerprint(receipt);pointer=put(self.root,'receipts',receipt_key,receipt)
                     if self.guard()!=epoch:deny('WORKFLOW_STOPPED','cancel before settlement commit')
                     if receipt['state']=='valid':
+                        changed=changed or page.get('receipt')!=pointer or attempt['state']!='valid'
                         page['receipt']=pointer;attempt['state']='valid'
                     else:
+                        changed=changed or attempt.get('failure_receipt')!=pointer or attempt['state']!='rejected'
                         attempt.update(state='rejected',failure_receipt=pointer,**{a:receipt[a] for a in ('correctable','code','reason')})
-                    self._save(r);results[k]=copy.deepcopy(receipt)
+                    if changed:self._save(r)
+                    results[k]=copy.deepcopy(receipt)
                 if on_receipt:on_receipt(results[k])
                 if after_page:after_page(k)
             return results

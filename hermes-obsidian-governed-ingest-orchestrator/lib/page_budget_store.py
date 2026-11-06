@@ -44,6 +44,7 @@ def load_index(root,*,fresh=False):
     if not fresh and scope is not None and key in scope['indexes']:return scope['indexes'][key]
     value=json.loads(file_bytes(p,fresh=fresh)) if p.exists() else {'contract':INDEX,'version':0,'pages':{},'requests':{}}
     if value.get('contract') not in (INDEX,WIRE):fail('unknown page budget contract')
+    if value['contract']==INDEX and (type(value.get('version')) is not int or value['version']<0):fail('invalid budget index version')
     if scope is not None:
         scope['index_loads'][key]=scope['index_loads'].get(key,0)+1
         if not fresh:scope['indexes'][key]=value
