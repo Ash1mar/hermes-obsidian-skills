@@ -60,9 +60,26 @@ def hints(value,handles,project):
             examples.append(probe(value,members,project));members=[handle]
         else:members.append(handle)
     if members:examples.append(probe(value,members,project))
-    return {'contract':CONTRACT,'limit_codepoints':limit,'provisional_identity_reserve_codepoints':reserve,
+    result={'contract':CONTRACT,'limit_codepoints':limit,'provisional_identity_reserve_codepoints':reserve,
         'fit_examples':examples,'candidate_count':len(ordered),
         'rule':'Cost examples only, never mandatory semantic groups. Shared complete readings are counted once per request, not summed per candidate. '
                'Choose the fewest independently meaningful pages that fit; preserve every condition, exception, contrary context, QA and required asset. '
                'Asset transport and final identity/parent costs are checked during writing. An indivisible oversize candidate remains held; never drop evidence to fit. '
                'Avoid over-splitting: compare planning plus all writing/review requests, not planning request count alone.'}
+    if value['view'].get('early_page_budget_contract')=='proposal-final-body-cost/v1':
+        from input_budget import from_value
+        budget=from_value(value);settings=budget['phases']['page-pair'] if budget else None
+        result['proposal_body_costs']={'columns':['proposal','candidate_refs','complete_codepoints','assets','fits_with_identity_reserve'],
+            'rows':[],'rule':'Whole final-body request construction, schema and decoding rules included. Examples retain full reading context. '
+                'Final identity, parent and image token costs remain current checks. Split only for meaning or verified budget; never remove coverage to fit.'}
+        for p in value['view'].get('proposals',[]):
+            subset=[h for h in p['candidate_refs'] if h in wanted]
+            if not subset:continue
+            measured=probe(value,subset,project)
+            result['proposal_body_costs']['rows'].append([p['proposal'],subset,measured['complete_request_codepoints'],measured['asset_count'],measured['complete_request_codepoints']+reserve<=limit])
+        result['budget_sha256']=budget['budget_sha256'] if budget else None
+        result['output_budget']=settings
+        result['parent_and_final_identity']='not yet chosen; remeasure before reservation'
+        result['input_token_status']='per complete request tokenizer; unknown if unavailable'
+        result['total_cost_rule']='Compare planning + all body requests + enabled reviews on the same candidate universe; include gained/lost published coverage. A planning request saved is not a net saving if more bodies are generated.'
+    return result

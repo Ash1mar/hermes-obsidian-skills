@@ -52,3 +52,11 @@ Use `python3 "<skill-dir>/scripts/compare_saved_bodies.py" --vault <vault>
 --workflow-id <id> --output <outside-vault-report>` for a mechanical 30000/40000
 fixed-page comparison. Three/four body slots remain disabled until live two-slot
 benefit is authorized and verified. No model/token/time gain is inferred offline.
+Future Global Plan inputs add per-proposal complete-body estimates before semantic
+grouping. They use the same pinned body constructor/budget and preserve full
+reading context. Final names, parents and image-token costs stay explicit pending
+checks. Fit examples are mechanical costs, never program-authored semantic pages.
+Use `python3 "<skill-dir>/scripts/audit_planning_efficiency.py" --vault <vault>
+--workflow-id <id> --output <outside-vault-report>` for authenticated saved request
+costs, budget-vs-semantic Detail causes and source duplicate-value measurements.
+Source packets do not expand solely because a duplicate-byte ratio is nonzero.
