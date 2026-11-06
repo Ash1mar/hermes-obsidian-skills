@@ -174,9 +174,15 @@ def capture(adapter, workflow, node):
     return True
 
 
+def prefix_fingerprint(w,name):
+    return next((r['fingerprint'] for r in w.get('workflow_test',{}).get('prefix_fingerprints',[]) if r['node']==name),None)
+
+
 def check_admission(service,w):
     test=w.get('workflow_test')
     if not test:return
+    prefix={r['node']:r['fingerprint'] for r in test['prefix_fingerprints']}
+    if len(prefix)!=len(test['prefix_fingerprints']):fail('duplicate prefix node identity')
     import json
     path=_vault_path(service.vault,test['report_ref']);raw=path.read_bytes();report=json.loads(raw)
     if (hashlib.sha256(raw).hexdigest()!=test['report_sha256']
@@ -184,7 +190,7 @@ def check_admission(service,w):
             or report['request']['operation_id']!=test['operation_id']
             or report['request']['from_node']!=test['from_node']
             or report['request']['pass_capacity']!=test['pass_capacity']
-            or report['prefix_fingerprints']!=test['prefix_fingerprints']):
+            or report['prefix_fingerprints']!=prefix):
         fail('test admission identity changed')
     seal_path=path.parent/'admitted.json'
     seal=_load_json(seal_path) if seal_path.exists() else {}

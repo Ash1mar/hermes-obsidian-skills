@@ -1,6 +1,7 @@
 """Rebuildable Hermes Kanban projection of a Vault ingest workflow."""
 from __future__ import annotations
 from hermes_source_units.runtime_policy import canary_count
+from hermes_source_units.workflow_test import prefix_fingerprint
 
 from dataclasses import dataclass
 import ast
@@ -131,7 +132,7 @@ def pass_node(workflow, value):
         if revision and pointer.get('revision_id')==revision['revision_id'] and value['slice_id'] in pointer.get('continuation_slice_ids',[]):
             dispositions.append(pointer['report_sha256'])
     return Node(name, 'pass-slice', (),
-                workflow.get('workflow_test',{}).get('prefix_fingerprints',{}).get(name) or node_identity(workflow, 'pass-slice', {
+                prefix_fingerprint(workflow,name) or node_identity(workflow, 'pass-slice', {
                     'slice_id':value['slice_id'], 'input_fingerprint':value['input_fingerprint'],
                     'template_hash':value['template_hash'],
                     **({'revision_digest': revision['input_digest']} if revision else {}),
@@ -202,7 +203,7 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
             inputs={'domain_inputs':inputs,'recovery_digest':workflow['release_recovery_history'][-1]['input_digest']}
         parents_fingerprints = [next(item.input_fingerprint for item in nodes if item.name == parent)
                                for parent in parents]
-        frozen=workflow.get('workflow_test',{}).get('prefix_fingerprints',{}).get(name)
+        frozen=prefix_fingerprint(workflow,name)
         nodes.append(Node(name, kind, parents, frozen or node_identity(workflow, kind, inputs, parents_fingerprints), gate))
         return name
 

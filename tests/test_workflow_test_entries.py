@@ -151,7 +151,7 @@ def test_default_cli_exposes_every_node_and_same_workflow_mineru_aliases(monkeyp
 
 def test_completed_pass_prefix_identity_is_frozen_and_missing_work_changes():
     w={'workflow_id':'ingest-frozen','workflow_test':{'operation_id':'new-cycle',
-        'prefix_fingerprints':{'pass-slice:accepted':'sha256:'+'a'*64}}}
+        'prefix_fingerprints':[{'node':'pass-slice:accepted','fingerprint':'sha256:'+'a'*64}]}}
     accepted={'slice_id':'accepted','input_fingerprint':'sha256:'+'b'*64,'template_hash':'sha256:'+'c'*64}
     assert pass_node(w,accepted).input_fingerprint=='sha256:'+'a'*64
     pending={**accepted,'slice_id':'pending'}

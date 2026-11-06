@@ -179,7 +179,8 @@ def reenter(adapter,request,*,dry_run=False):
                 'boundary_sha256':data['boundary_sha256'],'prefix_fingerprints':prefix,
                 'budget_policy':'authorized node retest; prior consumed calls retired for cumulative accounting; operation replay never grants new credit'}
         new['workflow_test']={'operation_id':op,'from_node':node,'report_ref':report_ref,
-            'report_sha256':digest(_json_bytes(report)),'prefix_fingerprints':prefix,'presentation_reused':late,
+            'report_sha256':digest(_json_bytes(report)),
+            'prefix_fingerprints':[{'node':name,'fingerprint':fp} for name,fp in sorted(prefix.items())],'presentation_reused':late,
             'pass_capacity':request['pass_capacity']}
         files=data['files'];desired=dict(data['boundary']['files']);inline={}
         def set_value(ref,value):
