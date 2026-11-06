@@ -77,7 +77,7 @@ def test_core_creation_pins_before_any_dispatch_and_rejects_missing_protocol(vau
     import json
     from hermes_source_units.ingest_workflow import FileIngestWorkflowService,mutation_digest
     service=FileIngestWorkflowService(vault)
-    q={'workflow_id':'isolated-core-protocol','actor':'agent','expected_revision':0,
+    q={'workflow_id':'ingest-isolated-core-protocol','actor':'agent','expected_revision':0,
         'profile':'compact-3','scope':{'source_paths':[],'knowledge_selector':'all-current'}}
     q['input_digest']=mutation_digest(q)
     w=service.start(q)
