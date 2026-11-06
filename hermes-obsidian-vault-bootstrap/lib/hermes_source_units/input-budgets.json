@@ -1,0 +1,206 @@
+{
+  "default_profile": "baseline-30000",
+  "profiles": {
+    "baseline-30000": {
+      "phases": {
+        "candidate": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "citation": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "resource-reduce": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "global-plan": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "global-detail": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "page-write": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "page-pair": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "page-review": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "page-review-pair": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        }
+      }
+    },
+    "review-40000": {
+      "phases": {
+        "candidate": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "citation": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "resource-reduce": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "global-plan": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "global-detail": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "page-write": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "page-pair": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "page-review": {
+          "input_codepoints": 40000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "page-review-pair": {
+          "input_codepoints": 40000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        }
+      }
+    },
+    "pages-40000": {
+      "phases": {
+        "candidate": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "citation": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "resource-reduce": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "global-plan": {
+          "input_codepoints": 30000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "global-detail": {
+          "input_codepoints": 40000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "page-write": {
+          "input_codepoints": 40000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "page-pair": {
+          "input_codepoints": 40000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "page-review": {
+          "input_codepoints": 40000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        },
+        "page-review-pair": {
+          "input_codepoints": 40000,
+          "input_tokens": null,
+          "context_tokens": null,
+          "output_tokens": 8192,
+          "output_reserve_tokens": 1024
+        }
+      }
+    }
+  }
+}

@@ -18,7 +18,9 @@ def contract_hash():
         ('fixed_reduce_packets.py','fixed_reduce.py','fixed_evidence.py','fixed_semantic.py'))).hexdigest()
 
 
-def plan(adapter, value, measure, *, limit=30000, correction_reserve=1024):
+def plan(adapter, value, measure, *, limit=None, correction_reserve=1024):
+    from input_budget import limit as input_limit
+    limit=input_limit(value,'resource-reduce') if limit is None else limit
     catalog=image_catalog(adapter,value['view']['original_evidence'])
     packets=[];group=[]
     def usage(handles):

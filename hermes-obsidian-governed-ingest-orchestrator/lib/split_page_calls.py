@@ -11,9 +11,10 @@ def page_key(page):return fingerprint({'kind':page['identity']['kind'],'identity
 
 class SplitPageCalls:
     storage_contract=INDEX
-    def __init__(self,root,guard,transaction=nullcontext,**_):
+    def __init__(self,root,guard,transaction=nullcontext,*,budget=None,**_):
         self.root=root;self.path=root/'page-call-budget.json';self.guard=guard
         self.transaction=transaction;self.mutex=threading.RLock()
+        self.budget=copy.deepcopy(budget)
     @contextmanager
     def scan(self):
         with operation() as stats:yield Snapshot(self.root)
@@ -31,7 +32,7 @@ class SplitPageCalls:
                     or bool(row.get('receipt'))!=bool(prior.get('receipt'))
                     or [{f:a.get(f) for f in ('ordinal','request_id','state','correctable')} for a in row['attempts']]
                     !=[{f:a.get(f) for f in ('ordinal','request_id','state','correctable')} for a in prior['attempts']]):deny('STALE_INPUT','inspection cannot refresh consumed page allowance')
-        index={'contract':INDEX,'version':current['version'],'pages':{},'requests':{}}
+        index={**{k:copy.deepcopy(v) for k,v in current.items() if k not in ('pages','requests')},'pages':{},'requests':{}}
         for k,row in r['pages'].items():
             small=copy.deepcopy(row)
             if small.get('receipt'):small['receipt']=put(self.root,'inspection-receipts',fingerprint(row['receipt']),row['receipt'])
@@ -58,6 +59,10 @@ class SplitPageCalls:
         with self.mutex,self.transaction(),_exclusive_lock(self.path.with_suffix('.lock'),timeout=5):
             epoch=self.guard();r=load_index(self.root,fresh=True);members=[]
             if r['contract']!=INDEX:deny('PAGE_PROTOCOL_UNSUPPORTED','new reservation cannot migrate historical budget')
+            if self.budget:
+                if r.get('input_budget')!=self.budget and r['requests']:deny('INPUT_BUDGET_CHANGED','consumed page budget cannot switch profiles')
+                r['input_budget']=copy.deepcopy(self.budget)
+            elif r.get('input_budget'):deny('INPUT_BUDGET_CHANGED','pinned page budget must be supplied for reservation')
             for page,view in items:
                 k=page_key(page);row=r['pages'].get(k)
                 if row:

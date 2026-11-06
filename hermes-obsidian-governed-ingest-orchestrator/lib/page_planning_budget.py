@@ -16,6 +16,8 @@ def operation(value):
 
 def probe(value,handles,project):
     """Render a whole provisional page; shared readings are selected once."""
+    from input_budget import limit as input_limit
+    limit=input_limit(value,'page-pair')
     scope=_SCOPE.get();key=tuple(handles)
     if scope is not None and scope['value'] is value and key in scope['costs']:
         return copy.deepcopy(scope['costs'][key])
@@ -28,17 +30,17 @@ def probe(value,handles,project):
     from page_protocol import strict
     if strict(value['view']):
         from page_request import prepare
-        actual=prepare([(page,view)],project,[])[2]
+        actual=prepare([(page,view)],project,[],limit=limit)[2]
         selected=actual
     else:
         variants=[view,{**view,MARKER:V1},{**view,MARKER:COMPACT_CONTRACT}]
         projections=[project('page-write',v,schema('page-write'),[]) for v in variants]
-        fitting=[p for p in projections if p['input_size']<=30000] or projections
+        fitting=[p for p in projections if p['input_size']<=limit] or projections
         selected=min(fitting,key=lambda p:p['input_size'])
         slot={'contract':'durable-page-calls/v1','pages':{'p1':{k:v for k,v in view.items() if k not in ('original_evidence',MARKER)}},
             'original_evidence':view.get('original_evidence',{}),'page_members':{'p1':fingerprint(page['identity'])}}
         options=[project('page-pair',v,schema_for('page-pair',slot),[]) for v in (slot,{**slot,MARKER:'lossless-page-pair/v1'})]
-        slot_fit=[p for p in options if p['input_size']<=30000] or options
+        slot_fit=[p for p in options if p['input_size']<=limit] or options
         actual=min(slot_fit,key=lambda p:p['input_size'])
     evidence=view.get('original_evidence',{})
     result={'candidate_refs':list(handles),'reading_refs':[t['task'] for t in evidence.get('tasks',[])],
@@ -50,7 +52,8 @@ def probe(value,handles,project):
 
 def hints(value,handles,project):
     wanted=set(handles);ordered=[c['candidate'] for c in value['view']['candidates'] if c['candidate'] in wanted]
-    examples=[];members=[];limit=30000;reserve=1024
+    from input_budget import limit as input_limit
+    examples=[];members=[];limit=input_limit(value,'page-pair');reserve=1024
     for handle in ordered:
         trial=probe(value,[*members,handle],project)
         if members and (trial['complete_request_codepoints']+reserve>limit or trial['asset_count']):

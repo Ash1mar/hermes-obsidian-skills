@@ -32,6 +32,9 @@ def read_snapshot(adapter,binding,checked,program=False):
     backend={'batch_id':batch['batch_id'],'actor':batch['actor'],'run_ids':batch['run_ids'],
         'checkpoint':workflow['checkpoints']['checkpoint_1'],'registry':registry,
         'passes':[fingerprint(p) for tid in sorted(passes) for p in passes[tid]],'runs':[],'pages':{}}
+    from input_budget import observed
+    budget=observed(adapter,binding)
+    if budget:backend['input_budget']=budget
     views=[]
     for run_id in batch['run_ids']:
         run=_load_json(service._run_path(run_id)); validate_record('build_run',run)

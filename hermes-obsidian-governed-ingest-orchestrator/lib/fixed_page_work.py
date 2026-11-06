@@ -16,6 +16,9 @@ import fixed_reduce
 import fixed_global_packets as g
 
 LIMIT=30000
+def input_limit(value):
+    from input_budget import limit
+    return limit(value,'page-pair',LIMIT)
 LOCAL={'READING_WINDOW_OVERSIZE','SEMANTIC_IMAGE_OVERSIZE','SEMANTIC_REVIEW_REQUIRED',
        'INVALID_SCHEMA','INCOMPLETE_COVERAGE','DUPLICATE','IDENTITY_CONFLICT',
        'UNRESOLVED_REFERENCE','SEMANTIC_OUTPUT_HELD'}
@@ -24,6 +27,7 @@ LOCAL={'READING_WINDOW_OVERSIZE','SEMANTIC_IMAGE_OVERSIZE','SEMANTIC_REVIEW_REQU
 @measured('reduce_page_measure',lambda adapter,value,page,caller,project:{
     'vault':adapter.workflow.vault,'page_path':page['path']})
 def measure(adapter,value,page,caller,project):
+    limit=input_limit(value)
     from fixed_semantic import HermesCaller
     from fixed_semantic_media import image_catalog,select_images,require_images_fit
     view=fixed_reduce.page_view(adapter,value,page)
@@ -38,14 +42,15 @@ def measure(adapter,value,page,caller,project):
     try:require_images_fit(images)
     except ContractError as exc:
         if exc.code!='SEMANTIC_IMAGE_OVERSIZE':raise
-        return view,LIMIT+1
+        return view,limit+1
     if future:
         from page_request import prepare
-        return view,prepare([(page,view)],project,images)[2]['input_size']
+        return view,prepare([(page,view)],project,images,limit=limit)[2]['input_size']
     return view,project('page-write',view,schema('page-write'),images)['input_size']
 
 
 def refinement(adapter,value,state,page,caller,project):
+    limit=input_limit(value)
     handles=set(page['candidate_refs'])
     # Preserve all semantic fields needed for grouping; originals are never
     # substituted: each final body still reads its complete original packages.
@@ -61,11 +66,11 @@ def refinement(adapter,value,state,page,caller,project):
     for handle in page['candidate_refs']:
         trial={**page,'candidate_refs':[*members,handle]}
         _,size=measure(adapter,value,trial,caller,project)
-        if size>LIMIT:
+        if size>limit:
             if not members:raise ContractError('READING_WINDOW_OVERSIZE','$','one complete candidate/parent request cannot fit; retain it as held')
             fits.append(members);members=[handle]
             _,single=measure(adapter,value,{**page,'candidate_refs':members},caller,project)
-            if single>LIMIT:raise ContractError('READING_WINDOW_OVERSIZE','$','one complete candidate/parent request cannot fit; retain it as held')
+            if single>limit:raise ContractError('READING_WINDOW_OVERSIZE','$','one complete candidate/parent request cannot fit; retain it as held')
         else:members=trial['candidate_refs']
     if members:fits.append(members)
     view['coordination']={'contract':g.CONTRACT,'previous_state_sha256':g.state_digest(base),'proposal_refs':[],
@@ -75,7 +80,7 @@ def refinement(adapter,value,state,page,caller,project):
                'Preserve conditions, scope/version differences and all QA. Keep the original identity/path for one suitable subset when meaningful; '
                'other page identities and paths must be distinct. Fit groups are measured cost examples, not semantic decisions; '
                'you may choose different subsets if they fit. Do not solve budget by omitting evidence or candidates.'}
-    view['page_budget']={'limit_codepoints':LIMIT,'original_page':{'identity':page['identity'],'path':page['path']},
+    view['page_budget']={'limit_codepoints':limit,'original_page':{'identity':page['identity'],'path':page['path']},
         'suggested_fit_candidate_groups':fits,'check':'Program measures the complete page-write request for each output page; an oversized member set violates this output contract.'}
     packet={'view':view,'previous_state_sha256':g.state_digest(base),'candidate_refs':page['candidate_refs'],
         'proposal_refs':[],'units':[],'unit_count':1}
@@ -85,19 +90,21 @@ def refinement(adapter,value,state,page,caller,project):
 def accept_refinement(adapter,value,base,packet,draft,caller,project,*,max_pages=None):
     """One acceptance contract for live and historical local page plans."""
     from fixed_global_targets import expand
+    limit=input_limit(value)
     updated=g.accept(value,base,packet,draft)
     expanded=expand('global-detail',packet['view'],draft)
     if max_pages is not None and len(expanded['pages'])>max_pages:
         raise ContractError('INVALID_SCHEMA','$',f'authorized local revision permits at most {max_pages} children')
     for index,page in enumerate(expanded['pages']):
         _,size=measure(adapter,value,page,caller,project)
-        if size>LIMIT:
+        if size>limit:
             raise ContractError('INVALID_SCHEMA',f'$.pages[{index}].candidate_refs',
-                f'complete output page request has {size} codepoints, exceeds supplied {LIMIT}; choose a smaller complete member set without dropping claims')
+                f'complete output page request has {size} codepoints, exceeds supplied {limit}; choose a smaller complete member set without dropping claims')
     return updated
 
 
 def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project,*,planning_failure=None):
+    limit=input_limit(value)
     from reduce_coverage import current,execute as scoped_execute
     scope=current(adapter,binding)
     if scope:
@@ -211,7 +218,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         prepared=None
         try:
             view,size=measure(adapter,value,page,caller,project)
-            if size>LIMIT or scope_revision:
+            if size>limit or scope_revision:
                 drain(True)  # Planning shares the body-call bound, never adds a slot.
                 base,packet=(revision_packet(value,working,page,disposition) if scope_revision
                     else refinement(adapter,value,working,page,caller,project))
@@ -243,7 +250,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                 with span('reduce_page_packet',vault=adapter.workflow.vault,binding=binding,
                           page_path=child['path'],reused_measure=prepared is not None):
                     child_view,n=prepared if prepared is not None else measure(adapter,value,child,caller,project)
-                if n>LIMIT:raise ContractError('READING_WINDOW_OVERSIZE','$','complete page input exceeds bound')
+                if n>limit:raise ContractError('READING_WINDOW_OVERSIZE','$','complete page input exceeds bound')
                 if per_page:continue  # All body requests use the single page-owned ledger below.
                 if len(pending)>=capacity:drain()
                 if halt.is_set():drain(True);raise RuntimeError('independent page work stopped by a shared failure')
@@ -313,10 +320,10 @@ def replay_local_plan(adapter,binding,value,state,prove):
     from semantic_output import path_for
     from fixed_semantic_schema import schema_for
     from hermes_source_units.source_units import _load_json
-    caller=HermesCaller();working=copy.deepcopy(state);calls=[]
+    caller=HermesCaller();working=copy.deepcopy(state);calls=[];limit=input_limit(value)
     for page in list(state['pages']):
         _,size=measure(adapter,value,page,caller,prepare_request_projection)
-        if size<=LIMIT:continue
+        if size<=limit:continue
         try:base,packet=refinement(adapter,value,working,page,caller,prepare_request_projection)
         except ContractError as exc:
             if exc.code!='READING_WINDOW_OVERSIZE':raise

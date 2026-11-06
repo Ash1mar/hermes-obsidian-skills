@@ -10,6 +10,7 @@ from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json,_vault_path,_write_atomic,_json_bytes
 from hermes_source_units.validation import fingerprint
 from fixed_semantic_schema import schema, schema_for
+from input_budget import bound
 
 SCOPE='semantic-output/v1'
 CONTRACT='finite-semantic-output/v1'
@@ -271,7 +272,7 @@ def read_saved_output(adapter,binding,phase,view,validator,prove,expected_ref):
         if index==0 and correction is not None or index==2 and correction!=permit['diagnostic']:
             held('historical correction authority differs')
         prepared=prepare_request_projection(phase,view,sc,[],correction)
-        if prepared['input_size']>30000 or fingerprint(prepared['wire'])!=attempt.get('wire_sha256'):
+        if prepared['input_size']>bound(adapter,binding,phase) or fingerprint(prepared['wire'])!=attempt.get('wire_sha256'):
             held('historical full request or budget differs')
         ref=attempt['audit_ref'];ap=_vault_path(adapter.workflow.vault,ref);audit=_load_json(ap)
         if (audit.get('phase')!=phase or audit.get('native_task_id')!=attempt.get('task_id')
@@ -331,7 +332,7 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
         if index==2:correction=copy.deepcopy(permit['diagnostic'])
         attempt=record['attempts'][index] if index<len(record['attempts']) else None
         prepared=prepare_request_projection(phase,view,output_schema,images,correction)
-        if prepared['input_size']>30000:raise ContractError('READING_WINDOW_OVERSIZE','$','complete correction request exceeds bound; no truncation or call')
+        if prepared['input_size']>bound(adapter,binding,phase):raise ContractError('READING_WINDOW_OVERSIZE','$','complete correction request exceeds bound; no truncation or call')
         reservation_history=[]
         if attempt:
             if attempt['wire_sha256']!=fingerprint(prepared['wire']):held('instructions or correction changed; attempt allowance is not reset')
@@ -397,7 +398,7 @@ def execute(adapter,binding,phase,view,caller,model_call,validator,*,packet=None
             token=ACTIVE.set((path,record,index));call_ref=None;draft=None;error=None
             try:
                 options={'_checked':entry_checked} if adjacent_build else {}
-                draft,call_ref=model_call(adapter,binding,phase,view,caller,30000,correction,
+                draft,call_ref=model_call(adapter,binding,phase,view,caller,bound(adapter,binding,phase),correction,
                     attempt_limit=2 if correction else 1,**options)
                 note_audit(call_ref)
             except ContractError as exc:

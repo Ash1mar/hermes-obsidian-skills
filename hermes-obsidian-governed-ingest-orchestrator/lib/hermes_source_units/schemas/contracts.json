@@ -2131,6 +2131,7 @@
         "execution_policy": {
           "type": "object",
           "properties": {
+            "input_budget_profile": {"enum":["baseline-30000","review-40000","pages-40000"]},
             "pass_worker_concurrency": {
               "type": "integer",
               "minimum": 1,

@@ -166,7 +166,9 @@ def select(adapter,binding,phase,view,project):
     # Includes the decoding instruction and schema, not just a smaller JSON body.
     from request_cost import rank
     projections=[(v,project(phase,v,sc,[])) for v in (view,encoded,compact)]
-    fitting=[pair for pair in projections if pair[1]['input_size']<=30000] or projections
+    from input_budget import bound
+    limit=bound(adapter,binding,phase)
+    fitting=[pair for pair in projections if pair[1]['input_size']<=limit] or projections
     chosen,prepared=min(fitting,key=lambda pair:rank(pair[1]))
     from hermes_source_units.runtime_telemetry import event
     event('page_representation_cost',binding=binding,phase=phase,selected=chosen.get(MARKER,'original'),

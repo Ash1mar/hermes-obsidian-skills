@@ -44,7 +44,9 @@ def select(adapter,binding,phase,packet,project):
             raise ContractError('SEMANTIC_OUTPUT_HELD','$','both routing contracts have consumed history; no allowance reset')
         return packet
     size=project(phase,short,schema_for(phase,short),[])['input_size']
-    if size>30000:
+    from input_budget import bound
+    limit=bound(adapter,binding,phase)
+    if size>limit:
         raise ContractError('READING_WINDOW_OVERSIZE','$','complete short-target routing exceeds bound; no truncation or call')
     return {**packet,'view':short,'input_codepoints':size}
 
