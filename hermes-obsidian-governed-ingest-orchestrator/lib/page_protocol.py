@@ -11,11 +11,13 @@ def preflight(profile):
     from page_pair_calls import PageCalls
     from native_page_pairs import execute
     from durable_page_replay import read_outcome
+    import durable_page_replay
     from hermes_source_units.page_governance import create
     from hermes_source_units.scoped_release import build_plan
     from fixed_semantic_schema import schema_for
     from fixed_semantic import prepare_request_projection
     if (profile.get('page_budget_contract')!=BUDGET or getattr(PageCalls,'storage_contract',None)!=BUDGET
+            or getattr(durable_page_replay,'SUPPORTED_EXECUTION_PROTOCOL',None)!=CONTRACT
             or not all(callable(f) for f in (execute,read_outcome,create,build_plan,prepare_request_projection))):
         raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','request/budget/receipt/recovery/publication support is incomplete; no consumption permitted')
     schema_for('page-pair',{'pages':{'p1':{}},'page_execution_contract':CONTRACT})

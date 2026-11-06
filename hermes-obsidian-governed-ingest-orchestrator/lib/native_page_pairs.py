@@ -72,7 +72,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     def transaction():
         with worker_binding(binding),workflow_write_guard(adapter.workflow.vault,kinds=('global-reduce',),actor=binding['actor']):
             yield
-    book=PageCalls(root,guard,transaction)
+    from page_protocol import strict,BUDGET
+    book=PageCalls(root,guard,transaction,**({'protocol':BUDGET} if strict(value['view']) else {}))
     boundary,_=output_boundary(adapter,binding)
     legacy=[]
     for folder in ('output-attempts','semantic-calls'):
@@ -110,7 +111,10 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     from fixed_semantic import prepare_request_projection
     by_key={key(p):(p,v) for p,v in items};calls=list(prior_calls);written={}
     if len(by_key)!=len(items):raise ContractError('IDENTITY_CONFLICT','$','duplicate durable page identities')
-    for page,view in items:book.status(page,view)  # Fail before persisting any changed-input result.
+    with book.scan() as scan:
+        for page,view in items:
+            row=scan.row(key(page))
+            if row and row['input_sha256']!=fingerprint(view):raise ContractError('STALE_INPUT','$','page input changed; no new allowance')
     def request_images(q):
         if not q.get('image_inputs'):return []
         from fixed_semantic_media import image_catalog,select_images
@@ -156,19 +160,21 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         book.settle(request,validate,persist,authenticate,on_receipt=acknowledge,
             **({'recovery_epoch':guard()} if per_page else {}))
     # Saved raw responses settle pages one at a time; no model call on this path.
-    for request,q in book.read()['requests'].items():
-        if not set(m['page_key'] for m in q['members'].values())<=set(by_key):
-            raise ContractError('STALE_INPUT','$','page plan changed after durable reservation')
-        if 'response' not in q:
-            matches=[]
-            for p in (root/'semantic-calls').glob('*.json'):
-                audit=_load_json(p)
-                if audit.get('page_request_id')==request:
-                    proof=native_reply(adapter,binding,p,q['wire'],q['schema'],request_images(q))
-                    if proof:matches.append((p,audit,proof[0]))
-            if len(matches)!=1:raise ContractError('SEMANTIC_OUTPUT_HELD','$','unknown page request; no automatic resend')
-            p,audit,raw=matches[0];book.capture(request,raw,p.relative_to(adapter.workflow.vault).as_posix(),audit['model'])
-        settle(request)
+    with book.scan() as scan:
+        for request in scan.index['requests']:
+            q=scan.request(request)
+            if not set(m['page_key'] for m in q['members'].values())<=set(by_key):
+                raise ContractError('STALE_INPUT','$','page plan changed after durable reservation')
+            if 'response' not in q:
+                matches=[]
+                for p in (root/'semantic-calls').glob('*.json'):
+                    audit=_load_json(p)
+                    if audit.get('page_request_id')==request:
+                        proof=native_reply(adapter,binding,p,q['wire'],q['schema'],request_images(q))
+                        if proof:matches.append((p,audit,proof[0]))
+                if len(matches)!=1:raise ContractError('SEMANTIC_OUTPUT_HELD','$','unknown page request; no automatic resend')
+                p,audit,raw=matches[0];book.capture(request,raw,p.relative_to(adapter.workflow.vault).as_posix(),audit['model'])
+            settle(request)
     def submit(group):
         from fixed_semantic import HermesCaller
         from ingest_kanban import IngestKanbanAdapter
@@ -183,10 +189,11 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         from page_protocol import strict,CONTRACT as PROTOCOL
         if strict(value['view']):wire_view['page_execution_contract']=PROTOCOL
         diagnostics={}
-        for i,(page,view) in enumerate(group,1):
-            prior=book.status(page,view)
-            if prior and prior['attempts']:
-                last=prior['attempts'][-1];diagnostics[f'p{i}']={'code':last.get('code'),'reason':last.get('reason')}
+        with book.scan() as scan:
+            for i,(page,view) in enumerate(group,1):
+                prior=scan.row(key(page))
+                if prior and prior['attempts']:
+                    last=prior['attempts'][-1];diagnostics[f'p{i}']={'code':last.get('code'),'reason':last.get('reason')}
         if diagnostics:wire_view['page_validation_diagnostics']=diagnostics
         images=[]
         if per_page:
@@ -235,46 +242,49 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         settle(request)
     # Only new or rejected mechanical outputs can request a call. Completed pages
     # are immutable and never enter another group, including after restart.
-    pending=[]
-    for page,view in items:
-        row=book.status(page,view)
-        if row and row.get('receipt'):acknowledge(row['receipt']);continue
-        if row and (len(row['attempts'])>=2 or not row['attempts'][-1].get('correctable')):continue
-        pending.append((page,view))
-    groups=[]
-    while pending:
-        first=pending.pop(0);group=[first]
-        # Additional checks are isolated to the failed page, never the valid peer.
-        if pending and not book.status(*first) and not book.status(*pending[0]) and compatible(first,pending[0]):
-            # Output headroom is an explicitly labelled heuristic, not a proof
-            # of semantic length. High-volume pages stay single.
-            import json
-            estimates=[max(512,len(json.dumps(v.get('candidates',[]),ensure_ascii=False).encode('utf-8'))//3+1024) for p,v in (first,pending[0])]
-            if not per_page or sum(estimates)<=7168:group.append(pending.pop(0))
-            else:observe(binding,'output_headroom_requires_single',page_path=first[0]['path'],estimated_output_tokens=estimates)
-        elif pending and per_page:
-            from page_protocol import strict
-            from page_pair_eligibility import pair
-            decision=pair(first,pending[0]) if strict(value['view']) else {'reasons':['historical-compatibility-rules']}
-            observe(binding,'incompatible_evidence_or_scope',page_path=first[0]['path'],peer_path=pending[0][0]['path'],qualification=decision)
-        groups.append(group)
+    with book.scan() as scan:
+        pending=[]
+        for page,view in items:
+            row=scan.row(key(page))
+            if row and row.get('receipt'):acknowledge(row['receipt']);continue
+            if row and (len(row['attempts'])>=2 or not row['attempts'][-1].get('correctable')):continue
+            pending.append((page,view))
+        groups=[]
+        while pending:
+            first=pending.pop(0);group=[first]
+            # Additional checks are isolated to the failed page, never the valid peer.
+            if pending and not scan.row(key(first[0])) and not scan.row(key(pending[0][0])) and compatible(first,pending[0]):
+                # Output headroom is an explicitly labelled heuristic, not a proof
+                # of semantic length. High-volume pages stay single.
+                import json
+                estimates=[max(512,len(json.dumps(v.get('candidates',[]),ensure_ascii=False).encode('utf-8'))//3+1024) for p,v in (first,pending[0])]
+                if not per_page or sum(estimates)<=7168:group.append(pending.pop(0))
+                else:observe(binding,'output_headroom_requires_single',page_path=first[0]['path'],estimated_output_tokens=estimates)
+            elif pending and per_page:
+                from page_protocol import strict
+                from page_pair_eligibility import pair
+                decision=pair(first,pending[0]) if strict(value['view']) else {'reasons':['historical-compatibility-rules']}
+                observe(binding,'incompatible_evidence_or_scope',page_path=first[0]['path'],peer_path=pending[0][0]['path'],qualification=decision)
+            groups.append(group)
     capacity=min(10,getattr(adapter,'reduce_page_concurrency',2))
     run_groups(groups,submit,capacity)
     corrections=[]
     # One bounded correction for remaining mechanical failures, sharing the ledger.
-    for page,view in items:
-        row=book.status(page,view)
-        if row and not row.get('receipt') and len(row['attempts'])==1 and row['attempts'][0].get('correctable'):
-            corrections.append([(page,view)])
+    with book.scan() as scan:
+        for page,view in items:
+            row=scan.row(key(page))
+            if row and not row.get('receipt') and len(row['attempts'])==1 and row['attempts'][0].get('correctable'):
+                corrections.append([(page,view)])
     run_groups(corrections,submit,capacity)
-    for page,view in items:
-        row=book.status(page,view)
-        if row and row.get('receipt'):acknowledge(row['receipt']);continue
-        last=row['attempts'][-1] if row and row['attempts'] else {}
-        if any(h['path']==page['path'] for h in held):continue
-        held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':'page-write',
-            'code':'SEMANTIC_REVIEW_REQUIRED' if last.get('state')=='rejected' else 'SEMANTIC_OUTPUT_HELD','validation_code':last.get('code'),'reason':last.get('reason','page outcome pending'),
-            'audit_ref':book.read()['requests'][last['request_id']].get('response',{}).get('audit_ref') if last else None})
+    with book.scan() as scan:
+        for page,view in items:
+            row=scan.row(key(page))
+            if row and row.get('receipt'):acknowledge(row['receipt']);continue
+            last=row['attempts'][-1] if row and row['attempts'] else {}
+            if any(h['path']==page['path'] for h in held):continue
+            held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':'page-write',
+                'code':'SEMANTIC_REVIEW_REQUIRED' if last.get('state')=='rejected' else 'SEMANTIC_OUTPUT_HELD','validation_code':last.get('code'),'reason':last.get('reason','page outcome pending'),
+                'audit_ref':scan.request(last['request_id']).get('response',{}).get('audit_ref') if last else None})
     working=copy.deepcopy(state)
     from qa_program import page_link_failures
     held.extend(page_link_failures(value,working,list(written.values())))
