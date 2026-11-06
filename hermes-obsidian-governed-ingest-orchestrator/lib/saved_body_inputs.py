@@ -7,13 +7,14 @@ from hermes_source_units.validation import fingerprint
 def load(vault,workflow_id):
     from ingest_kanban import IngestKanbanAdapter
     from page_budget_store import operation,Snapshot
-    from fixed_semantic_recovery import _request_text,native_reply,proof_scope
+    from fixed_semantic_recovery import _request_text,native_proof,proof_scope,permitted_tasks,transcript_reply
     from fixed_page_evidence import restore_pair
     from independent_body import restore
     from hermes_source_units.source_units import _load_json
     adapter=IngestKanbanAdapter(vault);root=Path(vault)/f'_system/ledgers/ingest-workflows/{workflow_id}'
     w=adapter.workflow.status(workflow_id);card=next(c for c in w['kanban']['task_map'] if c['node']=='global-reduce')
     binding=_load_json(root/f'bindings/{fingerprint(card["idempotency_key"])}.json');items={};audits=[]
+    permitted=permitted_tasks(adapter,binding,compact=True)
     with operation(),proof_scope():
         scan=Snapshot(root)
         for rid in scan.index['requests']:
@@ -30,8 +31,9 @@ def load(vault,workflow_id):
                 pictures,_=images_for(adapter,wire)
             elif q.get('image_inputs'):
                 e=wire['original_evidence'];pictures=select_images(e['tasks'],image_catalog(adapter,e))
-            response=q['response'];proof=native_reply(adapter,binding,Path(vault)/response['audit_ref'],q['wire'],q['schema'],pictures)
-            if not proof or proof[0]!=response['raw']:raise ContractError('STALE_INPUT','$','saved body input lacks exact native completion')
+            response=q['response'];path=Path(vault)/response['audit_ref']
+            proof=native_proof(adapter,binding,path,q['wire'],q['schema'],pictures,permitted)
+            if not proof or transcript_reply(_load_json(path),q['wire'])!=response['raw']:raise ContractError('STALE_INPUT','$','saved body input lacks exact native completion')
             audits.append(response['audit_ref'])
             for slot,m in q['members'].items():
                 v=wire['pages'][slot] if independent else {**wire['pages'][slot],'original_evidence':wire['original_evidence']}

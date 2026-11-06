@@ -13,7 +13,7 @@ from test_durable_page_replay import saved
 def rows():
     a,b=views()
     for p,v in (a,b):p['identity']=v['identity'];v['body_call_contract']=CONTRACT
-    b[1]['original_evidence']['texts']={'s1':'Completely different authorized original and exception.'}
+    texts=b[1]['original_evidence']['texts'];texts[next(iter(texts))]='Completely different authorized original and exception.'
     return a,b
 
 def test_independent_body_round_trip_keeps_different_qa_scope_and_originals():
@@ -26,7 +26,7 @@ def test_independent_body_round_trip_keeps_different_qa_scope_and_originals():
     assert all(x['budget_check']['complete_request_codepoints']==x['input_size'] for _,x in variants)
 
 def test_exact_bundle_shared_once_but_context_difference_prevents_sharing():
-    a,b=rows();b[1]=copy.deepcopy(a[1]);b[1]['identity']['identity_key']='second'
+    a,b=rows();b=(b[0],copy.deepcopy(a[1]));b[1]['identity']['identity_key']='second'
     v=prepare((a,b),prepare_request_projection)[0];p=present(v)
     assert len(p['evidence_pool'])==1 and restore(p)['pages']==v['pages']
     b[1]['original_evidence']['qa']=['Different limitation retained']
