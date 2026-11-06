@@ -119,7 +119,7 @@ def _snapshot(adapter,binding,checked,*,presentation=True):
         planning=observed_profile(adapter,binding).get('planning_budget_contract')
         if planning:view['planning_budget_contract']=planning
         pinned=observed_profile(adapter,binding)
-        for field in ('page_execution_contract','page_budget_contract','body_call_contract'):
+        for field in ('page_execution_contract','page_budget_contract','body_call_contract','early_page_budget_contract'):
             if field in pinned:view[field]=pinned[field]
     from input_budget import observed
     budget=observed(adapter,binding)
