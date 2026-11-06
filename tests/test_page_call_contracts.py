@@ -221,6 +221,7 @@ def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypa
     monkeypatch.setattr(fixed_global_packets,'complete',lambda value,s:{'pages':copy.deepcopy(s['pages'])})
     raw_by={};calls=[];receipts=[]
     def model(adapter,binding,phase,view,caller,limit,**kw):
+        assert phase=='page-pair'
         calls.append(view);raw=json.dumps({'results':{k:{'content':'isolated mechanical slot '+k} for k in view['pages']}})
         ref=f"_system/ledgers/ingest-workflows/isolated/semantic-calls/{len(calls)}.json"
         _write_atomic(tmp_path/ref,_json_bytes({'fixture':True,'phase':'page-pair','page_request_id':__import__('page_pair_calls').ACTIVE.get()[1],'model':{'origin':'isolated_fixture'}}));raw_by[str(tmp_path/ref)]=raw

@@ -22,6 +22,8 @@ def preflight(profile):
     from fixed_semantic import prepare_request_projection
     if (profile.get('page_budget_contract')!=BUDGET or getattr(PageCalls,'storage_contract',None)!=BUDGET
             or getattr(durable_page_replay,'SUPPORTED_EXECUTION_PROTOCOL',None)!=CONTRACT
-            or not all(callable(f) for f in (execute,read_outcome,create,build_plan,prepare_request_projection))):
+            or not all(callable(f) for f in (execute,read_outcome,create,build_plan,prepare_request_projection,
+                getattr(PageCalls,'reserve',None),getattr(PageCalls,'capture',None),getattr(PageCalls,'settle',None)))):
         raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','request/budget/receipt/recovery/publication support is incomplete; no consumption permitted')
     schema_for('page-pair',{'pages':{'p1':{}},'page_execution_contract':CONTRACT})
+    schema_for('page-pair',{'pages':{'p1':{},'p2':{}},'page_execution_contract':CONTRACT})

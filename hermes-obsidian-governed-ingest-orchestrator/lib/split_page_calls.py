@@ -28,8 +28,9 @@ class SplitPageCalls:
         for k,row in r['pages'].items():
             prior=current['pages'][k]
             if (row['input_sha256']!=prior['input_sha256'] or row['path']!=prior['path']
-                    or [{f:a[f] for f in ('ordinal','request_id','state')} for a in row['attempts']]
-                    !=[{f:a[f] for f in ('ordinal','request_id','state')} for a in prior['attempts']]):deny('STALE_INPUT','inspection cannot refresh consumed page allowance')
+                    or bool(row.get('receipt'))!=bool(prior.get('receipt'))
+                    or [{f:a.get(f) for f in ('ordinal','request_id','state','correctable')} for a in row['attempts']]
+                    !=[{f:a.get(f) for f in ('ordinal','request_id','state','correctable')} for a in prior['attempts']]):deny('STALE_INPUT','inspection cannot refresh consumed page allowance')
         index={'contract':INDEX,'version':current['version'],'pages':{},'requests':{}}
         for k,row in r['pages'].items():
             small=copy.deepcopy(row)

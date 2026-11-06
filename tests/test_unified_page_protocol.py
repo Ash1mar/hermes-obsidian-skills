@@ -59,6 +59,13 @@ def test_installed_protocol_preflight_checks_the_complete_chain():
     preflight({'page_execution_contract':CONTRACT,'page_budget_contract':BUDGET})
 
 
+def test_missing_receipt_capability_holds_before_consumption(monkeypatch):
+    from page_pair_calls import PageCalls
+    monkeypatch.setattr(PageCalls,'settle',None)
+    with pytest.raises(ContractError,match='PAGE_PROTOCOL_UNSUPPORTED'):
+        preflight({'page_execution_contract':CONTRACT,'page_budget_contract':BUDGET})
+
+
 def test_unknown_version_cannot_silently_fall_back():
     from page_protocol import strict
     with pytest.raises(ContractError,match='PAGE_PROTOCOL_UNSUPPORTED'):
