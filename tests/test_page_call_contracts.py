@@ -270,7 +270,7 @@ def test_recovery_fingerprint_includes_page_contract_modules(tmp_path,monkeypatc
     for name in names:(tmp_path/name).write_text('isolated code '+name)
     monkeypatch.setattr(qa_program,'__file__',str(tmp_path/'qa_program.py'))
     before=qa_program.execution_code_fingerprint()
-    for name in names[3:]:
+    for name in names:
         p=tmp_path/name;old=p.read_text();p.write_text('changed isolated code')
         assert qa_program.execution_code_fingerprint()!=before;p.write_text(old)
 

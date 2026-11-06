@@ -2,7 +2,11 @@
 from hermes_source_units import ContractError
 CONTRACT='unified-page-execution/v3'
 BUDGET='page-budget-index/v2'
-def strict(view):return view.get('page_execution_contract')==CONTRACT
+def strict(view):
+    declared=view.get('page_execution_contract')
+    if declared is not None and declared!=CONTRACT:
+        raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','unknown pinned execution version; no fallback')
+    return declared==CONTRACT
 def page_rules():
     from reduce_disposition import PAGE_RULE
     return PAGE_RULE+' Each result slot owns its exact page identity, candidates, applicability and necessary evidence. Shared context is retained for checking, never an instruction to merge scope. QA notes and truncation notices remain evidence; determine their actual effect on assigned claims. Missing required support must be reported, never inferred.'

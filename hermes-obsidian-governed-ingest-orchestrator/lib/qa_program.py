@@ -12,7 +12,8 @@ SCOPE='qa-policy/v1'
 def execution_code_fingerprint():
     root=Path(__file__).parent
     return fingerprint({n:hashlib.sha256((root/n).read_bytes()).hexdigest()
-        for n in ('qa_program.py','fixed_page_work.py','fixed_semantic.py',
+        for n in ('page_protocol.py','page_pair_eligibility.py','page_budget_store.py','split_page_calls.py','page_request.py',
+                  'qa_program.py','fixed_page_work.py','fixed_semantic.py',
                   'native_page_pairs.py','page_pair_calls.py','page_dependencies.py','durable_page_replay.py','page_budget_hold.py',
                   'source_unknown_recovery.py','native_stream_policy.py','returned_native_output.py',
                   'network_connection_retry.py')})

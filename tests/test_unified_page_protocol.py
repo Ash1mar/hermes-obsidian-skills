@@ -59,6 +59,12 @@ def test_installed_protocol_preflight_checks_the_complete_chain():
     preflight({'page_execution_contract':CONTRACT,'page_budget_contract':BUDGET})
 
 
+def test_unknown_version_cannot_silently_fall_back():
+    from page_protocol import strict
+    with pytest.raises(ContractError,match='PAGE_PROTOCOL_UNSUPPORTED'):
+        strict({'page_execution_contract':'future-unknown'})
+
+
 def test_same_complete_builder_measures_single_and_pair_without_evidence_loss():
     from page_request import prepare
     from fixed_semantic import prepare_request_projection
