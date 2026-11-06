@@ -172,7 +172,7 @@ def test_page_ack_is_published_before_second_page_failure(system):
 @pytest.mark.parametrize('dispatch',[None,'per-page-dispatch/v2','unified-page-execution/v3'])
 @pytest.mark.parametrize('special',[None,'oversize','asset'])
 def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypatch,cancel_after_first,dispatch,special):
-    if special and dispatch=='unified-page-execution/v3':pytest.skip('new protocol uses complete-request budget/asset fixtures, not the historical fake size probe')
+    if special=='oversize' and dispatch=='unified-page-execution/v3':pytest.skip('new protocol uses complete-request budget fixtures, not the historical fake size probe')
     if special and (not dispatch or cancel_after_first):pytest.skip('mixed-page cases use future dispatch without interruption')
     from types import SimpleNamespace as NS
     import native_page_pairs as native
