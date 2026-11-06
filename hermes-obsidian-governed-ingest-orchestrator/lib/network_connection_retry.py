@@ -1,4 +1,4 @@
-"""Persistent connection-only backoff within one fixed semantic reservation.
+"""Persistent connection/gateway backoff within one fixed semantic reservation.
 
 Every ambiguous transport failure stays auditable. A returned response exits
 this loop; validation/semantic corrections and other unknowns keep their bounds.
@@ -15,10 +15,10 @@ CONTRACT='native-connection-retry/v1'
 def connection_error(error):
     from openai import APIConnectionError
     # APITimeoutError is a subclass, but has a separate unknown/timeout policy.
-    if type(error) is not APIConnectionError:return False
     body=getattr(error,'body',None)
-    return not (getattr(error,'response_id',None) or isinstance(body,dict) and
-        (body.get('partial') or body.get('output') or body.get('choices')))
+    if getattr(error,'response_id',None) or isinstance(body,dict) and (body.get('partial') or body.get('output') or body.get('choices')):
+        return False
+    return type(error) is APIConnectionError or getattr(error,'status_code',None) in (502,503,504)
 
 
 def retry(agent,error,request_sha256):
@@ -40,7 +40,8 @@ def retry(agent,error,request_sha256):
     relative=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/network-retries/{agent.session_id}-{ordinal}.json"
     record={'contract':CONTRACT,'session_id':agent.session_id,'binding':copy.deepcopy(binding),
         'phase':context['phase'],'request_sha256':request_sha256,'wire_sha256':context['wire_sha256'],
-        'network_failure_ordinal':ordinal,'state':'completion_unknown','error_class':'APIConnectionError',
+        'network_failure_ordinal':ordinal,'state':'completion_unknown','error_class':type(error).__name__,
+        'status_code':getattr(error,'status_code',None),
         'recorded_at_ms':int(time.time()*1000),'next_backoff_seconds':delay,
         'semantic_ordinals_granted':0,'response_received':False,'retry_until':'connection_returns_or_control_stops',
         'previous_failure_ref':refs[-1]['ref'] if refs else None}

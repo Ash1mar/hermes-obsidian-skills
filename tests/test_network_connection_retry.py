@@ -2,7 +2,7 @@
 import copy,json
 from types import SimpleNamespace as NS
 import httpx,pytest
-from openai import APIConnectionError,APITimeoutError
+from openai import APIConnectionError,APITimeoutError,APIStatusError
 from hermes_source_units import ContractError
 from hermes_source_units.validation import fingerprint
 from native_call_state import StopNativeCall
@@ -19,6 +19,23 @@ def fixture(sdk,tmp_path,monkeypatch,control=lambda:None,fresh=lambda:None):
     return agent
 
 def connection():return APIConnectionError(request=httpx.Request('POST','https://offline.invalid'))
+
+@pytest.mark.parametrize('status',[502,503,504])
+def test_transient_gateway_retries_same_request_without_new_semantic_allowance(sdk,tmp_path,monkeypatch,status):
+    a=fixture(sdk,tmp_path,monkeypatch);calls=[];expected=api_request(a);a._apply_fixed_format(expected)
+    def backend(payload):
+        calls.append(copy.deepcopy(payload))
+        if len(calls)<4:raise APIStatusError('isolated gateway',response=httpx.Response(status,request=httpx.Request('POST','https://offline.invalid')),body=None)
+        return NS(choices=[NS(message=NS(content='native result'))])
+    assert a._fixed_api(backend,expected)
+    assert len(calls)==4 and all(c==calls[0] for c in calls)
+    records=[json.loads((tmp_path/r['ref']).read_text()) for r in a.fixed_network_retry_refs]
+    assert len(records)==3 and all(r['status_code']==status and r['semantic_ordinals_granted']==0 for r in records)
+
+@pytest.mark.parametrize('status',[400,401,403,409,429,500])
+def test_other_http_errors_do_not_gain_transport_retries(status):
+    error=APIStatusError('isolated',response=httpx.Response(status,request=httpx.Request('POST','https://offline.invalid')),body=None)
+    assert not network.connection_error(error)
 
 def test_more_than_one_connection_retry_preserves_payload_and_single_semantic_reservation(sdk,tmp_path,monkeypatch):
     fresh=[];a=fixture(sdk,tmp_path,monkeypatch,fresh=lambda:fresh.append(1));request=api_request(a);a._apply_fixed_format(request)

@@ -52,6 +52,11 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
     if not isinstance(rid, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,79}', rid):
         fail('INVALID_SCHEMA', 'invalid recovery ID')
     scope=request.get('recovery_scope')
+    page_transport=any(e.get('page_transport_retry') is True for e in (request.get('entries') or []) if isinstance(e,dict))
+    if page_transport:
+        from page_transport_recovery import contract_hash
+        if scope!='reduce-cancel/v1' or request.get('target_contract_sha256')!=contract_hash():
+            fail('STALE_INPUT','page transport retry requires its exact recovery contract')
     restore_returned=any(e.get('restore_native_output') is True for e in (request.get('entries') or []) if isinstance(e,dict))
     if restore_returned:
         from returned_native_output import contract_hash
@@ -234,7 +239,10 @@ def recover_reduce_execution(adapter, request, *, dry_run=False):
                 if scope=='reduce-validation/v1':
                     from reduce_coverage import verify_validator
                     audited[-1].update(verify_validator(adapter,value,node,binding,entry))
-                if call_failure:
+                if entry.get('page_transport_retry') is True:
+                    from page_transport_recovery import verify
+                    audited[-1].update(verify(adapter,value,node,binding,entry,report,runs))
+                elif call_failure:
                     from native_call_state import recovery_evidence
                     audited[-1].update(recovery_evidence(adapter,value,binding,runs))
                 if entry.get('restore_native_output') is True:

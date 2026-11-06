@@ -6,6 +6,8 @@ from hermes_source_units.source_units import _load_json,_vault_path,_write_atomi
 
 
 def recover(adapter,wid,*,resume=True):
+    from page_transport_recovery import recover as recover_transport
+    if recover_transport(adapter,wid,resume=resume):return True
     from qa_program import recover_global
     if recover_global(adapter,wid,resume=resume):return True
     from source_unknown_recovery import recover as recover_unknown
