@@ -49,13 +49,13 @@ def prepare(adapter,wid):
             # A prior no_action did not authorize or attempt source quarantine.
             # Re-evaluate only corrected, newly eligible source-unknown handling;
             # retain this episode, operation lineage and remaining attempt count.
-            if (state['state']=='no_action' and w['current_stage']=='reducing'
+            if ((state['state']=='no_action' or state['state']=='held' and state.get('reason')=='WORKFLOW_STOPPED') and w['current_stage']=='reducing'
                     and state['attempts']<state['policy']['controller_attempts']):
                 from page_transport_recovery import select as transport_select,contract_hash as transport_hash
                 from automatic_pass_recovery import enabled as recovery_enabled
                 transport_code=transport_hash()
                 if (recovery_enabled(w) and state.get('page_transport_contract_sha256')!=transport_code
-                        and transport_select(adapter,w)):
+                        and (transport_select(adapter,w) or (adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{wid}/automatic-page-transport/pending.json').exists())):
                     state['state']='pending';state['page_transport_contract_sha256']=transport_code
                     state['history'].append({'event':'corrected_page_transport_contract','new_attempts_granted':0})
                     _write_atomic(path,_json_bytes(state))

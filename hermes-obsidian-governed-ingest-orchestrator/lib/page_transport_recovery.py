@@ -138,6 +138,17 @@ def recover(adapter,wid,*,resume=True):
             intent={'entries':selected,'operation_id':'auto-page-transport-'+fingerprint(selected)[:20]}
             _write_atomic(pending,_json_bytes(intent))
         op=intent['operation_id']
+        from fixed_history import checked_report
+        prior=[checked_report(adapter.workflow,p) for p in w.get('execution_recovery_history',[]) if p['recovery_id']==op]
+        if prior:
+            if len(prior)!=1 or prior[0]['request']['entries']!=intent['entries']:
+                fail('existing transport admission differs from pending intent')
+            # A crash after admission/resume must not replay an old cancel
+            # receipt against a later native task or consume another grant.
+            if not w['cancel_requested']:
+                _write_atomic(root/(op+'-settled.json'),_json_bytes({'operation_id':op,'state':'settled',
+                    'reused_existing_admission':True,'new_semantic_ordinals':0}))
+                pending.unlink();return False
         if not w['cancel_requested']:control_workflow(adapter.workflow.vault,wid,'cancel',op+'-stop')
         verify_cancel_drain(adapter,wid,timeout=0)
         rp=root/(op+'.request.json')
