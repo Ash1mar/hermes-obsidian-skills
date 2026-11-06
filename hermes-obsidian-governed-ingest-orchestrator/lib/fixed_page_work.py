@@ -45,7 +45,8 @@ def measure(adapter,value,page,caller,project):
         return view,limit+1
     if future:
         from page_request import prepare
-        return view,prepare([(page,view)],project,images,limit=limit)[2]['input_size']
+        p=prepare([(page,view)],project,images,limit=limit,budget=value.get('backend',{}).get('input_budget'))[2]
+        return view,p['input_size'] if p.get('budget_check',{'fits':True})['fits'] else limit+1
     return view,project('page-write',view,schema('page-write'),images)['input_size']
 
 

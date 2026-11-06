@@ -386,7 +386,10 @@ def wire_prompt(phase,view,output_schema,correction=None,*,metrics=None):
     body={'phase':phase}
     if phase not in ('candidate','citation'):
         body['output_schema']=_stable_objects(output_schema)
-    if phase=='page-review-pair' and view.get('evidence_encoding')=='independent-page-evidence/v1':
+    if phase=='page-pair' and view.get('evidence_encoding')=='independent-body-evidence/v1':
+        from independent_body import present
+        body['input']=_ordered_view(present(view))
+    elif phase=='page-review-pair' and view.get('evidence_encoding')=='independent-page-evidence/v1':
         from review_pair_request import present
         body['input']=_ordered_view(present(view))
     elif phase=='page-pair' and view.get('evidence_encoding')=='lossless-page-pair/v1':
@@ -430,7 +433,12 @@ def system_prompt(phase,view,correction=None):
         from page_protocol import strict,page_rules
         if strict(view) or any(strict(p) for p in view.get('pages',{}).values()):system+=' '+page_rules()
     if phase=='page-pair':
-        system+=' Return exactly the fixed page result slots independently. original_evidence is shared by these pages; all conditions, exceptions, contrary evidence, QA and limits remain required for each assigned claim. Keep distinct identities and scope; one blocked page must not suppress another valid page. Return content or blocked_reason in each slot; never merge pages or reassign candidates.'
+        if view.get('body_call_contract')=='independent-page-body/v1':
+            system+=' Return each fixed page slot independently. Each page owns its original_evidence, candidates, QA, parent, scope, conditions, exceptions, contrary context, required assets and references. Never use another page evidence or reassign claims. image_bindings gives the zero-based authorized images per page. A blocked page must not suppress a valid peer. Return content or blocked_reason in EACH slot.'
+            if view.get('evidence_encoding')=='independent-body-evidence/v1':
+                from fixed_page_evidence import COMPACT_INSTRUCTION
+                system+=COMPACT_INSTRUCTION+' Decode each page locally. original_evidence_ref selects its exact complete original_evidence from evidence_pool[ref].original_evidence; expand before interpreting local tables. Sharing is exact source/context/QA identity only; it grants no other slot access.'
+        else:system+=' Return exactly the fixed page result slots independently. original_evidence is shared by these pages; all conditions, exceptions, contrary evidence, QA and limits remain required for each assigned claim. Keep distinct identities and scope; one blocked page must not suppress another valid page. Return content or blocked_reason in each slot; never merge pages or reassign candidates.'
         if view.get('evidence_encoding')=='lossless-page-pair/v1':
             from fixed_page_evidence import COMPACT_INSTRUCTION
             system+=COMPACT_INSTRUCTION+' shared_evidence holds the exact common original_evidence and candidate table; each page candidate_rows selects its ordered zero-based rows. Expand these references independently for every page, including all proof, QA and context fields.'
@@ -539,7 +547,7 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
     images=[]
     if isinstance(caller,HermesCaller):
         original=view.get('original_evidence')
-        if phase=='page-review-pair':
+        if phase=='page-review-pair' or (phase=='page-pair' and view.get('body_call_contract')=='independent-page-body/v1'):
             from review_pair_request import images_for
             images,_=images_for(adapter,view)
         elif original is not None:
