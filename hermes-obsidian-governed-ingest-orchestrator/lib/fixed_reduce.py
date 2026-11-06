@@ -121,6 +121,9 @@ def _snapshot(adapter,binding,checked,*,presentation=True):
         pinned=observed_profile(adapter,binding)
         for field in ('page_execution_contract','page_budget_contract'):
             if field in pinned:view[field]=pinned[field]
+    from input_budget import observed
+    budget=observed(adapter,binding)
+    if budget:backend['input_budget']=budget
     result = {'contract':'fixed-reduce-input/v1','binding':dict(binding),'view':view,'backend':backend}
     if kind=='resource-reduce':
         from source_hold_recovery import rebind_view

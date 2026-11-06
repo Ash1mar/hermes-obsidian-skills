@@ -39,6 +39,8 @@ def pin(workflow,w):
             if budget.exists() and not w.get('reduce_test') and not w.get('workflow_test'):consumed=consumed or any(r.get('attempts') for r in _load_json(budget).get('tasks',{}).values())
             record={**identity,'contract':'legacy' if consumed else CONTRACT}
             if not consumed:
+                from .input_budget import profile,CONTRACT as BUDGET
+                record.update(input_budget_contract=BUDGET,input_budget=profile(w['scope'].get('execution_policy',{}).get('input_budget_profile')))
                 record.update(page_call_contract='durable-page-calls/v1',page_dispatch_contract='per-page-dispatch/v2',
                     planning_budget_contract='shared-reading-page-budget/v1',fixed_before_consumption=True,
                     page_execution_contract='unified-page-execution/v3',page_budget_contract='page-budget-index/v2')
@@ -47,4 +49,7 @@ def pin(workflow,w):
         raise ContractError('STALE_INPUT','$','presentation identity changed')
     if w.get('page_execution_contract') and record.get('page_execution_contract')!=w['page_execution_contract']:
         raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','workflow and presentation protocol differ')
+    if record.get('input_budget_contract'):
+        from .input_budget import validate
+        validate(record.get('input_budget'))
     return record

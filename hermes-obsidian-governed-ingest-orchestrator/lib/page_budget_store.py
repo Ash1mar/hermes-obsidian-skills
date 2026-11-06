@@ -1,5 +1,5 @@
 """Small mutable index, immutable payloads, operation-local verified reads."""
-import copy,hashlib,json
+import copy,hashlib,json,time
 from contextvars import ContextVar
 from contextlib import contextmanager
 from pathlib import Path
@@ -16,24 +16,35 @@ def fail(message):raise ContractError('SOURCE_CHANGED','$',message)
 def operation():
     current=_READS.get()
     if current is not None:yield current;return
-    value={'indexes':{},'payloads':{},'proofs':{},'index_loads':{},'payload_loads':{},'bytes':{},'file_loads':{},'fresh_loads':{}}
+    value={'indexes':{},'payloads':{},'proofs':{},'index_loads':{},'payload_loads':{},'bytes':{},'file_loads':{},'fresh_loads':{},'io':{}}
     token=_READS.set(value)
+    started=time.monotonic();cpu=time.process_time();error=None
     try:
         yield value
         if (any(n-value['fresh_loads'].get(k,0)>1 for k,n in value['file_loads'].items())
                 or any(n>1 for n in value['payload_loads'].values())):
             raise ContractError('PAGE_READ_BUDGET_EXCEEDED','$','operation reread an immutable payload or read-only index')
+    except BaseException as exc:
+        error=getattr(exc,'code',type(exc).__name__);raise
+    finally:
         from hermes_source_units.runtime_telemetry import event
         event('page_budget_read_operation',index_loads=sum(value['index_loads'].values()),
             transaction_fresh_loads=sum(value['fresh_loads'].values()),payload_loads=sum(value['payload_loads'].values()),
-            max_payload_reads=max(value['payload_loads'].values(),default=0),read_limits_enforced=True)
-    finally:_READS.reset(token)
+            max_payload_reads=max(value['payload_loads'].values(),default=0),read_limits_enforced=True,
+            file_io=copy.deepcopy(value['io']),wall_seconds=time.monotonic()-started,cpu_seconds=time.process_time()-cpu,
+            operation_error=error,includes_failed_operation=True)
+        _READS.reset(token)
 
 def file_bytes(path,*,fresh=False):
     p=Path(path);scope=_READS.get();key=str(p)
     if not fresh and scope is not None and key in scope['bytes']:return scope['bytes'][key]
-    data=p.read_bytes()
+    # Transaction reads must bypass all external evidence/release caches.
+    from hermes_source_units.read_accounting import _raw_read_bytes
+    kind='index' if p.name=='page-call-budget.json' else p.parent.name if p.parent.name in ('requests','responses','receipts') else 'other'
+    origin='page_budget.'+kind+('.transaction' if fresh else '')
+    data=_raw_read_bytes(p,origin)
     if scope is not None:
+        row=scope['io'].setdefault(kind,{'reads':0,'bytes':0,'fresh_reads':0});row['reads']+=1;row['bytes']+=len(data);row['fresh_reads']+=int(fresh)
         scope['file_loads'][key]=scope['file_loads'].get(key,0)+1
         if fresh:scope['fresh_loads'][key]=scope['fresh_loads'].get(key,0)+1
         if not fresh:scope['bytes'][key]=data

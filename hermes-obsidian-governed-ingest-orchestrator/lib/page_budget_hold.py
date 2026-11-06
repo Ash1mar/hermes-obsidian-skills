@@ -3,6 +3,8 @@ from hermes_source_units.validation import fingerprint
 from page_pair_calls import CONTRACT,key
 
 def proof(adapter,value,page):
+    from input_budget import limit as input_limit
+    limit=input_limit(value,'page-pair')
     import fixed_reduce
     from fixed_semantic import prepare_request_projection
     from fixed_semantic_schema import schema_for
@@ -19,12 +21,12 @@ def proof(adapter,value,page):
     from page_protocol import strict
     if strict(value['view']):
         from page_request import prepare
-        _,sc,_,choices=prepare([(page,view)],prepare_request_projection,images)
+        _,sc,_,choices=prepare([(page,view)],prepare_request_projection,images,limit=limit)
         variants=[p for _,p in choices]
     # Isolation requires EVERY supported full representation to exceed the bound.
     size=min(p['input_size'] for p in variants)
     return {'contract':'complete-slot-budget/v1','page_key':key(page),'input_sha256':fingerprint(view),
-        'minimum_complete_input_codepoints':size,'limit':30000,
+        'minimum_complete_input_codepoints':size,'limit':limit,
         'wire_sha256s':[fingerprint(p['wire']) for p in variants],
         'schema_sha256':fingerprint(sc),'new_calls_granted':0}
 

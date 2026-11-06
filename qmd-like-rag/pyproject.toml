@@ -25,7 +25,7 @@ qmd-like-rag = "qmd_like_rag.cli:main"
 where = ["src"]
 
 [tool.setuptools.package-data]
-hermes_source_units = ["schemas/*.json", "defaults/*.json", "embedded-manifest.json", "py.typed"]
+hermes_source_units = ["schemas/*.json", "defaults/*.json", "embedded-manifest.json", "input-budgets.json", "py.typed"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

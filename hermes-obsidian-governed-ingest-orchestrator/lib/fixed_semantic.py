@@ -225,7 +225,7 @@ class HermesCaller:
         # Native workers inherit lifecycle tools unless explicitly disabled.
         # The program owns that lifecycle; retain its identity/isolation env.
         agent = FixedAgent(**fields,model=self.model,enabled_toolsets=[],disabled_toolsets=['kanban'],max_iterations=1,
-            max_tokens=OUTPUT_TOKENS,run_budget_seconds=600,quiet_mode=True,
+            max_tokens=getattr(self,'output_token_limit',OUTPUT_TOKENS),run_budget_seconds=600,quiet_mode=True,
             skip_context_files=True,skip_memory=True,skip_background_review=True,
             load_soul_identity=False,fallback_model=None,session_db=self.db,platform='kanban',
             session_id='fixed-'+uuid.uuid4().hex,save_trajectories=False)
@@ -515,6 +515,9 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
 
 
 def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2,_checked=None):
+    from input_budget import observed,check_request
+    budget=observed(adapter,binding)
+    if budget:limit=budget['phases'][phase]['input_codepoints']
     from reduce_coverage import current
     from finalize_revision import allowed as finalize_call_allowed
     if binding['node']=='build-finalize' and view.get('finalize_revision') and not finalize_call_allowed(adapter,binding,phase,view):
@@ -534,6 +537,10 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
         require_images_fit(images)
         caller.images=images
     prepared=prepare_request_projection(phase,view,output_schema,images,correction)
+    if budget:
+        prepared['budget_check']=check_request(prepared,budget,phase)
+        if not prepared['budget_check']['fits']:
+            raise ContractError('READING_WINDOW_OVERSIZE','$','pinned complete request budget: '+','.join(prepared['budget_check']['split_reasons']))
     prepared['audit_context']={'vault':str(adapter.workflow.vault),'binding':dict(binding),'phase':phase}
     wire=prepared['wire'];schema_size=prepared['schema_size'];size=prepared['input_size']
     if size>limit:
@@ -575,7 +582,9 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
         # backoff; the cheap live guard remains available during the wait.
         fresh_binding=live if binding['node'].startswith('pass-slice:') else binding
         prepared['fresh_control_check']=lambda:adapter.worker_check(fresh_binding)
-    if isinstance(caller,HermesCaller): caller.input_limit=limit
+    if isinstance(caller,HermesCaller):
+        caller.input_limit=limit
+        caller.output_token_limit=budget['phases'][phase]['output_tokens'] if budget else OUTPUT_TOKENS
     from citation_amendment_calls import active as amendment_active
     local_amendment=amendment_active(adapter,binding)
     if isinstance(caller,HermesCaller) and not correction and not local_amendment:
@@ -652,6 +661,7 @@ def _dispatch_model_call(adapter,binding,phase,view,caller,limit,correction=None
         'detail_reason_class':__import__('request_cost').detail_reason(phase,view,correction),
         'model':metadata,'receipt_refs':[],'output_codepoints':len(raw),'output_utf8_bytes':len(raw.encode('utf-8')),**correlation}
     audit['timeline_span_id']=model_trace['span_id']
+    if budget:audit['fixed_input_budget']=prepared['budget_check']
     if images:
         audit['image_inputs']=[{k:v for k,v in image.items() if k!='url'} for image in images]
     if phase in ('candidate','citation'):

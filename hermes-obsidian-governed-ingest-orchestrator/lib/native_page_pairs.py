@@ -52,6 +52,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     """Return None only before any durable page budget exists, for legacy fallback."""
     from page_execution_diagnostics import observe
     per_page=value['view'].get('page_dispatch_contract')=='per-page-dispatch/v2'
+    from input_budget import limit as input_limit
+    limit=input_limit(value,'page-pair')
     if value['view'].get('page_call_contract')!=CONTRACT:
         from page_protocol import strict
         if strict(value['view']):raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','new protocol cannot fall back without its budget contract')
@@ -73,7 +75,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         with worker_binding(binding),workflow_write_guard(adapter.workflow.vault,kinds=('global-reduce',),actor=binding['actor']):
             yield
     from page_protocol import strict,BUDGET
-    book=PageCalls(root,guard,transaction,**({'protocol':BUDGET} if strict(value['view']) else {}))
+    book=PageCalls(root,guard,transaction,budget=value.get('backend',{}).get('input_budget'),**({'protocol':BUDGET} if strict(value['view']) else {}))
     boundary,_=output_boundary(adapter,binding)
     legacy=[]
     for folder in ('output-attempts','semantic-calls'):
@@ -103,7 +105,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                     'code':'PAGE_REQUIRED_EVIDENCE_MISSING','reason':'assigned support or required asset is missing',
                     'origin':'required-page-evidence/v1','evidence_proof':qualification})
                 observe(binding,'required_evidence_missing',page_path=page['path'],qualification=qualification);continue
-        if n>30000:
+        if n>limit:
             if per_page:
                 if strict(value['view']):
                     from page_budget_hold import proof
@@ -195,11 +197,11 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                     original=_load_json(_vault_path(adapter.workflow.vault,grant['failure_ref']))
                     from fixed_semantic import prepare_request_projection
                     prepared=prepare_request_projection('page-pair',original['view'],q['schema'],request_images(q))
-                    if prepared['wire']!=q['wire'] or prepared['input_size']>30000:
+                    if prepared['wire']!=q['wire'] or prepared['input_size']>limit:
                         raise ContractError('STALE_INPUT','$','transport retry cannot change the complete original request')
                     book.claim_transport_retry(request,grant,{'task_id':binding['task_id']})
                     token=ACTIVE.set((book,request))
-                    try:model_call(adapter,binding,'page-pair',original['view'],caller,30000,attempt_limit=1)
+                    try:model_call(adapter,binding,'page-pair',original['view'],caller,limit,attempt_limit=1)
                     finally:ACTIVE.reset(token)
                 else:raise ContractError('SEMANTIC_OUTPUT_HELD','$','unknown or ambiguous page request; no automatic resend')
             settle(request)
@@ -230,14 +232,14 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                 images=select_images(evidence['tasks'],image_catalog(current_owner(),evidence));require_images_fit(images)
         if strict(value['view']):
             from page_request import prepare
-            wire_view,sc,prepared,_=prepare(group,prepare_request_projection,images,diagnostics)
+            wire_view,sc,prepared,_=prepare(group,prepare_request_projection,images,diagnostics,limit=limit)
         else:
             sc=schema_for('page-pair',wire_view);prepared=prepare_request_projection('page-pair',wire_view,sc,images)
         if per_page:
             from request_cost import rank
             encoded={**wire_view,'evidence_encoding':'lossless-page-pair/v1'}
             packed=prepare_request_projection('page-pair',encoded,sc,images)
-            if not strict(value['view']) and packed['input_size']<=30000 and rank(packed)<rank(prepared):wire_view,prepared=encoded,packed
+            if not strict(value['view']) and packed['input_size']<=limit and rank(packed)<rank(prepared):wire_view,prepared=encoded,packed
             if len(group)==2:
                 singles=[]
                 for page,view in group:
@@ -248,7 +250,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                         (single,{**single,'evidence_encoding':'lossless-page-pair/v1'})]
                     if strict(value['view']):
                         from page_request import prepare
-                        singles.append(prepare([(page,view)],prepare_request_projection,images)[2])
+                        singles.append(prepare([(page,view)],prepare_request_projection,images,limit=limit)[2])
                     else:singles.append(min(options,key=rank))
                 costs=[prepared,*singles]
                 metric='text_tokens' if all(p['request_cost'].get('text_tokens') is not None for p in costs) else 'utf8_bytes'
@@ -260,7 +262,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                     return
             observe(binding,'pair' if len(group)==2 else 'single',page_paths=[p['path'] for p,v in group],
                 request_cost=prepared['request_cost'],encoding=wire_view.get('evidence_encoding','original'))
-        if prepared['input_size']>30000:
+        if prepared['input_size']>limit:
             if len(group)==2:
                 for item in group:submit([item])
                 return
@@ -272,7 +274,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             raise ContractError('READING_WINDOW_OVERSIZE','$','complete durable page request exceeds bound')
         request=book.reserve(group,prepared['wire'],sc,images)
         token=ACTIVE.set((book,request))
-        try:model_call(current_owner(),binding,'page-pair',wire_view,local_caller,30000,attempt_limit=1)
+        try:model_call(current_owner(),binding,'page-pair',wire_view,local_caller,limit,attempt_limit=1)
         finally:ACTIVE.reset(token)
         settle(request)
     # Only new or rejected mechanical outputs can request a call. Completed pages

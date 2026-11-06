@@ -146,6 +146,8 @@ def packet_view(value,chosen,state,*,detail=False,reader_topics=False,project=No
 
 @measured('global_packet_pack')
 def next_packet(value,remaining,state,project,*,view_transform=None,reader_topics=False):
+    from input_budget import limit as input_limit
+    limit=input_limit(value,'global-plan',LIMIT)
     chosen=[];prepared=None
     for group in remaining:
         count=sum(len(g['proposals']) for g in [*chosen,group])
@@ -155,7 +157,7 @@ def next_packet(value,remaining,state,project,*,view_transform=None,reader_topic
         view=packet_view(value,[*chosen,group],state,reader_topics=reader_topics,project=project)
         if view_transform is not None:view=view_transform(view)
         projected=project('global-plan',view,schema_for('global-plan',view),[])
-        if projected['input_size']>LIMIT:
+        if projected['input_size']>limit:
             if not chosen:fail('READING_WINDOW_OVERSIZE','one complete proposal unit plus related page boundaries exceeds global planning budget')
             break
         chosen.append(group);prepared=(view,projected['input_size'])
@@ -240,9 +242,11 @@ def accept_proposals(value,state,packet,draft):
 
 
 def detail_packet(value,unit,state,project):
+    from input_budget import limit as input_limit
+    limit=input_limit(value,'global-detail',LIMIT)
     view=packet_view(value,[unit],state,detail=True,reader_topics=unit.get('reader_topics',False))
     size=project('global-detail',view,schema('global-detail'),[])['input_size']
-    if size>LIMIT:fail('READING_WINDOW_OVERSIZE','one requested complete detail unit exceeds the bound; no truncation')
+    if size>limit:fail('READING_WINDOW_OVERSIZE','one requested complete detail unit exceeds the bound; no truncation')
     return {'view':view,'input_codepoints':size,'unit_count':1,'units':[unit],
             'candidate_refs':sorted(unit['handles']),'proposal_refs':[p['proposal'] for p in unit['proposals']],
             'previous_state_sha256':state_digest(state)}
