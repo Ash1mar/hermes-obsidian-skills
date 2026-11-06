@@ -8,6 +8,10 @@ def pin(workflow,w):
     root=workflow.vault/f"_system/ledgers/ingest-workflows/{w['workflow_id']}"
     path=root/'presentation-contract.json'
     identity={'workflow_id':w['workflow_id'],'scope_sha256':fingerprint(w['scope'])}
+    if w.get('workflow_test') and not w['workflow_test']['presentation_reused']:
+        from .workflow_test import check_admission
+        check_admission(workflow,w)
+        identity['workflow_test_operation']=w['workflow_test']['operation_id']
     if w.get('reduce_test'):
         pointer=w['reduce_test'];report_path=workflow.vault/pointer['report_ref']
         import hashlib,json
@@ -28,8 +32,11 @@ def pin(workflow,w):
                 # accepted Pass calls and their cumulative budget in place.
                 consumed=any(_load_json(p).get('phase') not in ('candidate','citation')
                     for p in (root/'semantic-calls').glob('*.json')) or any((root/'output-attempts').glob('*.json'))
+            if w.get('workflow_test') and not w['workflow_test']['presentation_reused']:
+                consumed=any(_load_json(p).get('phase') in ('page-write','page-pair','page-review')
+                    for name in ('semantic-calls','output-attempts') for p in (root/name).glob('*.json'))
             budget=root/'pass-call-budget.json'
-            if budget.exists() and not w.get('reduce_test'):consumed=consumed or any(r.get('attempts') for r in _load_json(budget).get('tasks',{}).values())
+            if budget.exists() and not w.get('reduce_test') and not w.get('workflow_test'):consumed=consumed or any(r.get('attempts') for r in _load_json(budget).get('tasks',{}).values())
             record={**identity,'contract':'legacy' if consumed else CONTRACT}
             if not consumed:
                 record.update(page_call_contract='durable-page-calls/v1',page_dispatch_contract='per-page-dispatch/v2',

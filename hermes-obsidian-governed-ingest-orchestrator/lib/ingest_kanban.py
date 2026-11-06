@@ -107,6 +107,8 @@ class Node:
 def node_identity(workflow, kind, inputs, parent_keys):
     identity = {'workflow_id':workflow['workflow_id'], 'kind':kind,
                 'inputs':inputs, 'parent_keys':parent_keys}
+    if workflow.get('workflow_test'):
+        identity['workflow_test_operation']=workflow['workflow_test']['operation_id']
     if workflow.get('reduce_test') and kind not in ('pass-slice','source-prepare','exact-plan'):
         identity['reduce_test_operation'] = workflow['reduce_test']['operation_id']
     if workflow.get('repair_history'):
@@ -129,7 +131,7 @@ def pass_node(workflow, value):
         if revision and pointer.get('revision_id')==revision['revision_id'] and value['slice_id'] in pointer.get('continuation_slice_ids',[]):
             dispositions.append(pointer['report_sha256'])
     return Node(name, 'pass-slice', (),
-                node_identity(workflow, 'pass-slice', {
+                workflow.get('workflow_test',{}).get('prefix_fingerprints',{}).get(name) or node_identity(workflow, 'pass-slice', {
                     'slice_id':value['slice_id'], 'input_fingerprint':value['input_fingerprint'],
                     'template_hash':value['template_hash'],
                     **({'revision_digest': revision['input_digest']} if revision else {}),
@@ -200,7 +202,8 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
             inputs={'domain_inputs':inputs,'recovery_digest':workflow['release_recovery_history'][-1]['input_digest']}
         parents_fingerprints = [next(item.input_fingerprint for item in nodes if item.name == parent)
                                for parent in parents]
-        nodes.append(Node(name, kind, parents, node_identity(workflow, kind, inputs, parents_fingerprints), gate))
+        frozen=workflow.get('workflow_test',{}).get('prefix_fingerprints',{}).get(name)
+        nodes.append(Node(name, kind, parents, frozen or node_identity(workflow, kind, inputs, parents_fingerprints), gate))
         return name
 
     batch_id = workflow["batch_id"]
@@ -1067,7 +1070,7 @@ class IngestKanbanAdapter:
                     self._current_pass_card(value,card,item,snapshot)
                     # Native admission still verifies current bytes and ACL.
                     self._slice_worker(workflow_id,card['node'],card['task_id'],verify_inputs=False)
-                    self.kanban.unblock(board,card['task_id'])
+                    self._test_unblock(value,node,board,card['task_id'])
                     slots-=1
 
     @staticmethod
@@ -1159,6 +1162,13 @@ class IngestKanbanAdapter:
             return workflow["current_stage"] == stages.get(node.kind)
         return (policy.get("mode") == "canary" and node.kind == "pass-slice"
                 and node.name.partition(":")[2] in policy.get("slice_ids", []))
+
+    def _test_unblock(self,workflow,node,board,task_id):
+        from hermes_source_units.workflow_test import capture
+        if capture(self,workflow,node):
+            self.kanban.unblock(board,task_id)
+        else:
+            self.kanban.wait(board,task_id,'blocked','Awaiting stable test boundary and native prefix drain')
 
     def _eligible(self, workflow: Mapping[str, Any], node: Node,
                   nodes: list[Node], *, by_name=None) -> bool:
@@ -1993,11 +2003,11 @@ class IngestKanbanAdapter:
                         self.kanban.wait(slug, ids[node.name], "blocked", "Vault worker gate")
                     elif state == "ready":
                         if node.name in pass_window:
-                            self.kanban.unblock(slug, ids[node.name])
+                            self._test_unblock(updated,node,slug,ids[node.name])
                         else:
                             self.kanban.wait(slug, ids[node.name], 'blocked', 'Vault Pass concurrency limit')
                 else:
-                    self.kanban.unblock(slug, ids[node.name])
+                    self._test_unblock(updated,node,slug,ids[node.name])
             active_canary = self.enable_workers and any(
                 not domain_completed(self.workflow, updated, node)
                 and not self._failed_card(workflow_id, node)

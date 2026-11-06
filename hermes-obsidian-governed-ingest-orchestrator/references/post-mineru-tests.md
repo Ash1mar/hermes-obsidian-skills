@@ -1,5 +1,9 @@
 # Fixed-conversion downstream workflow tests
 
+This is explicitly cross-workflow/Vault reuse. Subsequent test reruns default to
+the same-workflow `start_workflow_test.py --from-node post-mineru` entry described
+in `workflow-tests.md`. Missing historical boundaries do not authorize a new Vault.
+
 Use this entry only when the user explicitly requests an independent test reusing
 converted material. It is not the ordinary production startup entry:
 
