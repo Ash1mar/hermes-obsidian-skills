@@ -88,7 +88,9 @@ class Snapshot:
     def request(self,identity):
         row=self.index['requests'][identity]
         if self.index['contract']==WIRE:return row
-        result={**payload(self.root,row['payload']),'state':row['state']}
+        body=payload(self.root,row['payload'])
+        if any(body[k]!=row[k] for k in ('request_id','members','epoch')):fail('request index differs from immutable request')
+        result={**body,'state':row['state']}
         pointer=row.get('response') or orphan(self.root,'responses',identity)
         if pointer:result['response']=payload(self.root,pointer)
         return result

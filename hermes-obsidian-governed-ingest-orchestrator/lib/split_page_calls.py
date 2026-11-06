@@ -79,7 +79,7 @@ class SplitPageCalls:
             q['response']=pointer;q['state']='returned';self._save(r)
     def settle(self,request,validate,persist,authenticate,*,after_page=None,on_receipt=None,recovery_epoch=None):
         with operation():
-            q=Snapshot(self.root).request(request)
+            q=Snapshot(self.root,load_index(self.root,fresh=True)).request(request)
             members=[[m['page_key'],m['ordinal']] for m in q['members'].values()]
             identity={'contract':WIRE,'members':members,'wire':q['wire'],'schema':q['schema'],'epoch':q['epoch']}
             if 'image_inputs' in q:identity['image_inputs']=q['image_inputs']
@@ -107,6 +107,7 @@ class SplitPageCalls:
                                 or receipt['input_sha256']!=page['input_sha256']
                                 or receipt['response_sha256']!=response['raw_sha256']
                                 or receipt['receipt_id']!=fingerprint({a:b for a,b in receipt.items() if a!='receipt_id'})):fail('different or damaged page receipt')
+                        if receipt['state']=='valid' and receipt['result']!=slots.get(slot):fail('receipt differs from native result slot')
                     else:
                         draft=slots.get(slot)
                         try:value=validate(k,draft)
