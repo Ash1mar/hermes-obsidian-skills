@@ -34,3 +34,10 @@ of four extra wrong publications. Holding all other calls constant removes22 of
 102 requests (21.57%). Actual next-run pages, calls, tokens, quality, exclusions,
 waiting and program overhead require separately authorized native execution.
 No workflow is started by installing this policy.
+
+For saved-input body and planning comparisons, add `--generation-only` to
+`compare_saved_bodies.py` and `audit_planning_efficiency.py`. This measures the
+complete future request including its longer first-write quality instructions;
+it does not change any saved request, result, receipt or budget.
+The30000-character baseline and40000 candidate remain distinct fixed profiles;
+installing the policy does not silently enlarge a consumed budget.

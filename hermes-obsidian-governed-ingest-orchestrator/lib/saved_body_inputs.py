@@ -43,7 +43,7 @@ def load(vault,workflow_id):
                 items[m['page_key']]=(p,{k:x for k,x in v.items() if k!='evidence_encoding'})
     return sorted(items.values(),key=lambda p:p[0]['path']),adapter,audits
 
-def compare(items,adapter,profile_name):
+def compare(items,adapter,profile_name,*,semantic_policy=None):
     from independent_body import CONTRACT,prepare
     from fixed_semantic import prepare_request_projection
     from fixed_semantic_media import image_catalog,select_images
@@ -51,7 +51,9 @@ def compare(items,adapter,profile_name):
     from input_budget import profile
     from request_cost import rank
     budget=profile(profile_name);pending=copy.deepcopy(items);groups=[];held=[];splits=[]
-    for _,v in pending:v['body_call_contract']=CONTRACT
+    for _,v in pending:
+        v['body_call_contract']=CONTRACT
+        if semantic_policy:v['page_semantics_policy']=semantic_policy
     def prepared(group):
         images=[]
         if len(group)==1:
@@ -74,7 +76,7 @@ def compare(items,adapter,profile_name):
             'estimated_output_tokens':p['estimated_body_output_tokens'],'input_size':p['input_size'],
             'variants':[{'encoding':v.get('evidence_encoding','original'),'input_size':x['input_size'],'request_cost':x['request_cost']} for v,x in variants]}
         (groups if p['budget_check']['fits'] else held).append(row)
-    return {'profile':profile_name,'same_planned_pages':len(items),'estimated_requests':len(groups),'pairs':sum(len(g['pages'])==2 for g in groups),
+    return {'profile':profile_name,'page_semantics_policy':semantic_policy,'same_planned_pages':len(items),'estimated_requests':len(groups),'pairs':sum(len(g['pages'])==2 for g in groups),
         'groups':groups,'held':held,'split_decisions':splits,'same_candidate_assignments':True,'actual_new_model_calls':0,
         'actual_token_usage':None,'actual_output_truncations':None,'actual_valid_bodies':None,'actual_additional_attempts':None,'model_wait_seconds':None,
         'note':'Mechanical fixed-plan comparison. Output estimates are heuristics; true result quality and wait remain unverified.'}
