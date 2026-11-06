@@ -2404,6 +2404,11 @@
         "revision": {"type": "integer", "minimum": 1},
         "start_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
         "page_execution_contract": {"const": "unified-page-execution/v3"},
+        "reduce_test": {"type":"object","properties": {
+          "operation_id":{"type":"string","pattern":"^[a-z0-9][a-z0-9_-]{0,70}$"},
+          "report_ref":{"type":"string","format":"vault-relative-path"},
+          "report_sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}
+        },"required":["operation_id","report_ref","report_sha256"],"additionalProperties":false},
         "template_pins": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_template_pin"}, "minItems": 0},
         "build_acceptance_adoption": {"type": "object", "properties": {
           "adoption_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"},

@@ -229,3 +229,9 @@ For an explicitly authorized independent downstream test reusing existing MinerU
 conversion material, read [post-mineru-tests.md](references/post-mineru-tests.md)
 and use `python3 "<skill-dir>/scripts/start_post_mineru_test.py"`. This is a separate
 test entry; ordinary startup does not import another Vault's Bundles.
+
+For an explicitly authorized supplemental test from Reduce in the **same** terminal
+test workflow, read [reduce-tests.md](references/reduce-tests.md) and use
+`python3 "<skill-dir>/scripts/start_reduce_test.py"`. This reuses verified native
+Passes and retires the authorized old downstream cycle with hash-bound audit data.
+Ordinary startup/resume never clears results or budgets for a test.

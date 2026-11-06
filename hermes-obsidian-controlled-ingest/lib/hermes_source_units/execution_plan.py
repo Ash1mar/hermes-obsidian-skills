@@ -167,6 +167,11 @@ class ExecutionPlanMixin:
         return plan
 
     def assert_execution_ready(self, workflow):
+        if workflow.get('reduce_test'):
+            test=workflow['reduce_test']
+            journal=_vault_path(self.vault,f"_system/ledgers/ingest-workflows/{workflow['workflow_id']}/reduce-tests/{test['operation_id']}/transaction.json")
+            if not journal.exists() or _load_json(journal).get('phase')!='admitted':
+                fail('EXECUTION_PLAN_PENDING','finish the exact Reduce test admission before dispatch')
         from .build_acceptance import verify_policy_adoption
         verify_policy_adoption(self, workflow)
         from .citation_amendment import state
