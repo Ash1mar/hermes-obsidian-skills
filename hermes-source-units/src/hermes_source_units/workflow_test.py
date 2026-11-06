@@ -181,6 +181,7 @@ def prefix_fingerprint(w,name):
 def check_admission(service,w):
     test=w.get('workflow_test')
     if not test:return
+    if type(test['pass_capacity']) is not int or not 1<=test['pass_capacity']<=10:fail('invalid pinned Pass capacity')
     prefix={r['node']:r['fingerprint'] for r in test['prefix_fingerprints']}
     if len(prefix)!=len(test['prefix_fingerprints']):fail('duplicate prefix node identity')
     import json
