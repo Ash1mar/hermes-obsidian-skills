@@ -27,6 +27,10 @@ def preflight(profile):
         raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','request/budget/receipt/recovery/publication support is incomplete; no consumption permitted')
     schema_for('page-pair',{'pages':{'p1':{}},'page_execution_contract':CONTRACT})
     schema_for('page-pair',{'pages':{'p1':{},'p2':{}},'page_execution_contract':CONTRACT})
+    if profile.get('body_call_contract'):
+        from independent_body import CONTRACT as BODY,prepare,restore,present
+        if profile['body_call_contract']!=BODY or not all(callable(f) for f in (prepare,restore,present)):
+            raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','independent body construction and recovery are required')
     if profile.get('review_call_contract'):
         from paired_reviews import execute as review_execute,history
         from hermes_source_units.review_receipts import validate_receipt,CONTRACT as REVIEW

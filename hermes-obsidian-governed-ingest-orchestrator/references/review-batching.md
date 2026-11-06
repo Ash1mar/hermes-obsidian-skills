@@ -42,3 +42,13 @@ All other triggers stay. V1 receipts recompute V1; saved conclusions are immutab
 The read-only comparison inventories every original scope and its evidence hashes,
 and retains the four substantive native opinions as regressions. Nonidentical text
 alone is neither equivalence nor proof of a semantic difference.
+Independent bodies are fixed only for untouched future pins. Each page carries
+its own originals/candidates/QA/scope. Identical whole source/context/QA bundles
+may be shared through an exact-hash pool; uncertain partial overlap stays local.
+Image pages keep independent single slots. The page-owned small ledger, native
+response capture, two-ordinal maximum, stopped recovery and publication apply to
+both one and two body slots. Existing request bytes remain reconstructible.
+Use `python3 "<skill-dir>/scripts/compare_saved_bodies.py" --vault <vault>
+--workflow-id <id> --output <outside-vault-report>` for a mechanical 30000/40000
+fixed-page comparison. Three/four body slots remain disabled until live two-slot
+benefit is authorized and verified. No model/token/time gain is inferred offline.

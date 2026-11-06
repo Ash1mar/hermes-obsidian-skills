@@ -5,7 +5,9 @@ from page_pair_calls import key,CONTRACT as WIRE
 from fixed_semantic_schema import schema_for
 from request_cost import rank
 
-def prepare(group,project,images=(),diagnostics=None,*,limit=30000):
+def prepare(group,project,images=(),diagnostics=None,*,limit=30000,budget=None):
+    from independent_body import enabled,prepare as independent
+    if all(enabled(v) for _,v in group):return independent(group,project,images,diagnostics,limit=limit,budget=budget)
     view={'contract':WIRE,'page_execution_contract':CONTRACT,
         'pages':{f'p{i}':{k:copy.deepcopy(v) for k,v in page.items() if k not in ('original_evidence','evidence_encoding')} for i,(_,page) in enumerate(group,1)},
         'original_evidence':copy.deepcopy(group[0][1].get('original_evidence',{})),

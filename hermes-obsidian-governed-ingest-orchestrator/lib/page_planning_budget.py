@@ -30,7 +30,7 @@ def probe(value,handles,project):
     from page_protocol import strict
     if strict(value['view']):
         from page_request import prepare
-        actual=prepare([(page,view)],project,[],limit=limit)[2]
+        actual=prepare([(page,view)],project,[],limit=limit,budget=value.get('backend',{}).get('input_budget'))[2]
         selected=actual
     else:
         variants=[view,{**view,MARKER:V1},{**view,MARKER:COMPACT_CONTRACT}]

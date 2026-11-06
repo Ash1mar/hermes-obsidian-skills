@@ -21,7 +21,7 @@ def proof(adapter,value,page):
     from page_protocol import strict
     if strict(value['view']):
         from page_request import prepare
-        _,sc,_,choices=prepare([(page,view)],prepare_request_projection,images,limit=limit)
+        _,sc,_,choices=prepare([(page,view)],prepare_request_projection,images,limit=limit,budget=value.get('backend',{}).get('input_budget'))
         variants=[p for _,p in choices]
     # Isolation requires EVERY supported full representation to exceed the bound.
     size=min(p['input_size'] for p in variants)

@@ -23,6 +23,6 @@ def main():
         'mechanical_wall_seconds':time.monotonic()-started,'mechanical_cpu_seconds':time.process_time()-cpu,
         'actual_new_model_calls':0,'actual_new_token_usage':None,'model_wait_seconds':None,'maintenance_window':'reported separately by operator'}
     a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(out,ensure_ascii=False,indent=2)+'\n')
-    print(json.dumps({k:v for k,v in out.items() if k!='profiles'}));print(json.dumps([
+    print(json.dumps({k:v for k,v in out.items() if k not in ('profiles','scope_equivalence_audit')}));print(json.dumps([
         {k:v for k,v in row.items() if k not in ('request_groups','held')} for row in out['profiles']]))
 if __name__=='__main__':main()

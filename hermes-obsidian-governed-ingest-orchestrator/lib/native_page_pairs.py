@@ -54,6 +54,9 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     per_page=value['view'].get('page_dispatch_contract')=='per-page-dispatch/v2'
     from input_budget import limit as input_limit
     limit=input_limit(value,'page-pair')
+    from independent_body import enabled as independent
+    independent_body=independent(value['view'])
+    budget=value.get('backend',{}).get('input_budget')
     if value['view'].get('page_call_contract')!=CONTRACT:
         from page_protocol import strict
         if strict(value['view']):raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','new protocol cannot fall back without its budget contract')
@@ -133,6 +136,13 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             if row and row['input_sha256']!=fingerprint(view):raise ContractError('STALE_INPUT','$','page input changed; no new allowance')
     def request_images(q):
         if not q.get('image_inputs'):return []
+        if independent_body:
+            from review_pair_request import images_for
+            source={'pages':{s:by_key[m['page_key']][1] for s,m in q['members'].items()}}
+            images,_=images_for(current_owner(),source)
+            if [{k:v for k,v in i.items() if k!='url'} for i in images]!=q['image_inputs']:
+                raise ContractError('SOURCE_CHANGED','$','independent body image ownership changed')
+            return images
         from fixed_semantic_media import image_catalog,select_images
         view=by_key[next(iter(q['members'].values()))['page_key']][1]
         evidence=view['original_evidence'];images=select_images(evidence['tasks'],image_catalog(current_owner(),evidence))
@@ -232,14 +242,15 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                 images=select_images(evidence['tasks'],image_catalog(current_owner(),evidence));require_images_fit(images)
         if strict(value['view']):
             from page_request import prepare
-            wire_view,sc,prepared,_=prepare(group,prepare_request_projection,images,diagnostics,limit=limit)
+            wire_view,sc,prepared,_=prepare(group,prepare_request_projection,images,diagnostics,limit=limit,budget=budget)
         else:
             sc=schema_for('page-pair',wire_view);prepared=prepare_request_projection('page-pair',wire_view,sc,images)
         if per_page:
             from request_cost import rank
-            encoded={**wire_view,'evidence_encoding':'lossless-page-pair/v1'}
-            packed=prepare_request_projection('page-pair',encoded,sc,images)
-            if not strict(value['view']) and packed['input_size']<=limit and rank(packed)<rank(prepared):wire_view,prepared=encoded,packed
+            if not independent_body:
+                encoded={**wire_view,'evidence_encoding':'lossless-page-pair/v1'}
+                packed=prepare_request_projection('page-pair',encoded,sc,images)
+                if not strict(value['view']) and packed['input_size']<=limit and rank(packed)<rank(prepared):wire_view,prepared=encoded,packed
             if len(group)==2:
                 singles=[]
                 for page,view in group:
@@ -250,7 +261,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                         (single,{**single,'evidence_encoding':'lossless-page-pair/v1'})]
                     if strict(value['view']):
                         from page_request import prepare
-                        singles.append(prepare([(page,view)],prepare_request_projection,images,limit=limit)[2])
+                        singles.append(prepare([(page,view)],prepare_request_projection,images,limit=limit,budget=budget)[2])
                     else:singles.append(min(options,key=rank))
                 costs=[prepared,*singles]
                 metric='text_tokens' if all(p['request_cost'].get('text_tokens') is not None for p in costs) else 'utf8_bytes'
@@ -262,7 +273,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                     return
             observe(binding,'pair' if len(group)==2 else 'single',page_paths=[p['path'] for p,v in group],
                 request_cost=prepared['request_cost'],encoding=wire_view.get('evidence_encoding','original'))
-        if prepared['input_size']>limit:
+        if prepared['input_size']>limit or not prepared.get('budget_check',{'fits':True})['fits']:
             if len(group)==2:
                 for item in group:submit([item])
                 return

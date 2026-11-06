@@ -33,6 +33,7 @@ def inspect(view):
 def pair(left,right):
     a,b=left[1],right[1];rows=[inspect(a),inspect(b)]
     reasons=sorted({r for row in rows for r in row['reasons']})
-    if fingerprint(a.get('original_evidence'))!=fingerprint(b.get('original_evidence')):reasons.append('different-complete-evidence')
+    from independent_body import enabled
+    if not (enabled(a) and enabled(b)) and fingerprint(a.get('original_evidence'))!=fingerprint(b.get('original_evidence')):reasons.append('different-complete-evidence')
     return {'eligible':not reasons and all(r['eligible'] for r in rows),'reasons':reasons,'pages':rows,
         'scope_binding':'independent-page-input-sha256; no textual applicability equality required'}

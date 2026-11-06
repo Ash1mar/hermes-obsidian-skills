@@ -28,10 +28,15 @@ def _authenticate_inputs(adapter,binding,value,request):
     if not 1<=len(members)<=2 or q['request_id']!=request or fingerprint(identity)!=request:fail('request member/wire identity changed')
     if 'response' not in q:fail('unknown page response cannot be recovered as QA')
     wire_view=json.loads(_request_text(q['wire']['user']))['input']
+    independent=wire_view.get('body_call_contract')=='independent-page-body/v1'
+    if independent:
+        from independent_body import restore
+        encoding=wire_view.get('evidence_encoding');wire_view=restore(wire_view)
+        if encoding:wire_view['evidence_encoding']=encoding
     if wire_view.get('evidence_encoding')=='lossless-page-pair/v1':wire_view=restore_pair(wire_view)
     if set(wire_view['pages'])!=set(q['members']):fail('request slots changed')
     for slot,member in q['members'].items():
-        canonical={**wire_view['pages'][slot],'original_evidence':wire_view['original_evidence']}
+        canonical=wire_view['pages'][slot] if independent else {**wire_view['pages'][slot],'original_evidence':wire_view['original_evidence']}
         page={'identity':canonical['identity'],'path':canonical['path'],
             'candidate_refs':[c['candidate'] for c in canonical['candidates']]}
         if member['page_key']!=key(page) or wire_view['page_members'][slot]!=member['page_key']:fail('page slot identity changed')
@@ -40,9 +45,12 @@ def _authenticate_inputs(adapter,binding,value,request):
         row=ledger['pages'][member['page_key']]
         if current!=canonical or row['input_sha256']!=fingerprint(canonical) or row['path']!=page['path']:fail('page evidence differs from current snapshot')
         if row['attempts'][member['ordinal']-1]['request_id']!=request:fail('page ordinal mapping changed')
-    evidence=wire_view['original_evidence'];images=[]
+    evidence=wire_view.get('original_evidence',{});images=[]
     if q.get('image_inputs'):
-        images=select_images(evidence['tasks'],image_catalog(adapter,evidence))
+        if independent:
+            from review_pair_request import images_for
+            images,_=images_for(adapter,wire_view)
+        else:images=select_images(evidence['tasks'],image_catalog(adapter,evidence))
         if [{k:v for k,v in i.items() if k!='url'} for i in images]!=q['image_inputs']:fail('page image identity changed')
     sc=schema_for('page-pair',wire_view)
     if sc!=q['schema'] or prepare_request_projection('page-pair',wire_view,sc,images)['wire']!=q['wire']:fail('page request no longer reconstructs exactly')
@@ -83,7 +91,8 @@ def read_outcome(adapter,binding,view,prove,images,*,value=None):
         if attempt['ordinal']!=ordinal:fail('page allowance order changed')
         ledger,q,wire=authenticate_request(adapter,binding,value,attempt['request_id'],prove)
         slot=next(s for s,m in q['members'].items() if m['page_key']==k and m['ordinal']==ordinal)
-        if {**wire['pages'][slot],'original_evidence':wire['original_evidence']}!=canonical:fail('receipt input differs')
+        saved=wire['pages'][slot] if wire.get('body_call_contract')=='independent-page-body/v1' else {**wire['pages'][slot],'original_evidence':wire['original_evidence']}
+        if saved!=canonical:fail('receipt input differs')
         decoded,_=decode_semantic_response(q['response']['raw']);draft=decoded.get('results',{}).get(slot)
         error=None
         try:check('page-write',None,None,None,draft)
