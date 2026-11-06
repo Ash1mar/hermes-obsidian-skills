@@ -28,6 +28,9 @@ def journal_evidence(adapter, binding, view):
     """Capture exact finite history; never infer no-call from missing evidence."""
     from semantic_output import path_for
     vault = adapter.workflow.vault
+    from paired_reviews import journal_evidence as paired_history
+    paired=paired_history(adapter,binding,view)
+    if paired is not None:return paired
     path = path_for(adapter, binding, 'page-review', view)
     if not path.exists():
         return {'attempt_count': 0, 'attempts': [], 'journal': None}

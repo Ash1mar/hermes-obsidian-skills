@@ -289,6 +289,10 @@ def verify(adapter,w,node,binding,entry,runs):
     from finalize_revision import authenticate_history
     controlled_audits,controlled_journals=authenticate_history(adapter,binding,permitted)
     accounted.update(controlled_audits);journals.update(controlled_journals)
+    from paired_reviews import history as review_history
+    paired_audits,paired_rows=review_history(adapter,binding,old,
+        lambda p,wire,sc,images:native_proof(adapter,binding,p,wire,sc,images,permitted))
+    accounted.update(paired_audits);reviews.extend(paired_rows)
     for jp in (root/'output-attempts').glob('*.json'):
         j=_load_json(jp)
         if any(a.get('task_id')==binding['task_id'] for a in j.get('attempts',[])) and jp.name not in journals:

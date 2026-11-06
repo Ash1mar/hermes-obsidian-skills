@@ -1803,6 +1803,7 @@
     "build_acceptance": {
       "type": "object",
       "properties": {
+        "review_receipt": {"type":"object","properties":{"ref":{"type":"string","format":"vault-relative-path"},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"required":["ref","sha256"],"additionalProperties":false},
         "contract": {
           "const": "program-build-acceptance/v1"
         },

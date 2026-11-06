@@ -116,7 +116,7 @@ class SplitPageCalls:
             q['response']=pointer;q['state']='returned'
             if q.get('transport_retries'):q['transport_retries'][-1].update(state='returned',audit_ref=audit_ref)
             self._save(r)
-    def settle(self,request,validate,persist,authenticate,*,after_page=None,on_receipt=None,recovery_epoch=None):
+    def settle(self,request,validate,persist,authenticate,*,after_page=None,on_receipt=None,recovery_epoch=None,only_pages=None):
         with operation():
             q=Snapshot(self.root,load_index(self.root,fresh=True)).request(request)
             members=[[m['page_key'],m['ordinal']] for m in q['members'].values()]
@@ -135,6 +135,7 @@ class SplitPageCalls:
             results={}
             for slot,member in q['members'].items():
                 k=member['page_key'];ordinal=member['ordinal'];receipt_key=f'{k}-{ordinal}-{request}'
+                if only_pages is not None and k not in only_pages:continue
                 with self.mutex,self.transaction(),_exclusive_lock(self.path.with_suffix('.lock'),timeout=5):
                     if self.guard()!=epoch:deny('WORKFLOW_STOPPED','cancel superseded page settlement')
                     r=load_index(self.root,fresh=True);page=r['pages'][k];attempt=page['attempts'][ordinal-1]

@@ -1,5 +1,5 @@
 {
-  "default_profile": "baseline-30000",
+  "default_profile": "review-40000",
   "profiles": {
     "baseline-30000": {
       "phases": {

@@ -219,10 +219,12 @@ def assess(service, run, page, *, selected=None, parent_content=None, committed_
     return {'policy': POLICY, 'risk_reasons': risks, 'evidence_sha256': fingerprint(evidence)}
 
 
-def record(assessment, *, review_audit_ref=None):
-    return {'contract': CONTRACT, **assessment,
+def record(assessment, *, review_audit_ref=None,review_receipt=None):
+    value={'contract': CONTRACT, **assessment,
             'independent_review': 'approved' if review_audit_ref else 'not_performed',
             'review_audit_ref': review_audit_ref}
+    if review_receipt:value['review_receipt']=copy.deepcopy(review_receipt)
+    return value
 
 
 def validate_acceptance(service, run, page, review, *, selected=None):
@@ -264,11 +266,17 @@ def validate_acceptance(service, run, page, review, *, selected=None):
     else:
         if not ref:
             _fail('independent approval requires its durable native audit')
-        audit = _load_json(_vault_path(service.vault, ref))
+        from .review_receipts import audit as read_review_audit
+        audit = read_review_audit(service.vault,ref)
         model = audit.get('model', {})
         prefix = f"_system/ledgers/ingest-workflows/{audit.get('workflow_id')}/semantic-calls/"
         if (audit.get('contract') != 'hermes-fixed-semantic-call/v1' or audit.get('node') != 'build-finalize'
                 or not ref.startswith(prefix) or '/' in ref[len(prefix):]
-                or audit.get('phase') != 'page-review' or model.get('origin') != 'hermes_native_model'
+                or audit.get('phase') not in ('page-review','page-review-pair') or model.get('origin') != 'hermes_native_model'
                 or not audit.get('response_sha256') or model.get('response_sha256') != audit['response_sha256']):
             _fail('independent approval lacks native page-review provenance')
+        if audit.get('phase')=='page-review-pair':
+            from .review_receipts import validate_receipt
+            validate_receipt(service,page,review,acceptance,audit,expected)
+        elif acceptance.get('review_receipt'):
+            _fail('legacy review cannot borrow another protocol receipt')

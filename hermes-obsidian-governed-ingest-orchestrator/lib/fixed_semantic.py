@@ -386,7 +386,10 @@ def wire_prompt(phase,view,output_schema,correction=None,*,metrics=None):
     body={'phase':phase}
     if phase not in ('candidate','citation'):
         body['output_schema']=_stable_objects(output_schema)
-    if phase=='page-pair' and view.get('evidence_encoding')=='lossless-page-pair/v1':
+    if phase=='page-review-pair' and view.get('evidence_encoding')=='independent-page-evidence/v1':
+        from review_pair_request import present
+        body['input']=_ordered_view(present(view))
+    elif phase=='page-pair' and view.get('evidence_encoding')=='lossless-page-pair/v1':
         from fixed_page_evidence import present_pair
         body['input']=_ordered_view(present_pair(view))
     elif phase in ('page-write','page-review') and view.get('evidence_encoding') in ('lossless-page-evidence/v1','lossless-page-evidence/v2'):
@@ -416,7 +419,13 @@ def wire_prompt(phase,view,output_schema,correction=None,*,metrics=None):
 
 
 def system_prompt(phase,view,correction=None):
-    system=COMMON+'\n'+(RULES['page-write'] if phase=='page-pair' else RULES[phase])
+    system=COMMON+'\n'+(RULES['page-write'] if phase=='page-pair' else RULES['page-review'] if phase=='page-review-pair' else RULES[phase])
+    if phase=='page-review-pair':
+        from reduce_disposition import PAGE_RULE
+        system+=' '+PAGE_RULE+' Review every fixed result slot independently using only that page content, citation_evidence, original_evidence, parent, applicability and review_scope risks. Evidence and local handles can differ between pages; never use another slot evidence or references. Return the same decision/review_note or blocked_reason required for a single review in EACH slot. One refusal or revision does not suppress another conclusion. image_bindings maps each page to its authorized zero-based images.'
+        if view.get('evidence_encoding')=='independent-page-evidence/v1':
+            from fixed_page_evidence import COMPACT_INSTRUCTION
+            system+=COMPACT_INSTRUCTION+' Decode each page table and pool locally. Equal local IDs across pages do not imply shared evidence.'
     if phase in ('page-write','page-pair'):
         from page_protocol import strict,page_rules
         if strict(view) or any(strict(p) for p in view.get('pages',{}).values()):system+=' '+page_rules()
@@ -530,7 +539,10 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
     images=[]
     if isinstance(caller,HermesCaller):
         original=view.get('original_evidence')
-        if original is not None:
+        if phase=='page-review-pair':
+            from review_pair_request import images_for
+            images,_=images_for(adapter,view)
+        elif original is not None:
             images=select_images(original['tasks'],image_catalog(adapter,original))
         else:
             images=select_images(view.get('tasks',[]),getattr(caller,'image_catalog',{}))
@@ -556,7 +568,7 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
                 return model_call(adapter,binding,phase,clarified,caller,limit,policy=policy,attempt_limit=attempt_limit)
         raise ContractError('READING_WINDOW_OVERSIZE','$','fixed task instructions/schema/materials exceed the bound; no truncation or model call')
     page_entry=phase in ('page-write','page-pair') and binding['node']=='global-reduce'
-    build_entry=(phase=='page-review' and binding['node']=='build-finalize'
+    build_entry=(phase in ('page-review','page-review-pair') and binding['node']=='build-finalize'
         and _checked is not None and correction is None and isinstance(caller,HermesCaller))
     with span('semantic_entry_authority',vault=adapter.workflow.vault,binding=binding,phase=phase,
               lock_policy='adjacent_build_proof' if build_entry else 'isolated_page_reader' if page_entry else 'action_lock'):
@@ -661,7 +673,7 @@ def _dispatch_model_call(adapter,binding,phase,view,caller,limit,correction=None
         'detail_reason_class':__import__('request_cost').detail_reason(phase,view,correction),
         'model':metadata,'receipt_refs':[],'output_codepoints':len(raw),'output_utf8_bytes':len(raw.encode('utf-8')),**correlation}
     audit['timeline_span_id']=model_trace['span_id']
-    if budget:audit['fixed_input_budget']=prepared['budget_check']
+    if prepared.get('budget_check'):audit['fixed_input_budget']=prepared['budget_check']
     if images:
         audit['image_inputs']=[{k:v for k,v in image.items() if k!='url'} for image in images]
     if phase in ('candidate','citation'):
@@ -680,7 +692,7 @@ def _dispatch_model_call(adapter,binding,phase,view,caller,limit,correction=None
     if attempt_id():audit['output_attempt_id']=attempt_id()
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(audit))
     note_audit(ref)
-    if phase=='page-pair':
+    if phase in ('page-pair','page-review-pair'):
         from page_pair_calls import capture
         capture(adapter,binding,raw,ref,metadata)
         return raw,ref
