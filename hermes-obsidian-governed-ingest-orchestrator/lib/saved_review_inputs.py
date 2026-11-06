@@ -73,3 +73,25 @@ def compare(rows,adapter,profile_name):
         'requests_saved_by_batching_only':len(rows)-len(groups)-len(held),
         'actual_model_calls':0,'actual_token_usage':None,'model_wait_seconds':None,
         'scope':'same saved page contents, evidence and risk standards; mechanical complete request comparison only'}
+
+def audit_scope(rows):
+    """Read-only evidence inventory. Nonidentity never proves semantic inequivalence."""
+    results=[]
+    for r in rows:
+        if 'different_applicability' not in r['assessment']['risk_reasons']:continue
+        v=r['view'];cs=v['citation_evidence'];original=v['original_evidence']
+        dimensions={k:[fingerprint(c.get(k)) for c in cs] for k in ('applicability','conditions','exceptions','finding','source_evidence')}
+        results.append({'page':r['page']['path'],'audit_ref':r['audit_ref'],
+            'classification':'insufficient_evidence_of_equivalence','remove_trigger':False,
+            'reason':'No exact complete source/original/scope/conditions/exceptions identity proof; no semantic equivalence inferred.',
+            'distinct_counts':{k:len(set(h)) for k,h in dimensions.items()},
+            'scopes':list(dict.fromkeys(c['applicability'] for c in cs)),
+            'citations_sha256':fingerprint(cs),'original_evidence_sha256':fingerprint(original),
+            'source_bindings':[c['source_evidence'] for c in cs],
+            'historical_conclusion':r['response'],'historical_conclusion_sha256':fingerprint(r['response'])})
+    regressions=[{'page':r['page']['path'],'audit_ref':r['audit_ref'],'original_conclusion':r['response'],
+        'risk_retained':bool(r['assessment']['risk_reasons']),'new_model_calls':0} for r in rows if r['response']['decision']=='revision_required']
+    return {'contract':'saved-scope-equivalence-audit/v1','pages':results,'mechanically_proven_equivalent':0,
+        'mechanically_proven_semantic_difference':0,'equivalence_not_proven':len(results),
+        'eliminated_triggers':0,'substantive_opinion_regressions':regressions,
+        'scope':'Mechanical identity proof only. Operator factual distinction inventory may narrow the uncertain category; never grants acceptance.'}

@@ -155,12 +155,14 @@ def _revised(service, record, candidate):
     return old != candidate or prior['inspections'] != record['inspections']
 
 
-def assess(service, run, page, *, selected=None, parent_content=None, committed_review=None):
+def assess(service, run, page, *, selected=None, parent_content=None, committed_review=None, policy=POLICY):
     """Pin current page evidence and name concrete conservative review triggers.
 
     QA is retained by the page contract, not converted into another model call.
     Missing/stale evidence is an error, never a semantic-review trigger.
     """
+    from .scope_equivalence import POLICY as V2,prove
+    if policy not in (POLICY,V2):_fail('unsupported risk policy')
     decision = next(d for d in run['decisions'] if d['page_id'] == page['page_id'])
     if selected is None:
         candidates, _ = service._pass_index([t['task_id'] for t in run['tasks']])
@@ -199,7 +201,7 @@ def assess(service, run, page, *, selected=None, parent_content=None, committed_
     risks = []
     if len(resources) > 1:
         risks.append('cross_source_merge')
-    if len(scopes) > 1:
+    if len(scopes) > 1 and not (policy==V2 and prove(selected)['equivalent']):
         risks.append('different_applicability')
     if any(len(v) > 1 for v in variants.values()):
         risks.append('claim_variants')
@@ -211,12 +213,12 @@ def assess(service, run, page, *, selected=None, parent_content=None, committed_
         risks.append('parent_content_rewritten')
     elif committed_review and 'parent_content_rewritten' in committed_review['risk_reasons']:
         risks.append('parent_content_rewritten')
-    evidence = {'policy': POLICY, 'page_id': page['page_id'], 'authored_sha256': page['authored_sha256'],
+    evidence = {'policy': policy, 'page_id': page['page_id'], 'authored_sha256': page['authored_sha256'],
                 'parent_revision_id': page['parent_revision_id'], 'parent_authored_sha256': parent_sha,
                 'decision': decision, 'citations': [{'pass': r, 'candidate': c} for r, c in selected],
                 'qa_status': page['qa_status'], 'business_status': page['business_status'],
                 'visibility': page['visibility']}
-    return {'policy': POLICY, 'risk_reasons': risks, 'evidence_sha256': fingerprint(evidence)}
+    return {'policy': policy, 'risk_reasons': risks, 'evidence_sha256': fingerprint(evidence)}
 
 
 def record(assessment, *, review_audit_ref=None,review_receipt=None):
@@ -256,7 +258,7 @@ def validate_acceptance(service, run, page, review, *, selected=None):
         if saved != expected_page:
             _fail('partial committed acceptance differs from this request')
         committed_review = acceptance
-    expected = assess(service, run, page, selected=selected, committed_review=committed_review)
+    expected = assess(service, run, page, selected=selected, committed_review=committed_review,policy=acceptance['policy'])
     if any(acceptance[k] != v for k, v in expected.items()):
         _fail('program acceptance risk or evidence changed')
     ref = acceptance['review_audit_ref']
