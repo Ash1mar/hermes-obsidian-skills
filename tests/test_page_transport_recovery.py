@@ -41,3 +41,19 @@ def test_unknown_with_possible_output_or_nontransient_status_never_gets_transpor
     assert transient(row)
     assert not transient({**row,'response_evidence':{'partial':['maybe']}})
     assert not transient({**row,'error':{'class':'PermissionDeniedError','status_code':403}})
+
+def test_shared_plan_recognizes_only_the_exact_sealed_page_transport_admission():
+    from hermes_source_units.execution_plan import authenticated_page_transport
+    row={'request_id':'a'*64,'wire_sha256':'b'*64,'schema_sha256':'c'*64,'failure_sha256':'d'*64,
+        'failure_ref':'failure.json','session_id':'native','members':{'p1':{'page_key':'page'}},'page_reservations':{'page':{}}}
+    selected={'node':'global-reduce','task_id':'ended','failure_sha256':'e'*64,'page_transport_retry':True}
+    request={'entries':[selected]};entry={'node':'global-reduce','previous_task_id':'ended','failure_sha256':'e'*64,
+        'failure':{'error_code':'NATIVE_COMPLETION_UNKNOWN'},'ended_run_ids':['122'],
+        'page_transport_retry':{'contract':'durable-page-transport-recovery/v1','source_identity':'f'*64,
+            'new_semantic_ordinals':0,'original_unknowns_preserved':True,'requests':[row]}}
+    assert authenticated_page_transport(request,entry)
+    for name,value in [('new_semantic_ordinals',1),('original_unknowns_preserved',False),('source_identity','changed')]:
+        bad=copy.deepcopy(entry);bad['page_transport_retry'][name]=value
+        assert not authenticated_page_transport(request,bad)
+    bad=copy.deepcopy(request);bad['entries'][0]['task_id']='other'
+    assert not authenticated_page_transport(bad,entry)
