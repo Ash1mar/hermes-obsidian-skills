@@ -33,6 +33,10 @@ Use `python3 "<skill-dir>/scripts/compare_single_admission_pairs.py" --vault <va
 comparison. Keep40000 constant: original eligibility, remove only QA splitting,
 then reuse all text-single admissions. The final row additionally includes the
 new generation-only instructions and pairing pin in the complete request.
+Before that final row, a separate fit-partner row tries remaining admitted peers
+in descending measured single-input size and accepts the first complete pair
+that fits. The runtime uses the same simple search. No source files are reopened
+for candidate pairing; the report counts full pair trials and CPU/wall overhead.
 Single inputs prepare once per comparison, with no pair-driven asset rescans.
 Counts of overlapping QA pair judgments are not saved model calls. Historical
 outcomes/budgets stay untouched; this is a counterfactual plan before outcomes,

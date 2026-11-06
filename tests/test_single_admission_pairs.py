@@ -79,3 +79,21 @@ def test_saved_comparison_changes_eligibility_without_changing_budget_or_materia
     assert old['covered_pages']==qa['covered_pages']==new['covered_pages']==2
     assert items==before and all(r['original_evidence_and_qa_unchanged'] for r in (old,qa,new))
     assert all(r['single_page_preparations']==2 for r in (old,qa,new))
+    searched=compare(items,adapter,'pages-40000',pairing_mode='single_admission',partner_search=True)
+    assert searched['estimated_requests']==1 and searched['complete_pair_trials']==1
+
+def test_nonadjacent_fit_partners_avoid_two_unnecessary_singles():
+    from types import SimpleNamespace as NS
+    from saved_body_inputs import compare
+    base=admitted()[0][0];items=[]
+    for i,n in enumerate((26000,26000,100,100)):
+        p,v=copy.deepcopy(base);p['identity']['identity_key']=v['identity']['identity_key']='synthetic-'+str(i)
+        p['path']=v['path']=str(i)+'.md';v.pop('body_pairing_contract')
+        texts=v['original_evidence']['texts'];texts[next(iter(texts))]=chr(65+i)*n
+        q=v['evidence_selection'];q['view_sha256']=fingerprint(v['original_evidence']);q['proof_sha256']=fingerprint({k:x for k,x in q.items() if k!='proof_sha256'})
+        items.append((p,v))
+    adapter=NS(workflow=NS(knowledge=NS(source=object())))
+    adjacent=compare(items,adapter,'pages-40000',pairing_mode='single_admission')
+    fit=compare(items,adapter,'pages-40000',pairing_mode='single_admission',partner_search=True)
+    assert adjacent['estimated_requests']==3 and fit['estimated_requests']==2
+    assert adjacent['covered_pages']==fit['covered_pages']==4 and fit['held_pages']==0

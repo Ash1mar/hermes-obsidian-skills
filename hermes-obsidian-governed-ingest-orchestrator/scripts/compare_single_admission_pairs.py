@@ -17,7 +17,8 @@ def main():
   stages=[]
   for name,kwargs in [('original_40000',{}),('remove_QA_only',{'pairing_mode':'qa_only'}),
        ('reuse_text_single_admission',{'pairing_mode':'single_admission'}),
-       ('future_generation_only_complete_request',{'pairing_mode':'single_admission','future_pairing':True,'semantic_policy':POLICY})]:
+       ('fit_partner_search_same_instructions',{'pairing_mode':'single_admission','partner_search':True}),
+       ('future_generation_only_complete_request',{'pairing_mode':'single_admission','future_pairing':True,'semantic_policy':POLICY,'partner_search':True})]:
    t=time.monotonic();c=time.process_time();r=compare(items,adapter,'pages-40000',**kwargs)
    r.update(stage=name,wall_seconds=time.monotonic()-t,cpu_seconds=time.process_time()-c,
         split_reason_counts=dict(Counter(reason for s in r['split_decisions'] for reason in s['reasons'])),

@@ -307,18 +307,30 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         groups=[]
         while pending:
             first=pending.pop(0);group=[first]
+            if reuse_single:
+                # Page jobs already run independently. Try the largest remaining
+                # admitted peer that fits; a name-adjacent oversized peer must
+                # not force two singles. Only in-memory fixed inputs are read.
+                if not scan.row(key(first[0])):
+                    from page_pair_eligibility import pair
+                    from page_request import prepare
+                    peers=sorted(range(len(pending)),key=lambda i:admissions[key(pending[i][0])]['single_input_codepoints'],reverse=True)
+                    for i in peers:
+                        peer=pending[i]
+                        if scan.row(key(peer[0])):continue
+                        decision=pair(first,peer,admissions=admissions)
+                        if not decision['eligible']:continue
+                        trial=prepare([first,peer],prepare_request_projection,[],limit=limit,budget=budget)[2]
+                        if trial['budget_check']['fits']:
+                            group.append(pending.pop(i));break
+                groups.append(group);continue
             # Additional checks are isolated to the failed page, never the valid peer.
             if pending and not scan.row(key(first[0])) and not scan.row(key(pending[0][0])) and compatible(first,pending[0],admissions=admissions):
                 # Output headroom is an explicitly labelled heuristic, not a proof
                 # of semantic length. High-volume pages stay single.
                 import json
                 estimates=[max(512,len(json.dumps(v.get('candidates',[]),ensure_ascii=False).encode('utf-8'))//3+1024) for p,v in (first,pending[0])]
-                if reuse_single:
-                    from page_request import prepare
-                    trial=prepare([first,pending[0]],prepare_request_projection,[],limit=limit,budget=budget)[2]
-                    if trial['budget_check']['fits']:group.append(pending.pop(0))
-                    else:observe(binding,'complete_pair_requires_single',page_path=first[0]['path'],peer_path=pending[0][0]['path'],budget_check=trial['budget_check'])
-                elif not per_page or sum(estimates)<=7168:group.append(pending.pop(0))
+                if not per_page or sum(estimates)<=7168:group.append(pending.pop(0))
                 else:observe(binding,'output_headroom_requires_single',page_path=first[0]['path'],estimated_output_tokens=estimates)
             elif pending and per_page:
                 from page_protocol import strict
