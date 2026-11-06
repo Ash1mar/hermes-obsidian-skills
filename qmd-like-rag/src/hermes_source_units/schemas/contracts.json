@@ -1808,7 +1808,7 @@
           "const": "program-build-acceptance/v1"
         },
         "policy": {
-          "const": "explicit-page-risks/v1"
+          "enum": ["explicit-page-risks/v1", "explicit-page-risks/v2"]
         },
         "independent_review": {
           "enum": [

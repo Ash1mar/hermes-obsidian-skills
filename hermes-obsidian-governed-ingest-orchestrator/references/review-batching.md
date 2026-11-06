@@ -35,3 +35,10 @@ changes a workflow, resets a budget or writes inside the Vault. Group counts and
 offline text tokens are mechanical comparisons, not real completion or billable
 usage evidence. Authorize real calls separately: acceptance requires one real
 request, two independently validated conclusions and two durable receipts.
+For newly pinned work, explicit-page-risks/v2 removes a lexical applicability
+trigger only with identical source spans, original inspections, finding, scope,
+conditions and exceptions (whitespace runs only may normalize in claim fields).
+All other triggers stay. V1 receipts recompute V1; saved conclusions are immutable.
+The read-only comparison inventories every original scope and its evidence hashes,
+and retains the four substantive native opinions as regressions. Nonidentical text
+alone is neither equivalence nor proof of a semantic difference.

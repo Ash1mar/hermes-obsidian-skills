@@ -35,6 +35,8 @@ def read_snapshot(adapter,binding,checked,program=False):
     from input_budget import observed
     budget=observed(adapter,binding)
     if budget:backend['input_budget']=budget
+    pin=adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}/presentation-contract.json'
+    risk_policy=_load_json(pin).get('review_risk_contract','explicit-page-risks/v1') if pin.exists() else 'explicit-page-risks/v1'
     views=[]
     for run_id in batch['run_ids']:
         run=_load_json(service._run_path(run_id)); validate_record('build_run',run)
@@ -86,7 +88,7 @@ def read_snapshot(adapter,binding,checked,program=False):
             if program:
                 from hermes_source_units.build_acceptance import assess
                 backend['pages'][alias]['assessment']=assess(service,run,page,selected=selected,
-                    parent_content=parent['content'] if parent else None)
+                    parent_content=parent['content'] if parent else None,policy=risk_policy)
             page_view={'page':alias,'identity':{k:v for k,v in decision['identity'].items() if k!='subject_id'},
                 'path':page['path'],'content':raw.decode('utf-8'),'existing_page':parent,
                 'qa_status':page['qa_status'],'business_status':page['business_status'],

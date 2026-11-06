@@ -3,7 +3,7 @@
 import argparse,json,os,sys,time
 from pathlib import Path
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'lib'))
-from saved_review_inputs import load,compare
+from saved_review_inputs import load,compare,audit_scope
 
 def main():
     p=argparse.ArgumentParser(description=__doc__);p.add_argument('--vault',required=True,type=Path)
@@ -19,6 +19,7 @@ def main():
         'historical_usage':{k:sum(r['usage'][k] or 0 for r in rows) for k in ('input','output','api_calls')},
         'historical_substantive_opinions':sum(r['response'].get('decision')=='revision_required' for r in rows),
         'profiles':[compare(rows,adapter,name) for name in ('baseline-30000','review-40000')],
+        'scope_equivalence_audit':audit_scope(rows),
         'mechanical_wall_seconds':time.monotonic()-started,'mechanical_cpu_seconds':time.process_time()-cpu,
         'actual_new_model_calls':0,'actual_new_token_usage':None,'model_wait_seconds':None,'maintenance_window':'reported separately by operator'}
     a.output.parent.mkdir(parents=True,exist_ok=True);a.output.write_text(json.dumps(out,ensure_ascii=False,indent=2)+'\n')
