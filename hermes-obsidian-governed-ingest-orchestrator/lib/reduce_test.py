@@ -226,6 +226,15 @@ def _apply(vault, journal, plan):
     _write_atomic(journal, _json_bytes(plan))
 
 
+def _seal(journal,plan):
+    row={'contract':CONTRACT,'phase':'admitted','workflow_id':plan['request']['workflow_id'],
+         'operation_id':plan['request']['operation_id'],'input_digest':plan['request']['input_digest'],
+         'report_ref':plan['report_ref'],'report_sha256':hashlib.sha256(plan['writes'][plan['report_ref']].encode()).hexdigest()}
+    p=journal.with_name('admitted.json')
+    if p.exists() and _load_json(p)!=row:fail('admission seal changed')
+    if not p.exists():_write_atomic(p,_json_bytes(row))
+
+
 def reenter(adapter, request, *, dry_run=False):
     """Terminal, query-disabled test Vaults only; ordinary resume never rewinds."""
     import re
@@ -248,10 +257,11 @@ def reenter(adapter, request, *, dry_run=False):
             plan = _load_json(journal)
             if plan['request'] != request:fail('stable test operation has different inputs')
             if plan['phase'] == 'admitted':
+                if not dry_run:_seal(journal,plan)
                 return {'ok':True,'applied':False,'replayed':True,'workflow_id':wid,
                         'report_ref':plan['report_ref'],'resumed':False}
             if dry_run:return {'ok':True,'applied':False,'pending':True,'resumed':False}
-            _apply(vault, journal, plan)
+            _apply(vault, journal, plan);_seal(journal,plan)
             return {'ok':True,'applied':True,'workflow_id':wid,'report_ref':plan['report_ref'],'resumed':False}
         w = service._mutation(request)
         if w['state'] not in ('completed','partial') or w['cancel_requested'] or w['scope'].get('pause_after'):
@@ -280,6 +290,10 @@ def reenter(adapter, request, *, dry_run=False):
                 'retired_files':retired,'budget_policy':'explicit authorized test cycle; original Pass budget unchanged; retired downstream calls remain in cumulative accounting',
                 'new_pass_calls_allowed':0,'source_conversion_calls_allowed':0,
                 'reused_task_count':len(descriptor['task_ids']),'native_pass_proofs':descriptor['native_pass_proofs']}
+            evidence_ref=report_ref.replace('admission.json','prefix-evidence.json')
+            evidence={'prefix':report.pop('prefix'),'retired_files':report.pop('retired_files'),
+                      'native_pass_proofs':report.pop('native_pass_proofs')}
+            report.update(evidence_ref=evidence_ref,evidence_sha256=hashlib.sha256(_json_bytes(evidence)).hexdigest())
             pointer = {'operation_id':operation,'report_ref':report_ref,'report_sha256':hashlib.sha256(_json_bytes(report)).hexdigest()}
             # Retain prefix authority and identity. All previous downstream control
             # belongs to the retired cycle rather than the new active execution.
@@ -301,12 +315,15 @@ def reenter(adapter, request, *, dry_run=False):
             identities.update(revision=0,subjects=[])
             release.update(revision=0,current_release_id=None,releases=[],applied_build_runs=[])
             writes = {report_ref:_json_bytes(report).decode(),
+                evidence_ref:_json_bytes(evidence).decode(),
                 service._path(wid).relative_to(vault).as_posix():_json_bytes(new).decode(),
                 service.knowledge._batch_path(w['batch_id']).relative_to(vault).as_posix():_json_bytes(newbatch).decode(),
                 '_system/metadata/knowledge-identities.json':_json_bytes(identities).decode(),
                 '_system/metadata/knowledge-release-state.json':_json_bytes(release).decode(),
                 '_system/metadata/document-registry.json':_json_bytes(descriptor['registry']).decode(),
                 '_system/metadata/source-organizations.json':_json_bytes(descriptor['organizations']).decode()}
+            from hermes_source_units.workflow_test import CONTRACT as NODE_TEST, POLICY
+            writes[POLICY]=_json_bytes({'contract':NODE_TEST,'workflow_id':wid,'actor':w['actor'],'capture':True}).decode()
             for tid, task in descriptor['boundary_tasks'].items():
                 writes[service.knowledge._task_path(tid).relative_to(vault).as_posix()]=_json_bytes(task).decode()
             validate_record('ingest_workflow',new);validate_record('knowledge_batch',newbatch)
@@ -320,7 +337,7 @@ def reenter(adapter, request, *, dry_run=False):
                 return {'ok':True,'applied':False,'workflow_id':wid,'retired_files':len(retired),
                         'preserved_files':len(preserved),'reused_tasks':len(descriptor['task_ids']),
                         'report_ref':report_ref,'resumed':False}
-            _write_atomic(journal,_json_bytes(plan));_apply(vault,journal,plan)
+            _write_atomic(journal,_json_bytes(plan));_apply(vault,journal,plan);_seal(journal,plan)
             return {'ok':True,'applied':True,'workflow_id':wid,'report_ref':report_ref,
                     'reused_tasks':len(descriptor['task_ids']),'resumed':False}
 

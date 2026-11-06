@@ -88,6 +88,9 @@ def start(request, record, bootstrap_skill, *, before_workflow=None):
         if not pp.exists(): _write_atomic(pp,_json_bytes(provider))
         vault_provider_config({},vault,'sync')
         test_import=before_workflow(vault,request) if before_workflow is not None else None
+        if request.get('test_mode') in ('same-workflow-node-test/v1','post-mineru-test/v1'):
+            from hermes_source_units.workflow_test import enable
+            enable(vault,'ingest-'+request['operation_id'],request['actor'])
         ref='_system/reports/vault-startup/'+request['operation_id']+'.json'
         scope={'source_paths':paths,'knowledge_selector':'Complete the scoped sources through Final Acceptance using native workers.',
             'execution_mode':'auto_full','pause_after':request.get('pause_after',[]),'canary_policy':request.get('canary_policy','sample'),

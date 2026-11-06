@@ -230,6 +230,13 @@ conversion material, read [post-mineru-tests.md](references/post-mineru-tests.md
 and use `python3 "<skill-dir>/scripts/start_post_mineru_test.py"`. This is a separate
 test entry; ordinary startup does not import another Vault's Bundles.
 
+The **default test rerun** reuses the same workflow. Read
+[workflow-tests.md](references/workflow-tests.md) and use
+`python3 "<skill-dir>/scripts/start_workflow_test.py"` for all node families,
+including same-workflow `post-mineru`, Reduce, checkpoints, publication, sync and
+acceptance. List available boundaries and pin a read-only plan first. Missing
+historical boundaries block explicitly; they never trigger cross-workflow reuse.
+
 For an explicitly authorized supplemental test from Reduce in the **same** terminal
 test workflow, read [reduce-tests.md](references/reduce-tests.md) and use
 `python3 "<skill-dir>/scripts/start_reduce_test.py"`. This reuses verified native

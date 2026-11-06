@@ -1,5 +1,9 @@
 # Same-workflow Reduce supplemental tests
 
+Default node reruns use `start_workflow_test.py --from-node resource-reduce`;
+see `workflow-tests.md`. `start_reduce_test.py` remains its compatibility alias.
+Existing pinned Reduce requests retain their original admission contract.
+
 This is an explicitly authorized test entry, never the formal ingest startup or
 ordinary resume operation. It keeps the same physical Vault, workflow, batch,
 source identities, immutable original evidence, completed slices and native Pass
