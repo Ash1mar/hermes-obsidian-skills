@@ -52,7 +52,7 @@ def compare(items,adapter,profile_name,*,semantic_policy=None,pairing_mode=None,
     from request_cost import rank
     from page_single_admission import admit,CONTRACT as PAIRING
     from page_pair_calls import key
-    immutable_before=fingerprint(items)
+    immutable_before=fingerprint([[p,v] for p,v in items])
     budget=profile(profile_name);pending=copy.deepcopy(items);groups=[];held=[];splits=[]
     for _,v in pending:
         v['body_call_contract']=CONTRACT
@@ -87,7 +87,7 @@ def compare(items,adapter,profile_name,*,semantic_policy=None,pairing_mode=None,
             'estimated_output_tokens':p['estimated_body_output_tokens'],'input_size':p['input_size'],
             'variants':[{'encoding':v.get('evidence_encoding','original'),'input_size':x['input_size'],'request_cost':x['request_cost']} for v,x in variants]}
         (groups if p['budget_check']['fits'] else held).append(row)
-    assert fingerprint(items)==immutable_before
+    assert fingerprint([[p,v] for p,v in items])==immutable_before
     return {'profile':profile_name,'pairing_mode':pairing_mode,'future_pairing_contract':future_pairing,'page_semantics_policy':semantic_policy,'same_planned_pages':len(items),'estimated_requests':len(groups),'pairs':sum(len(g['pages'])==2 for g in groups),
         'covered_pages':sum(len(g['pages']) for g in groups),'held_pages':sum(len(g['pages']) for g in held),
         'original_evidence_and_qa_unchanged':True,'single_page_preparations':len(singles),
