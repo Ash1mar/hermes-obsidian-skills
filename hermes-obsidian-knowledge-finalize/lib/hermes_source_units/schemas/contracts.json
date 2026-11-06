@@ -1808,7 +1808,7 @@
           "const": "program-build-acceptance/v1"
         },
         "policy": {
-          "enum": ["explicit-page-risks/v1", "explicit-page-risks/v2"]
+          "enum": ["explicit-page-risks/v1", "explicit-page-risks/v2", "generation-only-page-semantics/v1"]
         },
         "independent_review": {
           "enum": [
@@ -1885,6 +1885,7 @@
     "build_run": {
       "type": "object",
       "properties": {
+        "page_review_policy": {"type":"object","properties":{"contract":{"const":"generation-only-page-semantics/v1"},"workflow_id":{"type":"string","minLength":1},"ref":{"type":"string","format":"vault-relative-path"},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"required":["contract","workflow_id","ref","sha256"],"additionalProperties":false},
         "coverage_scope": {"$ref": "#/$defs/reduce_coverage_scope"},
         "contract": {"const": "hermes-knowledge-build-run/v1"},
         "run_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
@@ -2133,6 +2134,7 @@
           "type": "object",
           "properties": {
             "input_budget_profile": {"enum":["baseline-30000","review-40000","pages-40000"]},
+            "independent_page_review": {"enum":["enabled","disabled"]},
             "pass_worker_concurrency": {
               "type": "integer",
               "minimum": 1,

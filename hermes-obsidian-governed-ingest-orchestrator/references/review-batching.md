@@ -60,3 +60,7 @@ Use `python3 "<skill-dir>/scripts/audit_planning_efficiency.py" --vault <vault>
 --workflow-id <id> --output <outside-vault-report>` for authenticated saved request
 costs, budget-vs-semantic Detail causes and source duplicate-value measurements.
 Source packets do not expand solely because a duplicate-byte ratio is nonzero.
+The later user-selected generation-only test policy supersedes review batching
+for new test execution; see [generation-only-tests.md](generation-only-tests.md).
+Review batching remains available only where a fixed enabled policy requires it;
+offline batching estimates are not a next-test review-dispatch plan.

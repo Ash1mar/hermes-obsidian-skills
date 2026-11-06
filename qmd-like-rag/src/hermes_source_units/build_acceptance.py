@@ -155,14 +155,17 @@ def _revised(service, record, candidate):
     return old != candidate or prior['inspections'] != record['inspections']
 
 
-def assess(service, run, page, *, selected=None, parent_content=None, committed_review=None, policy=POLICY):
+def assess(service, run, page, *, selected=None, parent_content=None, committed_review=None, policy=None):
     """Pin current page evidence and name concrete conservative review triggers.
 
     QA is retained by the page contract, not converted into another model call.
     Missing/stale evidence is an error, never a semantic-review trigger.
     """
     from .scope_equivalence import POLICY as V2,prove
-    if policy not in (POLICY,V2):_fail('unsupported risk policy')
+    from .generation_policy import POLICY as GENERATION_ONLY,validate_run
+    policy=policy or (GENERATION_ONLY if run.get('page_review_policy') else POLICY)
+    if policy not in (POLICY,V2,GENERATION_ONLY):_fail('unsupported risk policy')
+    if policy==GENERATION_ONLY:validate_run(service,run)
     decision = next(d for d in run['decisions'] if d['page_id'] == page['page_id'])
     if selected is None:
         candidates, _ = service._pass_index([t['task_id'] for t in run['tasks']])
@@ -233,8 +236,15 @@ def validate_acceptance(service, run, page, review, *, selected=None):
     """Recompute risk/evidence under the ordinary Finalize lock before writes."""
     acceptance = review.get('acceptance')
     if acceptance is None:
+        if run.get('page_review_policy'):_fail('generation-only run requires an explicit unreviewed program acceptance record')
         return  # Legacy/manual reviews keep their original explicit review contract.
     validate_record('build_acceptance', acceptance)
+    from .generation_policy import POLICY as GENERATION_ONLY,validate_run
+    if run.get('page_review_policy'):
+        validate_run(service,run)
+        if (acceptance['policy']!=GENERATION_ONLY or acceptance['independent_review']!='not_performed'
+                or acceptance['review_audit_ref'] is not None or acceptance.get('review_receipt')):
+            _fail('generation-only run must state that no independent model review was performed')
     from .finalize_revision_state import active_for_run
     local=active_for_run(service,run).get(page['page_id'])
     if local and local.get('grants'):
@@ -263,7 +273,7 @@ def validate_acceptance(service, run, page, review, *, selected=None):
         _fail('program acceptance risk or evidence changed')
     ref = acceptance['review_audit_ref']
     if acceptance['independent_review'] == 'not_performed':
-        if ref is not None or expected['risk_reasons']:
+        if ref is not None or (expected['risk_reasons'] and acceptance['policy']!=GENERATION_ONLY):
             _fail('a triggered review cannot be replaced with program acceptance')
     else:
         if not ref:
