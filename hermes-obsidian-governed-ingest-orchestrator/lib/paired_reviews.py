@@ -92,7 +92,12 @@ def execute(adapter,binding,value,caller,model_call,attach_receipt,committed):
         return {'page_id':meta['page']['page_id'],'authored_sha256':meta['page']['authored_sha256'],'assessment':copy.deepcopy(meta['assessment'])}
     def receive(receipt):
         k=receipt['page_key'];alias=aliases[k]
-        with book.scan() as scan:row=scan.index['pages'][k];a=row['attempts'][receipt['ordinal']-1];pointer=row.get('receipt') if receipt['state']=='valid' else a['failure_receipt']
+        with book.scan() as scan:
+            row=scan.index['pages'][k]
+            # Request hashes do not sort chronologically. An earlier rejected
+            # slot remains audit history, never the current page outcome.
+            if receipt['ordinal']!=len(row['attempts']):return
+            a=row['attempts'][receipt['ordinal']-1];pointer=row.get('receipt') if receipt['state']=='valid' else a['failure_receipt']
         pointer={'ref':(root/pointer['ref']).relative_to(adapter.workflow.vault).as_posix(),'sha256':pointer['sha256']}
         error=None if receipt['state']=='valid' else ContractError(receipt['code'],'$',receipt['reason'])
         if error:error.semantic_audit_ref=receipt['audit_ref']
@@ -201,7 +206,8 @@ def journal_evidence(adapter,binding,view):
         k,_=matches[0];row=scan.row(k);attempts=[]
         for a in row['attempts']:
             q=scan.request(a['request_id']);response=q.get('response');ref=response['audit_ref'] if response else None
-            audit={'ref':ref,'sha256':__import__('hashlib').sha256(_vault_path(adapter.workflow.vault,ref).read_bytes()).hexdigest()} if ref else None
+            from page_budget_store import file_bytes
+            audit={'ref':ref,'sha256':__import__('hashlib').sha256(file_bytes(_vault_path(adapter.workflow.vault,ref))).hexdigest()} if ref else None
             attempts.append({'attempt_sha256':fingerprint(a),'state':a['state'],'audit':audit,
                 **({'completion_state':'completion_unknown'} if not response else {})})
         return {'attempt_count':len(attempts),'attempts':attempts,'journal':None,'review_budget_contract':CONTRACT,
