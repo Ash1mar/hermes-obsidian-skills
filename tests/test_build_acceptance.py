@@ -107,6 +107,7 @@ def execution(tmp_path,monkeypatch,risks):
     monkeypatch.setattr(fixed_review,'policy_enabled',lambda *_:True)
     monkeypatch.setattr(fixed_review,'snapshot',lambda *_:copy.deepcopy(value))
     monkeypatch.setattr('hermes_source_units.partial_finalize.enabled',lambda *_:True)
+    monkeypatch.setattr('hermes_source_units.partial_finalize.progress',lambda *_:{'committed':{}})
     from contextlib import nullcontext
     monkeypatch.setattr(fixed_review,'worker_binding',lambda *_:nullcontext())
     monkeypatch.setattr(fixed_review,'workflow_write_guard',lambda *_a,**_k:nullcontext())

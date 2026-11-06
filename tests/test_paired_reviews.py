@@ -31,7 +31,7 @@ def review_system(tmp_path,monkeypatch):
             'risk_reasons':['different_applicability'],'evidence_sha256':str(i)*64}}
     value={'views':views,'backend':{'pages':pages,'input_budget':profile('review-40000')}}
     binding={'workflow_id':'isolated','node':'build-finalize','task_id':'native','actor':'operator','template_hash':'fixed'}
-    adapter=NS(workflow=NS(vault=tmp_path),worker_check=lambda *_:{})
+    adapter=NS(workflow=NS(vault=tmp_path,knowledge=NS(source=object())),worker_check=lambda *_:{})
     epoch={'value':None};monkeypatch.setattr(pair,'epoch',lambda *_:epoch['value'])
     raw_by_audit={};calls=[];attached=[]
     def proof(_a,_b,path,wire,sc,images):
