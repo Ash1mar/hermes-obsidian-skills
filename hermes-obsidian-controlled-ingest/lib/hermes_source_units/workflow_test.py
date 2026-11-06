@@ -18,9 +18,9 @@ NODES = ('bootstrap','source-prepare','exact-plan','canary','pass','resource-red
          'checkpoint-2-validate','release-apply','provider-sync','acceptance')
 STAGES={'source-prepare':('created','source_preparing'),'exact-plan':('planning',),
         'canary':('analyzing',),'pass':('analyzing',),'resource-reduce':('reducing',),
-        'global-reduce':('reducing',),'checkpoint-1-validate':('checkpoint_1',),
+        'global-reduce':('reducing',),'checkpoint-1-validate':('reducing',),
         'build-finalize':('build_finalizing',),'vault-finalize-plan':('release_planning',),
-        'checkpoint-2-validate':('checkpoint_2',),'release-apply':('applying',),
+        'checkpoint-2-validate':('release_planning','checkpoint_2'),'release-apply':('applying',),
         'provider-sync':('indexing',),'acceptance':('validating',)}
 
 
