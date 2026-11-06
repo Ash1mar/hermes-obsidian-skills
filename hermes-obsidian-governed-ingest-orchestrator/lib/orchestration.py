@@ -41,7 +41,9 @@ def start_and_pin(vault: str | Path, request: Mapping[str, Any]) -> dict[str, An
     service = FileIngestWorkflowService(vault)
     value = service.start(request)
     from hermes_source_units.presentation_contract import pin
-    pin(service,value)
+    profile=pin(service,value)
+    from page_protocol import preflight
+    preflight(profile)
     if not value.get("template_pins"):
         value = service.pin_templates(_mutation(value, templates=worker_pack()))
     service.pinned_templates(value)

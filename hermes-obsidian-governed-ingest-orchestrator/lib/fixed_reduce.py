@@ -118,6 +118,9 @@ def _snapshot(adapter,binding,checked,*,presentation=True):
         if dispatch:view['page_dispatch_contract']=dispatch
         planning=observed_profile(adapter,binding).get('planning_budget_contract')
         if planning:view['planning_budget_contract']=planning
+        pinned=observed_profile(adapter,binding)
+        for field in ('page_execution_contract','page_budget_contract'):
+            if field in pinned:view[field]=pinned[field]
     result = {'contract':'fixed-reduce-input/v1','binding':dict(binding),'view':view,'backend':backend}
     if kind=='resource-reduce':
         from source_hold_recovery import rebind_view
@@ -225,6 +228,8 @@ def page_view(adapter, value, page):
                 proof={**proof,'packet_sha256':fingerprint(view['original_evidence'])}
             view['original_evidence'],view['evidence_selection']=page_evidence_view(view['original_evidence'],candidates,provenance=proof)
             view['efficiency_contract']=value['view']['efficiency_contract']
+    for field in ('page_execution_contract','page_budget_contract'):
+        if field in value['view']:view[field]=value['view'][field]
     return view
 
 
