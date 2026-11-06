@@ -35,6 +35,10 @@ def preflight(profile):
         from hermes_source_units.generation_policy import POLICY,validate_run,capture,assert_model_phase
         if profile['page_semantics_policy']!=POLICY or not all(callable(f) for f in (validate_run,capture,assert_model_phase)):
             raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','generation-only provenance, Build and model-dispatch fencing must be installed')
+    if profile.get('body_pairing_contract'):
+        from page_single_admission import CONTRACT as PAIRING,admit,matches
+        if profile['body_pairing_contract']!=PAIRING or not all(callable(f) for f in (admit,matches)):
+            raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','single admission reuse must be installed before pairing')
     if profile.get('review_call_contract'):
         from paired_reviews import execute as review_execute,history
         from hermes_source_units.review_receipts import validate_receipt,CONTRACT as REVIEW

@@ -1,0 +1,66 @@
+"""Reuse single admission, retain QA, zero semantic reclassification or asset I/O."""
+import copy
+import pytest
+from hermes_source_units.validation import fingerprint
+from input_budget import profile
+from page_single_admission import CONTRACT,admit
+from page_pair_calls import key
+from page_pair_eligibility import pair
+from independent_body import prepare,restore,present
+from fixed_semantic import prepare_request_projection
+from test_independent_body import rows
+
+def admitted():
+    items=rows();budget=profile('pages-40000');proofs={}
+    for p,v in items:
+        v['body_pairing_contract']=CONTRACT
+        v['candidates'][0]['evidence_qa'][0].update(qa='needs-qa',qa_note='Uncertainty stays with this page; do not infer the missing formula.')
+        q=v['evidence_selection'];q['candidates_sha256']=fingerprint(v['candidates']);q['proof_sha256']=fingerprint({k:x for k,x in q.items() if k!='proof_sha256'})
+        size=prepare([(p,v)],prepare_request_projection,budget=budget)[2]['input_size']
+        proofs[key(p)]=admit(p,v,size,40000,allowed=True,budget=budget)
+    return items,proofs
+
+def test_different_source_and_scope_qa_labels_do_not_force_split_after_single_admission():
+    items,proofs=admitted();before=copy.deepcopy(items)
+    assert pair(*items,admissions=proofs)['eligible']
+    assert not pair(*items)['eligible'] # No detached authority inferred.
+    v,_,p,_=prepare(items,prepare_request_projection,budget=profile('pages-40000'))
+    assert p['budget_check']['fits'] and restore(present(v))['pages']==v['pages'] and items==before
+    assert all(p['semantic_ordinals_granted']==0 and not p['publication_eligibility_granted'] for p in proofs.values())
+
+def test_denied_missing_or_changed_single_page_cannot_borrow_peer_admission():
+    items,proofs=admitted();bad=copy.deepcopy(proofs);bad[key(items[0][0])]['allowed']=False
+    assert not pair(*items,admissions=bad)['eligible']
+    changed=copy.deepcopy(items);changed[0][1]['candidates'][0]['exceptions']=['different exception']
+    assert not pair(*changed,admissions=proofs)['eligible']
+
+def test_link_only_material_uses_existing_single_decision_without_image_reads(monkeypatch):
+    from pathlib import Path
+    items,proofs=admitted()
+    for p,v in items:
+        v['original_evidence']['tasks'][0]['materials'][0]['linked_assets']=[{'path':'registered.png','sha256':'a'*64}]
+        proofs[key(p)]=admit(p,v,1000,40000,allowed=True)
+    monkeypatch.setattr(Path,'read_bytes',lambda *_:pytest.fail('pairing must not scan or read asset bytes'))
+    assert pair(*items,admissions=proofs)['eligible']
+    p,v=items[0];v['original_evidence']['tasks'][0]['materials'][0]['asset']={'path':'required.png','sha256':'b'*64}
+    proofs[key(p)]=admit(p,v,1000,40000,allowed=True)
+    assert not pair(*items,admissions=proofs)['eligible']
+
+@pytest.mark.parametrize('stop',[False,True])
+def test_native_executor_reuses_qa_single_admission_and_preserves_stopped_receipts(tmp_path,monkeypatch,stop):
+    import native_page_pairs as native
+    from test_page_call_contracts import test_native_pair_bridge_recovers_receipts_without_new_call
+    original=native.execute
+    def run(*args,**kwargs):
+        args=list(args);value=args[2]
+        value['view'].update(body_call_contract='independent-page-body/v1',body_pairing_contract=CONTRACT)
+        value['backend']['input_budget']=profile('pages-40000');measure=args[8]
+        def measure_admitted(*a):
+            v,n=measure(*a);v.update(body_call_contract='independent-page-body/v1',body_pairing_contract=CONTRACT)
+            v['candidates'][0]['evidence_qa'][0]['qa']='needs-qa'
+            q=v['evidence_selection'];q['candidates_sha256']=fingerprint(v['candidates']);q['proof_sha256']=fingerprint({k:x for k,x in q.items() if k!='proof_sha256'})
+            return v,n
+        args[8]=measure_admitted
+        return original(*args,**kwargs)
+    monkeypatch.setattr(native,'execute',run)
+    test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypatch,cancel_after_first=stop,dispatch='unified-page-execution/v3',special=None)
