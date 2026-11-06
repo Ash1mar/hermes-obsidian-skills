@@ -38,7 +38,7 @@ def audit(vault,wid):
             if len(users)!=1:raise ContractError('STALE_INPUT','$','planning audit lacks unique native input')
             body=json.loads(_request_text(users[0]));v=body['input'];sc=body['output_schema'];wire={'system':system_prompt(phase,v,body.get('correction')),'user':users[0]}
             card=by_node[a['node']];binding=_load_json(root/f'bindings/{fingerprint(card["idempotency_key"])}.json')
-            e=v.get('original_evidence',{});images=select_images(e.get('tasks',[]),image_catalog(adapter,e))
+            e=v.get('original_evidence',{});e={**e,'tasks':e.get('tasks',[])};images=select_images(e['tasks'],image_catalog(adapter,e))
             if not native_proof(adapter,binding,p,wire,sc,images,permitted_tasks(adapter,binding,compact=True)):
                 raise ContractError('STALE_INPUT','$','planning input lacks native proof')
             if phase=='global-detail':details.append({'audit_ref':p.relative_to(vault).as_posix(),'reason':'page_input_budget' if 'page_budget' in v else 'semantic_detail',
