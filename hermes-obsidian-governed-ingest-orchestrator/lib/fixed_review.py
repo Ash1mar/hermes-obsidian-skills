@@ -103,6 +103,8 @@ def read_snapshot(adapter,binding,checked,program=False):
 def execute(adapter,binding,caller,model_call,attach_receipt):
     adapter.worker_begin(binding); program=policy_enabled(adapter,binding)
     value=snapshot(adapter,binding,True) if program else snapshot(adapter,binding)
+    from hermes_source_units.generation_policy import POLICY as GENERATION_ONLY,pinned
+    generation_only=program and pinned(adapter.workflow.vault,binding['workflow_id'])==GENERATION_ONLY
     if program:
         from hermes_source_units.delivery_scope import active as delivery_authorization,close as close_delivery,pending_reopen
         if (any(delivery_authorization(adapter.workflow.knowledge,r) for r in value['backend']['runs'])
@@ -116,7 +118,7 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
             return adapter.worker_complete(binding)
     if program:
         from finalize_revision import prepare_revisions
-        if prepare_revisions(adapter,binding,value,caller,model_call):
+        if not generation_only and prepare_revisions(adapter,binding,value,caller,model_call):
             value=snapshot(adapter,binding,True)
     ref=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/semantic-inputs/review-{value['input_id']}.json"
     _write_atomic(_vault_path(adapter.workflow.vault,ref),_json_bytes(value))
@@ -129,7 +131,7 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
     batched={}
     from fixed_semantic import HermesCaller
     from paired_reviews import enabled as paired_enabled,execute as review_pairs
-    if program and isinstance(caller,HermesCaller) and paired_enabled(adapter,binding):
+    if program and not generation_only and isinstance(caller,HermesCaller) and paired_enabled(adapter,binding):
         batched=review_pairs(adapter,binding,value,caller,model_call,attach_receipt,committed)
     for view in value['views']:
         from fixed_semantic import HermesCaller,prepare_request_projection
@@ -145,6 +147,17 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
             reviews[view['page']]=review['note'];acceptances[view['page']]=review['acceptance']
             from build_disposition import item
             dispositions.append(item(adapter,binding,value,view,state='ready',audit_ref=review['acceptance'].get('review_audit_ref')))
+            continue
+        if generation_only:
+            from build_disposition import journal_evidence,item
+            from hermes_source_units.build_acceptance import record
+            if controlled_revision or journal_evidence(adapter,binding,view)['attempt_count']:
+                fail('PAGE_REVIEW_POLICY_CHANGED','consumed review/revision history cannot be erased by generation-only policy')
+            if assessment['policy']!=GENERATION_ONLY:
+                fail('PAGE_REVIEW_POLICY_CHANGED','generation-only Build needs its run-creation policy')
+            reviews[view['page']]='Program checks completed; no independent model page review performed. Page semantic quality is the generation model responsibility; risks and QA remain recorded, with publication eligibility checked separately.'
+            acceptances[view['page']]=record(assessment)
+            dispositions.append(item(adapter,binding,value,view,state='ready'))
             continue
         if isinstance(caller,HermesCaller) and not controlled_revision and view['page'] not in batched:
             from fixed_page_evidence import select,select_review
@@ -206,6 +219,7 @@ def execute(adapter,binding,caller,model_call,attach_receipt):
         _write_atomic(_vault_path(adapter.workflow.vault,report),_json_bytes({
             'contract':'program-build-acceptance-report/v1','input_id':value['input_id'],
             'acceptances':acceptances,'held':held,'committed':False,'disposition_ref':disposition_ref,
+            'independent_model_review':'disabled_by_fixed_test_policy' if generation_only else 'risk_triggered',
             'limitations':'Program acceptance does not prove semantic correctness; QA, coverage, business and release gates remain separate.'}))
     if held:
         suffix='-disposition-v1' if program else ''

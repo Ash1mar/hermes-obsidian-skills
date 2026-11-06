@@ -28,6 +28,7 @@ def audit(vault,wid):
         for p in (root/'semantic-calls').glob('*.json'):
             a=_load_json(p)
             if a.get('reused_from_audit'):continue
+            if a.get('phase') not in ('resource-reduce','global-plan','global-detail','page-write','page-pair','page-review','page-review-pair'):continue
             session=a.get('model',{}).get('session_id');usage=db.execute('SELECT input_tokens,output_tokens,api_call_count FROM sessions WHERE id=?',(session,)).fetchone() if session else None
             phase=a['phase'];r=phases.setdefault(phase,{'native_audits':0,'reported_input_tokens':0,'reported_output_tokens':0,'usage_unknown_audits':0,'summed_model_elapsed_ms':0})
             r['native_audits']+=1;r['summed_model_elapsed_ms']+=a.get('model_elapsed_ms',0)
@@ -41,7 +42,7 @@ def audit(vault,wid):
             e=v.get('original_evidence',{});e={**e,'tasks':e.get('tasks',[])};images=select_images(e['tasks'],image_catalog(adapter,e))
             if not native_proof(adapter,binding,p,wire,sc,images,permitted_tasks(adapter,binding,compact=True)):
                 raise ContractError('STALE_INPUT','$','planning input lacks native proof')
-            if phase=='global-detail':details.append({'audit_ref':p.relative_to(vault).as_posix(),'reason':'page_input_budget' if 'page_budget' in v else 'semantic_detail',
+            if phase=='global-detail':details.append({'audit_ref':p.relative_to(vault).as_posix(),'reason':'semantic_correction' if body.get('correction') else 'page_input_budget' if 'page_budget' in v else 'semantic_detail',
                 'original_page':v.get('page_budget',{}).get('original_page'),'suggested_fit_groups':v.get('page_budget',{}).get('suggested_fit_candidate_groups'),
                 'original_input_codepoints':a['input_codepoints'],'reported_input_tokens':usage[0] if usage else None,
                 'avoidable_before_model':'budget pressure mechanically detectable; avoided calls and new page count require native semantic validation' if 'page_budget' in v else 'semantic correction retained'})

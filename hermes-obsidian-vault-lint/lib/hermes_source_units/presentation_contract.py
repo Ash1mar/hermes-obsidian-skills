@@ -45,6 +45,11 @@ def pin(workflow,w):
                 record['review_risk_contract']='explicit-page-risks/v2'
                 record['body_call_contract']='independent-page-body/v1'
                 record['early_page_budget_contract']='proposal-final-body-cost/v1'
+                from .generation_policy import select,POLICY as GENERATION_ONLY
+                if select(workflow.vault,w)==GENERATION_ONLY:
+                    record['page_semantics_policy']=GENERATION_ONLY
+                    record['review_risk_contract']=GENERATION_ONLY
+                    record.pop('review_call_contract',None)
                 record.update(page_call_contract='durable-page-calls/v1',page_dispatch_contract='per-page-dispatch/v2',
                     planning_budget_contract='shared-reading-page-budget/v1',fixed_before_consumption=True,
                     page_execution_contract='unified-page-execution/v3',page_budget_contract='page-budget-index/v2')

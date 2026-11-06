@@ -242,3 +242,12 @@ test workflow, read [reduce-tests.md](references/reduce-tests.md) and use
 `python3 "<skill-dir>/scripts/start_reduce_test.py"`. This reuses verified native
 Passes and retires the authorized old downstream cycle with hash-bound audit data.
 Ordinary startup/resume never clears results or budgets for a test.
+
+New unconsumed Query-disabled test workflows default to a single semantic page
+generation with **no independent Build model review**. Read
+[generation-only-tests.md](references/generation-only-tests.md). Keep per-page
+source/scope/conditions/exceptions and all program QA/publication gates; record
+`not_performed`, never imply independent approval. Existing pins and consumed
+Build runs retain their original contracts. Saved-input comparisons and the
+[review/body cost tools](references/review-batching.md) do not authorize model
+calls, workflow startup, reruns, publishing or Provider sync.

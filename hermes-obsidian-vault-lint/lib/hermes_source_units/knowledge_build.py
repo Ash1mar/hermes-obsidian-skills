@@ -2093,6 +2093,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                   "identity_registry_revision": registry["revision"], "tasks": task_snapshots,
                   "decisions": decisions, "page_revisions": [item[0] for item in page_drafts],
                   "reviews": [], "reason": str(request.get("reason", ""))}
+        from .generation_policy import new_run
+        review_policy=new_run(self,actor)
+        if review_policy:record['page_review_policy']=review_policy
         if scope:record['coverage_scope']=scope
         validate_references("build_run", record, units)
         if path.exists():

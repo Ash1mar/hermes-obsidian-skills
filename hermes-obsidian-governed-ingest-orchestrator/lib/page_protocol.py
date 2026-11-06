@@ -31,6 +31,10 @@ def preflight(profile):
         from independent_body import CONTRACT as BODY,prepare,restore,present
         if profile['body_call_contract']!=BODY or not all(callable(f) for f in (prepare,restore,present)):
             raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','independent body construction and recovery are required')
+    if profile.get('page_semantics_policy'):
+        from hermes_source_units.generation_policy import POLICY,validate_run,capture,assert_model_phase
+        if profile['page_semantics_policy']!=POLICY or not all(callable(f) for f in (validate_run,capture,assert_model_phase)):
+            raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','generation-only provenance, Build and model-dispatch fencing must be installed')
     if profile.get('review_call_contract'):
         from paired_reviews import execute as review_execute,history
         from hermes_source_units.review_receipts import validate_receipt,CONTRACT as REVIEW

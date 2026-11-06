@@ -432,6 +432,8 @@ def system_prompt(phase,view,correction=None):
     if phase in ('page-write','page-pair'):
         from page_protocol import strict,page_rules
         if strict(view) or any(strict(p) for p in view.get('pages',{}).values()):system+=' '+page_rules()
+        if view.get('page_semantics_policy')=='generation-only-page-semantics/v1':
+            system+=' This is the only semantic page-generation step; there is no later independent model review. Before returning each page, check every assigned claim against its authorized original text, applicable objects, design stage, conditions, exceptions and contrary evidence. Preserve AND/OR operators, numerical bounds and source-specific qualifications. Correct citations alone do not justify widening scope. Preserve required assets, QA and uncertainty. If essential evidence is missing, return blocked_reason; never invent or omit a limitation to obtain a usable body.'
     if phase=='page-pair':
         if view.get('body_call_contract')=='independent-page-body/v1':
             system+=' Return each fixed page slot independently. Each page owns its original_evidence, candidates, QA, parent, scope, conditions, exceptions, contrary context, required assets and references. Never use another page evidence or reassign claims. image_bindings gives the zero-based authorized images per page. A blocked page must not suppress a valid peer. Return content or blocked_reason in EACH slot.'
@@ -532,6 +534,8 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
 
 
 def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2,_checked=None):
+    from hermes_source_units.generation_policy import assert_model_phase
+    assert_model_phase(adapter.workflow.vault,binding,phase)
     from input_budget import observed,check_request
     budget=observed(adapter,binding)
     if budget:limit=budget['phases'][phase]['input_codepoints']
@@ -641,6 +645,8 @@ def _model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy
 
 
 def _dispatch_model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2,prepared):
+    from hermes_source_units.generation_policy import assert_model_phase
+    assert_model_phase(adapter.workflow.vault,binding,phase)
     output_schema=prepared['identity']['output_schema'];images=prepared['images']
     wire=prepared['wire'];schema_size=prepared['schema_size'];size=prepared['input_size']
     from citation_amendment_calls import check_dispatch
