@@ -8,6 +8,7 @@ from page_pair_eligibility import pair,inspect
 from fixed_semantic import system_prompt
 from test_page_call_contracts import packet
 from page_dependencies import derive
+from test_p3_knowledge_build import vault
 
 def views():
     evidence,candidates,proof=packet()
@@ -70,6 +71,23 @@ def test_unknown_version_cannot_silently_fall_back():
     from page_protocol import strict
     with pytest.raises(ContractError,match='PAGE_PROTOCOL_UNSUPPORTED'):
         strict({'page_execution_contract':'future-unknown'})
+
+
+def test_core_creation_pins_before_any_dispatch_and_rejects_missing_protocol(vault):
+    import json
+    from hermes_source_units.ingest_workflow import FileIngestWorkflowService,mutation_digest
+    service=FileIngestWorkflowService(vault)
+    q={'workflow_id':'isolated-core-protocol','actor':'agent','expected_revision':0,
+        'profile':'compact-3','scope':{'source_paths':[],'knowledge_selector':'all-current'}}
+    q['input_digest']=mutation_digest(q)
+    w=service.start(q)
+    path=vault/f"_system/ledgers/ingest-workflows/{w['workflow_id']}/presentation-contract.json"
+    record=json.loads(path.read_text())
+    assert w['page_execution_contract']==record['page_execution_contract']==CONTRACT
+    assert record['page_budget_contract']==BUDGET and w['state']=='created'
+    assert service.start(q)==w
+    record.pop('page_execution_contract');path.write_text(json.dumps(record))
+    with pytest.raises(ContractError,match='PAGE_PROTOCOL_UNSUPPORTED'):service.start(q)
 
 
 def test_same_complete_builder_measures_single_and_pair_without_evidence_loss():
