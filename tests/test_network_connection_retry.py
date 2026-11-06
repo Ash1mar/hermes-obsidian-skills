@@ -22,7 +22,7 @@ def connection():return APIConnectionError(request=httpx.Request('POST','https:/
 
 @pytest.mark.parametrize('status',[502,503,504])
 def test_transient_gateway_retries_same_request_without_new_semantic_allowance(sdk,tmp_path,monkeypatch,status):
-    a=fixture(sdk,tmp_path,monkeypatch);calls=[];expected=api_request(a)
+    a=fixture(sdk,tmp_path,monkeypatch);calls=[];expected=api_request(a);a._apply_fixed_format(expected)
     def backend(payload):
         calls.append(copy.deepcopy(payload))
         if len(calls)<4:raise APIStatusError('isolated gateway',response=httpx.Response(status,request=httpx.Request('POST','https://offline.invalid')),body=None)
