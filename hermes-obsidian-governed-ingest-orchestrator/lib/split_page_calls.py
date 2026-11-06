@@ -77,13 +77,38 @@ class SplitPageCalls:
             for k,n in members:r['pages'][k]['attempts'].append({'ordinal':n,'request_id':request,'state':'reserved'})
             if self.guard()!=epoch:deny('WORKFLOW_STOPPED','cancel epoch changed before reservation')
             self._save(r);return request
+    def claim_transport_retry(self,request,permit,owner):
+        """Reuse an authenticated unknown reservation, without another page ordinal."""
+        with self.mutex,self.transaction(),_exclusive_lock(self.path.with_suffix('.lock'),timeout=5),operation():
+            epoch=self.guard();r=load_index(self.root,fresh=True);small=r['requests'][request]
+            q=Snapshot(self.root,r).request(request)
+            if 'response' in q:deny('INVALID_TRANSITION','returned request must settle, never resend')
+            if (permit['request_id']!=request or permit['members']!=q['members']
+                    or permit['wire_sha256']!=fingerprint(q['wire']) or permit['schema_sha256']!=fingerprint(q['schema'])):
+                deny('STALE_INPUT','transport retry request changed')
+            for m in q['members'].values():
+                p=r['pages'][m['page_key']];proof=permit['page_reservations'][m['page_key']]
+                if (p.get('receipt') or p['input_sha256']!=proof['input_sha256'] or p['path']!=proof['path']
+                        or fingerprint(p['attempts'])!=proof['attempts_sha256']
+                        or p['attempts'][-1]!={'ordinal':m['ordinal'],'request_id':request,'state':'reserved'}):
+                    deny('STALE_INPUT','valid or changed page cannot be retried')
+            grant=fingerprint(permit)
+            if any(a['grant_sha256']==grant for a in small.get('transport_retries',[])):
+                deny('SEMANTIC_OUTPUT_HELD','transport grant already dispatched; recover its outcome first')
+            small.setdefault('transport_retries',[]).append({'grant_sha256':grant,'recovery_id':permit['recovery_id'],
+                'failure_ref':permit['failure_ref'],'failure_sha256':permit['failure_sha256'],
+                'owner':copy.deepcopy(owner),'state':'dispatched','new_semantic_ordinals':0})
+            if self.guard()!=epoch:deny('WORKFLOW_STOPPED','stop changed before transport retry')
+            self._save(r)
     def capture(self,request,raw,audit_ref,metadata):
         with self.mutex,_exclusive_lock(self.path.with_suffix('.lock'),timeout=5),operation():
             r=load_index(self.root,fresh=True);q=r['requests'][request]
             value={'raw':raw,'raw_sha256':fingerprint(raw),'audit_ref':audit_ref,'metadata':copy.deepcopy(metadata)}
             pointer=put(self.root,'responses',request,value)
             if q.get('response') and q['response']!=pointer:fail('returned response changed')
-            q['response']=pointer;q['state']='returned';self._save(r)
+            q['response']=pointer;q['state']='returned'
+            if q.get('transport_retries'):q['transport_retries'][-1].update(state='returned',audit_ref=audit_ref)
+            self._save(r)
     def settle(self,request,validate,persist,authenticate,*,after_page=None,on_receipt=None,recovery_epoch=None):
         with operation():
             q=Snapshot(self.root,load_index(self.root,fresh=True)).request(request)

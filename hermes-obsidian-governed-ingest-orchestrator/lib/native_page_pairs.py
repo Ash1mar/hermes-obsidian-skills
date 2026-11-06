@@ -186,8 +186,22 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                     if audit.get('page_request_id')==request:
                         proof=native_reply(adapter,binding,p,q['wire'],q['schema'],request_images(q))
                         if proof:matches.append((p,audit,proof[0]))
-                if len(matches)!=1:raise ContractError('SEMANTIC_OUTPUT_HELD','$','unknown page request; no automatic resend')
-                p,audit,raw=matches[0];book.capture(request,raw,p.relative_to(adapter.workflow.vault).as_posix(),audit['model'])
+                if len(matches)==1:
+                    p,audit,raw=matches[0];book.capture(request,raw,p.relative_to(adapter.workflow.vault).as_posix(),audit['model'])
+                elif not matches and per_page:
+                    from page_transport_recovery import permit
+                    grant=permit(adapter,binding,value,request,q)
+                    if not grant:raise ContractError('SEMANTIC_OUTPUT_HELD','$','unknown page request lacks exact transport authorization')
+                    original=_load_json(_vault_path(adapter.workflow.vault,grant['failure_ref']))
+                    from fixed_semantic import prepare_request_projection
+                    prepared=prepare_request_projection('page-pair',original['view'],q['schema'],request_images(q))
+                    if prepared['wire']!=q['wire'] or prepared['input_size']>30000:
+                        raise ContractError('STALE_INPUT','$','transport retry cannot change the complete original request')
+                    book.claim_transport_retry(request,grant,{'task_id':binding['task_id']})
+                    token=ACTIVE.set((book,request))
+                    try:model_call(adapter,binding,'page-pair',original['view'],caller,30000,attempt_limit=1)
+                    finally:ACTIVE.reset(token)
+                else:raise ContractError('SEMANTIC_OUTPUT_HELD','$','unknown or ambiguous page request; no automatic resend')
             settle(request)
     def submit(group):
         from fixed_semantic import HermesCaller
