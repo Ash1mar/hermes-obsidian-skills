@@ -17,10 +17,17 @@ ACTIVE=ContextVar('durable_page_request',default=None)
 def fail(code,message):raise ContractError(code,'$',message)
 def key(page):return fingerprint({'kind':page['identity']['kind'],'identity_key':page['identity']['identity_key']})
 
-class PageCalls:
+class LegacyPageCalls:
     def __init__(self,root,guard,transaction=nullcontext):
         self.transaction=transaction;self.mutex=threading.RLock()
         self.root=root;self.path=root/'page-call-budget.json';self.guard=guard
+    def scan(self):
+        from page_budget_store import operation,Snapshot
+        from contextlib import contextmanager
+        @contextmanager
+        def scan():
+            with operation():yield Snapshot(self.root)
+        return scan()
     def read(self):
         record=_load_json(self.path) if self.path.exists() else {'contract':CONTRACT,'pages':{},'requests':{}}
         if record.get('contract')!=CONTRACT:fail('STALE_INPUT','unknown page budget contract')
@@ -128,3 +135,14 @@ def capture(adapter,binding,raw,ref,metadata):
     active=ACTIVE.get()
     if active:
         book,request=active;book.capture(request,raw,ref,metadata)
+
+
+from split_page_calls import SplitPageCalls
+class PageCalls(SplitPageCalls):
+    def __new__(cls,root,guard,transaction=nullcontext,**kw):
+        from page_budget_store import load_index,WIRE
+        if load_index(root).get('contract')==WIRE:
+            if kw.get('protocol'):
+                fail('PAGE_PROTOCOL_UNSUPPORTED','historical page budgets cannot switch protocol')
+            return LegacyPageCalls(root,guard,transaction)
+        return super().__new__(cls)
