@@ -3,6 +3,7 @@ from hermes_source_units.input_budget import *
 from hermes_source_units.source_units import _load_json
 
 def observed(adapter,binding):
+    if adapter is None:return None  # Pure saved-input construction has no execution authority.
     path=adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}/presentation-contract.json'
     if not path.exists():return None
     row=_load_json(path)
