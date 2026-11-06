@@ -53,7 +53,7 @@ def compare(items,adapter,profile_name,*,semantic_policy=None,pairing_mode=None,
     from page_single_admission import admit,CONTRACT as PAIRING
     from page_pair_calls import key
     immutable_before=fingerprint([[p,v] for p,v in items])
-    budget=profile(profile_name);pending=copy.deepcopy(list(items));groups=[];held=[];splits=[];pair_trials=0
+    budget=profile(profile_name);pending=copy.deepcopy(list(items));groups=[];held=[];splits=[];pair_trials=0;pruned=0
     for _,v in pending:
         v['body_call_contract']=CONTRACT
         if semantic_policy:v['page_semantics_policy']=semantic_policy
@@ -77,6 +77,9 @@ def compare(items,adapter,profile_name,*,semantic_policy=None,pairing_mode=None,
             for i in peers:
                 peer=pending[i];qualification=pair(first,peer,admissions=admissions,mode='single_admission')
                 if not qualification['eligible']:continue
+                from page_single_admission import pair_input_lower_bound
+                if pair_input_lower_bound(admissions[key(first[0])],admissions[key(peer[0])])>budget['phases']['page-pair']['input_codepoints']:
+                    pruned+=1;continue
                 pair_trials+=1;trial=prepared([first,peer])
                 if trial[2]['budget_check']['fits']:
                     group.append(pending.pop(i));packed=trial;break
@@ -99,6 +102,7 @@ def compare(items,adapter,profile_name,*,semantic_policy=None,pairing_mode=None,
     assert fingerprint([[p,v] for p,v in items])==immutable_before
     return {'profile':profile_name,'pairing_mode':pairing_mode,'future_pairing_contract':future_pairing,'fit_partner_search':partner_search,'complete_pair_trials':pair_trials,'page_semantics_policy':semantic_policy,'same_planned_pages':len(items),'estimated_requests':len(groups),'pairs':sum(len(g['pages'])==2 for g in groups),
         'covered_pages':sum(len(g['pages']) for g in groups),'held_pages':sum(len(g['pages']) for g in held),
+        'impossible_pairs_pruned_by_proven_text_lower_bound':pruned,
         'original_evidence_and_qa_unchanged':True,'single_page_preparations':len(singles),
         'groups':groups,'held':held,'split_decisions':splits,'same_candidate_assignments':True,'actual_new_model_calls':0,
         'actual_token_usage':None,'actual_output_truncations':None,'actual_valid_bodies':None,'actual_additional_attempts':None,'model_wait_seconds':None,

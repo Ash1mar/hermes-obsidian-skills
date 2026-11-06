@@ -320,6 +320,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                         if scan.row(key(peer[0])):continue
                         decision=pair(first,peer,admissions=admissions)
                         if not decision['eligible']:continue
+                        from page_single_admission import pair_input_lower_bound
+                        if pair_input_lower_bound(admissions[key(first[0])],admissions[key(peer[0])])>limit:continue
                         trial=prepare([first,peer],prepare_request_projection,[],limit=limit,budget=budget)[2]
                         if trial['budget_check']['fits']:
                             group.append(pending.pop(i));break

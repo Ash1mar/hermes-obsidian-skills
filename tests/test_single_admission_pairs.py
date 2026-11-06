@@ -15,7 +15,7 @@ def admitted():
     for p,v in items:
         v['body_pairing_contract']=CONTRACT
         v['candidates'][0]['evidence_qa'][0].update(qa='needs-qa',qa_note='Uncertainty stays with this page; do not infer the missing formula.')
-        q=v['evidence_selection'];q['candidates_sha256']=fingerprint(v['candidates']);q['proof_sha256']=fingerprint({k:x for k,x in q.items() if k!='proof_sha256'})
+        q=v['evidence_selection'];q['view_sha256']=fingerprint(v['original_evidence']);q['candidates_sha256']=fingerprint(v['candidates']);q['proof_sha256']=fingerprint({k:x for k,x in q.items() if k!='proof_sha256'})
         size=prepare([(p,v)],prepare_request_projection,budget=budget)[2]['input_size']
         proofs[key(p)]=admit(p,v,size,40000,allowed=True,budget=budget)
     return items,proofs
@@ -97,3 +97,16 @@ def test_nonadjacent_fit_partners_avoid_two_unnecessary_singles():
     fit=compare(items,adapter,'pages-40000',pairing_mode='single_admission',partner_search=True)
     assert adjacent['estimated_requests']==3 and fit['estimated_requests']==2
     assert adjacent['covered_pages']==fit['covered_pages']==4 and fit['held_pages']==0
+
+def test_literal_text_pruning_is_a_lower_bound_for_every_supported_complete_encoding():
+    from page_single_admission import pair_input_lower_bound
+    items,proofs=admitted()
+    for same in (False,True):
+        group=copy.deepcopy(items)
+        if same:group[1][1]['original_evidence']=copy.deepcopy(group[0][1]['original_evidence']);group[1][1]['evidence_selection']=copy.deepcopy(group[0][1]['evidence_selection'])
+        for _,v in group:
+            texts=v['original_evidence']['texts'];texts[next(iter(texts))]='条件 AND/OR "exception"\n'*200
+        rows=[admit(p,v,10000,40000,allowed=True) for p,v in group]
+        bound=pair_input_lower_bound(*rows)
+        _,_,_,variants=prepare(group,prepare_request_projection,budget=profile('pages-40000'))
+        assert all(bound<=p['input_size'] for _,p in variants)
