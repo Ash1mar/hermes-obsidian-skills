@@ -43,6 +43,25 @@ def authenticated_call_recovery(entry):
             for r in rows))
 
 
+def authenticated_page_transport(request,entry):
+    """Accept an operator-sealed retry of exact existing page reservations."""
+    proof=entry.get('page_transport_retry',{});rows=proof.get('requests')
+    selected=[r for r in request.get('entries',[]) if r.get('node')==entry.get('node')]
+    return (entry.get('node')=='global-reduce' and entry.get('failure',{}).get('error_code')=='NATIVE_COMPLETION_UNKNOWN'
+        and bool(entry.get('ended_run_ids')) and proof.get('contract')=='durable-page-transport-recovery/v1'
+        and proof.get('new_semantic_ordinals')==0 and proof.get('original_unknowns_preserved') is True
+        and isinstance(proof.get('source_identity'),str) and len(proof['source_identity'])==64
+        and len(selected)==1 and selected[0].get('page_transport_retry') is True
+        and selected[0].get('task_id')==entry.get('previous_task_id')
+        and selected[0].get('failure_sha256')==entry.get('failure_sha256')
+        and isinstance(rows,list) and bool(rows) and len({r.get('request_id') for r in rows})==len(rows)
+        and all(isinstance(r.get('members'),dict) and 1<=len(r['members'])<=2
+            and set(r.get('page_reservations',{}))=={m.get('page_key') for m in r['members'].values()}
+            and isinstance(r.get('failure_ref'),str) and bool(r['failure_ref']) and bool(r.get('session_id'))
+            and all(isinstance(r.get(k),str) and len(r[k])==64 for k in ('request_id','wire_sha256','schema_sha256','failure_sha256'))
+            for r in rows))
+
+
 def authenticated_returned_output(entry):
     proof=entry.get('returned_native_output',{});rows=proof.get('outputs')
     return (entry.get('failure',{}).get('error_code')=='INVALID_CANONICAL_VALUE'
@@ -292,6 +311,7 @@ class ExecutionPlanMixin:
                     if (not isinstance(cause,str) or not cause or (entry.get('failure',{}).get('error_code')
                             not in ('NATIVE_WORKER_STOPPED','WORKFLOW_STOPPED','DISPATCH_ARTIFACT_CHANGED')
                             and not authenticated_call_recovery(entry) and not authenticated_returned_output(entry)
+                            and not authenticated_page_transport(request,entry)
                             and not authenticated_local_amendment_recovery(request,entry))):
                         fail('STALE_INPUT','Reduce cancellation recovery lacks its exact ended native identity')
                 if scope=='build-native/v1':
