@@ -22,4 +22,6 @@ def pin(workflow,w):
             _write_atomic(path,_json_bytes(record))
     if any(record.get(k)!=v for k,v in identity.items()) or record.get('contract') not in ('legacy',CONTRACT):
         raise ContractError('STALE_INPUT','$','presentation identity changed')
+    if w.get('page_execution_contract') and record.get('page_execution_contract')!=w['page_execution_contract']:
+        raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','workflow and presentation protocol differ')
     return record

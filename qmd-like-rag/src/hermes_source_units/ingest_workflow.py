@@ -302,6 +302,7 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
             "artifacts": [], "source_outcomes": [], "cancel_requested": False,
             "resume_stage": None, "revision": 1, "template_pins": [],
             "start_digest": request["input_digest"],
+            "page_execution_contract": "unified-page-execution/v3",
         }
         validate_record("ingest_workflow", value)
         from .runtime_policy import check_provider_pin
@@ -310,9 +311,14 @@ class FileIngestWorkflowService(PassSkipMixin, ExecutionPlanMixin, PassRevisionM
             if path.exists():
                 existing = self._load(workflow_id)
                 if existing["start_digest"] == request["input_digest"]:
+                    if existing.get('page_execution_contract'):
+                        from .presentation_contract import pin
+                        pin(self,existing)
                     return existing
                 _fail("IDEMPOTENCY_CONFLICT", "workflow id already exists with other inputs")
             self._write(value)
+            from .presentation_contract import pin
+            pin(self,value)
         return value
 
     def status(self, workflow_id: str, compact: bool = False) -> dict[str, Any]:

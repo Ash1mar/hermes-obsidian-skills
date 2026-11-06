@@ -57,3 +57,11 @@ def test_payload_is_checked_again_in_next_operation(system):
     (b.root/pointer['ref']).write_text('{}')
     with pytest.raises(ContractError,match='SOURCE_CHANGED'):
         with b.scan() as s:s.request(q)
+
+
+def test_valid_replay_never_rewrites_index_or_refreshes_allowance(system):
+    b,*_=system;a=item('a');q=reserve(b,a);returned(b,q,{'p1':{'content':'done'}});settle(system,q)
+    before=b.path.read_bytes();settle(system,q)
+    assert b.path.read_bytes()==before
+    r=b.read();r['pages'][key(a[0])]['attempts']=[]
+    with pytest.raises(ContractError):b.save(r)

@@ -92,6 +92,14 @@ def create(service, authorization_pointer):
         service.validate(base['release_id'])
     if q['retrieval_scope'] != service.source.vault_manifest['vault']['id']:
         fail('retrieval authorization belongs to another Vault')
+    exclusion_evidence=[]
+    if initial and workflow.get('page_execution_contract')=='unified-page-execution/v3':
+        from .qa_policy import reports
+        exclusion_evidence=[pin(service.vault,ref) for ref in reports(service.vault,workflow['workflow_id'])]
+        for pointer in workflow.get('execution_recovery_history',[]):
+            proof=pin(service.vault,pointer['report_ref'])
+            if proof['sha256']!=pointer['report_sha256']:fail('workflow exclusion authority changed')
+            exclusion_evidence.append(proof)
     from .delivery_scope import release_closures
     scopes = release_closures(service.build, base.get('delivery_scopes', []),
                                [r['run_id'] for r in base['build_runs']])
@@ -163,10 +171,10 @@ def create(service, authorization_pointer):
                    or service._contribution(r,current,{})!='active'
                    for r in page['support_refs']):
                 reasons.append('source-governance-ineligible')
-            evidence = []
+            evidence = list(exclusion_evidence)
             if bound:
                 row, _ = bound
-                evidence = ([row['manifest']] if row.get('completed_run')
+                evidence.extend([row['manifest']] if row.get('completed_run')
                             else [row['pointer'], row['closure']['authorization']])
                 # Native closure already validates exact acceptance. Pin the
                 # unchanged inputs that made this acceptance reusable.

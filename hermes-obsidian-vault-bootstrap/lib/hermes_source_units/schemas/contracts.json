@@ -2403,6 +2403,7 @@
         "resume_stage": {"anyOf": [{"type": "string", "minLength": 1}, {"type": "null"}]},
         "revision": {"type": "integer", "minimum": 1},
         "start_digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "page_execution_contract": {"const": "unified-page-execution/v3"},
         "template_pins": {"type": "array", "items": {"$ref": "#/$defs/ingest_workflow_template_pin"}, "minItems": 0},
         "build_acceptance_adoption": {"type": "object", "properties": {
           "adoption_id": {"type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$"},

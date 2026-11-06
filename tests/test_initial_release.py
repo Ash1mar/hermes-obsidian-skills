@@ -178,6 +178,21 @@ def grant_request(service,grant):
     return json.loads((service.vault/grant['ref']).read_text())['request']
 
 
+@pytest.mark.parametrize('basis',['initial','completed_initial'])
+def test_new_protocol_partial_and_complete_publication_pin_exclusion_proof(request,basis):
+    from hermes_source_units.qa_policy import gap
+    service,w,grant,_,run=request.getfixturevalue(basis)
+    w['page_execution_contract']='unified-page-execution/v3'
+    ref=gap(service.vault,w['workflow_id'],'global-reduce',{'pages':[{'path':'held.md'}]},
+        [{'code':'SEMANTIC_REVIEW_REQUIRED','reason':'isolated retained exclusion proof'}])
+    with planner(service.vault):pointer=create(service,grant)
+    record=json.loads((service.vault/pointer['ref']).read_text())
+    assert record['pages'] and all(ref in {p['ref'] for p in row['evidence']} for row in record['pages'])
+    row=record['pages'][0];page=service._page_revision(row['page_id'],row['revision_id'])
+    (service.vault/ref).write_text('{}')
+    with pytest.raises(ContractError):effective(service,page,pointer)
+
+
 @pytest.mark.parametrize('change',['vault','bootstrap','source','plan','transaction','qa-policy','human','published'])
 def test_initial_authority_rejects_scope_or_evidence_changes(initial,change,monkeypatch):
     service,w,pointer,plan,run=initial

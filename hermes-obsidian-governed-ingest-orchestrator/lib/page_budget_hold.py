@@ -16,6 +16,11 @@ def proof(adapter,value,page):
         'original_evidence':evidence,'page_members':{'p1':key(page)}}
     sc=schema_for('page-pair',wire)
     variants=[prepare_request_projection('page-pair',v,sc,images) for v in (wire,{**wire,'evidence_encoding':'lossless-page-pair/v1'})]
+    from page_protocol import strict
+    if strict(value['view']):
+        from page_request import prepare
+        _,sc,_,choices=prepare([(page,view)],prepare_request_projection,images)
+        variants=[p for _,p in choices]
     # Isolation requires EVERY supported full representation to exceed the bound.
     size=min(p['input_size'] for p in variants)
     return {'contract':'complete-slot-budget/v1','page_key':key(page),'input_sha256':fingerprint(view),

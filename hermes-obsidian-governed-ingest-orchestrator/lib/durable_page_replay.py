@@ -8,10 +8,12 @@ from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json,_vault_path
 from hermes_source_units.validation import fingerprint
 from page_pair_calls import key,CONTRACT
+from page_budget_store import operation,Snapshot,file_bytes,_READS
+SUPPORTED_EXECUTION_PROTOCOL='unified-page-execution/v3'
 
 def fail(message):raise ContractError('SEMANTIC_OUTPUT_HELD','$',message)
 
-def authenticate_request(adapter,binding,value,request,prove):
+def _authenticate_inputs(adapter,binding,value,request):
     from fixed_semantic_recovery import _request_text
     from fixed_page_evidence import restore_pair
     from fixed_semantic import prepare_request_projection
@@ -19,9 +21,8 @@ def authenticate_request(adapter,binding,value,request,prove):
     from fixed_semantic_media import image_catalog,select_images
     import fixed_reduce
     root=adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}'
-    ledger=_load_json(root/'page-call-budget.json')
-    if ledger.get('contract')!=CONTRACT:fail('unknown page receipt contract')
-    q=ledger['requests'][request];members=[[m['page_key'],m['ordinal']] for m in q['members'].values()]
+    snapshot=Snapshot(root);ledger=snapshot.index
+    q=snapshot.request(request);members=[[m['page_key'],m['ordinal']] for m in q['members'].values()]
     identity={'contract':CONTRACT,'members':members,'wire':q['wire'],'schema':q['schema'],'epoch':q['epoch']}
     if 'image_inputs' in q:identity['image_inputs']=q['image_inputs']
     if not 1<=len(members)<=2 or q['request_id']!=request or fingerprint(identity)!=request:fail('request member/wire identity changed')
@@ -48,18 +49,30 @@ def authenticate_request(adapter,binding,value,request,prove):
     response=q['response'];path=_vault_path(adapter.workflow.vault,response['audit_ref']);audit=_load_json(path)
     if (audit.get('page_request_id')!=request or audit.get('phase')!='page-pair' or audit.get('model')!=response['metadata']
             or fingerprint(response['raw'])!=response['raw_sha256']):fail('page audit or raw response changed')
-    native=prove(path,q['wire'],q['schema'],images)
-    if not native or native[0]!=response['raw']:fail('page response lacks exact ended native proof')
-    return ledger,q,wire_view
+    return ledger,q,wire_view,path,images
 
+@operation()
+def authenticate_request(adapter,binding,value,request,prove):
+    scope=_READS.get()
+    k=('page-request',str(adapter.workflow.vault),fingerprint(binding),value.get('input_id') or fingerprint(value),request)
+    if k not in scope['proofs']:
+        scope['proofs'][k]=_authenticate_inputs(adapter,binding,value,request)
+    ledger,q,wire,path,images=scope['proofs'][k]
+    # Live authority is never replaced by the cached mechanical payload proof.
+    native=prove(path,q['wire'],q['schema'],images)
+    if not native or native[0]!=q['response']['raw']:fail('page response lacks exact ended native proof')
+    return ledger,q,wire
+
+
+@operation()
 def read_outcome(adapter,binding,view,prove,images,*,value=None):
     from semantic_output import check
     from fixed_semantic import decode_semantic_response
     root=adapter.workflow.vault/f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}'
     path=root/'page-call-budget.json'
     if not path.exists():return None
-    canonical={k:v for k,v in view.items() if k!='evidence_encoding'};ledger=_load_json(path)
-    k=key({'identity':canonical['identity']});row=ledger['pages'].get(k)
+    canonical={k:v for k,v in view.items() if k!='evidence_encoding'};snapshot=Snapshot(root)
+    k=key({'identity':canonical['identity']});row=snapshot.row(k)
     if row is None:return None
     if row['input_sha256']!=fingerprint(canonical) or not 1<=len(row['attempts'])<=2:fail('page input or allowance changed')
     last=None
@@ -82,7 +95,7 @@ def read_outcome(adapter,binding,view,prove,images,*,value=None):
                     or r['response_sha256']!=q['response']['raw_sha256']
                     or r['receipt_id']!=fingerprint({k:v for k,v in r.items() if k!='receipt_id'})):fail('valid page receipt changed')
             expected=f'_system/ledgers/ingest-workflows/{binding["workflow_id"]}/page-drafts/{fingerprint(canonical)}.md'
-            if r['saved']['draft_ref']!=expected or _vault_path(adapter.workflow.vault,expected).read_text()!=draft['content']:fail('saved page body changed')
+            if r['saved']['draft_ref']!=expected or file_bytes(_vault_path(adapter.workflow.vault,expected)).decode()!=draft['content']:fail('saved page body changed')
             last={'kind':'valid','ref':r['audit_ref'],'draft':draft,'error':None}
         else:
             r=attempt.get('failure_receipt',{})

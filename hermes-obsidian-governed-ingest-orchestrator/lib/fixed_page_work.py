@@ -27,7 +27,10 @@ def measure(adapter,value,page,caller,project):
     from fixed_semantic import HermesCaller
     from fixed_semantic_media import image_catalog,select_images,require_images_fit
     view=fixed_reduce.page_view(adapter,value,page)
-    if isinstance(caller,HermesCaller):
+    from page_protocol import strict
+    future=strict(view)
+    if future:view['page_scope_contract']='assigned-candidates/v1'
+    if isinstance(caller,HermesCaller) and not future:
         from fixed_page_evidence import select
         view=select(adapter,value['binding'],'page-write',view,project)
     images=select_images(view.get('original_evidence',{}).get('tasks',[]),
@@ -36,6 +39,9 @@ def measure(adapter,value,page,caller,project):
     except ContractError as exc:
         if exc.code!='SEMANTIC_IMAGE_OVERSIZE':raise
         return view,LIMIT+1
+    if future:
+        from page_request import prepare
+        return view,prepare([(page,view)],project,images)[2]['input_size']
     return view,project('page-write',view,schema('page-write'),images)['input_size']
 
 

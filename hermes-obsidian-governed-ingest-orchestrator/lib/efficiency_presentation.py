@@ -105,8 +105,13 @@ def page_contract(adapter,binding):
 def observed_profile(adapter,binding):
     """Read an already fixed format for stopped previews; never create a pin."""
     path=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/presentation-contract.json"
-    if not path.exists():return {'contract':'legacy'}
+    if not path.exists():
+        w=adapter.workflow.status(binding['workflow_id'])
+        if w.get('page_execution_contract'):raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','new workflow is missing its pinned execution protocol')
+        return {'contract':'legacy'}
     w=adapter.workflow.status(binding['workflow_id']);record=_load_json(path)
+    if w.get('page_execution_contract') and record.get('page_execution_contract')!=w['page_execution_contract']:
+        raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','workflow and page protocol differ')
     if (record.get('workflow_id')!=w['workflow_id'] or record.get('scope_sha256')!=fingerprint(w['scope'])
             or record.get('contract') not in ('legacy',CONTRACT)):
         raise ContractError('STALE_INPUT','$','observed presentation identity changed')

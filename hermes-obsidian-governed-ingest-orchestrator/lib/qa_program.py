@@ -12,7 +12,8 @@ SCOPE='qa-policy/v1'
 def execution_code_fingerprint():
     root=Path(__file__).parent
     return fingerprint({n:hashlib.sha256((root/n).read_bytes()).hexdigest()
-        for n in ('qa_program.py','fixed_page_work.py','fixed_semantic.py',
+        for n in ('page_protocol.py','page_pair_eligibility.py','page_budget_store.py','split_page_calls.py','page_request.py',
+                  'qa_program.py','fixed_page_work.py','fixed_semantic.py',
                   'native_page_pairs.py','page_pair_calls.py','page_dependencies.py','durable_page_replay.py','page_budget_hold.py',
                   'source_unknown_recovery.py','native_stream_policy.py','returned_native_output.py',
                   'network_connection_retry.py')})
@@ -45,6 +46,12 @@ def isolate_pages(adapter,binding,value,state,written,held,planning_failure):
     from page_budget_hold import verified
     by_path={p['path']:p for p in state['pages']}
     for h in held:
+        if h.get('origin')=='required-page-evidence/v1' and h.get('path') in by_path:
+            from fixed_reduce import page_view
+            from page_pair_eligibility import inspect
+            observed=page_view(adapter,value,by_path[h['path']]);observed['page_scope_contract']='assigned-candidates/v1'
+            if inspect(observed)==h.get('evidence_proof') and h['evidence_proof']['required_missing']:continue
+            return None
         if h.get('code')=='SEMANTIC_REVIEW_REQUIRED' and h.get('audit_ref'):continue
         if h.get('path') in by_path and verified(adapter,value,by_path[h['path']],h):continue
         return None
@@ -86,6 +93,9 @@ def page_link_failures(value,state,written):
     return held
 
 
+from page_budget_store import operation as page_read_operation
+
+@page_read_operation()
 def verify_recovery(adapter,w,node,binding,entry,failure,runs):
     """Authenticate current immutable inputs and ended known native responses."""
     from fixed_reduce import preview_snapshot

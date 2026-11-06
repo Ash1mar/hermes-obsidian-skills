@@ -20,7 +20,9 @@ def proof_scope():
     if _PROOFS.get() is not None:
         yield;return
     scope={'dbs':{},'proofs':{},'reports':{}};token=_PROOFS.set(scope)
-    try:yield
+    try:
+        from page_budget_store import operation
+        with operation():yield
     finally:
         _PROOFS.reset(token)
         for db in scope['dbs'].values():db.close()
