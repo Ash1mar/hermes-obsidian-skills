@@ -64,3 +64,18 @@ def test_native_executor_reuses_qa_single_admission_and_preserves_stopped_receip
         return original(*args,**kwargs)
     monkeypatch.setattr(native,'execute',run)
     test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypatch,cancel_after_first=stop,dispatch='unified-page-execution/v3',special=None)
+
+def test_saved_comparison_changes_eligibility_without_changing_budget_or_materials():
+    from types import SimpleNamespace as NS
+    from saved_body_inputs import compare
+    items,_=admitted()
+    for _,v in items:v.pop('body_pairing_contract')
+    adapter=NS(workflow=NS(knowledge=NS(source=object())))
+    before=copy.deepcopy(items)
+    old=compare(items,adapter,'pages-40000')
+    qa=compare(items,adapter,'pages-40000',pairing_mode='qa_only')
+    new=compare(items,adapter,'pages-40000',pairing_mode='single_admission')
+    assert old['estimated_requests']==2 and qa['estimated_requests']==new['estimated_requests']==1
+    assert old['covered_pages']==qa['covered_pages']==new['covered_pages']==2
+    assert items==before and all(r['original_evidence_and_qa_unchanged'] for r in (old,qa,new))
+    assert all(r['single_page_preparations']==2 for r in (old,qa,new))

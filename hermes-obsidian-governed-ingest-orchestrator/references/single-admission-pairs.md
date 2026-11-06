@@ -27,3 +27,13 @@ reuse of the existing single-page media proof are established. Pairing itself
 does not open asset files or invoke a model to decide whether QA/assets matter.
 Measure actual asset reads, bytes and time separately; real pair-vs-concurrent-
 single wait/token/output/quality comparisons need separate native authorization.
+
+Use `python3 "<skill-dir>/scripts/compare_single_admission_pairs.py" --vault <vault>
+--workflow-id <id> --output <outside-vault-report>` for a read-only fixed-plan
+comparison. Keep40000 constant: original eligibility, remove only QA splitting,
+then reuse all text-single admissions. The final row additionally includes the
+new generation-only instructions and pairing pin in the complete request.
+Single inputs prepare once per comparison, with no pair-driven asset rescans.
+Counts of overlapping QA pair judgments are not saved model calls. Historical
+outcomes/budgets stay untouched; this is a counterfactual plan before outcomes,
+never authority to resend the existing workflow's completed or isolated pages.
