@@ -53,3 +53,25 @@ def test_missing_dispatch_cannot_enter_legacy_generator(tmp_path,monkeypatch):
     with pytest.raises(ContractError,match='PAGE_PROTOCOL_UNSUPPORTED'):
         fixed_page_work.execute(adapter,{'workflow_id':'future'},{'view':{'page_execution_contract':CONTRACT}},
             {'pages':[]},None,lambda *_:pytest.fail('legacy called'),None,None)
+
+
+def test_installed_protocol_preflight_checks_the_complete_chain():
+    preflight({'page_execution_contract':CONTRACT,'page_budget_contract':BUDGET})
+
+
+def test_same_complete_builder_measures_single_and_pair_without_evidence_loss():
+    from page_request import prepare
+    from fixed_semantic import prepare_request_projection
+    from fixed_page_evidence import restore_pair
+    from fixed_semantic_recovery import _request_text
+    import json
+    rows=views()
+    for row in rows:row[0]['identity']=row[1]['identity']
+    for group in ([rows[0]],rows):
+        view,sc,prepared,_=prepare(group,prepare_request_projection)
+        body=json.loads(_request_text(prepared['wire']['user']))['input']
+        if body.get('evidence_encoding')=='lossless-page-pair/v1':body=restore_pair(body)
+        assert body['original_evidence']==rows[0][1]['original_evidence']
+        assert len(body['pages'])==len(group)
+        assert 'Write only the assigned candidates' in prepared['wire']['system']
+        assert all(p['candidates'][0]['evidence_qa'][0]['qa_note'] for p in body['pages'].values())

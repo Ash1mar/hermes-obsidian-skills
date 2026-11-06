@@ -16,15 +16,24 @@ def fail(message):raise ContractError('SOURCE_CHANGED','$',message)
 def operation():
     current=_READS.get()
     if current is not None:yield current;return
-    value={'indexes':{},'payloads':{},'proofs':{},'index_loads':{},'payload_loads':{}}
+    value={'indexes':{},'payloads':{},'proofs':{},'index_loads':{},'payload_loads':{},'bytes':{},'file_loads':{}}
     token=_READS.set(value)
     try:yield value
     finally:_READS.reset(token)
 
+def file_bytes(path,*,fresh=False):
+    p=Path(path);scope=_READS.get();key=str(p)
+    if not fresh and scope is not None and key in scope['bytes']:return scope['bytes'][key]
+    data=p.read_bytes()
+    if scope is not None:
+        scope['file_loads'][key]=scope['file_loads'].get(key,0)+1
+        if not fresh:scope['bytes'][key]=data
+    return data
+
 def load_index(root,*,fresh=False):
     p=Path(root)/'page-call-budget.json';scope=_READS.get();key=str(p)
     if not fresh and scope is not None and key in scope['indexes']:return scope['indexes'][key]
-    value=json.loads(p.read_text()) if p.exists() else {'contract':INDEX,'version':0,'pages':{},'requests':{}}
+    value=json.loads(file_bytes(p,fresh=fresh)) if p.exists() else {'contract':INDEX,'version':0,'pages':{},'requests':{}}
     if value.get('contract') not in (INDEX,WIRE):fail('unknown page budget contract')
     if scope is not None:
         scope['index_loads'][key]=scope['index_loads'].get(key,0)+1
@@ -40,7 +49,7 @@ def payload(root,pointer):
     p=target(root,pointer['ref']);scope=_READS.get();key=(str(p),pointer['sha256'])
     if scope is not None and key in scope['payloads']:return scope['payloads'][key]
     if scope is not None and any(k[0]==str(p) for k in scope['payloads']):fail('conflicting payload hashes in one operation')
-    raw=p.read_bytes()
+    raw=file_bytes(p)
     if hashlib.sha256(raw).hexdigest()!=pointer['sha256']:fail('immutable page payload changed')
     value=json.loads(raw)
     if scope is not None:
@@ -64,7 +73,7 @@ def orphan(root,kind,identity):
             if key[0]==str(p):return {'ref':ref,'sha256':key[1]}
     if not p.exists():return None
     # Deterministic crash recovery discovery. Cache these exact bytes too.
-    raw=p.read_bytes();pointer={'ref':ref,'sha256':hashlib.sha256(raw).hexdigest()}
+    raw=file_bytes(p);pointer={'ref':ref,'sha256':hashlib.sha256(raw).hexdigest()}
     scope=_READS.get()
     if scope is not None:
         key=(str(p),pointer['sha256'])

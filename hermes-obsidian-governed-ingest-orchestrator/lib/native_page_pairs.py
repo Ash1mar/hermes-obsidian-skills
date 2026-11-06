@@ -95,8 +95,22 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             observe(binding,'output_boundary_or_disposition',page_path=page['path']);return None
         view,n=measure(adapter,value,page,caller,project)
         if per_page:view={k:v for k,v in view.items() if k!='evidence_encoding'}
+        if strict(value['view']):
+            from page_pair_eligibility import inspect
+            qualification=inspect(view)
+            if qualification['required_missing']:
+                held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':'page-write',
+                    'code':'PAGE_REQUIRED_EVIDENCE_MISSING','reason':'assigned support or required asset is missing',
+                    'origin':'required-page-evidence/v1','evidence_proof':qualification})
+                observe(binding,'required_evidence_missing',page_path=page['path'],qualification=qualification);continue
         if n>30000:
             if per_page:
+                if strict(value['view']):
+                    from page_budget_hold import proof
+                    held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':'page-write',
+                        'code':'READING_WINDOW_OVERSIZE','reason':'complete slot request exceeds bound; no reservation consumed',
+                        'origin':'complete-slot-budget/v1','budget_proof':proof(adapter,value,page)})
+                    observe(binding,'complete_input_oversize',page_path=page['path'],input_codepoints=n);continue
                 held.append({'path':page['path'],'candidate_refs':page['candidate_refs'],'phase':'page-write',
                     'code':'READING_WINDOW_OVERSIZE','reason':'complete evidence still exceeds page budget'})
                 observe(binding,'complete_input_oversize',page_path=page['path'],input_codepoints=n);continue
@@ -200,12 +214,16 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             from fixed_semantic_media import image_catalog,select_images,require_images_fit
             if any(m.get('asset') for t in evidence.get('tasks',[]) for m in t.get('materials',[])):
                 images=select_images(evidence['tasks'],image_catalog(current_owner(),evidence));require_images_fit(images)
-        sc=schema_for('page-pair',wire_view);prepared=prepare_request_projection('page-pair',wire_view,sc,images)
+        if strict(value['view']):
+            from page_request import prepare
+            wire_view,sc,prepared,_=prepare(group,prepare_request_projection,images,diagnostics)
+        else:
+            sc=schema_for('page-pair',wire_view);prepared=prepare_request_projection('page-pair',wire_view,sc,images)
         if per_page:
             from request_cost import rank
             encoded={**wire_view,'evidence_encoding':'lossless-page-pair/v1'}
             packed=prepare_request_projection('page-pair',encoded,sc,images)
-            if packed['input_size']<=30000 and rank(packed)<rank(prepared):wire_view,prepared=encoded,packed
+            if not strict(value['view']) and packed['input_size']<=30000 and rank(packed)<rank(prepared):wire_view,prepared=encoded,packed
             if len(group)==2:
                 singles=[]
                 for page,view in group:
@@ -214,7 +232,10 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                     single_schema=schema_for('page-pair',single)
                     options=[prepare_request_projection('page-pair',v,single_schema,[]) for v in
                         (single,{**single,'evidence_encoding':'lossless-page-pair/v1'})]
-                    singles.append(min(options,key=rank))
+                    if strict(value['view']):
+                        from page_request import prepare
+                        singles.append(prepare([(page,view)],prepare_request_projection,images)[2])
+                    else:singles.append(min(options,key=rank))
                 costs=[prepared,*singles]
                 metric='text_tokens' if all(p['request_cost'].get('text_tokens') is not None for p in costs) else 'utf8_bytes'
                 pair_cost=prepared['request_cost'][metric];single_cost=sum(p['request_cost'][metric] for p in singles)

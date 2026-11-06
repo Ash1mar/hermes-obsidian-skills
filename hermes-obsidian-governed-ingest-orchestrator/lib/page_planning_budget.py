@@ -25,15 +25,21 @@ def probe(value,handles,project):
         'path':'entities/cost-probe-only.md','candidate_refs':list(handles)}
     hypothetical={**value,'backend':{**value['backend'],'existing_pages':{}}}
     view=page_view(None,hypothetical,page);view['page_scope_contract']='assigned-candidates/v1'
-    variants=[view,{**view,MARKER:V1},{**view,MARKER:COMPACT_CONTRACT}]
-    projections=[project('page-write',v,schema('page-write'),[]) for v in variants]
-    fitting=[p for p in projections if p['input_size']<=30000] or projections
-    selected=min(fitting,key=lambda p:p['input_size'])
-    slot={'contract':'durable-page-calls/v1','pages':{'p1':{k:v for k,v in view.items() if k not in ('original_evidence',MARKER)}},
-        'original_evidence':view.get('original_evidence',{}),'page_members':{'p1':fingerprint(page['identity'])}}
-    options=[project('page-pair',v,schema_for('page-pair',slot),[]) for v in (slot,{**slot,MARKER:'lossless-page-pair/v1'})]
-    slot_fit=[p for p in options if p['input_size']<=30000] or options
-    actual=min(slot_fit,key=lambda p:p['input_size'])
+    from page_protocol import strict
+    if strict(value['view']):
+        from page_request import prepare
+        actual=prepare([(page,view)],project,[])[2]
+        selected=actual
+    else:
+        variants=[view,{**view,MARKER:V1},{**view,MARKER:COMPACT_CONTRACT}]
+        projections=[project('page-write',v,schema('page-write'),[]) for v in variants]
+        fitting=[p for p in projections if p['input_size']<=30000] or projections
+        selected=min(fitting,key=lambda p:p['input_size'])
+        slot={'contract':'durable-page-calls/v1','pages':{'p1':{k:v for k,v in view.items() if k not in ('original_evidence',MARKER)}},
+            'original_evidence':view.get('original_evidence',{}),'page_members':{'p1':fingerprint(page['identity'])}}
+        options=[project('page-pair',v,schema_for('page-pair',slot),[]) for v in (slot,{**slot,MARKER:'lossless-page-pair/v1'})]
+        slot_fit=[p for p in options if p['input_size']<=30000] or options
+        actual=min(slot_fit,key=lambda p:p['input_size'])
     evidence=view.get('original_evidence',{})
     result={'candidate_refs':list(handles),'reading_refs':[t['task'] for t in evidence.get('tasks',[])],
         'complete_request_codepoints':max(selected['input_size'],actual['input_size']),

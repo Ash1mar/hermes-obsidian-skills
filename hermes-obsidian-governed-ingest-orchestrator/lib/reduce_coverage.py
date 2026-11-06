@@ -10,7 +10,7 @@ from hermes_source_units.reduce_coverage import active,pinned,fail
 
 def contract_hash():
     root=Path(__file__).parent
-    names=['reduce_coverage.py','reduce_coverage_reopen.py','fixed_page_work.py','fixed_reduce.py',
+    names=['page_protocol.py','page_pair_eligibility.py','page_budget_store.py','split_page_calls.py','page_request.py','reduce_coverage.py','reduce_coverage_reopen.py','fixed_page_work.py','fixed_reduce.py',
            'reduce_execution_recovery.py','hermes_source_units/execution_plan.py',
            'hermes_source_units/reduce_coverage.py','hermes_source_units/knowledge_build.py',
            'hermes_source_units/schemas/contracts.json','qa_scope.py','durable_page_replay.py','page_budget_hold.py']
@@ -22,6 +22,9 @@ def current(adapter,binding):
     return active(adapter.workflow.vault,adapter.workflow.status(binding['workflow_id']))
 
 
+from page_budget_store import operation as page_read_operation,Snapshot,file_bytes
+
+@page_read_operation()
 def journal_seals(adapter,manifest):
     """Seal the finite outcomes already authenticated by the admission."""
     root=adapter.workflow.vault/f"_system/ledgers/ingest-workflows/{manifest['workflow_id']}/output-attempts"
@@ -34,11 +37,11 @@ def journal_seals(adapter,manifest):
         found=by_input.get(row['input_sha256'],[])
         durable=root.parent/'page-call-budget.json'
         if not found and durable.exists():
-            record=_load_json(durable)
-            pages=[p for p in record['pages'].values() if p.get('input_sha256')==row['input_sha256']]
+            snapshot=Snapshot(durable.parent)
+            pages=[snapshot.row(k) for k,p in snapshot.index['pages'].items() if p.get('input_sha256')==row['input_sha256']]
             if len(pages)!=1 or pages[0].get('receipt',{}).get('audit_ref')!=row['audit_ref']:fail('durable native body lacks unique receipt')
             audit=_load_json(_vault_path(adapter.workflow.vault,row['audit_ref']))
-            seals.append({'ref':durable.relative_to(adapter.workflow.vault).as_posix(),'sha256':hashlib.sha256(durable.read_bytes()).hexdigest(),
+            seals.append({'ref':durable.relative_to(adapter.workflow.vault).as_posix(),'sha256':hashlib.sha256(file_bytes(durable)).hexdigest(),
                 'audit_ref':row['audit_ref'],'audit_semantic_sha256':fingerprint({k:v for k,v in audit.items() if k not in ('receipt_refs','validated')})})
             continue
         if len(found)!=1:fail('native body lacks a unique finite journal')

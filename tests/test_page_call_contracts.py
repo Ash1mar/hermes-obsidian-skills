@@ -169,9 +169,10 @@ def test_page_ack_is_published_before_second_page_failure(system):
 
 
 @pytest.mark.parametrize('cancel_after_first',[False,True])
-@pytest.mark.parametrize('dispatch',[None,'per-page-dispatch/v2'])
+@pytest.mark.parametrize('dispatch',[None,'per-page-dispatch/v2','unified-page-execution/v3'])
 @pytest.mark.parametrize('special',[None,'oversize','asset'])
 def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypatch,cancel_after_first,dispatch,special):
+    if special and dispatch=='unified-page-execution/v3':pytest.skip('new protocol uses complete-request budget/asset fixtures, not the historical fake size probe')
     if special and (not dispatch or cancel_after_first):pytest.skip('mixed-page cases use future dispatch without interruption')
     from types import SimpleNamespace as NS
     import native_page_pairs as native
@@ -194,7 +195,10 @@ def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypa
     state={'pages':pages};value={'view':{'page_call_contract':'durable-page-calls/v1',
         'candidates':[{'candidate':p['candidate_refs'][0],'source_evidence':[]} for p in pages],
         'original_evidence':{'tasks':[]}},'backend':{'existing_pages':{}}}
-    if dispatch:value['view']['page_dispatch_contract']=dispatch
+    if dispatch:value['view']['page_dispatch_contract']='per-page-dispatch/v2'
+    if dispatch=='unified-page-execution/v3':
+        value['view']['page_execution_contract']=dispatch
+        for view in views.values():view.update(page_execution_contract=dispatch,page_scope_contract='assigned-candidates/v1')
     adapter.workflow.knowledge=NS()
     import hermes_source_units.delivery_scope as delivery
     monkeypatch.setattr(delivery,'guard_page',lambda *_:None)
@@ -213,7 +217,7 @@ def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypa
     monkeypatch.setattr(semantic_output,'output_boundary',lambda *_:(None,None))
     monkeypatch.setattr(reduce_disposition,'page_permit',lambda *_:None)
     original=PageCalls
-    monkeypatch.setattr(native,'PageCalls',lambda root,guard,transaction:original(root,guard))
+    monkeypatch.setattr(native,'PageCalls',lambda root,guard,transaction,**kw:original(root,guard,**kw))
     monkeypatch.setattr(fixed_global_packets,'complete',lambda value,s:{'pages':copy.deepcopy(s['pages'])})
     raw_by={};calls=[];receipts=[]
     def model(adapter,binding,phase,view,caller,limit,**kw):
@@ -227,7 +231,8 @@ def test_native_pair_bridge_recovers_receipts_without_new_call(tmp_path,monkeypa
         receipts.append(x)
         if cancel_after_first and not cancelled:
             cancelled.append(True);w['cancel_requested']=True
-    args=(adapter,binding,value,state,object(),model,ack,lambda *a:None,
+    from fixed_semantic import prepare_request_projection
+    args=(adapter,binding,value,state,object(),model,ack,prepare_request_projection if dispatch=='unified-page-execution/v3' else lambda *a:None,
           lambda a,v,p,c,pr:(copy.deepcopy(views[p['path']]),30001 if special=='oversize' and p['path']=='extra.md' else 100))
     if cancel_after_first:
         with pytest.raises(ContractError,match='WORKFLOW_STOPPED'):native.execute(*args)
@@ -260,7 +265,7 @@ def test_cancel_before_atomic_publication_reserves_nothing(tmp_path):
 
 def test_recovery_fingerprint_includes_page_contract_modules(tmp_path,monkeypatch):
     import qa_program
-    names=('qa_program.py','fixed_page_work.py','fixed_semantic.py','native_page_pairs.py','page_pair_calls.py','page_dependencies.py','durable_page_replay.py','page_budget_hold.py',
+    names=('page_protocol.py','page_pair_eligibility.py','page_budget_store.py','split_page_calls.py','page_request.py','qa_program.py','fixed_page_work.py','fixed_semantic.py','native_page_pairs.py','page_pair_calls.py','page_dependencies.py','durable_page_replay.py','page_budget_hold.py',
         'source_unknown_recovery.py','native_stream_policy.py','returned_native_output.py','network_connection_retry.py')
     for name in names:(tmp_path/name).write_text('isolated code '+name)
     monkeypatch.setattr(qa_program,'__file__',str(tmp_path/'qa_program.py'))

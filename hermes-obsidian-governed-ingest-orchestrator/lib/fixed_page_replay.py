@@ -13,6 +13,8 @@ def read_outcome(adapter,binding,view,prove,images,*,value=None):
     if not path.is_file():
         from durable_page_replay import read_outcome as durable
         return durable(adapter,binding,view,prove,images,value=value)
+    from page_protocol import strict
+    if strict(view):raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','new page protocol cannot read an executable legacy journal')
     journal=_load_json(path);attempts=journal.get('attempts',[]);schema=schema_for('page-write',view)
     from reduce_disposition import output_permit,read_recovery
     permit=output_permit(adapter,binding,path,journal)

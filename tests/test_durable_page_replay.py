@@ -40,6 +40,18 @@ def test_saved_native_body_replays_without_writes_or_allowance_change(saved):
     assert read_outcome(a,b,view,prove,[],value=v)==result and book.path.read_bytes()==before
     assert len(next(iter(book.read()['pages'].values()))['attempts'])==1
 
+
+def test_one_read_only_operation_loads_each_payload_once_but_keeps_authority_live(saved):
+    from page_budget_store import operation
+    a,b,v,view,book,q,prove=saved
+    with operation() as stats:
+        assert read_outcome(a,b,view,prove,[],value=v)['kind']=='valid'
+        assert read_outcome(a,b,view,prove,[],value=v)['kind']=='valid'
+        assert list(stats['index_loads'].values())==[1]
+        assert max(stats['payload_loads'].values())==1
+        assert max(stats['file_loads'].values())==1
+        with pytest.raises(ContractError):read_outcome(a,b,view,lambda *_:None,[],value=v)
+
 @pytest.mark.parametrize('damage',['current_input','receipt','raw','members','native_proof','unknown'])
 def test_changed_or_unknown_native_page_proof_cannot_be_reused(saved,damage):
     a,b,v,view,book,q,prove=saved;ledger=book.read()
@@ -47,7 +59,10 @@ def test_changed_or_unknown_native_page_proof_cannot_be_reused(saved,damage):
     if damage=='receipt':next(iter(ledger['pages'].values()))['receipt']['result']['content']='changed'
     if damage=='raw':ledger['requests'][q]['response']['raw']='changed'
     if damage=='members':ledger['requests'][q]['members']['p1']['page_key']='other'
-    if damage=='unknown':ledger['requests'][q].pop('response')
+    if damage=='unknown':
+        ledger['requests'][q].pop('response')
+        response=book.root/'page-call-payloads/responses'/f'{q}.json'
+        if response.exists():response.unlink()
     if damage=='native_proof':prove=lambda *_:None
     book.save(ledger);before=book.path.read_bytes()
     with pytest.raises((ContractError,KeyError)):read_outcome(a,b,view,prove,[],value=v)

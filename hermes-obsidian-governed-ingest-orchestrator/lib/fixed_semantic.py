@@ -498,6 +498,7 @@ def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=
     from efficiency_presentation import observed_profile
     from page_protocol import strict,preflight
     profile=observed_profile(adapter,binding)
+    if strict(view) and not strict(profile):raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','new request lacks its startup protocol pin')
     if strict(profile):
         preflight(profile)
         if phase=='page-write':raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','new workflow cannot call the legacy page generator')
