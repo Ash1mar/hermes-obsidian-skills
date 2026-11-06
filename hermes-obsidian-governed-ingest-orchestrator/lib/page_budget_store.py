@@ -50,6 +50,17 @@ def load_index(root,*,fresh=False):
         if not fresh:scope['indexes'][key]=value
     return value
 
+def publish_index(root,value,raw):
+    """Publish our committed version to later scans without another disk read.
+
+    Existing Snapshot instances keep their prior value. Reservation authority
+    still comes exclusively from transaction-fresh reads under the write lock.
+    """
+    scope=_READS.get()
+    if scope is not None:
+        key=str(Path(root)/'page-call-budget.json')
+        scope['indexes'][key]=value;scope['bytes'][key]=raw
+
 def target(root,ref):
     p=(Path(root)/ref).resolve()
     if not p.is_relative_to(Path(root).resolve()):fail('page payload escaped workflow')

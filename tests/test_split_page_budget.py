@@ -65,3 +65,15 @@ def test_valid_replay_never_rewrites_index_or_refreshes_allowance(system):
     assert b.path.read_bytes()==before
     r=b.read();r['pages'][key(a[0])]['attempts']=[]
     with pytest.raises(ContractError):b.save(r)
+
+def test_committed_mutation_is_visible_to_later_scans_in_same_proof_operation(system):
+    b,*_=system;a=item('a')
+    with operation() as io:
+        with b.scan() as old:
+            assert old.row(key(a[0])) is None
+            q=reserve(b,a);returned(b,q,{'p1':{'content':'durable response'}});settle(system,q)
+            assert old.row(key(a[0])) is None
+        with b.scan() as new:
+            assert new.row(key(a[0]))['receipt']['state']=='valid'
+            assert len(new.row(key(a[0]))['attempts'])==1
+        assert all(n-io['fresh_loads'].get(k,0)<=1 for k,n in io['file_loads'].items())

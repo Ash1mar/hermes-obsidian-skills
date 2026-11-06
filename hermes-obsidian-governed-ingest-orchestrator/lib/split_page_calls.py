@@ -46,7 +46,9 @@ class SplitPageCalls:
             index['requests'][k]=small
         self._save(index)
     def _save(self,index):
-        index['version']+=1;_write_atomic(self.path,_json_bytes(index))
+        from page_budget_store import publish_index
+        index['version']+=1;raw=_json_bytes(index);_write_atomic(self.path,raw)
+        publish_index(self.root,index,raw)
     def status(self,page,view):
         with self.scan() as scan:row=scan.row(page_key(page))
         if row and row['input_sha256']!=fingerprint(view):deny('STALE_INPUT','page inputs changed; budget cannot reset')
