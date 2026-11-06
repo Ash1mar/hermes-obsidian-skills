@@ -107,6 +107,8 @@ class Node:
 def node_identity(workflow, kind, inputs, parent_keys):
     identity = {'workflow_id':workflow['workflow_id'], 'kind':kind,
                 'inputs':inputs, 'parent_keys':parent_keys}
+    if workflow.get('reduce_test') and kind not in ('pass-slice','source-prepare','exact-plan'):
+        identity['reduce_test_operation'] = workflow['reduce_test']['operation_id']
     if workflow.get('repair_history'):
         identity['repair_id'] = workflow['repair_history'][-1]['repair_id']
     pin = next((p for p in workflow.get('template_pins', []) if p['kind']==kind), None)

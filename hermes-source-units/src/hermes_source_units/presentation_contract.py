@@ -8,12 +8,28 @@ def pin(workflow,w):
     root=workflow.vault/f"_system/ledgers/ingest-workflows/{w['workflow_id']}"
     path=root/'presentation-contract.json'
     identity={'workflow_id':w['workflow_id'],'scope_sha256':fingerprint(w['scope'])}
+    if w.get('reduce_test'):
+        pointer=w['reduce_test'];report_path=workflow.vault/pointer['report_ref']
+        import hashlib,json
+        raw=report_path.read_bytes();report=json.loads(raw)
+        if (hashlib.sha256(raw).hexdigest()!=pointer['report_sha256']
+                or report.get('contract')!='same-workflow-reduce-test/v1'
+                or report['request']['workflow_id']!=w['workflow_id']
+                or report['request']['operation_id']!=pointer['operation_id']
+                or report.get('new_pass_calls_allowed')!=0):
+            raise ContractError('STALE_INPUT','$','Reduce test admission changed')
+        identity['reduce_test_operation']=pointer['operation_id']
     with _exclusive_lock(path.with_suffix('.lock'),timeout=5):
         if path.exists():record=_load_json(path)
         else:
             consumed=any((root/'semantic-calls').glob('*.json')) or any((root/'output-attempts').glob('*.json'))
+            if w.get('reduce_test'):
+                # The explicit test admission retires downstream work, retaining
+                # accepted Pass calls and their cumulative budget in place.
+                consumed=any(_load_json(p).get('phase') not in ('candidate','citation')
+                    for p in (root/'semantic-calls').glob('*.json')) or any((root/'output-attempts').glob('*.json'))
             budget=root/'pass-call-budget.json'
-            if budget.exists():consumed=consumed or any(r.get('attempts') for r in _load_json(budget).get('tasks',{}).values())
+            if budget.exists() and not w.get('reduce_test'):consumed=consumed or any(r.get('attempts') for r in _load_json(budget).get('tasks',{}).values())
             record={**identity,'contract':'legacy' if consumed else CONTRACT}
             if not consumed:
                 record.update(page_call_contract='durable-page-calls/v1',page_dispatch_contract='per-page-dispatch/v2',
