@@ -14,7 +14,7 @@ def repeats(values):
     return {'serialized_value_bytes':total,'exact_duplicate_value_bytes':duplicate,'duplicate_fraction':duplicate/total if total else 0,
         'note':'Representation opportunity only; source ownership/QA still required. Not measured billable token savings.'}
 
-def audit(vault,wid):
+def audit(vault,wid,*,semantic_policy=None):
     from ingest_kanban import IngestKanbanAdapter
     from revision_disposition import native_user
     from fixed_semantic_recovery import _request_text,native_proof,permitted_tasks,proof_scope
@@ -63,11 +63,12 @@ def audit(vault,wid):
         universe=[c['candidate'] for c in v['view']['candidates']];profiles=[]
         for name in ('baseline-30000','pages-40000'):
             v['view'].update(body_call_contract='independent-page-body/v1',page_execution_contract='unified-page-execution/v3',early_page_budget_contract='proposal-final-body-cost/v1')
+            if semantic_policy:v['view']['page_semantics_policy']=semantic_policy
             v['backend']['input_budget']=profile(name)
             with operation(v):h=hints(v,universe,prepare_request_projection)
             profiles.append({'profile':name,'candidate_count':len(universe),'candidate_membership_sha256':fingerprint(universe),'hints':h})
     else:profiles=[]
-    return {'contract':'planning-total-cost-audit/v1','phases':phases,'detail_reasons':dict(Counter(d['reason'] for d in details)),
+    return {'contract':'planning-total-cost-audit/v1','future_page_semantics_policy':semantic_policy,'phases':phases,'detail_reasons':dict(Counter(d['reason'] for d in details)),
         'detail_calls':details,'source_duplication':sources,'same_universe_early_hints':profiles,
         'cost_scope':'Resource Reduce + Global Plan + Detail + bodies + enabled reviews; native audits may omit transport failures. Unknown usage never counted as free.',
         'future_quality_or_coverage_change':None,'future_actual_tokens':None,'actual_new_model_calls':0,

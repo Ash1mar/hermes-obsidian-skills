@@ -21,11 +21,11 @@ def run_groups(groups,submit,capacity):
     if errors:raise errors[0]
 
 
-def compatible(left,right):
+def compatible(left,right,*,admissions=None):
     from page_protocol import strict
     if strict(left[1]) or strict(right[1]):
         from page_pair_eligibility import pair
-        return pair(left,right)['eligible']
+        return pair(left,right,admissions=admissions)['eligible']
     a,b=left[1],right[1]
     if a.get('existing_page') or b.get('existing_page'):return False
     if fingerprint(a.get('original_evidence'))!=fingerprint(b.get('original_evidence')):return False
@@ -57,6 +57,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     from independent_body import enabled as independent
     independent_body=independent(value['view'])
     budget=value.get('backend',{}).get('input_budget')
+    from page_single_admission import enabled as admission_enabled,admit
+    reuse_single=admission_enabled(value['view']);admissions={}
     if value['view'].get('page_call_contract')!=CONTRACT:
         from page_protocol import strict
         if strict(value['view']):raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','new protocol cannot fall back without its budget contract')
@@ -78,6 +80,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         with worker_binding(binding),workflow_write_guard(adapter.workflow.vault,kinds=('global-reduce',),actor=binding['actor']):
             yield
     from page_protocol import strict,BUDGET
+    if reuse_single and (not independent_body or not strict(value['view'])):
+        raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','single admission pairing requires independent body slots and strict execution')
     book=PageCalls(root,guard,transaction,budget=value.get('backend',{}).get('input_budget'),**({'protocol':BUDGET} if strict(value['view']) else {}))
     boundary,_=output_boundary(adapter,binding)
     legacy=[]
@@ -100,6 +104,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             observe(binding,'output_boundary_or_disposition',page_path=page['path']);return None
         view,n=measure(adapter,value,page,caller,project)
         if per_page:view={k:v for k,v in view.items() if k!='evidence_encoding'}
+        qualification=None
         if strict(value['view']):
             from page_pair_eligibility import inspect
             qualification=inspect(view)
@@ -125,6 +130,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             if book.path.exists():raise ContractError('SEMANTIC_OUTPUT_HELD','$','asset call cannot replace an existing text-only reservation')
             observe(binding,'asset_requires_single',page_path=page['path']);return None
         items.append((page,view))
+        if reuse_single:
+            admissions[key(page)]=admit(page,view,n,limit,allowed=True,qualification=qualification,budget=budget)
     from fixed_semantic_schema import schema_for
     from fixed_semantic_recovery import native_reply
     from fixed_semantic import prepare_request_projection
@@ -268,7 +275,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
                 pair_cost=prepared['request_cost'][metric];single_cost=sum(p['request_cost'][metric] for p in singles)
                 observe(binding,'pair_cost_comparison',metric=metric,pair_cost=pair_cost,two_single_cost=single_cost,
                     net_saving=single_cost-pair_cost,billable_saving_verified=False)
-                if pair_cost>=single_cost:
+                if pair_cost>=single_cost and not reuse_single:
                     for item in group:submit([item])
                     return
             observe(binding,'pair' if len(group)==2 else 'single',page_paths=[p['path'] for p,v in group],
@@ -300,8 +307,27 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         groups=[]
         while pending:
             first=pending.pop(0);group=[first]
+            if reuse_single:
+                # Page jobs already run independently. Try the largest remaining
+                # admitted peer that fits; a name-adjacent oversized peer must
+                # not force two singles. Only in-memory fixed inputs are read.
+                if not scan.row(key(first[0])):
+                    from page_pair_eligibility import pair
+                    from page_request import prepare
+                    peers=sorted(range(len(pending)),key=lambda i:admissions[key(pending[i][0])]['single_input_codepoints'],reverse=True)
+                    for i in peers:
+                        peer=pending[i]
+                        if scan.row(key(peer[0])):continue
+                        decision=pair(first,peer,admissions=admissions)
+                        if not decision['eligible']:continue
+                        from page_single_admission import pair_input_lower_bound
+                        if pair_input_lower_bound(admissions[key(first[0])],admissions[key(peer[0])])>limit:continue
+                        trial=prepare([first,peer],prepare_request_projection,[],limit=limit,budget=budget)[2]
+                        if trial['budget_check']['fits']:
+                            group.append(pending.pop(i));break
+                groups.append(group);continue
             # Additional checks are isolated to the failed page, never the valid peer.
-            if pending and not scan.row(key(first[0])) and not scan.row(key(pending[0][0])) and compatible(first,pending[0]):
+            if pending and not scan.row(key(first[0])) and not scan.row(key(pending[0][0])) and compatible(first,pending[0],admissions=admissions):
                 # Output headroom is an explicitly labelled heuristic, not a proof
                 # of semantic length. High-volume pages stay single.
                 import json
@@ -311,7 +337,7 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             elif pending and per_page:
                 from page_protocol import strict
                 from page_pair_eligibility import pair
-                decision=pair(first,pending[0]) if strict(value['view']) else {'reasons':['historical-compatibility-rules']}
+                decision=pair(first,pending[0],admissions=admissions) if strict(value['view']) else {'reasons':['historical-compatibility-rules']}
                 observe(binding,'incompatible_evidence_or_scope',page_path=first[0]['path'],peer_path=pending[0][0]['path'],qualification=decision)
             groups.append(group)
     capacity=min(10,getattr(adapter,'reduce_page_concurrency',2))

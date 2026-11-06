@@ -44,6 +44,7 @@ def pin(workflow,w):
                 record['review_call_contract']='independent-page-review/v1'
                 record['review_risk_contract']='explicit-page-risks/v2'
                 record['body_call_contract']='independent-page-body/v1'
+                record['body_pairing_contract']='single-admission-body-pairs/v1'
                 record['early_page_budget_contract']='proposal-final-body-cost/v1'
                 from .generation_policy import select,POLICY as GENERATION_ONLY
                 if select(workflow.vault,w)==GENERATION_ONLY:

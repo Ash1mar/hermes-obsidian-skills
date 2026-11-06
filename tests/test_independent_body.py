@@ -38,6 +38,14 @@ def test_no_implicit_three_page_or_image_pair_expansion():
     with pytest.raises(ContractError):prepare((a,b,a),prepare_request_projection)
     with pytest.raises(ContractError):prepare((a,b),prepare_request_projection,images=[{}])
 
+def test_generation_only_complete_cost_includes_first_write_quality_instructions():
+    group=rows();old=prepare(group,prepare_request_projection,budget=profile('pages-40000'))[2]
+    for _,v in group:v['page_semantics_policy']='generation-only-page-semantics/v1'
+    view,_,new,_=prepare(group,prepare_request_projection,budget=profile('pages-40000'))
+    assert 'no later independent model review' in new['wire']['system']
+    assert new['input_size']>old['input_size']
+    assert new['budget_check']['complete_request_codepoints']==new['input_size']
+
 def test_independent_qualification_does_not_require_identical_complete_evidence():
     from page_pair_eligibility import pair
     a,b=rows()

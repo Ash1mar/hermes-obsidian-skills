@@ -43,6 +43,8 @@ def prepare(group,project,images=(),diagnostics=None,*,limit=40000,budget=None):
     if diagnostics:v['page_validation_diagnostics']=copy.deepcopy(diagnostics)
     policies={p.get('page_semantics_policy') for _,p in group}
     if len(policies)==1 and None not in policies:v['page_semantics_policy']=next(iter(policies))
+    pairing={p.get('body_pairing_contract') for _,p in group}
+    if len(pairing)==1 and None not in pairing:v['body_pairing_contract']=next(iter(pairing))
     if images:
         # Asset qualification keeps image pages single; never infer ownership
         # from coincident local task/material IDs across independent pages.
