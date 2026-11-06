@@ -17,7 +17,8 @@ def pin(workflow,w):
             record={**identity,'contract':'legacy' if consumed else CONTRACT}
             if not consumed:
                 record.update(page_call_contract='durable-page-calls/v1',page_dispatch_contract='per-page-dispatch/v2',
-                    planning_budget_contract='shared-reading-page-budget/v1',fixed_before_consumption=True)
+                    planning_budget_contract='shared-reading-page-budget/v1',fixed_before_consumption=True,
+                    page_execution_contract='unified-page-execution/v3',page_budget_contract='page-budget-index/v2')
             _write_atomic(path,_json_bytes(record))
     if any(record.get(k)!=v for k,v in identity.items()) or record.get('contract') not in ('legacy',CONTRACT):
         raise ContractError('STALE_INPUT','$','presentation identity changed')

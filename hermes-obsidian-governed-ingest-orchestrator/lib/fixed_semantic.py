@@ -417,6 +417,9 @@ def wire_prompt(phase,view,output_schema,correction=None,*,metrics=None):
 
 def system_prompt(phase,view,correction=None):
     system=COMMON+'\n'+(RULES['page-write'] if phase=='page-pair' else RULES[phase])
+    if phase in ('page-write','page-pair'):
+        from page_protocol import strict,page_rules
+        if strict(view) or any(strict(p) for p in view.get('pages',{}).values()):system+=' '+page_rules()
     if phase=='page-pair':
         system+=' Return exactly the fixed page result slots independently. original_evidence is shared by these pages; all conditions, exceptions, contrary evidence, QA and limits remain required for each assigned claim. Keep distinct identities and scope; one blocked page must not suppress another valid page. Return content or blocked_reason in each slot; never merge pages or reassign candidates.'
         if view.get('evidence_encoding')=='lossless-page-pair/v1':
@@ -492,6 +495,13 @@ def prepare_request_projection(phase,view,output_schema,images=(),correction=Non
 
 @measured('semantic_call', lambda adapter, binding, phase, view, caller, limit, correction=None, **kwargs: {'vault':adapter.workflow.vault,'binding':binding,'phase':phase})
 def model_call(adapter,binding,phase,view,caller,limit,correction=None,*,policy=None,attempt_limit=2,_checked=None):
+    from efficiency_presentation import observed_profile
+    from page_protocol import strict,preflight
+    profile=observed_profile(adapter,binding)
+    if strict(profile):
+        preflight(profile)
+        if phase=='page-write':raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','new workflow cannot call the legacy page generator')
+
     from citation_amendment_calls import proof_only,invoke
     if proof_only(adapter,binding):
         # Checkpoint admission authenticates saved results while workers are

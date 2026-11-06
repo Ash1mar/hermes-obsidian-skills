@@ -102,6 +102,9 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     if durable_ledger.exists() and (planning_failure or value['view'].get('page_call_contract')!='durable-page-calls/v1'):
         raise ContractError('SEMANTIC_OUTPUT_HELD','$','existing page budget cannot fall back to new legacy allowances')
     per_page=value['view'].get('page_dispatch_contract')=='per-page-dispatch/v2'
+    from page_protocol import strict
+    if strict(value['view']) and not per_page:
+        raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','new execution requires fixed per-page dispatch; no fallback')
     if not per_page and not planning_failure and isinstance(caller,HermesCaller):
         from native_page_pairs import execute as durable_pages
         durable=durable_pages(adapter,binding,value,state,caller,model_call,attach_receipt,project,measure)
@@ -241,8 +244,10 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         pool.shutdown(wait=True,cancel_futures=True)
     if per_page:
         from native_page_pairs import execute as durable_pages
-        return durable_pages(adapter,binding,value,working,caller,model_call,attach_receipt,project,measure,
+        result=durable_pages(adapter,binding,value,working,caller,model_call,attach_receipt,project,measure,
             preheld=held,prior_calls=calls,planning_failure=planning_failure,progress=save_durable_progress(adapter,binding,value,working,original_plan_sha))
+        if result is None:raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','pinned page executor returned no supported result')
+        return result
     from qa_program import page_link_failures
     link_holds=page_link_failures(value,working,written)
     held.extend(h for h in link_holds if not any(old['path']==h['path'] for old in held))

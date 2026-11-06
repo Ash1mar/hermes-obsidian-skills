@@ -22,6 +22,10 @@ def run_groups(groups,submit,capacity):
 
 
 def compatible(left,right):
+    from page_protocol import strict
+    if strict(left[1]) or strict(right[1]):
+        from page_pair_eligibility import pair
+        return pair(left,right)['eligible']
     a,b=left[1],right[1]
     if a.get('existing_page') or b.get('existing_page'):return False
     if fingerprint(a.get('original_evidence'))!=fingerprint(b.get('original_evidence')):return False
@@ -49,6 +53,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
     from page_execution_diagnostics import observe
     per_page=value['view'].get('page_dispatch_contract')=='per-page-dispatch/v2'
     if value['view'].get('page_call_contract')!=CONTRACT:
+        from page_protocol import strict
+        if strict(value['view']):raise ContractError('PAGE_PROTOCOL_UNSUPPORTED','$','new protocol cannot fall back without its budget contract')
         observe(binding,'contract_not_pinned');return None
     from semantic_output import output_boundary,check
     from reduce_disposition import page_permit
@@ -174,6 +180,8 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
         pages={f'p{i}':{k:copy.deepcopy(v) for k,v in view.items() if k not in ('original_evidence','evidence_encoding')} for i,(p,view) in enumerate(group,1)}
         wire_view={'contract':CONTRACT,'pages':pages,'original_evidence':evidence,
                    'page_members':{f'p{i}':key(p) for i,(p,v) in enumerate(group,1)}}
+        from page_protocol import strict,CONTRACT as PROTOCOL
+        if strict(value['view']):wire_view['page_execution_contract']=PROTOCOL
         diagnostics={}
         for i,(page,view) in enumerate(group,1):
             prior=book.status(page,view)
@@ -245,7 +253,10 @@ def execute(adapter,binding,value,state,caller,model_call,attach_receipt,project
             if not per_page or sum(estimates)<=7168:group.append(pending.pop(0))
             else:observe(binding,'output_headroom_requires_single',page_path=first[0]['path'],estimated_output_tokens=estimates)
         elif pending and per_page:
-            observe(binding,'incompatible_evidence_or_scope',page_path=first[0]['path'],peer_path=pending[0][0]['path'])
+            from page_protocol import strict
+            from page_pair_eligibility import pair
+            decision=pair(first,pending[0]) if strict(value['view']) else {'reasons':['historical-compatibility-rules']}
+            observe(binding,'incompatible_evidence_or_scope',page_path=first[0]['path'],peer_path=pending[0][0]['path'],qualification=decision)
         groups.append(group)
     capacity=min(10,getattr(adapter,'reduce_page_concurrency',2))
     run_groups(groups,submit,capacity)
