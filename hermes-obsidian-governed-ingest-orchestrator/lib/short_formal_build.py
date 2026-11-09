@@ -13,7 +13,7 @@ from hermes_source_units.validation import fingerprint
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from short_evidence_pass import mapping_groups, require, seed_requests
 from short_fragment_disposition import delivery_partition
-from short_page_contract import auditable_qa, check_fragment
+from short_page_contract import auditable_qa, check_fragment, restore_locked_draft, retry_slots
 
 
 def native_fragment(root, receipt, attempts, conn, runner):
@@ -30,7 +30,7 @@ def native_fragment(root, receipt, attempts, conn, runner):
         if slot not in call['view']['pages'] or call['phase'] != 'short-write':
             continue
         if call['id'] != prior['id']:
-            if not runner.checked_retry(prior, call, job):
+            if not runner.checked_retry(prior, call, job, audit):
                 continue
         grant = audit['grant']
         native = kb.get_task(conn, grant['task_id'])
@@ -56,7 +56,12 @@ def native_fragment(root, receipt, attempts, conn, runner):
             continue
         try:
             answer, _ = runner.decode_semantic_response(audit['raw'])
-            if slot not in answer['results'] or check_fragment(prior, slot, answer['results'][slot]) != receipt:
+            if slot not in answer['results']:
+                continue
+            locked = 'locked_draft_sha256' in retry_slots(call).get(slot, {})
+            draft = runner.locked_drafts(job).get(slot) if locked else None
+            answer = restore_locked_draft(call, slot, answer['results'][slot], draft)
+            if check_fragment(prior, slot, answer) != receipt:
                 continue
         except (ValueError, TypeError, ContractError):
             continue
@@ -116,7 +121,8 @@ def final_plan(root, operation, authorization, runner):
                              page_contract=control['page_contract'], fragment_repair=control.get('fragment_repair'),
                              fragment_exclusions=control.get('fragment_exclusions'), mapping_contract=mapping_contract,
                              mapping_overlay=overlay, preserved_pages=control.get('preserved_pages', ()),
-                             writing_contract=operation.get('writing_contract'))
+                             writing_contract=operation.get('writing_contract'),
+                             split_output=control.get('split_output', operation.get('split_output')))
     require(rebuilt == _load_json(saved_plan), 'formal Build requires reproducible writing, QA and coverage')
     return rebuilt, sources
 

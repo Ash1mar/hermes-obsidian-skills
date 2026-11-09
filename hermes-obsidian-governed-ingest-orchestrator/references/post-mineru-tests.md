@@ -84,3 +84,16 @@ Whole-asset inspections still need explicit acknowledgment. A pure table
 wrapper can be accounted for by its supplied, cited and inspected tables.
 Unlocated source QA is annotation metadata. An identifiable missing or
 unreadable required item still holds its dependent work.
+
+If adding the missing whole-asset attestations would resolve every structural
+error, the retry supplies only those assets and accepts only
+`inspected_assets`. The program binds the original Markdown to the first
+native response and preserves its bytes. A known content omission remains an
+independent hold.
+
+For an output-only budget hold, use `--from-node writing --reentry-id <id>`
+with `--split-atomic-fragment <fragment-hash>` on a settled test. The splitter
+keeps the full evidence, registered tables and relationship graph in each
+request. It assigns text requirements and form coverage separately and checks
+each complete request and output estimate. An unresolved dependency or an
+oversized input remains held. The split stays inside the existing page.

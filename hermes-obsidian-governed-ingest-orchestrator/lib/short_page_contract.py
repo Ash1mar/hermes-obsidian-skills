@@ -1,6 +1,7 @@
 """Versioned page planning, scoped evidence obligations and fragment acceptance."""
 import re
 
+from hermes_source_units import ContractError
 from hermes_source_units.semantic_submission import closed
 from hermes_source_units.validation import _check_shape, fingerprint
 from short_evidence_pass import NAME, NOTE, PASS_LIMIT, REF, array, evidence, request, require, source_revision
@@ -283,12 +284,17 @@ def coordination_issues(answer, topics):
     return issues
 
 
+def writing_output(page):
+    materials = page['materials']
+    assigned = page.get('writing_assignment', {}).get('primary', materials)
+    return 900 + sum(len(materials[key]['text'] or '') for key in assigned) // 2 + 20 * len(materials)
+
+
 def body_request(group, limit, *, repair_contract=None):
     require(1 <= len(group) <= 2 and (len(group) == 1 or not any(p['images'] for p in group)),
             'fragment request requires independently transportable slots')
     slots = {f'p{i}': p['view'] for i, p in enumerate(group, 1)}
-    estimate = sum(900 + sum(len(m['text'] or '') for m in p['materials'].values()) // 2
-                   + 20 * len(p['materials']) for p in slots.values())
+    estimate = sum(writing_output(p) for p in slots.values())
     view = {'page_contract': CONTRACT, 'pages': slots}
     modern = all(p.get('writing_contract') == WRITE_CONTRACT for p in slots.values())
     if modern:
@@ -307,18 +313,61 @@ def section_citations(section):
     return set(_INLINE.findall(section['content']))
 
 
-def writing_retry(row, slots, drafts, diagnostics):
+def inspection_gaps(row, slot, draft):
+    """An inspection patch is eligible only if adding those attestations is sufficient."""
+    if not isinstance(draft, dict) or 'sections' not in draft or not isinstance(draft.get('inspected_assets'), list):
+        return []
+    try:
+        _check_shape(WRITING_RESULT, draft, {}, '$')
+        duties = row['view']['pages'][slot]['obligations']
+        missing = sorted({key for key, duty in duties.items() if duty['inspect']} - set(draft['inspected_assets']))
+        patched = {**draft, 'inspected_assets': [*draft['inspected_assets'], *missing]}
+        if missing and check_fragment(row, slot, patched)['state'] == 'structurally_valid':
+            return missing
+    except (ContractError, ValueError):
+        pass
+    return []
+
+
+def writing_retry(row, slots, drafts, diagnostics, *, inspection_patch=False):
     properties = row['schema']['properties']['results']['properties']
     pages = {slot: row['view']['pages'][slot] for slot in slots}
+    retry = {slot: {'previous_answer': drafts.get(slot), 'diagnostics': diagnostics[slot]} for slot in slots}
+    schemas = {slot: properties[slot] for slot in slots}
+    estimate = 0
+    for slot, page in pages.items():
+        missing = inspection_gaps(row, slot, drafts.get(slot)) if inspection_patch else []
+        if missing:
+            retry[slot] = {'locked_draft_sha256': fingerprint(drafts[slot]), 'missing_inspections': missing,
+                           'diagnostics': diagnostics[slot]}
+            pages[slot] = {'materials': {key: page['materials'][key] for key in missing}}
+            schemas[slot] = closed({'inspected_assets': array({'enum': missing})})
+            estimate += 160 + 20 * len(missing)
+        else:
+            estimate += writing_output(page)
     materials = {key for page in pages.values() for key in page['materials']}
     images = [image for image in row['image_inputs']
               if any(ref['material'] in materials for ref in image['references'])]
-    view = {**row['view'], 'pages': pages, 'structural_retry': {'slots': {
-        slot: {'previous_answer': drafts.get(slot), 'diagnostics': diagnostics[slot]} for slot in slots}}}
-    estimate = sum(900 + sum(len(m['text'] or '') for m in page['materials'].values()) // 2
-                   + 20 * len(page['materials']) for page in pages.values())
-    return request('short-write', view, {slot: properties[slot] for slot in slots},
-                   estimate, row['budget']['input_cap'], images, slots=True)
+    view = {**row['view'], 'pages': pages, 'structural_retry': {'slots': retry}}
+    return request('short-write', view, schemas, estimate, row['budget']['input_cap'], images, slots=True)
+
+
+def retry_slots(call):
+    return call['view'].get('structural_retry', {}).get('slots', {})
+
+
+def restore_locked_draft(call, slot, answer, draft):
+    patch = retry_slots(call).get(slot, {})
+    if 'locked_draft_sha256' not in patch:
+        return answer
+    expected = patch['missing_inspections']
+    require(fingerprint(draft) == patch['locked_draft_sha256'], 'locked writing draft changed')
+    require(isinstance(answer, dict) and set(answer) == {'inspected_assets'}
+            and isinstance(answer['inspected_assets'], list)
+            and all(isinstance(ref, str) for ref in answer['inspected_assets'])
+            and sorted(answer['inspected_assets']) == expected,
+            'inspection patch requires exactly the supplied asset attestations')
+    return {**draft, 'inspected_assets': [*draft['inspected_assets'], *expected]}
 
 
 def check_fragment(row, slot, answer):

@@ -9,7 +9,7 @@ SKILL = Path(__file__).resolve().parents[1] / 'hermes-obsidian-governed-ingest-o
 sys.path[:0] = [str(SKILL / 'lib'), str(SKILL / 'scripts')]
 
 from short_page_contract import (WRITE_CONTRACT, check_coordination, check_fragment, obligations, qa_impacts,
-                                 table_navigation, writing_retry)
+                                 restore_locked_draft, table_navigation, writing_retry)
 from short_page_fragments import build, pack
 from short_fragment_repair import equivalent_coverage, form_navigation
 from short_fragment_disposition import exact_continuations, verify_block
@@ -94,9 +94,44 @@ def test_writing_uses_inline_coverage_and_retains_inspection_in_scoped_retry():
     retry = writing_retry(row, [slot], {slot: answer}, {slot: str(error.value)})
     assert retry['budget']['fits'] and set(retry['view']['pages']) == {slot}
     assert retry['view']['structural_retry']['slots'][slot]['previous_answer'] == answer
+    retry = writing_retry(row, [slot], {slot: answer}, {slot: str(error.value)}, inspection_patch=True)
+    assert retry['view']['structural_retry']['slots'][slot]['previous_answer'] == answer
     answer['sections'][0]['content'] += ' Table requirements. [S1-A2]'
+    patch = writing_retry(row, [slot], {slot: answer}, {slot: 'missing inspection'}, inspection_patch=True)
+    assert set(patch['view']['pages'][slot]['materials']) == {'S1-A2'}
+    assert 'previous_answer' not in patch['view']['structural_retry']['slots'][slot]
+    restored = restore_locked_draft(patch, slot, {'inspected_assets': ['S1-A2']}, answer)
+    assert restored['sections'] == answer['sections'] and not answer['inspected_assets']
+    assert check_fragment(row, slot, restored)['state'] == 'structurally_valid'
+    with pytest.raises(ValueError, match='exactly the supplied'):
+        restore_locked_draft(patch, slot, {'inspected_assets': ['S1-A2'], 'sections': []}, answer)
+    with pytest.raises(ValueError, match='draft changed'):
+        restore_locked_draft(patch, slot, {'inspected_assets': ['S1-A2']}, {**answer, 'sections': []})
     answer['inspected_assets'].append('S1-A2')
     assert check_fragment(row, slot, answer)['state'] == 'structurally_valid'
+
+
+def test_output_only_split_preserves_complete_packet_and_condition_edges():
+    items = {'S1-B1': item('block', 'Condition. ' + 'x' * 4200, 'Conditions'),
+             'S1-B2': item('block', 'Exception. ' + 'y' * 2800, 'Exceptions'),
+             'S1-A3': item('asset', '| Complete table |' + 'z' * 7000, 'Form')}
+    sources = {'S1': source(items)}
+    reduced = mapped(items, {'T1': [link('S1-B1', 'condition', 'S1-A3'),
+                                   link('S1-B2', 'exception', 'S1-A3'), link('S1-A3', 'asset')]})
+    reduced['writing_contract'] = WRITE_CONTRACT
+    requests, held, expected = pack(sources, reduced, [page(['T1'])], 40_000)
+    assert not requests and held[0]['reason'] == 'atomic_evidence_over_budget'
+    requests, gaps, split = pack(sources, reduced, [page(['T1'])], 40_000, split_output=True)
+    assert not gaps and len(requests) == 2
+    assert list(expected) == list(split)
+    views = [row['view']['pages']['p1'] for row in requests]
+    assert views[0]['materials'] == views[1]['materials']
+    assert views[0]['topics'] == views[1]['topics']
+    assert [v['writing_assignment']['primary'] for v in views] == [['S1-B1', 'S1-B2'], ['S1-A3']]
+    assert all(v['obligations']['S1-A3']['inspect'] for v in views)
+    assert all(row['budget']['fits'] for row in requests)
+    requests, gaps, _ = pack(sources, reduced, [page(['T1'])], 10_000, split_output=True)
+    assert not requests and gaps[0]['reason'] == 'atomic_evidence_over_budget'
 
 
 def test_oversized_whole_asset_without_unresolved_mapping_is_serializable():
