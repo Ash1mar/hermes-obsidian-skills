@@ -4,7 +4,7 @@ from .validation import fingerprint,validate_record
 from .runtime_telemetry import span
 from .delivery_scope import dependency_partition,fail,authorized
 from .partial_finalize import pin,pinned
-from .short_build import evidence as short_evidence, identity as short_identity, output_path, qa_advisory
+from .short_build import content_isolation, evidence as short_evidence, identity as short_identity, output_path, qa_advisory
 
 
 def short_scope(service, runs):
@@ -20,6 +20,18 @@ def short_scope(service, runs):
                                  'original_scope': run['short_evidence']}
     if selected.intersection(excluded):
         fail('short Build selected an excluded page')
+    for run in runs:
+        if not run.get('short_evidence'):
+            continue
+        pointer, rows = content_isolation(service.build, run)
+        if pointer:
+            proofs.append(pointer)
+        for row in rows:
+            decision = next(d for d in run['decisions'] if d['page_id'] == row['page_id'])
+            excluded[row['page_id']] = {'category': 'unresolved', 'reason': row['reason'],
+                                       'reopen_condition': 'verify a new revision of the affected page',
+                                       'identity': decision['identity'], 'path': decision['path'],
+                                       'original_scope': pointer}
     return selected, excluded, proofs
 
 def build_plan(service,request,state,runs,scopes):
@@ -113,7 +125,7 @@ def build_plan(service,request,state,runs,scopes):
         'base_release':(pin(service.vault,service._manifest_path(prior).relative_to(service.vault).as_posix()) if prior else None),
         'included_page_ids':sorted(included),'excluded':[{'page_id':k,'path':v.get('path') or next(p['path'] for p in candidates if p['page_id']==k),
             'category':v['category'],'reason':v['reason'],'reopen_condition':v['reopen_condition'],
-            'depends_on':v.get('depends_on',[]),'original_scope':source_by_page.get(k) or v.get('original_scope')}
+            'depends_on':v.get('depends_on',[]),'original_scope':v.get('original_scope') or source_by_page.get(k)}
             for k,v in sorted(partition['excluded'].items())],
         'inherited_coverage_gaps':list({r['closure']['authorization']['ref']:r['closure']['authorization'] for r in scopes.values()}.values())
             + [r['coverage_scope'] for r in runs if r.get('coverage_scope')] + short_proofs + previous_qa,

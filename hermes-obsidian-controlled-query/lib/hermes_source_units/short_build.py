@@ -10,6 +10,7 @@ from .validation import ContractError, fingerprint, validate_references
 
 POLICY = 'native-short-build/v1'
 QA_POLICY = 'short-build-advisory-qa/v1'
+CONTENT_ISOLATION = 'short-build-content-isolation/v1'
 ROOT = '_system/knowledge-builds'
 
 
@@ -89,6 +90,59 @@ def assess(service, run, page):
             'short_evidence': run['short_evidence'],
             'evidence_sha256': fingerprint({'record': run['short_evidence'], 'page_id': page['page_id'],
                                            'revision_id': page['revision_id'], 'origin': record['scope']['origin']})}
+
+
+def content_isolation(service, run):
+    path = service._run_path(run['run_id']).with_name('content-isolation.json')
+    if not path.is_file():
+        return None, []
+    pointer = pin(service.vault, path.relative_to(service.vault).as_posix())
+    value = pinned(service.vault, pointer)
+    require(value['contract'] == CONTENT_ISOLATION and value['run_id'] == run['run_id']
+            and value['build_evidence'] == run['short_evidence']
+            and value['record_id'] == fingerprint({k: v for k, v in value.items() if k != 'record_id'}),
+            'short content isolation changed or belongs to another Build')
+    rows = value['pages']
+    pages = {p['page_id']: p for p in run['page_revisions']}
+    candidates = {p['page_id']: c for p, c in zip(run['page_revisions'], evidence(service, run)['scope']['pages'], strict=True)}
+    require(len(rows) == len({r['page_id'] for r in rows}), 'duplicate short content isolation')
+    for row in rows:
+        page = pages.get(row['page_id'])
+        require(page and page['revision_id'] == row['revision_id']
+                and page['authored_sha256'] == row['authored_sha256']
+                and row['reason'].strip() and row['evidence_refs']
+                and set(row['evidence_refs']) <= candidates[row['page_id']]['citation_bindings'].keys(),
+                'short content isolation must bind the reviewed revision and cited source evidence')
+    return pointer, rows
+
+
+def record_content_isolation(service, run, rows, authorization):
+    """Append an operator exclusion before release without altering the committed Build."""
+    require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT')
+            and run['state'] == 'completed' and evidence(service.build, run)['scope']['authorization'] == authorization,
+            'content isolation requires the exact completed operator scope')
+    value = {'contract': CONTENT_ISOLATION, 'run_id': run['run_id'],
+             'build_evidence': run['short_evidence'], 'pages': rows}
+    value['record_id'] = fingerprint(value)
+    path = service.build._run_path(run['run_id']).with_name('content-isolation.json')
+    with _exclusive_lock(_vault_path(service.vault, '_system/knowledge-releases/.finalize.lock')):
+        if path.exists():
+            require(_load_json(path) == value, 'existing short content isolation differs')
+        else:
+            require(service.status()['current_release_id'] == authorization['base_release'],
+                    'cannot append a short exclusion after the target release advanced')
+            # Validate the entries against the completed manifest before writing.
+            pages = {p['page_id']: p for p in run['page_revisions']}
+            candidates = evidence(service.build, run)['scope']['pages']
+            by_id = {p['page_id']: c for p, c in zip(run['page_revisions'], candidates, strict=True)}
+            require(rows and len(rows) == len({r['page_id'] for r in rows})
+                    and all(r['page_id'] in pages and r['reason'].strip() and r['evidence_refs']
+                            and r['revision_id'] == pages[r['page_id']]['revision_id']
+                            and r['authored_sha256'] == pages[r['page_id']]['authored_sha256']
+                            and set(r['evidence_refs']) <= by_id[r['page_id']]['citation_bindings'].keys() for r in rows),
+                    'content isolation lacks an exact reviewed revision or cited source evidence')
+            _write_atomic(path, _json_bytes(value))
+    return content_isolation(service.build, run)[0]
 
 
 def qa_advisory(service, run):
@@ -173,7 +227,7 @@ def publication_approval(service, page, acceptance):
     authorization = proof['scope']['authorization']
     authorized = authorization['publish'] is True and authorization['policy'] == RELEASE_POLICY
     _, advisory = qa_advisory(service.build, run)
-    if authorized and advisory and row['source_eligible_at_admission']:
+    if authorized and advisory:
         disposition = next(q for q in advisory['pages'] if q['page_id'] == page['page_id'])
         return not disposition['material_holds'], not disposition['material_holds']
     return authorized and row['publication_authorized'] and page['qa_status'] == 'usable', False

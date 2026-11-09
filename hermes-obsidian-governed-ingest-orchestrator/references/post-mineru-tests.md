@@ -49,3 +49,11 @@ and writing stages, authenticates the completed fragments, then executes
 formal Build, eligible partial release, Provider sync and exact-scope
 verification. The new Vault must have its own source registration, release
 and Provider namespace. A material hold remains visible in the run evidence.
+The controller verifies exact declared source identity and applies the existing
+scoped source qualification before semantic dispatch. If a completed short
+Build reaches a first-release eligibility issue, use the same request and
+output with `--resume-delivery` to preserve its exact pages, calls and Build
+evidence. A confirmed content issue can be isolated before release with
+`--content-isolation <JSON>`, binding the page ID, revision, body hash, cited
+source references and reason. Record the interrupted run as an automation
+failure even if delivery recovery succeeds.

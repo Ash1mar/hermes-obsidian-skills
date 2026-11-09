@@ -12,10 +12,11 @@ import time
 
 import run_short_evidence_test as runner
 from hermes_source_units.page_governance import POLICY, validate_retrieval_snapshot
+from hermes_source_units.short_build import record_content_isolation
 from hermes_source_units.source_units import _load_json, _vault_path
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from short_evidence_pass import require
-from short_formal_build import execute
+from short_formal_build import delivery as publish, execute
 from short_fragment_disposition import delivery_partition
 
 
@@ -83,6 +84,46 @@ def synchronize(vault, root, release_id, provider_config):
     return index
 
 
+def qualify_sources(vault, root, handoff, request):
+    """Use the existing role-labelled, hash-bound source resolution."""
+    result_path = root / 'source-qualification.json'
+    if result_path.is_file():
+        return _load_json(result_path)
+    scripts = Path(__file__).resolve().parents[2] / 'hermes-obsidian-controlled-ingest/scripts'
+    sys.path.insert(0, str(scripts))
+    from governance_repository import JsonGovernanceRepository
+    from source_governance_resolution import digest
+
+    repo = JsonGovernanceRepository(vault)
+    wid = handoff['workflow_id']
+    workflow_ref = f'_system/ledgers/ingest-workflows/{wid}.json'
+    workflow = _load_json(_vault_path(vault, workflow_ref))
+    path = root / 'source-qualification-request.json'
+    if path.is_file():
+        resolution = _load_json(path)
+    else:
+        org, registry = repo.load_state()
+        resolution = {'workflow_id': wid, 'workflow_ref': workflow_ref, 'actor': request['actor'],
+                      'operation_id': request['operation_id'] + '-short-source',
+                      'reason': 'Authorized independent post-MinerU short test; existing deterministic source resolution.',
+                      'source_boundary': 'post-mineru-short/v1',
+                      'pause_digest': handoff['pause']['evidence_digest'],
+                      'automatic_approval_activation': True, 'expected_workflow_revision': workflow['revision'],
+                      'expected_organization_revision': org['registry_revision'],
+                      'expected_registry_revision': registry['registry_revision'],
+                      'resource_ids': sorted(pin['resource_id'] for pin in handoff['pins'])}
+        resolution['input_digest'] = digest(resolution)
+        preview = repo.resolve_sources(resolution, dry_run=True)
+        runner.save(root / 'source-qualification-preview.json', preview)
+        require(preview['resolved'], 'source resolution found no exact declared source identity')
+        resolution['preview_digest'] = preview['preview_digest']
+        resolution['input_digest'] = digest({k: v for k, v in resolution.items() if k != 'input_digest'})
+        runner.save(path, resolution)
+    result = repo.resolve_sources(resolution)
+    runner.save(result_path, result)
+    return result
+
+
 def accept(vault, operation, delivery, provider, host_state):
     service = FileVaultFinalizeService(vault)
     release_id = delivery['release_id']
@@ -123,6 +164,8 @@ def main():
     parser.add_argument('--bootstrap-skill', type=Path, required=True)
     parser.add_argument('--provider-config', type=Path, required=True)
     parser.add_argument('--provider-state', type=Path, required=True)
+    parser.add_argument('--resume-delivery', action='store_true')
+    parser.add_argument('--content-isolation', type=Path)
     args = parser.parse_args()
     request = _load_json(args.request.resolve(strict=True))
     root = args.output.resolve()
@@ -130,34 +173,53 @@ def main():
     require(not root.is_relative_to(vault), 'test evidence must remain outside the Vault')
     root.mkdir(parents=True, exist_ok=True)
     with runner.exclusive_lock(root / 'pipeline.lock', timeout=0, marker=False):
-        require(not (root / 'pipeline-start.json').exists(), 'stable run already started; inspect its durable stage')
-        start = time.time()
-        runner.save(root / 'pipeline-start.json', {'started_at': start, 'operation_id': request['operation_id'],
-                                                  'path': 'post-mineru-short', 'request_sha256': runner.sha(args.request)})
-        print('Starting independent native source preparation', flush=True)
-        handoff = prepare(vault, request, root, args.provisioner_skill.resolve(), args.bootstrap_skill.resolve())
-        print(f"Source handoff verified at revision {handoff['revision']}; starting short stages", flush=True)
         short = root / 'native'
-        result = runner.start(short, vault, handoff['workflow_id'], handoff['pins'], request['operation_id'])
-        require(result['last_stage'] == 'offline_build', 'short stages did not produce a settled Build input')
-        plan_path = sorted(short.glob('stage-*-offline_build.json'))[-1]
-        partition = delivery_partition(_load_json(plan_path))
-        require(partition['included'], 'no pages with verified complete fragment coverage')
-        authorization = {'contract': 'short-formal-authorization/v1', 'writing_entry': 'initial',
-                         'checkpoint': {'control_sha256': runner.sha(short / 'operation.json'),
-                                        'result_sha256': runner.sha(short / 'result.json'),
-                                        'plan_sha256': runner.sha(plan_path)},
-                         'actor': request['actor'], 'pages': partition['included'], 'base_release': None,
-                         'publish': True, 'policy': POLICY}
-        runner.save(root / 'formal-authorization.json', authorization)
-        print(f"{len(partition['included'])} complete pages; executing formal Build and release", flush=True)
-        delivery = execute(short, 'formal-fifth-release', authorization, False, runner)
+        marker = root / 'pipeline-start.json'
+        if args.resume_delivery:
+            prior = _load_json(marker)
+            require(prior['request_sha256'] == runner.sha(args.request)
+                    and not (root / 'final-acceptance.json').exists(), 'delivery reentry identity changed')
+            start = prior['started_at']
+            handoff = _load_json(root / 'source-handoff.json')
+            result = _load_json(short / 'result.json')
+            authorization = _load_json(root / 'formal-authorization.json')
+            first = _load_json(short / 'reentries/formal-fifth-release/result.json')
+            service = FileVaultFinalizeService(vault)
+            run = _load_json(service.build._run_path(first['run_id']))
+            if args.content_isolation:
+                record_content_isolation(service, run, _load_json(args.content_isolation), authorization)
+            qualification = qualify_sources(vault, root, handoff, request)
+            print('Source qualification settled; reusing the existing Build for release', flush=True)
+            delivery = publish(vault, first['run_id'], authorization)
+        else:
+            require(not marker.exists() and not args.content_isolation, 'stable run already started or unsupported early isolation')
+            start = time.time()
+            runner.save(marker, {'started_at': start, 'operation_id': request['operation_id'],
+                                  'path': 'post-mineru-short', 'request_sha256': runner.sha(args.request)})
+            print('Starting independent native source preparation', flush=True)
+            handoff = prepare(vault, request, root, args.provisioner_skill.resolve(), args.bootstrap_skill.resolve())
+            qualification = qualify_sources(vault, root, handoff, request)
+            print(f"Source handoff verified at revision {handoff['revision']}; starting short stages", flush=True)
+            result = runner.start(short, vault, handoff['workflow_id'], handoff['pins'], request['operation_id'])
+            require(result['last_stage'] == 'offline_build', 'short stages did not produce a settled Build input')
+            plan_path = sorted(short.glob('stage-*-offline_build.json'))[-1]
+            partition = delivery_partition(_load_json(plan_path))
+            require(partition['included'], 'no pages with verified complete fragment coverage')
+            authorization = {'contract': 'short-formal-authorization/v1', 'writing_entry': 'initial',
+                             'checkpoint': {'control_sha256': runner.sha(short / 'operation.json'),
+                                            'result_sha256': runner.sha(short / 'result.json'),
+                                            'plan_sha256': runner.sha(plan_path)},
+                             'actor': request['actor'], 'pages': partition['included'], 'base_release': None,
+                             'publish': True, 'policy': POLICY}
+            runner.save(root / 'formal-authorization.json', authorization)
+            print(f"{len(partition['included'])} complete pages; executing formal Build and release", flush=True)
+            delivery = execute(short, 'formal-fifth-release', authorization, False, runner)
         require(delivery['release_id'], 'formal eligibility produced no releasable pages')
         print(f"Release {delivery['release_id']} applied; synchronizing Provider", flush=True)
         provider = synchronize(vault, root, delivery['release_id'], args.provider_config.resolve())
         final = accept(vault, _load_json(short / 'operation.json'), delivery, provider, args.provider_state.resolve())
         final.update(source_handoff=handoff, short_result=result, delivery=delivery, wall_seconds=time.time() - start,
-                     whole_run_continuous_automation=True)
+                     source_qualification=qualification, whole_run_continuous_automation=not args.resume_delivery)
         runner.save(root / 'final-acceptance.json', final)
         print(json.dumps(final['release'], ensure_ascii=False), flush=True)
 
