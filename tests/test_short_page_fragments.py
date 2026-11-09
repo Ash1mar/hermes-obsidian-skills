@@ -41,6 +41,15 @@ def page(topics, sections=()):
             'grouping_basis': 'single_topic' if len(topics) == 1 else 'shared_reader_task'}
 
 
+def test_primary_context_asset_keeps_whole_inspection_and_expression():
+    items = {'S1-A1': item('asset', '| controlled form |', 'Records')}
+    sources = {'S1': source(items)}
+    topic = {'T1': {'relations': [link('S1-A1', 'context')]}}
+    duty = obligations(sources, items, topic, {'S1-A1'})['S1-A1']
+    assert duty['mapped_roles'] == ['context']
+    assert duty['inspect'] and duty['express']
+
+
 def test_same_topic_splits_without_cutting_assets_or_shared_conditions():
     items = {
         'S1-B1': item('block', 'Applicability: version A only.', 'General'),

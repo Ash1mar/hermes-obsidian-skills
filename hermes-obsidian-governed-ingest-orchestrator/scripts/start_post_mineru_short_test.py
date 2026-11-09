@@ -166,6 +166,10 @@ def main():
     parser.add_argument('--provider-state', type=Path, required=True)
     parser.add_argument('--resume-delivery', action='store_true')
     parser.add_argument('--content-isolation', type=Path)
+    parser.add_argument('--from-node', choices=('mapping',))
+    parser.add_argument('--reentry-id')
+    parser.add_argument('--mapping-recovery', type=Path)
+    parser.add_argument('--source-registry-revision', type=int)
     args = parser.parse_args()
     request = _load_json(args.request.resolve(strict=True))
     root = args.output.resolve()
@@ -175,7 +179,41 @@ def main():
     with runner.exclusive_lock(root / 'pipeline.lock', timeout=0, marker=False):
         short = root / 'native'
         marker = root / 'pipeline-start.json'
-        if args.resume_delivery:
+        if args.from_node == 'mapping':
+            import re
+            require(args.reentry_id and re.fullmatch(r'[a-z0-9][a-z0-9-]{0,31}', args.reentry_id)
+                    and args.mapping_recovery and not args.resume_delivery and not args.content_isolation,
+                    'mapping recovery requires its own stable reentry and manifest')
+            start = time.time()
+            prior = _load_json(marker)
+            require(prior['request_sha256'] == runner.sha(args.request), 'supplement request identity changed')
+            handoff = _load_json(root / 'source-handoff.json')
+            qualification = _load_json(root / 'source-qualification.json')
+            original = _load_json(root / 'final-acceptance.json')
+            service = FileVaultFinalizeService(vault)
+            base_release = original['delivery']['release_id']
+            require(service.status()['current_release_id'] == base_release and service.validate(base_release)['ok'],
+                    'prior release must remain the exact supplement base')
+            recovery = _load_json(args.mapping_recovery)
+            require(recovery['prior_build'] == original['delivery']['run_id'], 'supplement prior Build changed')
+            print('Replaying the exact affected mapping requests', flush=True)
+            result = runner.start(short, vault, handoff['workflow_id'], handoff['pins'], request['operation_id'],
+                                  node='mapping', entry=args.reentry_id, mapping_recovery=recovery,
+                                  registry_revision=args.source_registry_revision)
+            directory = short / 'reentries' / args.reentry_id
+            require(result['last_stage'] == 'offline_build', 'supplement did not reach a settled writing checkpoint')
+            plan_path = sorted(directory.glob('stage-*-offline_build.json'))[-1]
+            partition = delivery_partition(_load_json(plan_path))
+            require(partition['included'], 'supplement found no complete affected pages')
+            authorization = {'contract': 'short-formal-authorization/v1', 'writing_entry': args.reentry_id,
+                             'checkpoint': {'control_sha256': runner.sha(directory / 'control.json'),
+                                            'result_sha256': runner.sha(directory / 'result.json'),
+                                            'plan_sha256': runner.sha(plan_path)},
+                             'actor': request['actor'], 'pages': partition['included'], 'base_release': base_release,
+                             'publish': True, 'policy': POLICY}
+            runner.save(directory / 'formal-authorization.json', authorization)
+            delivery = execute(short, 'formal-' + args.reentry_id, authorization, False, runner)
+        elif args.resume_delivery:
             prior = _load_json(marker)
             require(prior['request_sha256'] == runner.sha(args.request)
                     and not (root / 'final-acceptance.json').exists(), 'delivery reentry identity changed')
@@ -216,11 +254,12 @@ def main():
             delivery = execute(short, 'formal-fifth-release', authorization, False, runner)
         require(delivery['release_id'], 'formal eligibility produced no releasable pages')
         print(f"Release {delivery['release_id']} applied; synchronizing Provider", flush=True)
-        provider = synchronize(vault, root, delivery['release_id'], args.provider_config.resolve())
+        output = directory if args.from_node == 'mapping' else root
+        provider = synchronize(vault, output, delivery['release_id'], args.provider_config.resolve())
         final = accept(vault, _load_json(short / 'operation.json'), delivery, provider, args.provider_state.resolve())
         final.update(source_handoff=handoff, short_result=result, delivery=delivery, wall_seconds=time.time() - start,
                      source_qualification=qualification, whole_run_continuous_automation=not args.resume_delivery)
-        runner.save(root / 'final-acceptance.json', final)
+        runner.save(output / 'final-acceptance.json', final)
         print(json.dumps(final['release'], ensure_ascii=False), flush=True)
 
 

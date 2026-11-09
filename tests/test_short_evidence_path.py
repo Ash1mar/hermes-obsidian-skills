@@ -9,7 +9,7 @@ sys.path[:0] = [str(SKILL / 'lib'), str(SKILL / 'scripts')]
 
 from prepare_short_evidence_test import advance, seal
 from short_evidence_pass import (
-    checked_answer, map_requests, mapping_groups, mapping_request, receipt, seed_requests,
+    MAP_CONTRACT, checked_answer, map_requests, mapping_groups, mapping_receipt, mapping_request, receipt, seed_requests,
 )
 from short_evidence_reduce import (
     build_sections, check_page, coordination_request, detail_request, expand_sections, pack_pages,
@@ -47,6 +47,24 @@ def linked(iid, topic='t1', applies_to=()):
 
 def save_reply(plan, row, answer, directory):
     return seal(plan, row['id'], answer, directory)
+
+
+def test_asset_context_is_valid_and_invalid_record_does_not_hold_sibling():
+    material = source('S1')
+    seed = [{'id': 't1', 'name': 'Topic', 'scope': 'Scope'}]
+    dispositions = [linked('S1-B1', topic='unknown'), linked('S1-A2')]
+    dispositions[1]['links'][0]['role'] = 'context'
+    assigned = list(material['items'])
+    raw = result(topics=[], dispositions=dispositions)
+    old = mapping_request('S1', material, assigned, seed)
+    with pytest.raises(ValueError):
+        receipt(old, raw)
+    row = mapping_request('S1', material, assigned, seed, mapping_contract=MAP_CONTRACT)
+    for request, sealed in ((row, receipt(row, raw)), (old, mapping_receipt(old, raw, {'ordinal': 1}))):
+        accepted = checked_answer(request, sealed)['dispositions']
+        assert [d['status'] for d in accepted] == ['pending', 'linked']
+        assert accepted[1] == dispositions[1]
+        assert sealed['issues'][0]['item'] == 'S1-B1'
 
 
 def test_pipeline_reuses_completed_slots_and_bounds_repairs(tmp_path):
