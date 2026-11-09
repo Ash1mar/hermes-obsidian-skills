@@ -55,7 +55,21 @@ def source_boundary(vault, workflow_id, pins):
     path = _vault_path(vault, f'_system/ledgers/ingest-workflows/{workflow_id}.json')
     before = sha(path)
     origin = _load_json(path)
-    require(origin['state'] in ('completed', 'partial') and
+    pause = origin.get('pause_control', {})
+    provisioned = origin['scope'].get('pause_after') == ['exact_plan'] and pause.get('boundary') == 'exact_plan'
+    if provisioned:
+        startup = _load_json(_vault_path(vault, origin['scope']['bootstrap_ref']))
+        imported = startup['test_bundle_import']
+        import_path = _vault_path(vault, imported['ref'])
+        report = _load_json(import_path)
+        latch = _load_json(_vault_path(vault, pause['report_ref']))
+        require(imported['contract'] == report['contract'] == 'post-mineru-test/v1'
+                and imported['sha256'] == sha(import_path) and report['workflow_id'] == workflow_id
+                and report['mineru_calls'] == 0 and report['semantic_results_imported'] is False
+                and latch['contract'] == 'hermes-ingest-pause/v1'
+                and latch['evidence_digest'] == pause['evidence_digest'] == 'sha256:' + fingerprint(latch['evidence']),
+                'independent short path requires a latched, imported source boundary')
+    require((origin['state'] in ('completed', 'partial') or provisioned) and
             not workflow_processes(workflow_id, origin['kanban']['board_id']), 'origin must be settled and idle')
     sources = load_sources(vault, pins)
     ready = {row['path']: row for row in origin['source_outcomes'] if row['status'] == 'ready'}

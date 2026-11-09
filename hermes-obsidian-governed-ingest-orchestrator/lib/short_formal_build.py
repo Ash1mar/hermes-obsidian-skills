@@ -72,19 +72,21 @@ def native_fragment(root, receipt, attempts, conn, runner):
 
 
 def final_plan(root, operation, authorization, runner):
-    directory = root / 'reentries' / authorization['writing_entry']
-    control_path = directory / 'control.json'
+    initial = authorization['writing_entry'] == 'initial'
+    directory = root if initial else root / 'reentries' / authorization['writing_entry']
+    control_path = directory / ('operation.json' if initial else 'control.json')
     result_path = directory / 'result.json'
     control, result = _load_json(control_path), _load_json(result_path)
-    require(control['operation_sha256'] == runner.sha(root / 'operation.json')
-            and control['from_node'] == 'writing' and control['page_contract'] == runner.FRAGMENT_CONTRACT
+    require((initial or (control['operation_sha256'] == runner.sha(root / 'operation.json')
+            and control['from_node'] == 'writing')) and control['page_contract'] == runner.FRAGMENT_CONTRACT
             and result['last_stage'] == 'offline_build' and not result['native_active_or_ready']
             and result['origin'] == operation['origin'], 'a settled writing checkpoint is required')
     origin = _load_json(Path(operation['origin']['path']))
     require(origin['actor'] == authorization['actor'], 'formal actor must own the source boundary')
     controls = [_load_json(p) for p in (root / 'reentries').glob('*/control.json')]
     current = max((c for c in controls if c.get('page_contract') and
-                   c['operation_sha256'] == control['operation_sha256']), key=lambda c: c['started_at'])
+                   c['operation_sha256'] == runner.sha(root / 'operation.json')),
+                  key=lambda c: c['started_at'], default=operation)
     require(current == control, 'writing checkpoint is superseded by another reentry')
     saved_plan = sorted(directory.glob('stage-*-offline_build.json'))[-1]
     require(authorization['checkpoint'] == {

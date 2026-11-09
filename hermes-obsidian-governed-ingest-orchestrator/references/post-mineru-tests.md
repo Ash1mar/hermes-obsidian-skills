@@ -37,3 +37,15 @@ time as a downstream speedup. Keep the original Vault and Provider namespace
 unchanged. A real two-page claim needs one native request, two independently
 validated persisted results and two receipts. Current publication and indexing
 must use the new Vault's own release, exact scope and Provider namespace.
+
+For a new independent short-path run, use
+`python3 "<skill-dir>/scripts/start_post_mineru_short_test.py"`. Supply
+`--request`, `--output`, `--provisioner-skill`, `--bootstrap-skill`,
+`--provider-config` and `--provider-state`. The preparation request uses
+the exact-plan pause solely as a durable handoff from native source
+registration and UnitSet validation. The controller does not continue the
+legacy Pass graph. It automatically runs the native short mapping, planning
+and writing stages, authenticates the completed fragments, then executes
+formal Build, eligible partial release, Provider sync and exact-scope
+verification. The new Vault must have its own source registration, release
+and Provider namespace. A material hold remains visible in the run evidence.
