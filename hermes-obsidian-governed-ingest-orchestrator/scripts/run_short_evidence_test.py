@@ -24,7 +24,7 @@ from native_stop_inventory import workflow_processes
 from orchestration import configuration
 from prepare_short_evidence_test import advance, inventory, save, seal
 from short_evidence_pass import load_sources, mapping_groups, request, require, seed_requests
-from short_page_contract import CONTRACT as FRAGMENT_CONTRACT
+from short_page_contract import CONTRACT as FRAGMENT_CONTRACT, WRITE_CONTRACT, writing_retry
 from workflow_metrics import usage_for
 
 CONTRACT = 'native-short-evidence-test/v1'
@@ -129,6 +129,28 @@ def build_call(row, *, diagnostic, slots):
                    row['budget']['estimated_output_tokens'], row['budget']['input_cap'], images, slots=page_call)
 
 
+def checked_retry(prior, call, job):
+    retry = call['view']['structural_retry']
+    slots = list(call['view']['pages']) if call['phase'] == 'short-write' else ['r']
+    if 'slots' not in retry:
+        return build_call(prior, diagnostic=retry['reason'], slots=slots) == call
+    first = _load_json(job.with_name(job.stem + '.audit-1.json'))
+    completion = _load_json(job.with_suffix('.result.json'))
+    captured = completion['attempts'][0]['capture']['held']
+    drafts = response_drafts(first['raw'])
+    return set(captured) == set(slots) and writing_retry(prior, slots, drafts, captured) == call
+
+
+def response_drafts(raw):
+    try:
+        answer, _ = decode_semantic_response(raw)
+        if isinstance(answer, dict) and isinstance(answer.get('results'), dict):
+            return answer['results']
+    except (TypeError, ValueError, ContractError):
+        pass
+    return {}
+
+
 def checked_projection(row):
     p = prepare_request_projection(row['phase'], row['view'], row['schema'], row['image_inputs'])
     body = {k: row[k] for k in ('contract', 'phase', 'messages', 'system', 'schema', 'transport_schema', 'output_cap')}
@@ -158,8 +180,10 @@ def run_job(root, job, own):
     slots = row.get('missing_slots', ['r'])
     attempts = []
     ordinals = (1,) if original['view'].get('fragment_repair') else (1, 2)
+    retry_budget = None
     for ordinal in ordinals:
         if not row['budget']['fits']:
+            retry_budget = row['budget']
             break
         grant = own()
         p = checked_projection(row)
@@ -200,8 +224,12 @@ def run_job(root, job, own):
             return {'state': 'settled', 'attempts': attempts}
         slots = list(captured['held'])
         if ordinal < ordinals[-1]:
-            row = build_call(original, diagnostic='; '.join(captured['held'].values()), slots=slots)
-    return {'state': 'held', 'attempts': attempts, 'unsettled_slots': slots}
+            if original['view'].get('writing_contract') == WRITE_CONTRACT:
+                row = writing_retry(original, slots, response_drafts(raw), captured['held'])
+            else:
+                row = build_call(original, diagnostic='; '.join(captured['held'].values()), slots=slots)
+    return {'state': 'held', 'attempts': attempts, 'unsettled_slots': slots,
+            **({'retry_budget_hold': retry_budget} if retry_budget else {})}
 
 
 def replay_mapping(root, row, own):
@@ -261,9 +289,7 @@ def replay_node_output(root, row, saved, own, *, mapping_overlay=None):
                 and old['board'] == own_grant['board'] and audit['state'] == 'returned',
                 'replay request differs from native reservation')
         if call['id'] != row['id']:
-            diagnostic = call['view']['structural_retry']['reason']
-            slots = list(call['view']['pages']) if row['phase'] == 'short-write' else ['r']
-            require(build_call(prior_row, diagnostic=diagnostic, slots=slots) == call,
+            require(checked_retry(prior_row, call, old_job),
                     'saved retry differs from the bounded original request')
         with closing(kc.connect(board=old['board'])) as conn:
             prior_task = kb.get_task(conn, old['task_id'])
@@ -554,8 +580,33 @@ def attempt_index(root):
     return previous
 
 
+def verify_revision_drafts(root, board, repair):
+    from fixed_semantic_recovery import transcript_reply
+
+    kb, kc, _ = runtime()
+    for change in repair['changes']:
+        if change['action'] != 'revise':
+            continue
+        proof = change['prior_attempt']
+        job, reservation, audit_path = (_vault_path(root, proof[key]) for key in ('job', 'reservation', 'audit'))
+        reserved, audit = _load_json(reservation), _load_json(audit_path)
+        call, grant, model = reserved['request'], audit['grant'], audit['model']
+        with closing(kc.connect(board=board)) as conn:
+            task = kb.get_task(conn, grant['task_id'])
+            runs = kb.list_runs(conn, grant['task_id'], include_active=False)
+        require(grant['board'] == board and task and task.created_by == CONTRACT and task.body == task_body(root, job)
+                and any(run.id == grant['run_id'] for run in runs)
+                and model['parent_native_run_id'] == str(grant['run_id']) and model['fixed_request_checks'] > 0,
+                'revision draft must belong to a closed native writing attempt')
+        wire = checked_projection(call)['wire']
+        binding = {'model': model, 'response_sha256': fingerprint(audit['raw']),
+                   'user_sha256': fingerprint(wire['user']),
+                   'image_inputs': [{k: v for k, v in image.items() if k != 'url'} for image in call['image_inputs']]}
+        require(transcript_reply(binding, wire) == audit['raw'], 'revision draft differs from native transcript')
+
+
 def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, page_contract, fragment_repair=None,
-            fragment_exclusions=None, mapping_recovery=None, registry_revision=None):
+            fragment_exclusions=None, mapping_recovery=None, registry_revision=None, inherited=None):
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', entry), 'valid stable reentry ID required')
     kb, kc, _ = runtime()
     board = operation['board']
@@ -574,6 +625,16 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
     holds = {}
     overlay = None
     preserved = []
+    if inherited:
+        predecessor = root / 'reentries' / inherited['entry']
+        prior_result = _load_json(predecessor / 'result.json')
+        require(prior_result['last_stage'] == 'offline_build' and not prior_result['native_active_or_ready']
+                and prior_result['origin'] == operation['origin'], 'writing requires a settled upstream entry')
+        overlay_entry = inherited.get('mapping_overlay_entry', inherited['entry'])
+        overlay = root / 'reentries' / overlay_entry / 'mapping-receipts'
+        require(overlay.is_dir(), 'accepted mapping overlay missing')
+        holds = prior_result['execution_holds']
+        preserved = inherited['preserved_pages']
     if mapping_recovery is not None:
         require(node == 'mapping' and not operation.get('mapping_contract')
                 and set(mapping_recovery) == {'requests', 'prior_build'},
@@ -595,7 +656,7 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
     plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, page_contract=page_contract,
                    fragment_repair=fragment_repair, fragment_exclusions=fragment_exclusions,
                    mapping_contract=operation.get('mapping_contract'), mapping_overlay=overlay,
-                   preserved_pages=preserved, native_holds=holds)
+                   preserved_pages=preserved, native_holds=holds, writing_contract=operation.get('writing_contract'))
     current = reentry_node(plan, node)
     if mapping_recovery is not None:
         require(plan['stage'] == 'map' and {r['id'] for r in plan['requests']} == set(mapping_recovery['requests']),
@@ -603,6 +664,7 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
     if fragment_repair is not None:
         original = plan.get('fragment_repair', {}).get('original_requests', [])
         require(original and set(original) <= previous.keys(), 'repair requires original reserved writing requests')
+        verify_revision_drafts(root, board, fragment_repair)
     pending = plan.get('requests', [])
     control = {
         'entry': entry, 'from_node': node, 'effective_node': current, 'stage': plan['stage'],
@@ -622,6 +684,9 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
         control['mapping_recovery'] = mapping_recovery
         control['preserved_pages'] = preserved
         control['registry_revision'] = registry_revision
+    if inherited:
+        control.update(mapping_recovery=inherited['mapping_recovery'], preserved_pages=preserved,
+                       registry_revision=registry_revision, mapping_overlay_entry=overlay_entry)
     if dry_run:
         return {**control, 'model_calls': 0}
     save(directory / 'control.json', control)
@@ -649,7 +714,8 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
         plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, native_holds=holds,
                        page_contract=page_contract, fragment_repair=fragment_repair,
                        fragment_exclusions=fragment_exclusions, mapping_contract=operation.get('mapping_contract'),
-                       mapping_overlay=mapping_overlay, preserved_pages=preserved_pages)
+                       mapping_overlay=mapping_overlay, preserved_pages=preserved_pages,
+                       writing_contract=operation.get('writing_contract'))
         planning_seconds = time.monotonic() - planning_started
         rows = plan.get('requests', [])
         consumed_unknown = [r['id'] for r in rows if r['id'] in previous and not previous[r['id']]]
@@ -706,6 +772,17 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
     with exclusive_lock(root / 'controller.lock', timeout=0, marker=False):
         require(registry_revision is None or mapping_recovery is not None,
                 'historical source envelope requires exact mapping recovery')
+        active = None
+        inherited = None
+        if node:
+            operation_sha = sha(root / 'operation.json')
+            controls = [_load_json(path) for path in (root / 'reentries').glob('*/control.json')]
+            active = max((row for row in controls
+                          if row['operation_sha256'] == operation_sha and row.get('page_contract')),
+                         key=lambda row: row['started_at'], default=_load_json(root / 'operation.json'))
+            if node == 'writing' and active.get('mapping_recovery') and mapping_recovery is None:
+                inherited = active
+                registry_revision = active['registry_revision']
         sources, origin = source_boundary(vault, workflow_id, pins, registry_revision)
         board = 'short-' + operation_id
         kb, kc, kd = runtime()
@@ -722,11 +799,6 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
             require(operation['board'] == board and operation['origin'] == origin and operation['pins'] == pins
                     and operation['body_limit'] == LIMIT, 'resume input identity changed')
             if node:
-                operation_sha = sha(root / 'operation.json')
-                controls = [_load_json(path) for path in (root / 'reentries').glob('*/control.json')]
-                versions = [row for row in controls
-                            if row['operation_sha256'] == operation_sha and row.get('page_contract')]
-                active = max(versions, key=lambda row: row['started_at']) if versions else operation
                 active_contract = active.get('page_contract')
                 selected = page_contract or active_contract
                 if page_contract and page_contract != active_contract:
@@ -735,7 +807,7 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
                                dry_run=dry_run, page_contract=selected,
                                fragment_repair=fragment_repair or active.get('fragment_repair'),
                                fragment_exclusions=fragment_exclusions or active.get('fragment_exclusions'),
-                               mapping_recovery=mapping_recovery, registry_revision=registry_revision)
+                               mapping_recovery=mapping_recovery, registry_revision=registry_revision, inherited=inherited)
             metrics = resume_mapping(root, operation, sources, seeds, groups)
         else:
             require(not (root / 'operation.json').exists(), 'operation already exists; inspect its durable evidence')
@@ -744,6 +816,7 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
             page_contract = page_contract or FRAGMENT_CONTRACT
             operation['page_contract'] = page_contract
             operation['mapping_contract'] = MAP_CONTRACT
+            operation['writing_contract'] = WRITE_CONTRACT
             groups = mapping_groups(sources, MAP_CONTRACT)
             save(root / 'operation.json', operation)
             metrics = []

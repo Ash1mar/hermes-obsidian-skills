@@ -7,6 +7,7 @@ from short_evidence_pass import NAME, NOTE, PASS_LIMIT, REF, array, evidence, re
 from short_evidence_reduce import SECTION, ISSUE, check_coordination as check_partition
 
 CONTRACT = 'short-evidence-pages/v2'
+WRITE_CONTRACT = 'short-evidence-writing/v3'
 RECEIPT = 'short-evidence-fragment-receipt/v2'
 EXPLANATION = {'type': 'string', 'minLength': 1, 'maxLength': 240}
 PAGE = closed({
@@ -24,6 +25,12 @@ RESULT = {'anyOf': [
             'inspected_assets': array(REF)}),
     closed({'blocked': closed({'kind': {'enum': ['missing_asset', 'unreadable', 'missing_context', 'other']},
                               'refs': array(REF), 'detail': EXPLANATION, 'effect': EXPLANATION})}),
+]}
+WRITING_RESULT = {'anyOf': [
+    closed({**RESULT['anyOf'][0]['properties'],
+            'sections': {**array(closed({'heading': NAME, 'content': SECTION_BODY['properties']['content']})),
+                         'minItems': 1}}),
+    RESULT['anyOf'][1],
 ]}
 RULES = {
     'short-coordinate': (
@@ -49,6 +56,16 @@ RULES = {
         'content and effect. Do not infer, invent citations, or use absence of unrequired assets as a refusal.'
     ),
 }
+WRITING_RULE = (
+    'Write only the assigned Chinese fragment and only for its own slot. Follow the evidence obligations, '
+    'including conditions, exceptions, numerical limits and applicability. Cite every used source ID inline '
+    'in Markdown using [S1-B1]. The program derives used IDs from the Markdown. List unused context and '
+    'genuinely unresolved material; do not report a cited item as unresolved. Explicitly list each whole '
+    'asset inspected. A pure table navigation block can be accounted for by its bound complete tables '
+    'when those tables are inspected and cited. QA annotations are retained as metadata and do not '
+    'require publication review or justify refusal. A concrete missing or unreadable essential item '
+    'must still be reported with its exact ID and impact. Keep source conditions and exceptions intact.'
+)
 _INLINE = re.compile(r'\[(S[0-9]+-[AB][0-9]+)\]')
 _METADATA = re.compile(r'<!--\s*(?:source-page|table-id|block-id):[^<>]*-->')
 _METADATA_TAIL = re.compile(r'^:\s*(?:table|block)_\w+;\s*source-page:\s*\d+;\s*qa:\s*\w+\s*-->\s*$')
@@ -83,7 +100,54 @@ def navigation_wrapper(item, registered_paths):
     return True
 
 
-def obligations(sources, material, topics, primary):
+def table_navigation(item, materials):
+    """Return only registered assets named by a pure table wrapper."""
+    if item['kind'] != 'block' or not item['text']:
+        return []
+    bindings = {materials[ref].get('label'): ref for ref in item['required_assets']
+                if ref in materials and materials[ref]['kind'] == 'asset'}
+    text = _METADATA.sub('', item['text'])
+    links = _TABLE_LINK.findall(text)
+    if not links or not set(links) <= bindings.keys():
+        return []
+    if navigation_wrapper(item, set(bindings)):
+        return list(dict.fromkeys(bindings[link] for link in links))
+    caption = re.compile(r'\*\*(?P<title>[\w\u3400-\u9fff ]{2,40}?)(?:\s*编号[：:]\s*(?:[A-Z0-9-]+)?\s*)?'
+                         r'\s*共\s*\d*\s*页\s*第\s*\d*\s*页\*\*')
+    titles = {m['title'].strip() for line in text.splitlines()
+              if (m := caption.fullmatch(line.strip())) and not _OBLIGATION.search(m['title'])}
+    organization = r'[\u3400-\u9fff]{2,32}公司'
+    continuation = r'[A-Z][A-Z0-9]*(?:-[A-Z0-9]+){2,}\s*[（(]续[）)]'
+    for line in text.splitlines():
+        value = line.strip()
+        title = re.sub(r'^#{1,6}\s+', '', value)
+        if (not value or _TABLE_LINK.fullmatch(value)
+                or ((m := caption.fullmatch(value)) and m['title'].strip() in titles)
+                or (not _OBLIGATION.search(title) and any(
+                    re.fullmatch(r'[\u3400-\u9fff]{0,8}' + re.escape(t), title) for t in titles))
+                or re.fullmatch(rf'(?:{organization}|{continuation})', title)):
+            continue
+        return []
+    return list(dict.fromkeys(bindings[link] for link in links))
+
+
+def writing_view(view):
+    """Keep unlocated QA as annotations, separate from material controls."""
+    view['writing_contract'] = WRITE_CONTRACT
+    impacts = view['qa_impact']
+    view['qa_annotations'] = [{k: v for k, v in q.items() if k not in ('publication', 'writing')}
+                              for q in impacts if q['writing'] == 'allow']
+    view['qa_impact'] = [q for q in impacts if q['writing'] != 'allow']
+    view.pop('original_qa', None)
+    return view
+
+
+def auditable_qa(view):
+    return [*view['qa_impact'], *[{**q, 'writing': 'allow', 'publication': 'review'}
+            for q in view.get('qa_annotations', ()) if q['status'] == 'unlocated']]
+
+
+def obligations(sources, material, topics, primary, *, modern=False):
     by_item = {}
     for topic in topics.values():
         for link in topic['relations']:
@@ -93,9 +157,14 @@ def obligations(sources, material, topics, primary):
         source = sources[key.split('-', 1)[0]]
         roles = by_item.get(key, set())
         covers_by = []
+        navigation = table_navigation(item, material) if modern and not roles & {
+            'condition', 'exception', 'conflict', 'contrary'} else []
         if item['kind'] == 'asset':
             classification = 'asset'
             required = key in primary and bool(roles)
+        elif navigation:
+            classification, required = 'navigation', False
+            covers_by = navigation
         elif roles & {'evidence', 'condition', 'exception', 'conflict', 'contrary'}:
             classification = 'substantive'
             required = key in primary
@@ -221,20 +290,42 @@ def body_request(group, limit, *, repair_contract=None):
     estimate = sum(900 + sum(len(m['text'] or '') for m in p['materials'].values()) // 2
                    + 20 * len(p['materials']) for p in slots.values())
     view = {'page_contract': CONTRACT, 'pages': slots}
+    modern = all(p.get('writing_contract') == WRITE_CONTRACT for p in slots.values())
+    if modern:
+        view['writing_contract'] = WRITE_CONTRACT
     if repair_contract:
         view['fragment_repair'] = repair_contract
-    return request('short-write', view, dict.fromkeys(slots, RESULT),
+    return request('short-write', view, dict.fromkeys(slots, WRITING_RESULT if modern else RESULT),
                    estimate, limit, [image for p in group for image in p['images']], slots=True)
 
 
-def difference(label, values):
-    return f"{label}={','.join(sorted(values)[:24])}" if values else ''
+def difference(label, values, *, limit=24):
+    return f"{label}={','.join(sorted(values)[:limit])}" if values else ''
+
+
+def section_citations(section):
+    return set(_INLINE.findall(section['content']))
+
+
+def writing_retry(row, slots, drafts, diagnostics):
+    properties = row['schema']['properties']['results']['properties']
+    pages = {slot: row['view']['pages'][slot] for slot in slots}
+    materials = {key for page in pages.values() for key in page['materials']}
+    images = [image for image in row['image_inputs']
+              if any(ref['material'] in materials for ref in image['references'])]
+    view = {**row['view'], 'pages': pages, 'structural_retry': {'slots': {
+        slot: {'previous_answer': drafts.get(slot), 'diagnostics': diagnostics[slot]} for slot in slots}}}
+    estimate = sum(900 + sum(len(m['text'] or '') for m in page['materials'].values()) // 2
+                   + 20 * len(page['materials']) for page in pages.values())
+    return request('short-write', view, {slot: properties[slot] for slot in slots},
+                   estimate, row['budget']['input_cap'], images, slots=True)
 
 
 def check_fragment(row, slot, answer):
     require(row['budget']['fits'], 'fragment request exceeds its budget')
-    _check_shape(RESULT, answer, {}, '$')
     view = row['view']['pages'][slot]
+    modern = view.get('writing_contract') == WRITE_CONTRACT
+    _check_shape(WRITING_RESULT if modern else RESULT, answer, {}, '$')
     duties = view['obligations']
     known = set(duties)
     state, diagnostic = 'structurally_valid', None
@@ -258,25 +349,33 @@ def check_fragment(row, slot, answer):
         state = 'held'
     else:
         expressed = set()
+        errors = []
         for section in answer['sections']:
             require(section['heading'].strip() and section['content'].strip(), 'section needs a heading and content')
-            inline = set(_INLINE.findall(section['content']))
-            declared = set(section['expressed'])
-            require(inline == declared and inline <= known, '; '.join(filter(None, (
-                difference('declared_without_inline', declared - inline), difference('inline_without_declaration', inline - declared),
-                difference('unknown_inline', inline - known),
-            ))))
+            inline = section_citations(section)
+            declared = inline if modern else set(section['expressed'])
+            problems = (difference('declared_without_inline', declared - inline),
+                        difference('inline_without_declaration', inline - declared),
+                        difference('unknown_inline', inline - known, limit=None if modern else 24))
+            if modern:
+                errors.extend(problems)
+            else:
+                require(inline == declared and inline <= known, '; '.join(filter(None, problems)))
             expressed |= declared
         context = set(answer['context'])
         unresolved = {entry['item'] for entry in answer['unresolved']}
         inspected = set(answer['inspected_assets'])
         require(len(unresolved) == len(answer['unresolved']) and all(x['reason'].strip() for x in answer['unresolved']),
                 'each unresolved item needs one reason')
-        require(not (expressed & context or expressed & unresolved or context & unresolved), 'overlapping evidence dispositions')
+        if modern:
+            context -= expressed
+            errors.append(difference('overlapping_unresolved', unresolved & (expressed | context), limit=None))
+        else:
+            require(not (expressed & context or expressed & unresolved or context & unresolved), 'overlapping evidence dispositions')
         # Known nonblocking QA identifiers may be mentioned as observations.
         # They are never evidence, cannot cover a source obligation, and do
-        # not resolve the preserved publication review.
-        qa_ids = {q['id'] for q in view['qa_impact'] if q['writing'] == 'allow'}
+        # do not resolve the preserved QA annotation.
+        qa_ids = {q['id'] for q in auditable_qa(view) if q['writing'] == 'allow'}
         qa_observations = [
             {'qa_id': entry['item'], 'status': 'unresolved', 'reason': entry['reason']}
             for entry in answer['unresolved'] if entry['item'] in qa_ids
@@ -288,20 +387,33 @@ def check_fragment(row, slot, answer):
         required = {key for key, duty in duties.items() if duty['express']}
         assets = {key for key, duty in duties.items() if duty['inspect']}
         substitute = {dep for key, duty in duties.items() if key in context for dep in duty['covers_by']}
-        errors = [difference('unaccounted', known - accounted), difference('unknown_ids', accounted - known),
-                  difference('required_expressions_missing', (required | substitute) - expressed - unresolved),
-                  difference('asset_inspections_missing', assets - inspected - unresolved),
-                  difference('unexpected_asset_inspections', inspected - assets)]
+        if modern:
+            covered_nav = {key for key, duty in duties.items() if duty['covers_by']
+                           and set(duty['covers_by']) <= expressed & inspected}
+            accounted |= covered_nav | inspected
+            substitute |= {ref for duty in duties.values()
+                           if duty['assignment'] == 'primary' for ref in duty['covers_by']}
+        cap = None if modern else 24
+        errors += [difference('unaccounted', known - accounted, limit=cap),
+                   difference('unknown_ids', accounted - known, limit=cap),
+                   difference('required_expressions_missing', (required | substitute) - expressed - unresolved, limit=cap),
+                   difference('asset_inspections_missing', assets - inspected - unresolved, limit=cap),
+                   difference('unexpected_asset_inspections', inspected - assets, limit=cap)]
         require(not any(errors), '; '.join(filter(None, errors)))
         if unresolved & (required | assets | substitute):
             state, diagnostic = 'held', 'unresolved_required_evidence'
-    release = [qa['id'] for qa in view['qa_impact'] if qa['publication'] != 'allow']
-    body = {'contract': RECEIPT, 'request_sha256': row['id'], 'slot': slot, 'fragment_id': view['fragment_id'],
+    release = [qa['id'] for qa in auditable_qa(view) if qa['publication'] != 'allow']
+    body = {'contract': 'short-evidence-fragment-receipt/v3' if modern else RECEIPT,
+            'request_sha256': row['id'], 'slot': slot, 'fragment_id': view['fragment_id'],
             'page_id': view['id'], 'fragment_position': view['fragment_position'], 'fragment_sha256': fingerprint(view),
             'answer': answer, 'state': state, 'diagnostic': diagnostic, 'qa_publication_review': release,
             'independent_review': 'not_performed', 'publication_eligible': False}
     if qa_observations:
-        body.update(contract='short-evidence-fragment-receipt/v2.1', qa_observations=qa_observations)
+        body['qa_observations'] = qa_observations
+        if not modern:
+            body['contract'] = 'short-evidence-fragment-receipt/v2.1'
     if block_locations is not None:
-        body.update(contract='short-evidence-fragment-receipt/v2.2', blocked_material_locations=block_locations)
+        body['blocked_material_locations'] = block_locations
+        if not modern:
+            body['contract'] = 'short-evidence-fragment-receipt/v2.2'
     return {**body, 'receipt_sha256': fingerprint(body)}
