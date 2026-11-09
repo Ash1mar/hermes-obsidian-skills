@@ -5,6 +5,7 @@ from contextlib import closing
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import subprocess
 import sys
@@ -64,6 +65,23 @@ def prepare(vault, request, root, provisioner, bootstrap):
                'mineru_calls': imported['mineru_calls'], 'imported_files': sum(len(s['origin_files']) for s in imported['sources'])}
     runner.save(root / 'source-handoff.json', handoff)
     return handoff
+
+
+def repeat_handoff(vault, request_path, previous):
+    marker = _load_json(previous / 'pipeline-start.json')
+    require(marker['request_sha256'] == runner.sha(request_path),
+            'another round requires the exact same provisioning request')
+    handoff = _load_json(previous / 'source-handoff.json')
+    qualification = _load_json(previous / 'source-qualification.json')
+    from post_mineru_test import verify_import_board
+
+    workflow = _load_json(_vault_path(vault, f"_system/ledgers/ingest-workflows/{handoff['workflow_id']}.json"))
+    require(workflow['pause_control'] == handoff['pause'] and qualification['ok']
+            and qualification['resolved'] == len(handoff['pins']),
+            'the source handoff or its qualification changed')
+    runner.source_boundary(vault, handoff['workflow_id'], handoff['pins'])
+    verify_import_board(workflow['kanban']['board_id'])
+    return handoff, qualification
 
 
 def synchronize(vault, root, release_id, provider_config):
@@ -133,6 +151,9 @@ def accept(vault, operation, delivery, provider, host_state):
     manifest = _load_json(path)
     validate_retrieval_snapshot(service, manifest)
     included = {s['page_id'] for s in manifest['subjects']}
+    revisions = {(s['page_id'], s['current_revision_id']) for s in manifest['subjects']}
+    round_pages = {(s['page_id'], s['revision_id']) for s in delivery['candidates'] if s['published']}
+    require(round_pages and round_pages <= revisions, 'the exact round revisions must be in the release')
     expected = {s['id'] for s in manifest['index_eligibility'] if s['kind'] == 'knowledge_page' and s['eligible']}
     require(included == expected and provider['release_hash'] == runner.sha(path), 'release and index scope differ')
     generation = host_state / provider['vault_id'] / 'generations' / provider['index_generation']
@@ -152,7 +173,8 @@ def accept(vault, operation, delivery, provider, host_state):
             'Final Acceptance requires no active native consumers')
     return {'release': verified, 'provider_generation': provider['index_generation'],
             'chroma_pages': len(chroma), 'bm25_pages': len(bm25['meta']), 'provider_documents': len(indexed),
-            'native_board': operation['board'], 'native_tasks': len(tasks), 'state': 'partial',
+            'native_board': operation['board'], 'native_tasks': len(tasks), 'round_published_pages': len(round_pages),
+            'state': 'partial',
             'coverage_complete': False, 'final_acceptance': True}
 
 
@@ -173,18 +195,25 @@ def main():
     parser.add_argument('--split-atomic-fragment')
     parser.add_argument('--mapping-recovery', type=Path)
     parser.add_argument('--source-registry-revision', type=int)
+    parser.add_argument('--repeat-from', type=Path, help='Reuse the exact source handoff in a previous round directory')
+    parser.add_argument('--round-id', help='Stable board and page namespace for a new same-Vault round')
     args = parser.parse_args()
     request = _load_json(args.request.resolve(strict=True))
     root = args.output.resolve()
     vault = Path(request['vault_path']).resolve()
     require(not root.is_relative_to(vault), 'test evidence must remain outside the Vault')
+    require(bool(args.repeat_from) == bool(args.round_id)
+            and (not args.round_id or (re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', args.round_id)
+                                      and args.round_id != request['operation_id']
+                                      and not args.from_node and not args.resume_delivery)),
+            'a fresh same-Vault round requires its own ID and previous source handoff')
     root.mkdir(parents=True, exist_ok=True)
-    with runner.exclusive_lock(root / 'pipeline.lock', timeout=0, marker=False):
+    with (runner.exclusive_lock(vault.parent / ('.' + vault.name + '-short-pipeline.lock'), timeout=0, marker=False),
+          runner.exclusive_lock(root / 'pipeline.lock', timeout=0, marker=False)):
         short = root / 'native'
         marker = root / 'pipeline-start.json'
         provider = None
         if args.from_node:
-            import re
             entry_pattern = r'[a-z0-9][a-z0-9-]{0,31}'
             writing = args.from_node == 'writing'
             require(args.reentry_id and re.fullmatch(entry_pattern, args.reentry_id)
@@ -208,7 +237,8 @@ def main():
             if recovery:
                 require(recovery['prior_build'] == original['delivery']['run_id'], 'supplement prior Build changed')
             print(f"Recovering the affected {args.from_node} work", flush=True)
-            result = runner.start(short, vault, handoff['workflow_id'], handoff['pins'], request['operation_id'],
+            result = runner.start(short, vault, handoff['workflow_id'], handoff['pins'],
+                                  prior.get('round_id', request['operation_id']),
                                   node=args.from_node, entry=args.reentry_id, mapping_recovery=recovery,
                                   fragment_repair=_load_json(args.fragment_repair) if args.fragment_repair else None,
                                   split_output=args.split_atomic_fragment,
@@ -258,13 +288,33 @@ def main():
         else:
             require(not marker.exists() and not args.content_isolation, 'stable run already started or unsupported early isolation')
             start = time.time()
-            runner.save(marker, {'started_at': start, 'operation_id': request['operation_id'],
-                                  'path': 'post-mineru-short', 'request_sha256': runner.sha(args.request)})
-            print('Starting independent native source preparation', flush=True)
-            handoff = prepare(vault, request, root, args.provisioner_skill.resolve(), args.bootstrap_skill.resolve())
-            qualification = qualify_sources(vault, root, handoff, request)
+            round_id = args.round_id or request['operation_id']
+            launch = {'started_at': start, 'operation_id': request['operation_id'],
+                      'path': 'post-mineru-short', 'request_sha256': runner.sha(args.request)}
+            base_release = None
+            if args.repeat_from:
+                previous = args.repeat_from.resolve(strict=True)
+                require(previous != root and not previous.is_relative_to(vault), 'repeat requires independent evidence')
+                handoff, qualification = repeat_handoff(vault, args.request, previous)
+                service = FileVaultFinalizeService(vault)
+                base_release = service.status()['current_release_id']
+                require(not base_release or service.validate(base_release)['ok'], 'previous release is not verified')
+                launch.update(round_id=round_id, reused_handoff=str(previous), base_release=base_release)
+                runner.save(marker, launch)
+                runner.save(root / 'source-handoff.json', handoff)
+                runner.save(root / 'source-qualification.json', qualification)
+            else:
+                from ingest_kanban import KanbanCLI
+
+                require(KanbanCLI().dispatcher_available(),
+                        'native Hermes Gateway dispatcher must be available before source provisioning')
+                runner.save(marker, launch)
+                print('Starting independent native source preparation', flush=True)
+                handoff = prepare(vault, request, root, args.provisioner_skill.resolve(), args.bootstrap_skill.resolve())
+                qualification = qualify_sources(vault, root, handoff, request)
             print(f"Source handoff verified at revision {handoff['revision']}; starting short stages", flush=True)
-            result = runner.start(short, vault, handoff['workflow_id'], handoff['pins'], request['operation_id'])
+            result = runner.start(short, vault, handoff['workflow_id'], handoff['pins'], round_id,
+                                  separate_page_identities=bool(args.repeat_from))
             require(result['last_stage'] == 'offline_build', 'short stages did not produce a settled Build input')
             plan_path = sorted(short.glob('stage-*-offline_build.json'))[-1]
             partition = delivery_partition(_load_json(plan_path))
@@ -273,7 +323,7 @@ def main():
                              'checkpoint': {'control_sha256': runner.sha(short / 'operation.json'),
                                             'result_sha256': runner.sha(short / 'result.json'),
                                             'plan_sha256': runner.sha(plan_path)},
-                             'actor': request['actor'], 'pages': partition['included'], 'base_release': None,
+                             'actor': request['actor'], 'pages': partition['included'], 'base_release': base_release,
                              'publish': True, 'policy': POLICY}
             runner.save(root / 'formal-authorization.json', authorization)
             print(f"{len(partition['included'])} complete pages; executing formal Build and release", flush=True)

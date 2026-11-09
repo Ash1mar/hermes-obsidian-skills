@@ -46,8 +46,9 @@ For a new independent short-path run, use
 `--request`, `--output`, `--provisioner-skill`, `--bootstrap-skill`,
 `--provider-config` and `--provider-state`. The preparation request uses
 the exact-plan pause solely as a durable handoff from native source
-registration and UnitSet validation. The controller does not continue the
-legacy Pass graph. It automatically runs the native short mapping, planning
+registration and UnitSet validation. The controller checks the native Gateway
+dispatcher before creating a workflow and leaves the legacy Pass graph paused.
+It automatically runs the native short mapping, planning
 and writing stages, authenticates the completed fragments, then executes
 formal Build, eligible partial release, Provider sync and exact-scope
 verification. The new Vault must have its own source registration, release
@@ -60,6 +61,14 @@ evidence. A confirmed content issue can be isolated before release with
 `--content-isolation <JSON>`, binding the page ID, revision, body hash, cited
 source references and reason. Record the interrupted run as an automation
 failure even if delivery recovery succeeds.
+
+For another independent downstream round in the same test Vault, pass
+`--repeat-from <first-pipeline-output>` and `--round-id <stable-round-id>`
+with the original request and a fresh output directory. The program revalidates
+the source handoff and uses a distinct native board and distinct page identities.
+Only the source handoff is reused. The round runs fresh semantic work, adds its
+eligible page revisions to the verified base release, and verifies its exact new
+revisions as well as the cumulative Provider index. Query remains disabled.
 
 For a settled legacy mapping failure within the short path, resume the existing
 test with `--from-node mapping --reentry-id <id> --mapping-recovery <JSON>`.

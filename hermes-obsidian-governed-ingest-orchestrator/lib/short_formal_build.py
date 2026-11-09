@@ -122,7 +122,8 @@ def final_plan(root, operation, authorization, runner):
                              fragment_exclusions=control.get('fragment_exclusions'), mapping_contract=mapping_contract,
                              mapping_overlay=overlay, preserved_pages=control.get('preserved_pages', ()),
                              writing_contract=operation.get('writing_contract'),
-                             split_output=control.get('split_output', operation.get('split_output')))
+                             split_output=control.get('split_output', operation.get('split_output')),
+                             page_namespace=operation.get('page_namespace'))
     require(rebuilt == _load_json(saved_plan), 'formal Build requires reproducible writing, QA and coverage')
     return rebuilt, sources
 

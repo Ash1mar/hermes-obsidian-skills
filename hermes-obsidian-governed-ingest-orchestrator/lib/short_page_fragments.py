@@ -178,11 +178,16 @@ def split_atomic_output(fragment, limit):
     return parts
 
 
-def pack(sources, reduced, specs, limit, *, split_output=False, oversized=None):
+def page_identity(identities, namespace):
+    ordered = sorted(identities)
+    return fingerprint([namespace, ordered] if namespace else ordered)
+
+
+def pack(sources, reduced, specs, limit, *, split_output=False, oversized=None, page_namespace=None):
     pending, planned, held, expected = [], [], [], {}
     for spec in specs:
         topics = selected_topics(reduced, spec['topics'])
-        page = {**spec, 'id': fingerprint(sorted(topic['identity'] for topic in topics.values()))}
+        page = {**spec, 'id': page_identity((topic['identity'] for topic in topics.values()), page_namespace)}
         fragments = page_fragments(sources, reduced, page, limit)
         if split_output:
             fragments = [part for fragment in fragments for part in (split_atomic_output(fragment, limit) or [fragment])]
