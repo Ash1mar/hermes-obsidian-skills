@@ -1,4 +1,5 @@
 """Form physical writing fragments without altering semantic page identity."""
+import copy
 import re
 
 from hermes_source_units.validation import fingerprint
@@ -143,12 +144,48 @@ def page_fragments(sources, reduced, page, limit):
     return result
 
 
-def pack(sources, reduced, specs, limit):
+def split_atomic_output(fragment, limit):
+    """Split output ownership while duplicating the entire input dependency closure."""
+    original = fragment['view']
+    budget = body_request([fragment], limit)['budget']
+    if (fragment['hold'] or budget['fits'] or budget['input_size'] > budget['input_cap']
+            or budget['estimated_output_tokens'] <= budget['usable_output_tokens']):
+        return []
+    duties, materials = original['obligations'], original['materials']
+    primary = [key for key in materials if duties[key]['assignment'] == 'primary']
+    tables = {key for key in primary if materials[key]['kind'] == 'asset'}
+    table_fields = tables | {key for key in primary if tables.intersection(materials[key]['required_assets'])
+                             and not set(duties[key]['mapped_roles']) & SHARED}
+    scopes = ([key for key in primary if key not in table_fields],
+              [key for key in primary if key in table_fields])
+    if not all(any(duties[key]['express'] or duties[key]['covers_by'] for key in scope) for scope in scopes):
+        return []
+    parts = []
+    for number, (name, scope) in enumerate(zip(('text_requirements', 'whole_asset_coverage'), scopes), 1):
+        view = copy.deepcopy(original)
+        if view.get('writing_contract') != WRITE_CONTRACT:
+            writing_view(view)
+        view['fragment_position']['output_part'] = number
+        view['writing_assignment'] = {'scope': name, 'primary': scope, 'original_fragment': original['fragment_id']}
+        for key, duty in view['obligations'].items():
+            if key not in scope:
+                duty.update(assignment='shared', express=False)
+        view['fragment_id'] = fingerprint([CONTRACT, {k: v for k, v in view.items() if k != 'fragment_id'}])
+        part = {**fragment, 'view': view}
+        if not fits(part, limit):
+            return []
+        parts.append(part)
+    return parts
+
+
+def pack(sources, reduced, specs, limit, *, split_output=False, oversized=None):
     pending, planned, held, expected = [], [], [], {}
     for spec in specs:
         topics = selected_topics(reduced, spec['topics'])
         page = {**spec, 'id': fingerprint(sorted(topic['identity'] for topic in topics.values()))}
         fragments = page_fragments(sources, reduced, page, limit)
+        if split_output:
+            fragments = [part for fragment in fragments for part in (split_atomic_output(fragment, limit) or [fragment])]
         page_id = page['id']
         expected[page_id] = {'name': page['name'], 'reader_question': page['reader_question'],
                              'scope': page['scope'], 'fragments': [f['view']['fragment_id'] for f in fragments]}
@@ -158,6 +195,8 @@ def pack(sources, reduced, specs, limit):
             single = body_request([fragment], limit)
             view = fragment['view']
             if fragment['hold'] or not single['budget']['fits']:
+                if oversized is not None and not fragment['hold']:
+                    oversized[view['fragment_id']] = fragment
                 held.append({'page': page_id, 'fragment_id': view['fragment_id'], 'position': view['fragment_position'],
                              'reason': 'required_material_unresolved' if fragment['hold'] else 'atomic_evidence_over_budget',
                              'unresolved': fragment['hold'], 'material_ids': list(view['materials']),

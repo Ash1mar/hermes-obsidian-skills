@@ -448,7 +448,16 @@ def system_prompt(phase,view,correction=None):
                    'Do not rewrite a valid section or refuse because of a QA annotation.'
                    if view.get('structural_retry', {}).get('slots') else
                    ' Correct the bounded structural issue recorded in structural_retry.'
-                   if view.get('structural_retry') else ''))
+                   if view.get('structural_retry') else '')
+                + (' For slots with locked_draft_sha256, the body is immutable and omitted. Inspect the supplied '
+                   'whole assets and return only inspected_assets for that slot. Report only the IDs actually '
+                   'inspected. The program applies the attestation to the locked draft.'
+                   if any('locked_draft_sha256' in slot
+                          for slot in view.get('structural_retry', {}).get('slots', {}).values()) else '')
+                + (' Write only the primary coverage in writing_assignment. All materials and relationships '
+                   'are supplied for context. Use any related conditions and exceptions when they affect your '
+                   'assigned coverage. Other primary duties are covered in a separate fragment.'
+                   if any('writing_assignment' in slot for slot in view.get('pages', {}).values()) else ''))
     system=COMMON+'\n'+(RULES['page-write'] if phase=='page-pair' else RULES['page-review'] if phase=='page-review-pair' else RULES[phase])
     if phase=='page-review-pair':
         from reduce_disposition import PAGE_RULE

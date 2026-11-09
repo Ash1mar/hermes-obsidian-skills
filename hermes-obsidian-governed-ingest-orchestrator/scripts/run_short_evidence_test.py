@@ -24,7 +24,7 @@ from native_stop_inventory import workflow_processes
 from orchestration import configuration
 from prepare_short_evidence_test import advance, inventory, save, seal
 from short_evidence_pass import load_sources, mapping_groups, request, require, seed_requests
-from short_page_contract import CONTRACT as FRAGMENT_CONTRACT, WRITE_CONTRACT, writing_retry
+from short_page_contract import CONTRACT as FRAGMENT_CONTRACT, WRITE_CONTRACT, retry_slots, writing_retry
 from workflow_metrics import usage_for
 
 CONTRACT = 'native-short-evidence-test/v1'
@@ -129,7 +129,7 @@ def build_call(row, *, diagnostic, slots):
                    row['budget']['estimated_output_tokens'], row['budget']['input_cap'], images, slots=page_call)
 
 
-def checked_retry(prior, call, job):
+def checked_retry(prior, call, job, audit=None):
     retry = call['view']['structural_retry']
     slots = list(call['view']['pages']) if call['phase'] == 'short-write' else ['r']
     if 'slots' not in retry:
@@ -138,7 +138,32 @@ def checked_retry(prior, call, job):
     completion = _load_json(job.with_suffix('.result.json'))
     captured = completion['attempts'][0]['capture']['held']
     drafts = response_drafts(first['raw'])
-    return set(captured) == set(slots) and writing_retry(prior, slots, drafts, captured) == call
+    locked = any('locked_draft_sha256' in spec for spec in retry['slots'].values())
+    if locked:
+        reservation = _load_json(job.with_name(job.stem + '.attempt-1.json'))
+        if (audit is None or first['state'] != 'returned' or first['ordinal'] != 1
+                or first['grant'] != reservation['grant'] or first['grant'] != audit['grant']
+                or reservation['ordinal'] != 1 or first['request_id'] != prior['id']
+                or reservation['request'] != prior or not authentic_reply(first, prior)):
+            return False
+    return (set(captured) == set(slots)
+            and writing_retry(prior, slots, drafts, captured, inspection_patch=locked) == call)
+
+
+def authentic_reply(audit, call):
+    from fixed_semantic_recovery import transcript_reply
+
+    model, grant = audit['model'], audit['grant']
+    if model['parent_native_run_id'] != str(grant['run_id']) or not model['fixed_request_checks']:
+        return False
+    wire = checked_projection(call)['wire']
+    proof = {'model': model, 'response_sha256': fingerprint(audit['raw']), 'user_sha256': fingerprint(wire['user']),
+             'image_inputs': [{k: v for k, v in img.items() if k != 'url'} for img in call['image_inputs']]}
+    return transcript_reply(proof, wire) == audit['raw']
+
+
+def locked_drafts(job):
+    return response_drafts(_load_json(job.with_name(job.stem + '.audit-1.json'))['raw'])
 
 
 def response_drafts(raw):
@@ -179,6 +204,7 @@ def run_job(root, job, own):
     row = original
     slots = row.get('missing_slots', ['r'])
     attempts = []
+    drafts = {}
     ordinals = (1,) if original['view'].get('fragment_repair') else (1, 2)
     retry_budget = None
     for ordinal in ordinals:
@@ -216,7 +242,7 @@ def run_job(root, job, own):
         try:
             response, _ = decode_semantic_response(raw)
             plan = {'requests': [{**original, 'missing_slots': slots}]}
-            captured = seal(plan, original['id'], response, root / 'receipts')
+            captured = seal(plan, original['id'], response, root / 'receipts', call=row, drafts=drafts)
         except (ValueError, TypeError, ContractError) as error:
             captured = {'sealed': [], 'held': {slot: str(error) for slot in slots}}
         attempts.append({**audit, 'capture': captured})
@@ -225,7 +251,8 @@ def run_job(root, job, own):
         slots = list(captured['held'])
         if ordinal < ordinals[-1]:
             if original['view'].get('writing_contract') == WRITE_CONTRACT:
-                row = writing_retry(original, slots, response_drafts(raw), captured['held'])
+                drafts = response_drafts(raw)
+                row = writing_retry(original, slots, drafts, captured['held'], inspection_patch=True)
             else:
                 row = build_call(original, diagnostic='; '.join(captured['held'].values()), slots=slots)
     return {'state': 'held', 'attempts': attempts, 'unsettled_slots': slots,
@@ -289,7 +316,7 @@ def replay_node_output(root, row, saved, own, *, mapping_overlay=None):
                 and old['board'] == own_grant['board'] and audit['state'] == 'returned',
                 'replay request differs from native reservation')
         if call['id'] != row['id']:
-            require(checked_retry(prior_row, call, old_job),
+            require(checked_retry(prior_row, call, old_job, audit),
                     'saved retry differs from the bounded original request')
         with closing(kc.connect(board=old['board'])) as conn:
             prior_task = kb.get_task(conn, old['task_id'])
@@ -312,7 +339,10 @@ def replay_node_output(root, row, saved, own, *, mapping_overlay=None):
                 save(mapping_overlay / (row['id'] + '.json'), record)
                 captured = {'sealed': ['r'], 'held': {}, 'mapping_issues': record['issues']}
             else:
-                captured = seal({'requests': [{**row, 'missing_slots': remaining}]}, row['id'], response, root / 'receipts')
+                drafts = locked_drafts(old_job) if any('locked_draft_sha256' in spec
+                                                      for spec in retry_slots(call).values()) else {}
+                captured = seal({'requests': [{**row, 'missing_slots': remaining}]}, row['id'], response,
+                                root / 'receipts', call=call, drafts=drafts)
         except (ValueError, TypeError, ContractError) as error:
             captured = {'held': dict.fromkeys(remaining, str(error)), 'sealed': []}
         sources.append({'audit': ref['audit'], 'capture': captured})
@@ -581,8 +611,6 @@ def attempt_index(root):
 
 
 def verify_revision_drafts(root, board, repair):
-    from fixed_semantic_recovery import transcript_reply
-
     kb, kc, _ = runtime()
     for change in repair['changes']:
         if change['action'] != 'revise':
@@ -590,23 +618,19 @@ def verify_revision_drafts(root, board, repair):
         proof = change['prior_attempt']
         job, reservation, audit_path = (_vault_path(root, proof[key]) for key in ('job', 'reservation', 'audit'))
         reserved, audit = _load_json(reservation), _load_json(audit_path)
-        call, grant, model = reserved['request'], audit['grant'], audit['model']
+        call, grant = reserved['request'], audit['grant']
         with closing(kc.connect(board=board)) as conn:
             task = kb.get_task(conn, grant['task_id'])
             runs = kb.list_runs(conn, grant['task_id'], include_active=False)
         require(grant['board'] == board and task and task.created_by == CONTRACT and task.body == task_body(root, job)
-                and any(run.id == grant['run_id'] for run in runs)
-                and model['parent_native_run_id'] == str(grant['run_id']) and model['fixed_request_checks'] > 0,
+                and any(run.id == grant['run_id'] for run in runs),
                 'revision draft must belong to a closed native writing attempt')
-        wire = checked_projection(call)['wire']
-        binding = {'model': model, 'response_sha256': fingerprint(audit['raw']),
-                   'user_sha256': fingerprint(wire['user']),
-                   'image_inputs': [{k: v for k, v in image.items() if k != 'url'} for image in call['image_inputs']]}
-        require(transcript_reply(binding, wire) == audit['raw'], 'revision draft differs from native transcript')
+        require(authentic_reply(audit, call), 'revision draft differs from native transcript')
 
 
 def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, page_contract, fragment_repair=None,
-            fragment_exclusions=None, mapping_recovery=None, registry_revision=None, inherited=None):
+            fragment_exclusions=None, mapping_recovery=None, registry_revision=None, inherited=None,
+            split_output=None):
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', entry), 'valid stable reentry ID required')
     kb, kc, _ = runtime()
     board = operation['board']
@@ -656,7 +680,8 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
     plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, page_contract=page_contract,
                    fragment_repair=fragment_repair, fragment_exclusions=fragment_exclusions,
                    mapping_contract=operation.get('mapping_contract'), mapping_overlay=overlay,
-                   preserved_pages=preserved, native_holds=holds, writing_contract=operation.get('writing_contract'))
+                   preserved_pages=preserved, native_holds=holds, writing_contract=operation.get('writing_contract'),
+                   split_output=split_output)
     current = reentry_node(plan, node)
     if mapping_recovery is not None:
         require(plan['stage'] == 'map' and {r['id'] for r in plan['requests']} == set(mapping_recovery['requests']),
@@ -680,6 +705,9 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
         control['fragment_repair_preview'] = plan['fragment_repair']
     if fragment_exclusions is not None:
         control['fragment_exclusions'] = fragment_exclusions
+    if split_output:
+        control['split_output'] = split_output
+        control['output_split_preview'] = plan.get('output_split')
     if mapping_recovery is not None:
         control['mapping_recovery'] = mapping_recovery
         control['preserved_pages'] = preserved
@@ -696,13 +724,13 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
                       directory=directory, previous=previous, page_contract=page_contract,
                       fragment_repair=fragment_repair, fragment_exclusions=fragment_exclusions,
                       mapping_overlay=overlay, preserved_pages=preserved, registry_revision=registry_revision,
-                      initial_holds=holds)
+                      initial_holds=holds, split_output=split_output)
 
 
 def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=False,
                entry=None, directory=None, previous=None, page_contract=None, fragment_repair=None,
                fragment_exclusions=None, mapping_overlay=None, preserved_pages=(), registry_revision=None,
-               initial_holds=None):
+               initial_holds=None, split_output=None):
     kb, kc, _ = runtime()
     output = directory or root
     board = operation['board']
@@ -715,7 +743,8 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
                        page_contract=page_contract, fragment_repair=fragment_repair,
                        fragment_exclusions=fragment_exclusions, mapping_contract=operation.get('mapping_contract'),
                        mapping_overlay=mapping_overlay, preserved_pages=preserved_pages,
-                       writing_contract=operation.get('writing_contract'))
+                       writing_contract=operation.get('writing_contract'),
+                       split_output=split_output if split_output is not None else operation.get('split_output'))
         planning_seconds = time.monotonic() - planning_started
         rows = plan.get('requests', [])
         consumed_unknown = [r['id'] for r in rows if r['id'] in previous and not previous[r['id']]]
@@ -761,12 +790,14 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
 
 def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=None, entry=None, dry_run=False,
           page_contract=None, fragment_repair=None, fragment_exclusions=None, mapping_recovery=None,
-          registry_revision=None):
+          registry_revision=None, split_output=None):
     from short_evidence_pass import MAP_CONTRACT
 
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
             'trusted operator must start the experiment')
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', operation_id), 'invalid experiment operation ID')
+    require(split_output is None or (node == 'writing' and re.fullmatch(r'[a-f0-9]{64}', split_output)),
+            'an explicit output split requires the exact writing fragment hash')
     require(not root.is_relative_to(vault), 'write experiment evidence outside the source Vault')
     root.mkdir(parents=True, exist_ok=True)
     with exclusive_lock(root / 'controller.lock', timeout=0, marker=False):
@@ -807,7 +838,8 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
                                dry_run=dry_run, page_contract=selected,
                                fragment_repair=fragment_repair or active.get('fragment_repair'),
                                fragment_exclusions=fragment_exclusions or active.get('fragment_exclusions'),
-                               mapping_recovery=mapping_recovery, registry_revision=registry_revision, inherited=inherited)
+                               mapping_recovery=mapping_recovery, registry_revision=registry_revision, inherited=inherited,
+                               split_output=split_output or active.get('split_output') or operation.get('split_output'))
             metrics = resume_mapping(root, operation, sources, seeds, groups)
         else:
             require(not (root / 'operation.json').exists(), 'operation already exists; inspect its durable evidence')
@@ -817,6 +849,7 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
             operation['page_contract'] = page_contract
             operation['mapping_contract'] = MAP_CONTRACT
             operation['writing_contract'] = WRITE_CONTRACT
+            operation['split_output'] = True
             groups = mapping_groups(sources, MAP_CONTRACT)
             save(root / 'operation.json', operation)
             metrics = []
@@ -837,6 +870,7 @@ def main():
     parser.add_argument('--page-contract', choices=(FRAGMENT_CONTRACT,))
     parser.add_argument('--fragment-repair', type=Path)
     parser.add_argument('--fragment-exclusions', type=Path)
+    parser.add_argument('--split-atomic-fragment')
     parser.add_argument('--mapping-recovery', type=Path)
     parser.add_argument('--source-registry-revision', type=int)
     parser.add_argument('--formal-authorization', type=Path)
@@ -880,6 +914,7 @@ def main():
                        node=args.from_node, entry=args.reentry_id, dry_run=args.dry_run,
                        page_contract=args.page_contract,
                        fragment_repair=_load_json(args.fragment_repair) if args.fragment_repair else None,
+                       split_output=args.split_atomic_fragment,
                        fragment_exclusions=_load_json(args.fragment_exclusions) if args.fragment_exclusions else None,
                        mapping_recovery=_load_json(args.mapping_recovery) if args.mapping_recovery else None,
                        registry_revision=args.source_registry_revision)

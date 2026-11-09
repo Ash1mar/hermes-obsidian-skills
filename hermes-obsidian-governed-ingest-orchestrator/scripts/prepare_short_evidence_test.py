@@ -112,7 +112,7 @@ def collect(rows, saved, overlay=None):
 
 def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_contract=None, fragment_repair=None,
             fragment_exclusions=None, mapping_contract=None, mapping_overlay=None, preserved_pages=(),
-            writing_contract=None):
+            writing_contract=None, split_output=None):
     from short_evidence_pass import MAP_CONTRACT, MAP_RECEIPT
 
     native_holds = native_holds or {}
@@ -154,7 +154,7 @@ def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_con
         if writing_contract:
             reduced['writing_contract'] = writing_contract
         return advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs,
-                                 fragment_repair, fragment_exclusions)
+                                 fragment_repair, fragment_exclusions, split_output)
     coordination = coordination_request(sources, reduced)
     coordinated = None
     resolutions = {}
@@ -216,7 +216,7 @@ def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_con
 
 
 def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs, fragment_repair=None,
-                      fragment_exclusions=None):
+                      fragment_exclusions=None, split_output=None):
     common = {'page_contract': pages_v2.CONTRACT, 'reduced': reduced, 'held_repairs': held_repairs}
     topics = reduced['topics']
     coordination = pages_v2.coordination_request(sources, reduced)
@@ -248,7 +248,10 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 issues.extend(outcome['unresolved'])
             else:
                 issues.append({**issue, 'request': row['id'], 'budget': row['budget']})
-    planned, held, expected = fragments_v2.pack(sources, reduced, specs, limit)
+    selected_split = split_output if isinstance(split_output, str) else None
+    oversized = {} if selected_split else None
+    planned, held, expected = fragments_v2.pack(sources, reduced, specs, limit, split_output=split_output is True,
+                                                oversized=oversized)
     excluded = short_fragment_disposition.exclusions(planned, saved, fragment_exclusions)
     if excluded:
         common['fragment_exclusions'] = list(excluded.values())
@@ -261,6 +264,17 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
         common['fragment_repair'] = {'contract': short_fragment_repair.CONTRACT,
                                      'original_requests': consumed, 'replaced_or_isolated': sorted(replaced),
                                      'coverage_receipts': covered}
+    if selected_split:
+        require(selected_split in oversized, 'output split requires an exact oversized fragment')
+        parts = fragments_v2.split_atomic_output(oversized[selected_split], limit)
+        if parts:
+            page_id = oversized[selected_split]['view']['id']
+            members = expected[page_id]['fragments']
+            index = members.index(selected_split)
+            members[index:index + 1] = [part['view']['fragment_id'] for part in parts]
+            held = [row for row in held if row['fragment_id'] != selected_split]
+            planned.extend(pages_v2.body_request([part], limit) for part in parts)
+            common['output_split'] = {'original_fragment': selected_split, 'parts': members[index:index + len(parts)]}
     checks, requests = [], []
     for row in planned:
         rid = row['id']
@@ -300,7 +314,7 @@ def save(path, value):
             _write_atomic(path, _json_bytes(value))
 
 
-def seal(plan, request_id, response, saved):
+def seal(plan, request_id, response, saved, *, call=None, drafts=None):
     """Accept already captured replies one slot at a time for an isolated test."""
     row = next((r for r in plan['requests'] if r['id'] == request_id), None)
     require(row is not None, 'request is not pending in this saved plan')
@@ -318,7 +332,8 @@ def seal(plan, request_id, response, saved):
         try:
             require(slot in results, 'missing page result')
             validator = pages_v2.check_fragment if row['view'].get('page_contract') == pages_v2.CONTRACT else check_page
-            record = validator(row, slot, results[slot])
+            answer = results[slot] if call is None else pages_v2.restore_locked_draft(call, slot, results[slot], drafts.get(slot))
+            record = validator(row, slot, answer)
             save(saved / f'{request_id}-{slot}.json', record)
             sealed.append(slot)
         except (ValueError, ContractError) as error:

@@ -170,6 +170,7 @@ def main():
     parser.add_argument('--reentry-id')
     parser.add_argument('--prior-entry')
     parser.add_argument('--fragment-repair', type=Path)
+    parser.add_argument('--split-atomic-fragment')
     parser.add_argument('--mapping-recovery', type=Path)
     parser.add_argument('--source-registry-revision', type=int)
     args = parser.parse_args()
@@ -188,8 +189,8 @@ def main():
             writing = args.from_node == 'writing'
             require(args.reentry_id and re.fullmatch(entry_pattern, args.reentry_id)
                     and not args.resume_delivery and not args.content_isolation
-                    and (bool(args.fragment_repair) and not args.mapping_recovery if writing else
-                         bool(args.mapping_recovery) and not args.fragment_repair)
+                    and (bool(args.fragment_repair or args.split_atomic_fragment) and not args.mapping_recovery if writing else
+                         bool(args.mapping_recovery) and not args.fragment_repair and not args.split_atomic_fragment)
                     and (not args.prior_entry or (writing and re.fullmatch(entry_pattern, args.prior_entry))),
                     'supplement requires a stable reentry and its node-specific manifest')
             start = time.time()
@@ -209,7 +210,8 @@ def main():
             print(f"Recovering the affected {args.from_node} work", flush=True)
             result = runner.start(short, vault, handoff['workflow_id'], handoff['pins'], request['operation_id'],
                                   node=args.from_node, entry=args.reentry_id, mapping_recovery=recovery,
-                                  fragment_repair=_load_json(args.fragment_repair) if writing else None,
+                                  fragment_repair=_load_json(args.fragment_repair) if args.fragment_repair else None,
+                                  split_output=args.split_atomic_fragment,
                                   registry_revision=args.source_registry_revision)
             directory = short / 'reentries' / args.reentry_id
             require(result['last_stage'] == 'offline_build', 'supplement did not reach a settled writing checkpoint')
