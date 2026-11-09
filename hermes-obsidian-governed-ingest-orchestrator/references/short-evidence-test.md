@@ -87,3 +87,20 @@ python3 "<skill-dir>/scripts/run_short_evidence_test.py" stop \
 原片段可以用 `context` 处置重进。新请求固定同版原文的准确位置和其他页的处置状态。
 结构化缺料报告分别标记随包提供、位于其他页、登记存在但未随包提供、无法定位。
 未定位的关系保留缺口。后续重进沿用当前的排除和修复范围。
+
+正式接入需要单独授权精确候选。选择最新的已结算写页入口，并提交
+`short-formal-authorization/v1` JSON，包含 `writing_entry`、`checkpoint`
+（控制、结果和最终组包的 SHA256）、来源工作流 `actor`、已排序的 `pages`、
+当前 `base_release`、布尔值 `publish` 及现有内部检索 `policy`。
+
+```bash
+python3 "<skill-dir>/scripts/run_short_evidence_test.py" formal \
+  --output <experiment-dir> --reentry-id <formal-stable-id> \
+  --formal-authorization <authorization.json> --dry-run
+```
+
+正式执行去掉 `--dry-run`。专用原生程序任务验证已结束的写页运行、精确请求、
+本地会话响应和回执，并在原 Vault 通过正式 Build 提交页面版本。记录使用独立的
+`native-short-build/v1` 凭据，不生成 Citation。未知 QA 的页面可提交为草稿，
+部分发布只选择符合既有来源、QA、审批和依赖检查的页面。保留旧发布及隔离证据；
+若候选均未通过，记录 Build 和排除原因，保留原发布标识。此入口没有模型调用。

@@ -1779,7 +1779,7 @@
     "build_decision": {
       "type": "object",
       "properties": {
-        "candidate_refs": {"type": "array", "items": {"$ref": "#/$defs/pass_candidate_ref"}, "minItems": 1},
+        "candidate_refs": {"type": "array", "items": {"$ref": "#/$defs/pass_candidate_ref"}},
         "subject_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "page_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "action": {"enum": ["create", "update", "reuse", "relate"]},
@@ -1808,7 +1808,7 @@
           "const": "program-build-acceptance/v1"
         },
         "policy": {
-          "enum": ["explicit-page-risks/v1", "explicit-page-risks/v2", "generation-only-page-semantics/v1"]
+          "enum": ["explicit-page-risks/v1", "explicit-page-risks/v2", "generation-only-page-semantics/v1", "native-short-build/v1"]
         },
         "independent_review": {
           "enum": [
@@ -1887,13 +1887,14 @@
       "properties": {
         "page_review_policy": {"type":"object","properties":{"contract":{"const":"generation-only-page-semantics/v1"},"workflow_id":{"type":"string","minLength":1},"ref":{"type":"string","format":"vault-relative-path"},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"required":["contract","workflow_id","ref","sha256"],"additionalProperties":false},
         "coverage_scope": {"$ref": "#/$defs/reduce_coverage_scope"},
+        "short_evidence": {"type":"object","properties":{"ref":{"type":"string","format":"vault-relative-path"},"sha256":{"type":"string","pattern":"^[0-9a-f]{64}$"}},"required":["ref","sha256"],"additionalProperties":false},
         "contract": {"const": "hermes-knowledge-build-run/v1"},
         "run_id": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"},
         "revision": {"type": "integer", "minimum": 1},
         "state": {"enum": ["draft", "completed"]},
         "actor": {"type": "string", "minLength": 1, "pattern": "\\S"},
         "identity_registry_revision": {"type": "integer", "minimum": 0},
-        "tasks": {"type": "array", "items": {"$ref": "#/$defs/task_snapshot"}, "minItems": 1},
+        "tasks": {"type": "array", "items": {"$ref": "#/$defs/task_snapshot"}},
         "decisions": {"type": "array", "items": {"$ref": "#/$defs/build_decision"}, "minItems": 0},
         "page_revisions": {"type": "array", "items": {"$ref": "#/$defs/page_revision"}, "minItems": 0},
         "reviews": {"type": "array", "items": {"$ref": "#/$defs/build_review"}, "minItems": 0},

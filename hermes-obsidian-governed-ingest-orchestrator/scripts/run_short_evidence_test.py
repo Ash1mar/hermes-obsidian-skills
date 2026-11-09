@@ -120,6 +120,9 @@ def checked_projection(row):
 def run_job(root, job, own):
     payload = _load_json(job)
     original = payload['request']
+    if original['phase'] == 'short-formal-build':
+        from short_formal_build import build
+        return build(root, job, original, own, sys.modules[__name__])
     if 'saved_attempts' in payload:
         return replay_node_output(root, original, payload['saved_attempts'], own)
     if payload.get('replay'):
@@ -673,7 +676,7 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('start', 'resume-mapping', 'reenter', 'stop', 'worker'))
+    parser.add_argument('action', choices=('start', 'resume-mapping', 'reenter', 'stop', 'worker', 'formal'))
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--vault', type=Path)
     parser.add_argument('--origin-workflow')
@@ -685,11 +688,19 @@ def main():
     parser.add_argument('--page-contract', choices=(FRAGMENT_CONTRACT,))
     parser.add_argument('--fragment-repair', type=Path)
     parser.add_argument('--fragment-exclusions', type=Path)
+    parser.add_argument('--formal-authorization', type=Path)
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     root = args.output.resolve()
     if args.action == 'worker':
         worker(root, args.job.resolve(strict=True))
+    elif args.action == 'formal':
+        from short_formal_build import execute
+        if not (args.formal_authorization and args.reentry_id):
+            parser.error('formal requires --formal-authorization and --reentry-id')
+        result = execute(root, args.reentry_id, _load_json(args.formal_authorization),
+                         args.dry_run, sys.modules[__name__])
+        print(json.dumps(result, ensure_ascii=False))
     elif args.action == 'stop':
         require(not os.environ.get('HERMES_KANBAN_TASK'), 'trusted operator required to stop')
         _load_json(root / 'operation.json')
