@@ -72,14 +72,25 @@ def repair_requests(sources, mapping_rows, receipts):
     return rows
 
 
-def reduce_mappings(sources, mapping_rows, receipts, repairs=()):
+def reduce_mappings(sources, mapping_rows, receipts, repairs=(), *, execution_holds=None):
     topics, dispositions, revised = {}, {}, {}
+    execution_holds = execution_holds or {}
     for row in repairs:
         view = row['view']
         answer = checked_answer(row, receipts[row['id']])
         require(view['issue']['item'] not in revised, 'duplicate local repair')
         revised[view['issue']['item']] = (row, answer)
-    all_rows = [(row, checked_answer(row, receipts[row['id']])) for row in mapping_rows]
+    all_rows = []
+    for row in mapping_rows:
+        request_id = row['id']
+        if request_id in execution_holds:
+            require(request_id not in receipts, 'execution hold cannot replace an accepted mapping')
+            for item in row['view']['assigned']:
+                require(item not in dispositions, 'duplicate held item')
+                dispositions[item] = {'status': 'pending', 'reason': 'native mapping request held',
+                                      'request': request_id, 'topics': [], 'execution_hold': execution_holds[request_id]}
+        else:
+            all_rows.append((row, checked_answer(row, receipts[request_id])))
     used_repairs = set()
     for row, answer in [*all_rows, *revised.values()]:
         view = row['view']

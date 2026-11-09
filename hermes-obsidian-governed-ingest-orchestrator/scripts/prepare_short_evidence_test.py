@@ -104,21 +104,26 @@ def collect(rows, saved):
     return accepted, waiting
 
 
-def advance(sources, seeds, groups, saved, limit):
+def advance(sources, seeds, groups, saved, limit, *, native_holds=None):
+    native_holds = native_holds or {}
     accepted, waiting = collect(seeds, saved)
     if waiting:
+        if any(row['id'] in native_holds for row in waiting):
+            return {'stage': 'topic_seed_held', 'held': [row['id'] for row in waiting], 'reused': list(accepted)}
         return {'stage': 'topic-seed', 'requests': waiting, 'reused': list(accepted)}
     maps = map_requests(sources, groups, seeds, accepted)
     mapped, waiting = collect(maps, saved)
+    map_holds = {row['id']: native_holds[row['id']] for row in waiting if row['id'] in native_holds}
+    waiting = [row for row in waiting if row['id'] not in map_holds]
     if waiting:
         return {'stage': 'map', 'requests': waiting, 'reused': list(mapped)}
-    repairs = repair_requests(sources, maps, mapped)
+    repairs = repair_requests(sources, [row for row in maps if row['id'] in mapped], mapped)
     held_repairs = [row for row in repairs if not row['budget']['fits']]
-    available_repairs = [row for row in repairs if row['budget']['fits']]
+    available_repairs = [row for row in repairs if row['budget']['fits'] and row['id'] not in native_holds]
     repaired, waiting = collect(available_repairs, saved)
     if waiting:
         return {'stage': 'local-map', 'requests': waiting, 'held': held_repairs, 'reused': list(repaired)}
-    reduced = reduce_mappings(sources, maps, {**mapped, **repaired}, available_repairs)
+    reduced = reduce_mappings(sources, maps, {**mapped, **repaired}, available_repairs, execution_holds=map_holds)
     coordination = coordination_request(sources, reduced)
     coordinated = None
     resolutions = {}
@@ -127,11 +132,13 @@ def advance(sources, seeds, groups, saved, limit):
             return {'stage': 'coordination_held', 'held': [coordination], 'reduced': reduced}
         verified, waiting = collect([coordination], saved)
         if waiting:
+            if coordination['id'] in native_holds:
+                return {'stage': 'coordination_held', 'held': [coordination['id']], 'reduced': reduced}
             return {'stage': 'coordination', 'requests': waiting, 'reduced': reduced}
         coordinated = verified[coordination['id']]
         result = checked_answer(coordination, coordinated)
         local = [coordination_request(sources, reduced, issue) for issue in result['unresolved']]
-        resolutions, waiting = collect([row for row in local if row['budget']['fits']], saved)
+        resolutions, waiting = collect([row for row in local if row['budget']['fits'] and row['id'] not in native_holds], saved)
         if waiting:
             return {'stage': 'local_coordination', 'requests': waiting, 'reduced': reduced,
                     'reused': list(resolutions), 'held': [row for row in local if not row['budget']['fits']]}
@@ -142,7 +149,7 @@ def advance(sources, seeds, groups, saved, limit):
     for page in pages:
         if page['view']['id'] in needing_detail:
             row = detail_request(page, limit)
-            if row is not None and row['budget']['fits']:
+            if row is not None and row['budget']['fits'] and row['id'] not in native_holds:
                 details[row['id']] = (page, row)
     decided, waiting = collect([row for _, row in details.values()], saved)
     if waiting:
@@ -166,7 +173,11 @@ def advance(sources, seeds, groups, saved, limit):
             else:
                 missing.append(slot)
         if missing:
-            requests.append({**row, 'missing_slots': missing})
+            if row['id'] in native_holds:
+                held.extend({'page': row['view']['pages'][slot]['id'], 'slot': slot,
+                             'reason': 'native_page_request_held', 'request': row['id']} for slot in missing)
+            else:
+                requests.append({**row, 'missing_slots': missing})
     return {'stage': 'writing' if requests else 'offline_build', 'requests': requests,
             'checks': checks, 'assembled_sections': build_sections(checks),
             'held': held, 'reduced': reduced, 'held_repairs': held_repairs,

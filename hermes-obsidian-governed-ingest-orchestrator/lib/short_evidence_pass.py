@@ -155,7 +155,7 @@ def request(phase, view, schema, output_estimate, limit, images=(), *, reserve=0
         'transport_schema': projection['transport_schema'], 'output_cap': OUTPUT_LIMIT,
     }
     return {
-        'id': fingerprint(body), **body, 'view': view,
+        'id': fingerprint(body), **body, 'view': view, 'image_inputs': list(images),
         'budget': {
             **projection['request_cost'], 'input_size': projection['input_size'], 'input_cap': limit,
             'input_reserve': reserve, 'estimated_output_tokens': output_estimate,
