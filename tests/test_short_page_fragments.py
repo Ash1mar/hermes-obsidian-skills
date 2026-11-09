@@ -179,7 +179,7 @@ def test_exact_continuation_keeps_ambiguous_spans_unresolved():
         'S1-B1': {'section': '6.3', 'text': '### 6.3 Scope\n\nRequirements:',
                   'locator': {'path': 'document.md', 'span': {'start': 0, 'end': 30}}},
         'S1-B2': {'section': '6.3', 'locator': {'path': 'document.md', 'span': {'start': 0, 'end': 50}}},
-        'S1-B3': {'section': '6.3', 'locator': {'path': 'document.md', 'span': {'start': 50, 'end': 80}}},
+        'S1-B3': {'section': '6.3.1', 'locator': {'path': 'document.md', 'span': {'start': 50, 'end': 80}}},
     }}
     assert exact_continuations(data, 'S1-B1', ['S1-B2', 'S1-B3'])['refs'] == ['S1-B2', 'S1-B3']
     data['items']['S1-B4'] = {'section': '6.3', 'locator': {'path': 'document.md', 'span': {'start': 50, 'end': 60}}}

@@ -60,7 +60,13 @@ def exact_continuations(source, opener, assigned):
     candidates = {}
     for key in assigned:
         sibling = source['items'].get(key)
-        if key == opener or not sibling or sibling.get('section') != section:
+        if key == opener or not sibling:
+            continue
+        sibling_section = sibling.get('section') or ''
+        if sibling_section != section and not (
+            re.fullmatch(r'\d+(?:\.\d+)*', section)
+            and re.fullmatch(re.escape(section) + r'(?:\.\d+)+', sibling_section)
+        ):
             continue
         loc = sibling['locator']
         if loc.get('path') == file and 'span' in loc:
@@ -86,12 +92,14 @@ def context_for(view, sources, index):
     relations = []
     for item in view['materials']:
         key = item.split('-', 1)[0]
-        other = {ref for ref, pages in index.items() if ref.startswith(key + '-')
-                 and any(page['page_id'] != view['id'] for page in pages)}
-        relation = exact_continuations(sources[key], item, other)
+        assigned = {ref for ref, pages in index.items() if ref.startswith(key + '-')
+                    and (ref in view['materials'] or any(page['page_id'] != view['id'] for page in pages))}
+        relation = exact_continuations(sources[key], item, assigned)
         if relation is None:
             continue
-        relations.append({'opener': item, **relation, 'destinations': {
+        relations.append({'opener': item, **relation,
+                          'supplied': [ref for ref in relation.get('refs', []) if ref in view['materials']],
+                          'destinations': {
             ref: [page for page in index[ref] if page['page_id'] != view['id']]
             for ref in relation.get('refs', [])
         }})
