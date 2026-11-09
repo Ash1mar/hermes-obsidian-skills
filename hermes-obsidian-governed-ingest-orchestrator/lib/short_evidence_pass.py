@@ -318,9 +318,17 @@ def normalize_map(row, answer):
     seed = {t['id']: t for t in view['seed_topics']}
     assigned = set(view['assigned'])
     require(all(d['item'] in view['materials'] for d in result['dispositions']), 'disposition refers outside the packet')
+    dispositions = []
+    for disposition in result['dispositions']:
+        if disposition['item'] not in assigned:
+            continue
+        if (disposition['status'] == 'excluded' and disposition['reason'].strip()
+                and all(link['role'] == 'context' and not link['applies_to'] for link in disposition['links'])):
+            disposition = {**disposition, 'links': []}
+        dispositions.append(disposition)
     return {'results': {'r': {
         'topics': [t for t in result['topics'] if t != seed.get(t['id'])],
-        'dispositions': [d for d in result['dispositions'] if d['item'] in assigned],
+        'dispositions': dispositions,
     }}}
 
 

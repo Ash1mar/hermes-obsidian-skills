@@ -15,6 +15,7 @@ from short_evidence_reduce import (
     build_sections, check_page, coordination_request, detail_request, expand_sections, pack_pages,
     page_plan, reduce_mappings,
 )
+from run_short_evidence_test import reentry_node
 
 
 def source(key, size=24, qa=False):
@@ -116,6 +117,17 @@ def test_rejects_unaccounted_material_and_stale_receipts():
     changed = mapping_request('S1', {**s, 'registry_revision': 2}, list(s['items']), row['view']['seed_topics'])
     with pytest.raises(ValueError, match='stale'):
         checked_answer(changed, saved)
+
+
+def test_reentry_requires_accepted_predecessors():
+    assert reentry_node({'stage': 'map'}, 'mapping') == 'mapping'
+    assert reentry_node({'stage': 'local_coordination'}, 'coordination') == 'coordination'
+    assert reentry_node({'stage': 'writing'}, 'writing') == 'writing'
+    assert reentry_node({'stage': 'writing'}, 'mapping') == 'writing'
+    with pytest.raises(ValueError, match='complete upstream'):
+        reentry_node({'stage': 'map'}, 'writing')
+    with pytest.raises(ValueError, match='complete upstream'):
+        reentry_node({'stage': 'coordination_held'}, 'writing')
 
 
 def test_oversize_body_keeps_one_page_and_complete_sections():

@@ -42,3 +42,19 @@ python3 "<skill-dir>/scripts/run_short_evidence_test.py" start \
   --vault <origin-vault> --origin-workflow <workflow-id> \
   --sources <source-pins.json> --operation-id <stable-id> --output <experiment-dir>
 ```
+
+实验停止并排空原生租约后，复用同一个目录和原操作 ID。使用新的稳定重进 ID 绑定
+本次范围。先加 `--dry-run` 查看上游回执、当前阶段、未完成请求及旧调用保留状态。
+支持 `mapping`、`coordination` 和 `writing`。已验证结果会被复用。
+已预留请求的原生响应先按会话、输入和运行身份回放。未知消耗与失败的验证继续保留
+为缺口。新的调用只派发尚未预留的请求。
+
+```bash
+python3 "<skill-dir>/scripts/run_short_evidence_test.py" reenter \
+  --vault <origin-vault> --origin-workflow <workflow-id> --sources <source-pins.json> \
+  --operation-id <stable-id> --output <experiment-dir> \
+  --from-node mapping --reentry-id <stable-reentry-id> --dry-run
+
+python3 "<skill-dir>/scripts/run_short_evidence_test.py" stop \
+  --output <experiment-dir> --reentry-id <stable-reentry-id>
+```
