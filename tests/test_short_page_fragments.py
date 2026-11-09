@@ -10,6 +10,8 @@ sys.path[:0] = [str(SKILL / 'lib'), str(SKILL / 'scripts')]
 from short_page_contract import check_coordination, check_fragment, obligations, qa_impacts
 from short_page_fragments import build, pack
 from short_fragment_repair import equivalent_coverage, form_navigation
+from short_fragment_disposition import exact_continuations, verify_block
+from hermes_source_units.validation import fingerprint
 
 
 def item(kind, text, section, assets=()):
@@ -170,3 +172,22 @@ def test_exact_peer_coverage_requires_both_assets_in_same_section():
     answer['sections'] = [{'heading': ref, 'content': f'Test [{ref}]', 'expressed': [ref]}
                           for ref in ('S1-A1', 'S1-A2')]
     assert equivalent_coverage(target, donor, check_fragment(row, 'p1', answer)) is None
+
+
+def test_exact_continuation_keeps_ambiguous_spans_unresolved():
+    data = {'items': {
+        'S1-B1': {'section': '6.3', 'text': '### 6.3 Scope\n\nRequirements:',
+                  'locator': {'path': 'document.md', 'span': {'start': 0, 'end': 30}}},
+        'S1-B2': {'section': '6.3', 'locator': {'path': 'document.md', 'span': {'start': 0, 'end': 50}}},
+        'S1-B3': {'section': '6.3', 'locator': {'path': 'document.md', 'span': {'start': 50, 'end': 80}}},
+    }}
+    assert exact_continuations(data, 'S1-B1', ['S1-B2', 'S1-B3'])['refs'] == ['S1-B2', 'S1-B3']
+    data['items']['S1-B4'] = {'section': '6.3', 'locator': {'path': 'document.md', 'span': {'start': 50, 'end': 60}}}
+    assert exact_continuations(data, 'S1-B1', ['S1-B2', 'S1-B3', 'S1-B4'])['status'] == 'unresolved'
+
+
+def test_structured_missing_report_keeps_packet_and_source_scope_distinct():
+    index = {'S1-B1': [], 'S1-B2': [{'page_id': 'peer'}], 'S1-B3': []}
+    view = {'id': 'target', 'materials': {'S1-B1': {}}, 'material_locations_sha256': fingerprint(index)}
+    result = verify_block({'material_locations': index}, view, ['S1-B1', 'S1-B2', 'S1-B3', 'S1-B4'])
+    assert [row['status'] for row in result] == ['supplied', 'other_page', 'registered_unsupplied', 'unlocated']

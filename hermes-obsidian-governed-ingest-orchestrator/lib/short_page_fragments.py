@@ -183,7 +183,10 @@ def pack(sources, reduced, specs, limit):
     return planned, held, expected
 
 
-def build(expected, checks, covered=()):
+def build(expected, checks, covered=(), *, excluded_receipts=()):
+    require(not {row['receipt_sha256'] for row in checks}.intersection(excluded_receipts)
+            and not {row['donor_receipt_sha256'] for row in covered}.intersection(excluded_receipts),
+            'excluded fragment cannot be assembled or reused as coverage')
     by_id = {row['fragment_id']: row for row in checks}
     require(len(by_id) == len(checks), 'duplicate fragment receipt')
     reused = {row['fragment_id']: row for row in covered}

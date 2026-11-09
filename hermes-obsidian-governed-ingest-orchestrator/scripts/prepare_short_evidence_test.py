@@ -22,6 +22,7 @@ from short_evidence_reduce import (
 import short_page_contract as pages_v2
 import short_page_fragments as fragments_v2
 import short_fragment_repair
+import short_fragment_disposition
 
 
 def inventory(sources):
@@ -107,7 +108,8 @@ def collect(rows, saved):
     return accepted, waiting
 
 
-def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_contract=None, fragment_repair=None):
+def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_contract=None, fragment_repair=None,
+            fragment_exclusions=None):
     native_holds = native_holds or {}
     accepted, waiting = collect(seeds, saved)
     if waiting:
@@ -128,7 +130,8 @@ def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_con
         return {'stage': 'local-map', 'requests': waiting, 'held': held_repairs, 'reused': list(repaired)}
     reduced = reduce_mappings(sources, maps, {**mapped, **repaired}, available_repairs, execution_holds=map_holds)
     if page_contract == pages_v2.CONTRACT:
-        return advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs, fragment_repair)
+        return advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs,
+                                 fragment_repair, fragment_exclusions)
     coordination = coordination_request(sources, reduced)
     coordinated = None
     resolutions = {}
@@ -189,7 +192,8 @@ def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_con
             'coordination_issues': coordination_issues}
 
 
-def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs, fragment_repair=None):
+def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs, fragment_repair=None,
+                      fragment_exclusions=None):
     common = {'page_contract': pages_v2.CONTRACT, 'reduced': reduced, 'held_repairs': held_repairs}
     topics = reduced['topics']
     coordination = pages_v2.coordination_request(sources, reduced)
@@ -222,10 +226,13 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
             else:
                 issues.append({**issue, 'request': row['id'], 'budget': row['budget']})
     planned, held, expected = fragments_v2.pack(sources, reduced, specs, limit)
+    excluded = short_fragment_disposition.exclusions(planned, saved, fragment_exclusions)
+    if excluded:
+        common['fragment_exclusions'] = list(excluded.values())
     replaced, covered = set(), []
     if fragment_repair is not None:
         added, replaced, covered, isolated, expected, consumed = short_fragment_repair.apply(
-            planned, expected, saved, fragment_repair, limit)
+            planned, expected, saved, fragment_repair, limit, sources=sources, excluded=excluded)
         planned.extend(added)
         held.extend(isolated)
         common['fragment_repair'] = {'contract': short_fragment_repair.CONTRACT,
@@ -237,6 +244,10 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
         missing = []
         for slot, view in row['view']['pages'].items():
             if view['fragment_id'] in replaced:
+                continue
+            if view['fragment_id'] in excluded:
+                record = excluded[view['fragment_id']]
+                held.append({**record, 'page': record['page_id'], 'request': rid, 'slot': slot})
                 continue
             path = saved / f'{rid}-{slot}.json'
             if path.is_file():
@@ -252,7 +263,8 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
             requests.append({**row, 'missing_slots': missing})
     return {
         **common, 'stage': 'writing' if requests else 'offline_build', 'requests': requests, 'checks': checks,
-        'expected_pages': expected, 'assembled_sections': fragments_v2.build(expected, checks, covered),
+        'expected_pages': expected, 'assembled_sections': fragments_v2.build(
+            expected, checks, covered, excluded_receipts={row['receipt_sha256'] for row in excluded.values()}),
         'held': held, 'coordination_issues': issues,
     }
 

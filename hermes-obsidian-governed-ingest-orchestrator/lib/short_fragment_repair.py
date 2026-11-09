@@ -35,7 +35,7 @@ def form_navigation(item, registered_paths):
     return navigation_wrapper({**item, 'text': '\n'.join(lines)}, registered_paths)
 
 
-def scoped_request(row, slot, limit):
+def scoped_request(row, slot, limit, *, locations=None, continuations=()):
     """Build a single slot with explicit local authority and source-bound form references."""
     old = row['view']['pages'][slot]
     view = copy.deepcopy(old)
@@ -66,11 +66,17 @@ def scoped_request(row, slot, limit):
                                  if set(duty['mapped_roles']) & {'condition', 'exception', 'conflict', 'contrary'}],
         'asset_bindings': bindings,
     }
+    if locations is not None:
+        view['source_continuations'] = list(continuations)
+        view['material_locations_sha256'] = fingerprint(locations)
     view['repair_of_fragment'] = view.pop('fragment_id')
     view['fragment_id'] = fingerprint([CONTRACT, view])
     images = [img for img in row['image_inputs']
               if any(ref['material'] in materials for ref in img['references'])]
-    return body_request([{'view': view, 'images': images}], limit, repair_contract=CONTRACT)
+    replacement = body_request([{'view': view, 'images': images}], limit, repair_contract=CONTRACT)
+    if locations is not None:
+        replacement['material_locations'] = locations
+    return replacement
 
 
 def saved_fragment(saved, row, slot):
@@ -114,13 +120,14 @@ def equivalent_coverage(target, donor, receipt):
     return {**body, 'coverage_sha256': fingerprint(body)}
 
 
-def apply(planned, expected, saved, repair, limit):
+def apply(planned, expected, saved, repair, limit, *, sources=None, excluded=None):
     """Transform only selected fragment identities, keeping old rows and audit readable."""
     require(set(repair) == {'contract', 'expected_pages_sha256', 'changes'}
             and repair['contract'] == CONTRACT and repair['expected_pages_sha256'] == fingerprint(expected),
             'fragment repair does not match the exact writing plan')
     by_id = {v['fragment_id']: (row, slot, v) for row in planned for slot, v in row['view']['pages'].items()}
     expected = copy.deepcopy(expected)
+    excluded = excluded or {}
     changed, added, covered, holds, consumed = set(), [], [], [], set()
     for change in repair['changes']:
         require(set(change) == {'fragment_id', 'action', 'prior_receipt_sha256', 'donor_fragment_id'},
@@ -129,26 +136,42 @@ def apply(planned, expected, saved, repair, limit):
         require(fid in by_id and fid not in changed, 'unknown or repeated repair fragment')
         row, slot, view = by_id[fid]
         prior = saved_fragment(saved, row, slot)
-        require(prior is None or prior['state'] == 'held', 'accepted fragment cannot be superseded by a repair')
+        action = change['action']
+        require(prior is None or prior['state'] == 'held' or (action == 'context' and fid in excluded),
+                'accepted fragment requires an explicit exclusion before repair')
         require((prior['receipt_sha256'] if prior else None) == change['prior_receipt_sha256'],
                 'prior fragment receipt changed')
         changed.add(fid)
         consumed.add(row['id'])
-        action = change['action']
         if action == 'isolate':
             require(change['donor_fragment_id'] is None, 'isolated fragment cannot declare a donor')
             holds.append({'page': view['id'], 'fragment_id': fid, 'request': row['id'], 'slot': slot,
                           'reason': 'isolated_prior_substantive_omission'})
             continue
         if action == 'equivalent':
+            if change['donor_fragment_id'] in excluded:
+                holds.append({'page': view['id'], 'fragment_id': fid, 'request': row['id'], 'slot': slot,
+                              'reason': 'coverage_donor_excluded', 'donor': change['donor_fragment_id']})
+                continue
             donor_row, donor_slot, donor = by_id[change['donor_fragment_id']]
             proof = equivalent_coverage(view, donor, saved_fragment(saved, donor_row, donor_slot))
             if proof:
                 covered.append(proof)
                 continue
         else:
-            require(action == 'scope' and change['donor_fragment_id'] is None, 'unknown fragment repair action')
-        replacement = scoped_request(row, slot, limit)
+            require(action in ('scope', 'context') and change['donor_fragment_id'] is None,
+                    'unknown fragment repair action')
+        if action == 'context':
+            from short_fragment_disposition import context_for, locations
+            index = locations(sources, planned, excluded)
+            relations = context_for(view, sources, index)
+            if not relations or any(rel['status'] != 'resolved' for rel in relations):
+                holds.append({'page': view['id'], 'fragment_id': fid, 'reason': 'section_continuation_unresolved',
+                              'request': row['id'], 'relations': relations})
+                continue
+            replacement = scoped_request(row, slot, limit, locations=index, continuations=relations)
+        else:
+            replacement = scoped_request(row, slot, limit)
         new_id = replacement['view']['pages']['p1']['fragment_id']
         members = expected[view['id']]['fragments']
         members[members.index(fid)] = new_id

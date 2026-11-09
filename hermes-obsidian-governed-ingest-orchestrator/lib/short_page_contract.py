@@ -239,14 +239,19 @@ def check_fragment(row, slot, answer):
     known = set(duties)
     state, diagnostic = 'structurally_valid', None
     qa_observations = []
+    block_locations = None
     if 'blocked' in answer:
         block = answer['blocked']
-        require(set(block['refs']) <= known and block['detail'].strip() and block['effect'].strip(),
+        scoped = 'material_locations_sha256' in view
+        require((scoped or set(block['refs']) <= known) and block['detail'].strip() and block['effect'].strip(),
                 'refusal must cite supplied identifiers and describe its concrete effect')
+        if scoped:
+            from short_fragment_disposition import verify_block
+            block_locations = verify_block(row, view, block['refs'])
         scoped_assets = {key for key, duty in duties.items() if duty['inspect']}
         refs = set(block['refs'])
         if block['kind'] == 'missing_asset':
-            refs |= {dep for item in refs for dep in view['materials'][item]['required_assets']}
+            refs |= {dep for item in refs & known for dep in view['materials'][item]['required_assets']}
             diagnostic = 'asset_claim_requires_verification' if refs & scoped_assets else 'no_named_required_asset'
         else:
             diagnostic = 'reason_requires_verification' if refs else 'refusal_has_no_scoped_reference'
@@ -297,4 +302,6 @@ def check_fragment(row, slot, answer):
             'independent_review': 'not_performed', 'publication_eligible': False}
     if qa_observations:
         body.update(contract='short-evidence-fragment-receipt/v2.1', qa_observations=qa_observations)
+    if block_locations is not None:
+        body.update(contract='short-evidence-fragment-receipt/v2.2', blocked_material_locations=block_locations)
     return {**body, 'receipt_sha256': fingerprint(body)}

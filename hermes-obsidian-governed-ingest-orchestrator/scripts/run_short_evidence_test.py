@@ -76,6 +76,10 @@ def live(root, operation, *, resumed=False, entry=None):
         require(control['entry'] == entry and control['operation_sha256'] == sha(root / 'operation.json')
                 and not (root / 'reentries' / entry / 'stop.json').exists(),
                 'node reentry authority changed or stopped')
+        if control.get('fragment_exclusions'):
+            evidence = control['fragment_exclusions']['evidence']
+            require(sha(_vault_path(root.parent, evidence['ref'])) == evidence['sha256'],
+                    'fragment exclusion evidence changed')
     elif resumed:
         require(_load_json(root / 'resume.json')['stop_sha256'] == sha(stop)
                 and not (root / 'stop-resume.json').exists(), 'resumed experiment stopped or authority changed')
@@ -514,7 +518,8 @@ def attempt_index(root):
     return previous
 
 
-def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, page_contract, fragment_repair=None):
+def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, page_contract, fragment_repair=None,
+            fragment_exclusions=None):
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', entry), 'valid stable reentry ID required')
     kb, kc, _ = runtime()
     board = operation['board']
@@ -524,8 +529,13 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
                     for task in kb.list_tasks(conn)), 'node reentry requires a stopped native board')
     directory = root / 'reentries' / entry
     require(not directory.exists(), 'reentry ID already used')
+    if fragment_exclusions:
+        evidence = fragment_exclusions['evidence']
+        require(set(evidence) == {'ref', 'sha256'}
+                and sha(_vault_path(root.parent, evidence['ref'])) == evidence['sha256'],
+                'fragment exclusion evidence changed')
     plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, page_contract=page_contract,
-                   fragment_repair=fragment_repair)
+                   fragment_repair=fragment_repair, fragment_exclusions=fragment_exclusions)
     current = reentry_node(plan, node)
     previous = attempt_index(root)
     if fragment_repair is not None:
@@ -544,6 +554,8 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
     if fragment_repair is not None:
         control['fragment_repair'] = fragment_repair
         control['fragment_repair_preview'] = plan['fragment_repair']
+    if fragment_exclusions is not None:
+        control['fragment_exclusions'] = fragment_exclusions
     if dry_run:
         return {**control, 'model_calls': 0}
     save(directory / 'control.json', control)
@@ -551,11 +563,12 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
     metrics = sorted((_load_json(path) for path in paths), key=lambda row: row['started_at'])
     return run_stages(root, operation, sources, seeds, groups, metrics, entry=entry,
                       directory=directory, previous=previous, page_contract=page_contract,
-                      fragment_repair=fragment_repair)
+                      fragment_repair=fragment_repair, fragment_exclusions=fragment_exclusions)
 
 
 def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=False,
-               entry=None, directory=None, previous=None, page_contract=None, fragment_repair=None):
+               entry=None, directory=None, previous=None, page_contract=None, fragment_repair=None,
+               fragment_exclusions=None):
     kb, kc, _ = runtime()
     output = directory or root
     board = operation['board']
@@ -565,7 +578,8 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
         live(root, operation, resumed=resumed, entry=entry)
         planning_started = time.monotonic()
         plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, native_holds=holds,
-                       page_contract=page_contract, fragment_repair=fragment_repair)
+                       page_contract=page_contract, fragment_repair=fragment_repair,
+                       fragment_exclusions=fragment_exclusions)
         planning_seconds = time.monotonic() - planning_started
         rows = plan.get('requests', [])
         consumed_unknown = [r['id'] for r in rows if r['id'] in previous and not previous[r['id']]]
@@ -610,7 +624,7 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
 
 
 def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=None, entry=None, dry_run=False,
-          page_contract=None, fragment_repair=None):
+          page_contract=None, fragment_repair=None, fragment_exclusions=None):
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
             'trusted operator must start the experiment')
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', operation_id), 'invalid experiment operation ID')
@@ -643,7 +657,8 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
                     require(node == 'coordination', 'new page contract requires a coordination reentry')
                 return reenter(root, operation, sources, seeds, groups, node, entry,
                                dry_run=dry_run, page_contract=selected,
-                               fragment_repair=fragment_repair or active.get('fragment_repair'))
+                               fragment_repair=fragment_repair or active.get('fragment_repair'),
+                               fragment_exclusions=fragment_exclusions or active.get('fragment_exclusions'))
             metrics = resume_mapping(root, operation, sources, seeds, groups)
         else:
             require(not (root / 'operation.json').exists(), 'operation already exists; inspect its durable evidence')
@@ -669,6 +684,7 @@ def main():
     parser.add_argument('--reentry-id')
     parser.add_argument('--page-contract', choices=(FRAGMENT_CONTRACT,))
     parser.add_argument('--fragment-repair', type=Path)
+    parser.add_argument('--fragment-exclusions', type=Path)
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     root = args.output.resolve()
@@ -689,15 +705,16 @@ def main():
     else:
         if args.action == 'reenter' and not (args.from_node and args.reentry_id):
             parser.error('reenter requires --from-node and --reentry-id')
-        if args.fragment_repair and (args.action != 'reenter' or args.from_node != 'writing'):
-            parser.error('fragment repair requires writing reentry')
+        if (args.fragment_repair or args.fragment_exclusions) and (args.action != 'reenter' or args.from_node != 'writing'):
+            parser.error('fragment repair and exclusions require writing reentry')
         if args.action != 'reenter' and (args.from_node or args.reentry_id or args.dry_run):
             parser.error('node and dry-run arguments require reenter')
         result = start(root, args.vault.resolve(strict=True), args.origin_workflow, _load_json(args.sources),
                        args.operation_id, resumed=args.action == 'resume-mapping',
                        node=args.from_node, entry=args.reentry_id, dry_run=args.dry_run,
                        page_contract=args.page_contract,
-                       fragment_repair=_load_json(args.fragment_repair) if args.fragment_repair else None)
+                       fragment_repair=_load_json(args.fragment_repair) if args.fragment_repair else None,
+                       fragment_exclusions=_load_json(args.fragment_exclusions) if args.fragment_exclusions else None)
         print(json.dumps(result, ensure_ascii=False))
 
 

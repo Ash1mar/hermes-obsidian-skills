@@ -436,6 +436,11 @@ def system_prompt(phase,view,correction=None):
                    'are navigation only and do not identify a different form. Describe each required asset '
                    'using its own table content and include its actual citation.'
                    if view.get('fragment_repair') else '')
+                + (' Use source_continuations only to locate the original section and other planned coverage. '
+                   'An excluded destination is an audit location, not a published link. Do not claim source '
+                   'material is missing based on this packet. If an essential requirement cannot be answered, '
+                   'report the exact evidence identifiers and the local effect in the structured blocked object.'
+                   if any('source_continuations' in slot for slot in view.get('pages', {}).values()) else '')
                 + (' Correct the bounded structural issue recorded in structural_retry.'
                    if view.get('structural_retry') else ''))
     system=COMMON+'\n'+(RULES['page-write'] if phase=='page-pair' else RULES['page-review'] if phase=='page-review-pair' else RULES[phase])
