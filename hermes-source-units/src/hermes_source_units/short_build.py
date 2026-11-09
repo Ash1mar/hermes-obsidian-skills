@@ -9,6 +9,7 @@ from .source_units import _exclusive_lock, _json_bytes, _load_json, _sha, _vault
 from .validation import ContractError, fingerprint, validate_references
 
 POLICY = 'native-short-build/v1'
+QA_POLICY = 'short-build-advisory-qa/v1'
 ROOT = '_system/knowledge-builds'
 
 
@@ -90,7 +91,73 @@ def assess(service, run, page):
                                            'revision_id': page['revision_id'], 'origin': record['scope']['origin']})}
 
 
-def publication_approved(service, page, acceptance):
+def qa_advisory(service, run):
+    from .qa_policy import annotation_disposition
+
+    path = service._run_path(run['run_id']).with_name('qa-advisory.json')
+    if not path.is_file():
+        return None, None
+    pointer = pin(service.vault, path.relative_to(service.vault).as_posix())
+    value = pinned(service.vault, pointer)
+    require(value['contract'] == QA_POLICY and value['run_id'] == run['run_id']
+            and value['record_id'] == fingerprint({k: v for k, v in value.items() if k != 'record_id'})
+            and value['build_evidence'] == run['short_evidence']
+            and value['build_manifest'] == pin(service.vault, service._run_path(run['run_id']).relative_to(service.vault).as_posix()),
+            'QA advisory does not bind the exact committed short Build')
+    scope = evidence(service, run)['scope']
+    require(len(value['pages']) == len(run['page_revisions']), 'QA advisory candidate count changed')
+    for row, original, page in zip(value['pages'], scope['pages'], run['page_revisions'], strict=True):
+        checks = row['dependencies']
+        material = {item for fragment in checks for item in fragment['materials']}
+        require(row['short_id'] == original['short_id'] and row['page_id'] == page['page_id']
+                and row['revision_id'] == page['revision_id']
+                and row['acceptance_sha256'] == fingerprint(page['review']['acceptance'])
+                and [c['receipt_sha256'] for c in checks] == [f['receipt_sha256'] for f in original['native_fragments']]
+                and row['annotations'] == [annotation_disposition(q, material) for q in original['qa_issues']]
+                and row['material_holds'] == [q['original']['id'] for q in row['annotations']
+                                              if q['effect'] == 'material-hold'],
+                'QA advisory lost original labels or changed page binding')
+    return pointer, value
+
+
+def record_qa_advisory(service, run, dependencies, root, job):
+    """Append mechanical QA disposition under the bound native program claim."""
+    from .qa_policy import annotation_disposition
+
+    operation = _load_json(root / 'operation.json')
+    admission = native_authority(root, job, operation)
+    request = _load_json(job)['request']
+    proof = evidence(service, run)
+    require(run['state'] == 'completed' and request['phase'] in ('short-formal-build', 'short-formal-qa')
+            and request['view']['authorization'] == proof['scope']['authorization']
+            and proof['scope']['origin'] == operation['origin'] and Path(operation['vault']) == service.vault
+            and request['view'].get('run_id', run['run_id']) == run['run_id'],
+            'QA advisory authority differs from the completed Build')
+    pages = []
+    for row, page in zip(proof['scope']['pages'], run['page_revisions'], strict=True):
+        checks = dependencies[row['short_id']]
+        material = {item for fragment in checks for item in fragment['materials']}
+        annotations = [annotation_disposition(issue, material) for issue in row['qa_issues']]
+        pages.append({'short_id': row['short_id'], 'page_id': page['page_id'], 'revision_id': page['revision_id'],
+                      'acceptance_sha256': fingerprint(page['review']['acceptance']),
+                      'annotations': annotations, 'dependencies': checks,
+                      'material_holds': [q['original']['id'] for q in annotations if q['effect'] == 'material-hold']})
+    record = {'contract': QA_POLICY, 'run_id': run['run_id'], 'build_evidence': run['short_evidence'],
+              'build_manifest': pin(service.vault, service._run_path(run['run_id']).relative_to(service.vault).as_posix()),
+              'native': admission, 'professional_qa': 'not_performed', 'pages': pages}
+    path = service._run_path(run['run_id']).with_name('qa-advisory.json')
+    with _exclusive_lock(_vault_path(service.vault, f'{ROOT}/.finalize.lock'), marker=False):
+        prior, existing = qa_advisory(service, run)
+        if prior:
+            require(all(existing[k] == v for k, v in record.items() if k != 'native'),
+                    'existing QA advisory differs from the exact verified dependencies')
+            return prior
+        record['record_id'] = fingerprint(record)
+        _write_atomic(path, _json_bytes(record))
+        return qa_advisory(service, run)[0]
+
+
+def publication_approval(service, page, acceptance):
     """Apply the pinned internal retrieval policy without changing page QA."""
     from .page_governance import POLICY as RELEASE_POLICY
     from .build_acceptance import record
@@ -104,8 +171,12 @@ def publication_approved(service, page, acceptance):
             'short publication must bind the exact committed Build acceptance')
     row = next(r for r in proof['scope']['pages'] if projection(service.build, r)[0]['page_id'] == page['page_id'])
     authorization = proof['scope']['authorization']
-    return (row['publication_authorized'] and page['qa_status'] == 'usable'
-            and authorization['publish'] is True and authorization['policy'] == RELEASE_POLICY)
+    authorized = authorization['publish'] is True and authorization['policy'] == RELEASE_POLICY
+    _, advisory = qa_advisory(service.build, run)
+    if authorized and advisory and row['source_eligible_at_admission']:
+        disposition = next(q for q in advisory['pages'] if q['page_id'] == page['page_id'])
+        return not disposition['material_holds'], not disposition['material_holds']
+    return authorized and row['publication_authorized'] and page['qa_status'] == 'usable', False
 
 
 def admit(service, scope, bodies, root, job):

@@ -35,6 +35,15 @@ def gap(vault,workflow_id,node,scope,evidence,*,dependents=()):
     return ref
 
 
+def annotation_disposition(issue, materials):
+    """Preserve labels and distinguish a documented defect in used material."""
+    affected = sorted(set(materials).intersection(issue['items']))
+    hard = bool(affected and issue['status'] == 'localized'
+                and (issue['writing'] == 'hold' or issue['publication'] == 'hold'))
+    return {'original': issue, 'matched_materials': affected,
+            'effect': 'material-hold' if hard else 'annotation'}
+
+
 def reports(vault,workflow_id):
     root=_vault_path(vault,f'_system/ledgers/ingest-workflows/{workflow_id}/qa-gaps')
     refs=[]

@@ -7,7 +7,7 @@ import re
 from hermes_source_units import ContractError
 from hermes_source_units.build_acceptance import assess, record
 from hermes_source_units.page_governance import POLICY
-from hermes_source_units.short_build import admit, evidence, identity
+from hermes_source_units.short_build import admit, evidence, identity, qa_advisory, record_qa_advisory
 from hermes_source_units.source_units import _load_json, _sha, _vault_path
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
@@ -105,7 +105,7 @@ def final_plan(root, operation, authorization, runner):
     return rebuilt, sources
 
 
-def collect(root, operation, authorization, runner):
+def collect(root, operation, authorization, runner, *, dependencies=None):
     plan, sources = final_plan(root, operation, authorization, runner)
     partition = delivery_partition(plan)
     chosen = authorization['pages']
@@ -126,7 +126,7 @@ def collect(root, operation, authorization, runner):
             content = page['content']
             cited = sorted(set(re.findall(r'\[(S[0-9]+-[AB][0-9]+)\]', content)))
             support = [refs[ref] for ref in cited]
-            proof, qa = [], {}
+            proof, qa, checks = [], {}, []
             for receipt in page['fragment_receipts']:
                 try:
                     view, native = native_fragment(root, by_hash[receipt], attempts, conn, runner)
@@ -137,11 +137,25 @@ def collect(root, operation, authorization, runner):
                                             'reopen_condition': 'recover the exact acknowledged native fragment'}
                     break
                 proof.append(native)
+                if dependencies is not None:
+                    inspected = set(by_hash[receipt]['answer']['inspected_assets'])
+                    assets = {ref for ref, duty in view['obligations'].items() if duty['inspect']}
+                    require(assets == inspected, 'verified fragment lacks its required whole-asset inspection')
+                    checks.append({'fragment_id': view['fragment_id'], 'receipt_sha256': receipt,
+                                   'materials': sorted(view['materials']),
+                                   'required_expressions': sorted(ref for ref, duty in view['obligations'].items()
+                                                                  if duty['express']),
+                                   'required_assets': {ref: sources[ref.split('-', 1)[0]]['items'][ref]['sha256']
+                                                       for ref in sorted(assets)},
+                                   'source_revisions': view['source_revisions'],
+                                   'registered_packet_and_coverage': 'verified'})
                 for q in view['qa_impact']:
                     if q['publication'] != 'allow':
                         qa[q['id']] = q
             if page_id in proof_holds:
                 continue
+            if dependencies is not None:
+                dependencies[page_id] = checks
             require(sorted(qa) == page['qa_publication_review'], 'formal QA differs from verified writing packets')
             current_support = bool(support) and all(service._contribution(r, current, {}) == 'active'
                 and governance.get(r['unit_ref']['resource_id'], {}).get('eligible') for r in support)
@@ -171,7 +185,16 @@ def build(root, job, request, own, runner):
     operation = _load_json(root / 'operation.json')
     authorization = request['view']['authorization']
     require(request['id'] == fingerprint(request['view']), 'native formal request identity changed')
-    service, scope, bodies = collect(root, operation, authorization, runner)
+    dependencies = {}
+    service, scope, bodies = collect(root, operation, authorization, runner, dependencies=dependencies)
+    if request['phase'] == 'short-formal-qa':
+        run = _load_json(service.build._run_path(request['view']['run_id']))
+        require(run['state'] == 'completed' and evidence(service.build, run)['scope'] == scope,
+                'release reentry must reproduce the existing committed Build and all exclusions')
+        service.build.validate_run(run['run_id'])
+        own()
+        record_qa_advisory(service.build, run, dependencies, root, job)
+        return {'state': 'settled', 'attempts': [], 'formal_run_id': run['run_id']}
     if not scope['pages']:
         return {'state': 'settled', 'attempts': [], 'formal_holds': scope['excluded']}
     own()
@@ -185,6 +208,8 @@ def build(root, job, request, own, runner):
         run = service.build.finalize({'run_id': run['run_id'], 'actor': run['actor'],
                                      'expected_revision': run['revision'], 'reviews': reviews})['run']
     service.build.validate_run(run['run_id'])
+    own()
+    record_qa_advisory(service.build, run, dependencies, root, job)
     return {'state': 'settled', 'attempts': [], 'formal_run_id': run['run_id']}
 
 
@@ -192,6 +217,7 @@ def delivery(vault, run_id, authorization):
     service = FileVaultFinalizeService(vault)
     run = _load_json(service.build._run_path(run_id))
     proof = evidence(service.build, run)
+    advisory_pointer, advisory = qa_advisory(service.build, run)
     require(proof['scope']['authorization'] == authorization, 'publication authorization differs from Build')
     service.build.validate_run(run_id)
     state = service.status()
@@ -207,6 +233,11 @@ def delivery(vault, run_id, authorization):
         plan = service._build_plan(request)
         release = None
         if authorization['publish'] and not plan['blockers']:
+            if authorization['base_release']:
+                base = _load_json(service._manifest_path(authorization['base_release']))
+                previous = {p['id'] for p in base['index_eligibility'] if p['kind'] == 'knowledge_page' and p['eligible']}
+                qualified = {p['id'] for p in plan['index_eligibility'] if p['eligible']}
+                require(previous <= qualified, 'additive delivery would displace previously qualified pages')
             service.plan(request)
             release = service.apply({'release_id': release_id, 'actor': run['actor'],
                                      'plan_id': plan['plan_id'], 'expected_revision': plan['revision']})['release']
@@ -219,15 +250,18 @@ def delivery(vault, run_id, authorization):
         candidates.append({'name': row['name'], 'short_id': row['short_id'], 'page_id': page['page_id'],
                            'path': page['path'], 'revision_id': page['revision_id'], 'qa_status': page['qa_status'],
                            'qa_issues': row['qa_issues'], 'build_acceptance': page['review']['acceptance'],
+                           'qa_disposition': next((q for q in (advisory or {}).get('pages', [])
+                                                   if q['page_id'] == page['page_id']), None),
                            'coverage_proofs': row['same_page_coverage'], 'published': page['page_id'] in released,
                            'exclusion': exclusions.get(page['page_id'])})
     return {'run_id': run_id, 'build_revision': run['revision'], 'build_evidence': run['short_evidence'],
+            'qa_advisory': advisory_pointer,
             'candidates': candidates, 'isolated_pages': proof['scope']['excluded'],
             'release_id': release['release_id'] if release else None, 'base_release': authorization['base_release'],
             'blockers': plan['blockers'], 'model_calls': 0}
 
 
-def execute(root, entry, authorization, dry_run, runner):
+def execute(root, entry, authorization, dry_run, runner, *, existing_build=None):
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
             'trusted operator must authorize formal short Build')
     require(re.fullmatch(r'formal-[a-z0-9][a-z0-9-]{0,39}', entry)
@@ -245,13 +279,21 @@ def execute(root, entry, authorization, dry_run, runner):
         with closing(kc.connect(board=operation['board'])) as conn:
             require(all(t.status not in ('ready', 'running', 'todo', 'triage') and not t.claim_lock
                         for t in kb.list_tasks(conn)), 'formal admission requires no outstanding native claims')
-        state = FileVaultFinalizeService(operation['vault']).status()
+        service = FileVaultFinalizeService(operation['vault'])
+        state = service.status()
         directory = root / 'reentries' / entry
         result_path = directory / 'result.json'
         if result_path.exists():
             return _load_json(result_path)
         view = {'entry': entry, 'authorization': authorization}
-        row = {'id': fingerprint(view), 'phase': 'short-formal-build', 'view': view}
+        if existing_build:
+            require(re.fullmatch(r'short-build-[0-9a-f]{64}', existing_build), 'invalid existing short Build identity')
+            existing = _load_json(service.build._run_path(existing_build))
+            require(existing['state'] == 'completed'
+                    and evidence(service.build, existing)['scope']['authorization'] == authorization,
+                    'release reentry requires exact completed Build authorization')
+            view['run_id'] = existing_build
+        row = {'id': fingerprint(view), 'phase': 'short-formal-qa' if existing_build else 'short-formal-build', 'view': view}
         job = root / 'jobs' / f'entry-{entry}-{row["id"]}.json'
         control = {'entry': entry, 'operation_sha256': runner.sha(root / 'operation.json'), 'formal_request': row['id']}
         if dry_run:

@@ -254,7 +254,10 @@ class FileVaultFinalizeService:
         scopes=release_closures(self.build,request.get('delivery_scopes',[]),run_ids)
         assert_release_ready(self.build,run_ids,scopes)
         runs = self._runs(run_ids,scopes)
-        if scopes or request.get('page_governance') or any(r.get('short_evidence') for r in runs):
+        old = _load_json(self._manifest_path(state['current_release_id'])) if state['current_release_id'] else {}
+        prior_advisory = any(p['ref'].endswith('/qa-advisory.json')
+                             for p in old.get('delivery',{}).get('inherited_coverage_gaps',[]))
+        if scopes or request.get('page_governance') or prior_advisory or any(r.get('short_evidence') for r in runs):
             from .scoped_release import build_plan
             return build_plan(self,request,state,runs,scopes)
         current = self._current_sets()
@@ -265,8 +268,7 @@ class FileVaultFinalizeService:
         # Short drafts are admitted through exact scoped release, including
         # when an unrelated ordinary Build is subsequently published.
         if any(s['identity_key'].startswith('short-evidence:') for s in active_subjects):
-            base = _load_json(self._manifest_path(state['current_release_id'])) if state['current_release_id'] else {}
-            published = {(s['page_id'], s['current_revision_id']) for s in base.get('subjects', [])}
+            published = {(s['page_id'], s['current_revision_id']) for s in old.get('subjects', [])}
             active_subjects = [s for s in active_subjects if not s['identity_key'].startswith('short-evidence:')
                                or (s['page_id'], s['current_revision_id']) in published]
         included_pages = {page["page_id"] for run in runs for page in run["page_revisions"]}

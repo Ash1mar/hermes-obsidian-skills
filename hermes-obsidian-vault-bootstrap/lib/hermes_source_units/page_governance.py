@@ -228,10 +228,13 @@ def record(vault, pointer):
 
 def effective(service, page, pointer=None):
     if pointer is None:
-        from .short_build import POLICY as SHORT, publication_approved
+        from .short_build import POLICY as SHORT, publication_approval
         acceptance = (page.get('review') or {}).get('acceptance') or {}
-        if acceptance.get('policy') == SHORT and publication_approved(service, page, acceptance):
-            return {'qa_status': page['qa_status'], 'business_status': 'approved', 'visibility': 'published'}
+        if acceptance.get('policy') == SHORT:
+            approved, advisory = publication_approval(service, page, acceptance)
+            if approved:
+                return {'qa_status': page['qa_status'], 'business_status': 'approved', 'visibility': 'published',
+                        'qa_advisory': advisory}
         return {k:page[k] for k in ('qa_status','business_status','visibility')}
     value = record(service.vault,pointer)
     if value['retrieval_scope']!=service.source.vault_manifest['vault']['id']:
@@ -261,7 +264,27 @@ def reasons(service, page, pointer=None):
     state = effective(service,page,pointer)
     return [reason for key,needed,reason in (
         ('qa_status','usable','qa-required'),('business_status','approved','business-unassessed'),
-        ('visibility','published','visibility-draft')) if state[key]!=needed]
+        ('visibility','published','visibility-draft')) if state[key]!=needed
+        and (key != 'qa_status' or not state.get('qa_advisory'))]
+
+
+def release_pointer(service, release, page):
+    """Keep the exact governance of an unchanged page in an additive release."""
+    seen = set()
+    while release:
+        if release.get('page_governance'):
+            return release['page_governance']
+        base = release.get('delivery', {}).get('base_release')
+        if not base:
+            break
+        if base['ref'] in seen:
+            fail('cyclic base release governance')
+        seen.add(base['ref'])
+        release = pinned(service.vault, base)
+        if not any(r['page_id'] == page['page_id'] and r['current_revision_id'] == page['revision_id']
+                   for r in release['subjects']):
+            break
+    return None
 
 
 def preflight(plan):
@@ -285,7 +308,7 @@ def validate_retrieval_snapshot(service, release):
         if item['kind']!='knowledge_page' or not item['eligible']:
             continue
         page = service._page_revision(item['id'],item['page_revision_id'])
-        if reasons(service,page,release.get('page_governance')):
+        if reasons(service,page,release_pointer(service,release,page)):
             fail('eligible retrieval snapshot has unresolved page conditions')
         if any(not source.get(r['unit_ref']['resource_id'],{}).get('eligible')
                or service._contribution(r,current,{})!='active' for r in page['support_refs']):

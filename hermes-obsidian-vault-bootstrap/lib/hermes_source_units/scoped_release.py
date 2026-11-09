@@ -4,7 +4,7 @@ from .validation import fingerprint,validate_record
 from .runtime_telemetry import span
 from .delivery_scope import dependency_partition,fail,authorized
 from .partial_finalize import pin,pinned
-from .short_build import evidence as short_evidence, identity as short_identity, output_path
+from .short_build import evidence as short_evidence, identity as short_identity, output_path, qa_advisory
 
 
 def short_scope(service, runs):
@@ -36,9 +36,12 @@ def build_plan(service,request,state,runs,scopes):
         allowed.update(s['page_id'] for s in active if (s['page_id'],s['current_revision_id']) in published)
     exclusions={p['page_id']:{**p,'reason':p.get('reason','excluded by delivery scope')} for row in scopes.values() for p in row['scope']['excluded']}
     short_pages,short_excluded,short_proofs=short_scope(service,runs)
+    for run in runs:
+        if run.get('short_evidence') and (advisory := qa_advisory(service.build,run)[0]):
+            short_proofs.append(advisory)
     exclusions.update(short_excluded)
     source_eligibility={r['resource_id']:r for r in service._source_eligibility(current,change_map) if r['resource_id']}
-    from .page_governance import record as governance_record, reasons as governance_reasons
+    from .page_governance import reasons as governance_reasons, release_pointer
     governance=request.get('page_governance')
     candidates=[];rows={};eligible={};contents={}
     for subject in active:
@@ -56,7 +59,9 @@ def build_plan(service,request,state,runs,scopes):
             fail('canonical page changed before scoped publication','SOURCE_CHANGED')
         reasons=[];delivery_reasons=[]
         if pid not in allowed:delivery_reasons.append('outside-selected-delivery')
-        reasons.extend(governance_reasons(service,page,governance))
+        prior_pointer = (release_pointer(service,old,page) if prior and
+                         (pid,page['revision_id']) in published else None)
+        reasons.extend(governance_reasons(service,page,governance or prior_pointer))
         if (governance or pid in short_pages) and reasons:delivery_reasons.extend(reasons)
         groups={'active':[],'stale':[],'withdrawn':[]}
         for ref in page['support_refs']:
@@ -102,6 +107,9 @@ def build_plan(service,request,state,runs,scopes):
     source_by_page={p['page_id']:row['closure']['authorization'] for row in scopes.values() for p in row['scope']['excluded']}
     source_by_page.update({p['page_id']:r['short_evidence'] for r in runs if r.get('short_evidence')
                            for p in r['page_revisions']})
+    # Carry previously published short QA provenance into later scoped releases.
+    previous_qa = [p for p in (old.get('delivery',{}).get('inherited_coverage_gaps',[]) if prior else [])
+                   if p['ref'].endswith('/qa-advisory.json') and p not in short_proofs]
     delivery={'contract':'scoped-publication/v1','coverage_complete':False,
         'base_release':(pin(service.vault,service._manifest_path(prior).relative_to(service.vault).as_posix()) if prior else None),
         'included_page_ids':sorted(included),'excluded':[{'page_id':k,'path':v.get('path') or next(p['path'] for p in candidates if p['page_id']==k),
@@ -109,7 +117,7 @@ def build_plan(service,request,state,runs,scopes):
             'depends_on':v.get('depends_on',[]),'original_scope':source_by_page.get(k) or v.get('original_scope')}
             for k,v in sorted(partition['excluded'].items())],
         'inherited_coverage_gaps':list({r['closure']['authorization']['ref']:r['closure']['authorization'] for r in scopes.values()}.values())
-            + [r['coverage_scope'] for r in runs if r.get('coverage_scope')] + short_proofs,
+            + [r['coverage_scope'] for r in runs if r.get('coverage_scope')] + short_proofs + previous_qa,
         'coverage_gap_summaries':[{'scope_id':r['scope']['scope_id'],'held_page_count':r['scope']['coverage_gaps'].get('held_page_count',0),
             'deferred_candidate_occurrences':r['scope']['coverage_gaps'].get('deferred_candidate_occurrences',0)} for r in scopes.values()],
         'raw_source_indexing':False,'dependencies':[{'page_id':k,'depends_on':v} for k,v in partition['dependencies'].items()]}
@@ -164,6 +172,13 @@ def validate_manifest(service,plan,release,*,scopes=None):
         fail('release subjects/index escaped the exact eligible page set','SOURCE_CHANGED')
     for item in release['index_eligibility']:
         page=service._page_revision(item['id'],item['page_revision_id'])
-        from .page_governance import reasons
-        if (item['eligible'] or item['id'] in short_pages) and reasons(service,page,release.get('page_governance')):
+        acceptance=(page.get('review') or {}).get('acceptance') or {}
+        if item['eligible'] and acceptance.get('short_evidence') and page['qa_status']!='usable':
+            ref=acceptance['short_evidence']['ref'].replace('/short-evidence.json','/qa-advisory.json')
+            pins=[p for p in release['delivery']['inherited_coverage_gaps'] if p['ref']==ref]
+            if len(pins)!=1:
+                fail('published short page lost its exact QA advisory','SOURCE_CHANGED')
+            pinned(service.vault,pins[0])
+        from .page_governance import reasons, release_pointer
+        if (item['eligible'] or item['id'] in short_pages) and reasons(service,page,release_pointer(service,release,page)):
             fail('published page lacked its own required approval','SOURCE_CHANGED')

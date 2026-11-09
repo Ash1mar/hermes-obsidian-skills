@@ -120,7 +120,7 @@ def checked_projection(row):
 def run_job(root, job, own):
     payload = _load_json(job)
     original = payload['request']
-    if original['phase'] == 'short-formal-build':
+    if original['phase'] in ('short-formal-build', 'short-formal-qa'):
         from short_formal_build import build
         return build(root, job, original, own, sys.modules[__name__])
     if 'saved_attempts' in payload:
@@ -689,6 +689,7 @@ def main():
     parser.add_argument('--fragment-repair', type=Path)
     parser.add_argument('--fragment-exclusions', type=Path)
     parser.add_argument('--formal-authorization', type=Path)
+    parser.add_argument('--existing-build')
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     root = args.output.resolve()
@@ -699,7 +700,7 @@ def main():
         if not (args.formal_authorization and args.reentry_id):
             parser.error('formal requires --formal-authorization and --reentry-id')
         result = execute(root, args.reentry_id, _load_json(args.formal_authorization),
-                         args.dry_run, sys.modules[__name__])
+                         args.dry_run, sys.modules[__name__], existing_build=args.existing_build)
         print(json.dumps(result, ensure_ascii=False))
     elif args.action == 'stop':
         require(not os.environ.get('HERMES_KANBAN_TASK'), 'trusted operator required to stop')

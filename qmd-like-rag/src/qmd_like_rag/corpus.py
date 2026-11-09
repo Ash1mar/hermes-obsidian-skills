@@ -158,7 +158,7 @@ def load_release_corpus(vault_root: Path) -> ReleaseCorpus:
         raise ValueError("Knowledge release changed while loading corpus")
     source = FileSourceUnitService(vault_root)
     registry_revision = _registry_revision(vault_root, source)
-    if release.get('page_governance'):
+    if release.get('page_governance') or release.get('delivery'):
         from hermes_source_units.vault_finalize import FileVaultFinalizeService
         from hermes_source_units.page_governance import validate_retrieval_snapshot
         from hermes_source_units.release_reads import operation
