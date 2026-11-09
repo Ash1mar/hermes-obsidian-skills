@@ -47,6 +47,45 @@ def _verify_row(vault,row):
     if sha((_vault_path(vault,row['raw_ref'])).read_bytes())!=row['source_sha256']:fail('target original changed')
     return bundle
 
+def imported_source_boundary(vault, workflow_id, workflow):
+    """Read the latched source handoff used by independent short runs."""
+    scope = workflow['scope']
+    pause = workflow.get('pause_control', {})
+    if scope.get('pause_after') != ['exact_plan'] or pause.get('boundary') != 'exact_plan':
+        return None
+    if workflow.get('cancel_requested') or workflow['state'] in ('cancelled', 'failed'):
+        fail('origin source handoff was stopped')
+    startup = _load_json(_vault_path(vault, scope['bootstrap_ref']))
+    pointer = startup['test_bundle_import']
+    path = _vault_path(vault, pointer['ref'])
+    payload = path.read_bytes()
+    report = json.loads(payload)
+    latch = _load_json(_vault_path(vault, pause['report_ref']))
+    evidence = latch['evidence']
+    if (pointer['contract'] != CONTRACT or report['contract'] != CONTRACT
+            or pointer['sha256'] != sha(payload) or report['workflow_id'] != workflow_id
+            or report['vault_id'] != _load_json(vault / '_system/vault.json')['vault']['id']
+            or report['mineru_calls'] != 0 or report['semantic_results_imported'] is not False
+            or latch['contract'] != 'hermes-ingest-pause/v1' or evidence['workflow_id'] != workflow_id
+            or evidence['boundary'] != 'exact_plan' or evidence['source_outcomes'] != workflow['source_outcomes']
+            or latch['evidence_digest'] != pause['evidence_digest']
+            or latch['evidence_digest'] != 'sha256:' + fingerprint(evidence)):
+        fail('origin requires a verified imported source handoff')
+    return report
+
+
+def verify_import_board(board):
+    from contextlib import closing
+    from hermes_cli import kanban_db, kanban_db_connect
+
+    if not board:
+        fail('origin source handoff is missing its native board')
+    with closing(kanban_db_connect.connect(board=board)) as conn:
+        if any(task.claim_lock or task.status in ('ready', 'running', 'todo', 'triage')
+               for task in kanban_db.list_tasks(conn)):
+            fail('origin source handoff has runnable cards or live claims')
+
+
 def import_bundles(vault,request):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):fail('trusted test operator required')
     if request.get('test_mode')!=CONTRACT:fail('test mode required')
@@ -61,10 +100,21 @@ def import_bundles(vault,request):
         return {'ref':record_ref,'sha256':sha(path.read_bytes()),'contract':CONTRACT}
     if (vault/f'_system/ledgers/ingest-workflows/{wid}.json').exists():fail('cannot insert test materials into an existing workflow')
     ow=request['reuse_conversion']['workflow_id']
-    w=_load_json(_vault_path(origin,f'_system/ledgers/ingest-workflows/{ow}.json'))
-    if w['state'] not in ('completed','partial'):fail('origin workflow must be terminal')
+    origin_path=_vault_path(origin,f'_system/ledgers/ingest-workflows/{ow}.json')
+    origin_payload=origin_path.read_bytes()
+    w=json.loads(origin_payload)
+    handoff=None
+    if w['state'] not in ('completed','partial'):
+        handoff=imported_source_boundary(origin,ow,w)
+        if handoff is None:fail('origin workflow must be terminal or at a verified imported source handoff')
     from native_stop_inventory import workflow_processes
-    if workflow_processes(ow,w.get('kanban',{}).get('board_id')):fail('origin still has consumers')
+    board=w.get('kanban',{}).get('board_id')
+    if workflow_processes(ow,board):fail('origin still has consumers')
+    if handoff:
+        verify_import_board(board)
+        handoff_sources={row['bundle_ref']: row for row in handoff['sources']}
+        if set(handoff_sources)!={row['bundle_ref'] for row in request['reuse_conversion']['sources']}:
+            fail('origin handoff requires its exact conversion scope')
     rows=[];inputs={Path(p).name:sha(Path(p).read_bytes()) for p in request['sources']}
     supplied=request['reuse_conversion']['sources']
     if len(supplied)!=len(inputs) or {r['filename'] for r in supplied}!=set(inputs):fail('exact source coverage required')
@@ -75,6 +125,8 @@ def import_bundles(vault,request):
         if relative.parts[:3]!=('_system','reports','source-bundles') or '..' in relative.parts or relative.is_absolute():fail('origin must be a governed conversion Bundle')
         bundle=_vault_path(origin,q['bundle_ref'])
         if inventory(bundle)!=q['files']:fail('origin Bundle inventory/hash changed')
+        if handoff:
+            _verify_row(origin,handoff_sources[q['bundle_ref']])
         m=_load_json(bundle/'manifest.json');source=m.get('source',{})
         outcome=next((r for r in w['source_outcomes'] if r['path']=='10_Raw/'+q['filename']),None)
         if (not outcome or outcome['status']!='ready' or q['bundle_ref']+'/manifest.json' not in outcome['artifact_refs'] or
@@ -101,6 +153,10 @@ def import_bundles(vault,request):
             'imported_files':inventory(target),'conversion_sha256':fingerprint(conversion(m)),
             'origin_validation':quality,'import_validation':valid,'semantic_results_imported':False,'native_binding_pending':True}
         _verify_row(vault,row);rows.append(row)
+    if origin_path.read_bytes()!=origin_payload or workflow_processes(ow,board):
+        fail('origin workflow changed during conversion import')
+    if handoff:
+        verify_import_board(board)
     record={'contract':CONTRACT,'workflow_id':wid,'vault_id':request['vault_id'],'import_pin':pin,
         'sources':rows,'mineru_calls':0,'semantic_results_imported':False}
     _write_atomic(path,_json_bytes(record))

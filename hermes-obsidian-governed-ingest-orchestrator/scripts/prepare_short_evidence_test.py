@@ -112,7 +112,7 @@ def collect(rows, saved, overlay=None):
 
 def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_contract=None, fragment_repair=None,
             fragment_exclusions=None, mapping_contract=None, mapping_overlay=None, preserved_pages=(),
-            writing_contract=None, split_output=None):
+            writing_contract=None, split_output=None, page_namespace=None):
     from short_evidence_pass import MAP_CONTRACT, MAP_RECEIPT
 
     native_holds = native_holds or {}
@@ -149,12 +149,12 @@ def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_con
         reduced['mapping_recovery'] = {'recovered_items': sorted(recovered), 'affected_topics': sorted(affected),
                                        'preserved_pages': sorted(preserved_pages)}
         reduced['topics'] = {tid: topic for tid, topic in affected.items()
-                             if fingerprint([topic['identity']]) not in preserved_pages}
+                             if fragments_v2.page_identity([topic['identity']], page_namespace) not in preserved_pages}
     if page_contract == pages_v2.CONTRACT:
         if writing_contract:
             reduced['writing_contract'] = writing_contract
         return advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs,
-                                 fragment_repair, fragment_exclusions, split_output)
+                                 fragment_repair, fragment_exclusions, split_output, page_namespace)
     coordination = coordination_request(sources, reduced)
     coordinated = None
     resolutions = {}
@@ -216,7 +216,7 @@ def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_con
 
 
 def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs, fragment_repair=None,
-                      fragment_exclusions=None, split_output=None):
+                      fragment_exclusions=None, split_output=None, page_namespace=None):
     common = {'page_contract': pages_v2.CONTRACT, 'reduced': reduced, 'held_repairs': held_repairs}
     topics = reduced['topics']
     coordination = pages_v2.coordination_request(sources, reduced)
@@ -251,7 +251,7 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
     selected_split = split_output if isinstance(split_output, str) else None
     oversized = {} if selected_split else None
     planned, held, expected = fragments_v2.pack(sources, reduced, specs, limit, split_output=split_output is True,
-                                                oversized=oversized)
+                                                oversized=oversized, page_namespace=page_namespace)
     excluded = short_fragment_disposition.exclusions(planned, saved, fragment_exclusions)
     if excluded:
         common['fragment_exclusions'] = list(excluded.values())

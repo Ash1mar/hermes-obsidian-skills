@@ -22,6 +22,7 @@ from hermes_source_units.source_units import _load_json, _vault_path
 from hermes_source_units.validation import fingerprint
 from native_stop_inventory import workflow_processes
 from orchestration import configuration
+from post_mineru_test import imported_source_boundary
 from prepare_short_evidence_test import advance, inventory, save, seal
 from short_evidence_pass import load_sources, mapping_groups, request, require, seed_requests
 from short_page_contract import CONTRACT as FRAGMENT_CONTRACT, WRITE_CONTRACT, retry_slots, writing_retry
@@ -55,20 +56,7 @@ def source_boundary(vault, workflow_id, pins, registry_revision=None):
     path = _vault_path(vault, f'_system/ledgers/ingest-workflows/{workflow_id}.json')
     before = sha(path)
     origin = _load_json(path)
-    pause = origin.get('pause_control', {})
-    provisioned = origin['scope'].get('pause_after') == ['exact_plan'] and pause.get('boundary') == 'exact_plan'
-    if provisioned:
-        startup = _load_json(_vault_path(vault, origin['scope']['bootstrap_ref']))
-        imported = startup['test_bundle_import']
-        import_path = _vault_path(vault, imported['ref'])
-        report = _load_json(import_path)
-        latch = _load_json(_vault_path(vault, pause['report_ref']))
-        require(imported['contract'] == report['contract'] == 'post-mineru-test/v1'
-                and imported['sha256'] == sha(import_path) and report['workflow_id'] == workflow_id
-                and report['mineru_calls'] == 0 and report['semantic_results_imported'] is False
-                and latch['contract'] == 'hermes-ingest-pause/v1'
-                and latch['evidence_digest'] == pause['evidence_digest'] == 'sha256:' + fingerprint(latch['evidence']),
-                'independent short path requires a latched, imported source boundary')
+    provisioned = imported_source_boundary(vault, workflow_id, origin) if origin['state'] not in ('completed', 'partial') else None
     require((origin['state'] in ('completed', 'partial') or provisioned) and
             not workflow_processes(workflow_id, origin['kanban']['board_id']), 'origin must be settled and idle')
     sources = load_sources(vault, pins)
@@ -561,7 +549,7 @@ def resume_mapping(root, operation, sources, seeds, groups):
         require(all(task.status not in ('ready', 'running', 'todo', 'triage') and not task.claim_lock
                     for task in kb.list_tasks(conn)), 'native board has live claims')
     observed = _load_json(root / 'stage-02-map.json')
-    plan = advance(sources, seeds, groups, root / 'receipts', LIMIT)
+    plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, page_namespace=operation.get('page_namespace'))
     require(plan['stage'] == 'map' and all(row in observed['requests'] for row in plan['requests']),
             'recovery requires unchanged original mapping requests')
     results = []
@@ -681,7 +669,7 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
                    fragment_repair=fragment_repair, fragment_exclusions=fragment_exclusions,
                    mapping_contract=operation.get('mapping_contract'), mapping_overlay=overlay,
                    preserved_pages=preserved, native_holds=holds, writing_contract=operation.get('writing_contract'),
-                   split_output=split_output)
+                   split_output=split_output, page_namespace=operation.get('page_namespace'))
     current = reentry_node(plan, node)
     if mapping_recovery is not None:
         require(plan['stage'] == 'map' and {r['id'] for r in plan['requests']} == set(mapping_recovery['requests']),
@@ -744,7 +732,8 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
                        fragment_exclusions=fragment_exclusions, mapping_contract=operation.get('mapping_contract'),
                        mapping_overlay=mapping_overlay, preserved_pages=preserved_pages,
                        writing_contract=operation.get('writing_contract'),
-                       split_output=split_output if split_output is not None else operation.get('split_output'))
+                       split_output=split_output if split_output is not None else operation.get('split_output'),
+                       page_namespace=operation.get('page_namespace'))
         planning_seconds = time.monotonic() - planning_started
         rows = plan.get('requests', [])
         consumed_unknown = [r['id'] for r in rows if r['id'] in previous and not previous[r['id']]]
@@ -790,7 +779,7 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
 
 def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=None, entry=None, dry_run=False,
           page_contract=None, fragment_repair=None, fragment_exclusions=None, mapping_recovery=None,
-          registry_revision=None, split_output=None):
+          registry_revision=None, split_output=None, separate_page_identities=False):
     from short_evidence_pass import MAP_CONTRACT
 
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
@@ -850,6 +839,8 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
             operation['mapping_contract'] = MAP_CONTRACT
             operation['writing_contract'] = WRITE_CONTRACT
             operation['split_output'] = True
+            if separate_page_identities:
+                operation['page_namespace'] = operation_id
             groups = mapping_groups(sources, MAP_CONTRACT)
             save(root / 'operation.json', operation)
             metrics = []
