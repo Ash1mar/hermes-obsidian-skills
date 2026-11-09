@@ -6,6 +6,8 @@ The system-level architecture, data authority, interface, compatibility, and acc
 
 See [`DOCUMENTATION.md`](DOCUMENTATION.md) for a file-by-file documentation map and [`charts.md`](charts.md) for editable Mermaid diagrams of the complete bootstrap, ingest, lint, query, retrieval, and branch-specific deployment flow.
 
+The short path retains the five business stages and the Pass/slice terminology. See [`docs/SHORT_PATH_STAGE_MODEL.md`](docs/SHORT_PATH_STAGE_MODEL.md) for the mapping to evidence mapping, coordination, writing, formal Build, and release/Provider sync, including recovery-interface and historical-contract boundaries.
+
 Maintainers should follow [`BRANCH_MAINTENANCE.md`](BRANCH_MAINTENANCE.md): implement shared work on
 `main`, then merge `main` into `intranet` while preserving checked-in deployment configuration.
 Native ingest evidence may come from isolated acceptance or an explicitly authorized
