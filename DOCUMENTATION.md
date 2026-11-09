@@ -32,6 +32,7 @@
 | [`docs/architecture/0006-release-driven-retrieval-projection.md`](docs/architecture/0006-release-driven-retrieval-projection.md) | P5 Release 驱动的 SourceUnit/knowledge-page 检索投影、真实 tokenizer、索引代次、Query 精确回读和部署边界。 |
 | [`docs/SOURCE_UNITS_EVOLUTION_PLAN.md`](docs/SOURCE_UNITS_EVOLUTION_PLAN.md) | 从 P0 契约到 P7 正式重建的当前阶段计划、子任务与验收边界。 |
 | [`docs/SOURCE_UNIT_DESIGN_AND_ROLE.md`](docs/SOURCE_UNIT_DESIGN_AND_ROLE.md) | SourceUnit 的设计动机、旧 ledger/source map 与 WeKnora chunk 思路的吸收、从 Bootstrap/原件到 UnitSet 的产生过程、知识构建和检索消费边界。 |
+| [`docs/SHORT_PATH_STAGE_MODEL.md`](docs/SHORT_PATH_STAGE_MODEL.md) | 短路径五阶段及 Pass、slice、写作片段的术语约定；内部入口对应、模型与程序职责、历史合同兼容和 WeKnora MapReduce 的关系。 |
 | [`docs/WIKI_KNOWLEDGE_CONSTRUCTION_GUIDE.md`](docs/WIKI_KNOWLEDGE_CONSTRUCTION_GUIDE.md) | 现行来源单元到知识页的操作与人工判断指南。 |
 | [`docs/HERMES_WIKI_FROM_FILES_TO_KNOWLEDGE.md`](docs/HERMES_WIKI_FROM_FILES_TO_KNOWLEDGE.md) | 当前从文件到来源单元、知识 release 和检索的解释性说明。 |
 | [`charts.md`](charts.md) | Mermaid 端到端流程图：`main`/`intranet` 环境差异、建库、摄取、Lint、单遍 Query Session、Provider 与 Vault 的读写关系。 |
