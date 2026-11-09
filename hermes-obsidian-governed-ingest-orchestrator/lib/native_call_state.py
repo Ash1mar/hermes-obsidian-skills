@@ -58,7 +58,11 @@ def record(outcome,prepared,session,*,request_sha256=None,output_format=None):
     else:
         context=prepared.get('audit_context')
         if not context:raise ContractError('NATIVE_COMPLETION_UNKNOWN','$','fixed call lacks durable native context')
-        binding=context['binding'];root=Path(context['vault'])/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}"
+        binding=context['binding']
+        if context.get('short_evidence_root'):
+            root=Path(context['short_evidence_root'])
+        else:
+            root=Path(context['vault'])/f"_system/ledgers/ingest-workflows/{binding['workflow_id']}"
         journal={'phase':context['phase'],'schema_sha256':fingerprint(prepared['identity']['output_schema'])}
         attempt={'attempt_id':None,'task_id':binding['task_id'],'run_id':os.environ.get('HERMES_KANBAN_RUN_ID')}
     report={**copy.deepcopy(outcome),'session_id':session,'attempt_id':attempt['attempt_id'],

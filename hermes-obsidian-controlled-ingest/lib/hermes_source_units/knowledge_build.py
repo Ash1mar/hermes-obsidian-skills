@@ -1944,6 +1944,10 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         return result, by_task
 
     def _decision_task_outputs(self, run: Mapping[str, Any], *, candidates=None) -> dict[str, set[str]]:
+        if run.get('short_evidence'):
+            from .short_build import evidence
+            evidence(self, run)
+            return {}
         task_ids = [item["task_id"] for item in run["tasks"]]
         if candidates is None:
             candidates, _ = self._pass_index(task_ids)
@@ -2512,6 +2516,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         from .finalize_revision_state import effective_run,content_path
         run=effective_run(self,run)
         partial_request = request.get('partial_manifest')
+        if partial_request and run.get('short_evidence'):
+            _fail('INVALID_SCOPE', 'short Build commits exact candidates; release selects the qualified subset')
         reviews = list(request["reviews"])
         by_page = {item["page_id"]: item for item in reviews}
         all_page_ids = {item['page_id'] for item in run['page_revisions']}
@@ -2688,6 +2694,10 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             if _sha(draft.read_bytes()) != page["authored_sha256"]:
                 _fail("SOURCE_CHANGED", "build page draft changed")
             if run["state"] == "completed":
+                if run.get('short_evidence'):
+                    from .build_acceptance import validate_acceptance
+                    review = next(r for r in run['reviews'] if r['page_id'] == page['page_id'])
+                    validate_acceptance(self, run, page, review)
                 revision_path = _vault_path(
                     self.vault, f"{BUILD_ROOT}/page-revisions/{page['page_id']}/{page['revision_id']}.json")
                 if _load_json(revision_path) != page:

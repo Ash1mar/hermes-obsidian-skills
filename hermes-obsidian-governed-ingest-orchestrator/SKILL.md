@@ -7,6 +7,10 @@ description: Start, resume and inspect a persistent Vault-authoritative governed
 
 For a short request that creates a new Vault and runs it through Final Acceptance, read `references/vault-startup.md` and use `python3 "<skill-dir>/scripts/start_vault_workflow.py"`. This entry associates Bootstrap and workflow evidence and supports continuous execution, workflow-local capacity and small-batch Canary. Existing workflows keep their saved contracts and pauses.
 
+For the isolated offline topic and evidence mapping experiment, read
+`references/short-evidence-test.md` and use `python3 "<skill-dir>/scripts/prepare_short_evidence_test.py"`
+with exact source pins and a report path outside the Vault.
+
 Within one reconciliation, reuse pure completion proofs only against current
 slice/batch/reduction/recovery bytes and membership; changed dependencies force
 fresh proof. Terminal native projections survive refresh only when their full
@@ -227,8 +231,10 @@ For read-only metrics use `python3 "<skill-dir>/scripts/report_workflow_metrics.
 
 For an explicitly authorized independent downstream test reusing existing MinerU
 conversion material, read [post-mineru-tests.md](references/post-mineru-tests.md)
-and use `python3 "<skill-dir>/scripts/start_post_mineru_test.py"`. This is a separate
-test entry; ordinary startup does not import another Vault's Bundles.
+and use `python3 "<skill-dir>/scripts/start_post_mineru_short_test.py"` by default.
+The original `start_post_mineru_test.py` entry remains available for an explicit
+legacy comparison and for the short controller's native source handoff.
+Ordinary startup does not import another Vault's Bundles.
 
 The **default test rerun** reuses the same workflow. Read
 [workflow-tests.md](references/workflow-tests.md) and use

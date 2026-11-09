@@ -386,6 +386,12 @@ def validate_record(kind: str, record: Mapping[str, Any]) -> None:
         if record["revision_id"] != expected:
             _fail("IDENTITY_MISMATCH", "$.revision_id", "page revision identity does not match content and support")
     if kind == "build_run":
+        if "short_evidence" in record:
+            if (record["tasks"] or record.get("coverage_scope") or record.get("page_review_policy")
+                    or not record["decisions"] or any(d["candidate_refs"] for d in record["decisions"])):
+                _fail("INVALID_SCOPE", "$", "short Build uses only native short evidence")
+        elif not record["tasks"] or any(not d["candidate_refs"] for d in record["decisions"]):
+            _fail("INVALID_SCHEMA", "$", "ordinary Build requires task and candidate evidence")
         _unique([item["task_id"] for item in record["tasks"]], "$.tasks")
         _unique([item["subject_id"] for item in record["decisions"]], "$.decisions")
         _unique([item["page_id"] for item in record["page_revisions"]], "$.page_revisions")

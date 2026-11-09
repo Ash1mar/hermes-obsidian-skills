@@ -10,7 +10,7 @@ import json
 import os
 import re
 import sys
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from pathlib import Path
 
 from governance_repository import GovernanceError, atomic_write_json, load_json, utc_now, safe_control_path
@@ -38,6 +38,31 @@ def operator_guard(repo,request):
         from hermes_source_units.recovery_control import check
         check(repo.vault,wid)
         w=service.status(wid);service.assert_execution_ready(w)
+        if request.get('source_boundary') == 'post-mineru-short/v1':
+            from native_stop_inventory import workflow_processes
+            pause = w.get('pause_control', {})
+            startup = load_json(_vault_path(repo.vault, w['scope']['bootstrap_ref']))
+            pointer = startup['test_bundle_import']
+            imported = _vault_path(repo.vault, pointer['ref'])
+            report = load_json(imported)
+            ready = {o['resource_id'] for o in w['source_outcomes'] if o['status'] == 'ready'}
+            if (w['actor'] != request['actor'] or w['revision'] != request.get('expected_workflow_revision')
+                    or w['scope'].get('pause_after') != ['exact_plan'] or pause.get('boundary') != 'exact_plan'
+                    or pause.get('evidence_digest') != request.get('pause_digest') or w.get('release_id')
+                    or startup['workflow_id'] != wid or report['workflow_id'] != wid
+                    or pointer['contract'] != 'post-mineru-test/v1' or report['contract'] != 'post-mineru-test/v1'
+                    or hashlib.sha256(imported.read_bytes()).hexdigest() != pointer['sha256']
+                    or report['mineru_calls'] != 0 or report['semantic_results_imported'] is not False
+                    or set(request['resource_ids']) != ready
+                    or any(path != service._path(wid) for path in (repo.vault / WORKFLOW_ROOT).glob('*.json'))
+                    or workflow_processes(wid, w['kanban']['board_id'])):
+                raise GovernanceError('Requires the exact drained independent short-path source boundary')
+            from hermes_cli import kanban_db, kanban_db_connect
+            with closing(kanban_db_connect.connect(board=w['kanban']['board_id'])) as conn:
+                if any(t.claim_lock or t.status == 'running' for t in kanban_db.list_tasks(conn)):
+                    raise GovernanceError('Independent source boundary still has native claims')
+            yield None
+            return
         if (w['actor']!=request['actor'] or w['revision']!=request.get('expected_workflow_revision')
                 or not w['cancel_requested'] or w['state']!='cancelled' or w['current_stage']!='release_planning'
                 or service.pending_pause(w) or w.get('release_id')):raise GovernanceError('Requires exact drained stopped unbound release workflow')

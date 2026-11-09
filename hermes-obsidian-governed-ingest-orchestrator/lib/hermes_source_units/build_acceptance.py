@@ -161,6 +161,11 @@ def assess(service, run, page, *, selected=None, parent_content=None, committed_
     QA is retained by the page contract, not converted into another model call.
     Missing/stale evidence is an error, never a semantic-review trigger.
     """
+    if run.get('short_evidence'):
+        from .short_build import POLICY as SHORT, assess as assess_short
+        if policy not in (None, SHORT):
+            _fail('native short Build requires its own acceptance policy')
+        return assess_short(service, run, page)
     from .scope_equivalence import POLICY as V2,prove
     from .generation_policy import POLICY as GENERATION_ONLY,validate_run
     policy=policy or (GENERATION_ONLY if run.get('page_review_policy') else POLICY)
@@ -235,6 +240,12 @@ def record(assessment, *, review_audit_ref=None,review_receipt=None):
 def validate_acceptance(service, run, page, review, *, selected=None):
     """Recompute risk/evidence under the ordinary Finalize lock before writes."""
     acceptance = review.get('acceptance')
+    if run.get('short_evidence'):
+        if acceptance != record(assess(service, run, page)):
+            _fail('native short Build acceptance or evidence changed')
+        return
+    if acceptance and acceptance.get('short_evidence'):
+        _fail('ordinary Build cannot use short evidence')
     if acceptance is None:
         if run.get('page_review_policy'):_fail('generation-only run requires an explicit unreviewed program acceptance record')
         return  # Legacy/manual reviews keep their original explicit review contract.
