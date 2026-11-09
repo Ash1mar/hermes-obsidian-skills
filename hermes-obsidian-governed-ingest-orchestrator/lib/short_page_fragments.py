@@ -72,8 +72,6 @@ def make_fragment(sources, reduced, page, position, topics, primary):
             if (duty['express'] or duty['inspect'] or item in anchors)
             and reduced['dispositions'][item]['status'] != 'linked'}
     hold.update(item for impact in impacts if impact['writing'] == 'hold' for item in impact['items'])
-    if hold:
-        hold = sorted(hold)
     view = {
         'id': page['id'], 'name': page['name'], 'scope': page['scope'],
         'reader_question': page['reader_question'], 'fragment_position': position,
@@ -82,7 +80,7 @@ def make_fragment(sources, reduced, page, position, topics, primary):
         'materials': material, 'obligations': duties,
     }
     view['fragment_id'] = fingerprint([CONTRACT, view])
-    return {'view': view, 'images': images, 'hold': hold}
+    return {'view': view, 'images': images, 'hold': sorted(hold)}
 
 
 def selected_topics(reduced, keys):

@@ -1,4 +1,5 @@
 """Regression checks for fragment boundaries and citation/QA obligations."""
+import json
 import sys
 from pathlib import Path
 
@@ -48,6 +49,18 @@ def test_primary_context_asset_keeps_whole_inspection_and_expression():
     duty = obligations(sources, items, topic, {'S1-A1'})['S1-A1']
     assert duty['mapped_roles'] == ['context']
     assert duty['inspect'] and duty['express']
+
+
+def test_oversized_whole_asset_without_unresolved_mapping_is_serializable():
+    items = {'S1-A1': item('asset', 'a' * 45_000, 'Records')}
+    sources = {'S1': source(items)}
+    reduced = mapped(items, {'T1': [link('S1-A1', 'context')]})
+    requests, held, _ = pack(sources, reduced, [page(['T1'])], 40_000)
+    assert not requests
+    entry, = held
+    assert entry['reason'] == 'atomic_evidence_over_budget'
+    assert entry['unresolved'] == []
+    assert json.loads(json.dumps(held)) == held
 
 
 def test_same_topic_splits_without_cutting_assets_or_shared_conditions():
