@@ -31,13 +31,11 @@ def output_path(short_id):
 
 def projection(service, row):
     subject, page_id = identity(service, row['short_id'], row['name'])
-    qualified = row['qa_status'] == 'usable' and row['publication_authorized']
     page = {'contract': 'hermes-knowledge-page-revision/v1', 'page_id': page_id,
             'subject_id': subject['subject_id'], 'parent_revision_id': None, 'action': 'create',
             'path': output_path(row['short_id']), 'authored_sha256': row['authored_sha256'],
             'support_refs': row['support_refs'], 'qa_status': row['qa_status'],
-            'business_status': 'approved' if qualified else 'unassessed',
-            'visibility': 'published' if qualified else 'draft'}
+            'business_status': 'unassessed', 'visibility': 'draft'}
     page['revision_id'] = fingerprint({k: v for k, v in page.items() if k != 'contract'})
     decision = {k: page[k] for k in ('subject_id', 'page_id', 'action', 'path', 'support_refs', 'revision_id')}
     return {**page, 'state': 'draft', 'review': None}, {**decision, 'candidate_refs': [], 'identity': subject}
@@ -87,12 +85,33 @@ def assess(service, run, page):
             'short Build page bytes changed')
     resources = {r['unit_ref']['resource_id'] for r in page['support_refs']}
     return {'policy': POLICY, 'risk_reasons': ['cross_source_merge'] if len(resources) > 1 else [],
+            'short_evidence': run['short_evidence'],
             'evidence_sha256': fingerprint({'record': run['short_evidence'], 'page_id': page['page_id'],
                                            'revision_id': page['revision_id'], 'origin': record['scope']['origin']})}
 
 
+def publication_approved(service, page, acceptance):
+    """Apply the pinned internal retrieval policy without changing page QA."""
+    from .page_governance import POLICY as RELEASE_POLICY
+    from .build_acceptance import record
+
+    pointer = acceptance.get('short_evidence') or {}
+    path = _vault_path(service.vault, pointer.get('ref', ''))
+    run = _load_json(path.with_name('manifest.json'))
+    proof = evidence(service.build, run)
+    require(run['state'] == 'completed' and run['short_evidence'] == pointer
+            and page in run['page_revisions'] and acceptance == record(assess(service.build, run, page)),
+            'short publication must bind the exact committed Build acceptance')
+    row = next(r for r in proof['scope']['pages'] if projection(service.build, r)[0]['page_id'] == page['page_id'])
+    authorization = proof['scope']['authorization']
+    return (row['publication_authorized'] and page['qa_status'] == 'usable'
+            and authorization['publish'] is True and authorization['policy'] == RELEASE_POLICY)
+
+
 def admit(service, scope, bodies, root, job):
     """Stage drafts under the ordinary Build lock after native proof replay."""
+    from .page_governance import POLICY as RELEASE_POLICY
+
     operation = _load_json(root / 'operation.json')
     admission = native_authority(root, job, operation)
     require(Path(operation['vault']) == service.vault and scope['origin'] == operation['origin']
@@ -104,7 +123,8 @@ def admit(service, scope, bodies, root, job):
             and scope['pages']
             and {r['short_id'] for r in scope['pages']} <= set(scope['authorization']['pages'])
             and set(scope['authorization']['pages']) <= {r['short_id'] for r in [*scope['pages'], *scope['excluded']]}
-            and scope['actor'] == scope['authorization']['actor'],
+            and scope['actor'] == scope['authorization']['actor']
+            and scope['authorization']['policy'] == RELEASE_POLICY,
             'short Build admission differs from the operator selection')
     for row in scope['pages']:
         require(row['native_fragments'] and row['support_refs'] and

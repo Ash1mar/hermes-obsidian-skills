@@ -244,6 +244,8 @@ def validate_acceptance(service, run, page, review, *, selected=None):
         if acceptance != record(assess(service, run, page)):
             _fail('native short Build acceptance or evidence changed')
         return
+    if acceptance and acceptance.get('short_evidence'):
+        _fail('ordinary Build cannot use short evidence')
     if acceptance is None:
         if run.get('page_review_policy'):_fail('generation-only run requires an explicit unreviewed program acceptance record')
         return  # Legacy/manual reviews keep their original explicit review contract.

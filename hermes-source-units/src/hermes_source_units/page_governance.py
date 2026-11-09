@@ -228,6 +228,10 @@ def record(vault, pointer):
 
 def effective(service, page, pointer=None):
     if pointer is None:
+        from .short_build import POLICY as SHORT, publication_approved
+        acceptance = (page.get('review') or {}).get('acceptance') or {}
+        if acceptance.get('policy') == SHORT and publication_approved(service, page, acceptance):
+            return {'qa_status': page['qa_status'], 'business_status': 'approved', 'visibility': 'published'}
         return {k:page[k] for k in ('qa_status','business_status','visibility')}
     value = record(service.vault,pointer)
     if value['retrieval_scope']!=service.source.vault_manifest['vault']['id']:

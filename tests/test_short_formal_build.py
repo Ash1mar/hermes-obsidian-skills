@@ -8,6 +8,7 @@ from test_p4_vault_finalize import apply, request
 from hermes_source_units import ContractError, FileVaultFinalizeService
 from hermes_source_units import short_build
 from hermes_source_units.build_acceptance import assess, record
+from hermes_source_units.page_governance import POLICY
 from hermes_source_units.source_units import _json_bytes, _sha
 from hermes_source_units.validation import fingerprint
 
@@ -21,7 +22,7 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
     (root / 'operation.json').write_bytes(_json_bytes(operation))
     job = root / 'job.json'
     ids = [fingerprint(n) for n in ('one', 'two', 'isolated')]
-    grant = {'actor': 'agent', 'pages': ids[:2], 'publish': True}
+    grant = {'actor': 'agent', 'pages': ids[:2], 'publish': True, 'policy': POLICY}
     job.write_bytes(_json_bytes({'request': {'phase': 'short-formal-build', 'view': {'authorization': grant}}}))
     monkeypatch.setattr(short_build, 'native_authority', lambda *_: {'task_id': 'fixture', 'run_id': 1})
     bodies = {key: f'# Page {i}\n\nEvidence.\n'.encode() for i, key in enumerate(ids[:2])}
