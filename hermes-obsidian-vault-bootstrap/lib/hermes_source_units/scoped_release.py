@@ -88,7 +88,6 @@ def build_plan(service,request,state,runs,scopes):
                       for pid,row in short_excluded.items() if pid not in known)
     known.update(short_excluded)
     for row in scopes.values():
-        from .partial_finalize import pinned
         snapshot=pinned(service.vault,row['scope']['snapshot'])
         for view in snapshot['views']:
             p=snapshot['backend']['pages'][view['page']]['page']
@@ -160,7 +159,6 @@ def validate_manifest(service,plan,release,*,scopes=None):
     if any(p not in release['delivery']['inherited_coverage_gaps'] for p in short_proofs):
         fail('release omitted short Build coverage evidence','SOURCE_CHANGED')
     if release['delivery'].get('base_release'):
-        from .partial_finalize import pinned
         previous=pinned(service.vault,release['delivery']['base_release'])
         prior={(p['page_id'],p['current_revision_id']) for p in previous['subjects']}
         allowed.update(p['page_id'] for p in release['subjects'] if (p['page_id'],p['current_revision_id']) in prior)
