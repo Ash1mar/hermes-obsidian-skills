@@ -9,6 +9,7 @@ sys.path[:0] = [str(SKILL / 'lib'), str(SKILL / 'scripts')]
 
 from short_page_contract import check_coordination, check_fragment, obligations, qa_impacts
 from short_page_fragments import build, pack
+from short_fragment_repair import equivalent_coverage, form_navigation
 
 
 def item(kind, text, section, assets=()):
@@ -141,3 +142,31 @@ def test_known_qa_observation_does_not_fill_evidence_or_clear_review():
     response['sections'][0].update(content='Coverage omitted.', expressed=[])
     with pytest.raises(ValueError, match='required_expressions_missing=S1-B1'):
         check_fragment(row, 'p1', response)
+
+
+def test_appendix_form_wrapper_keeps_normative_text():
+    block = item('block', '## 附录 1: ABC-END-006-R01A 设计校审记录卡\n\n'
+                 '**设计校审记录卡 编号： 共2页 第1页**\n\n[表](tables/form.md)', 'one', ['S1-A2'])
+    assert form_navigation(block, {'tables/form.md'})
+    assert not form_navigation(block, {'tables/different.md'})
+    assert not form_navigation({**block, 'text': block['text'] + '\n应核对密级。'}, {'tables/form.md'})
+
+
+def test_exact_peer_coverage_requires_both_assets_in_same_section():
+    items = {'S1-A1': item('asset', 'Revision', 'one'), 'S1-A2': item('asset', 'Approval', 'two')}
+    data = mapped(items, {'T1': [link('S1-A1', 'asset', 'S1-A2'), link('S1-A2', 'asset')]})
+    rows, _, expected = pack({'S1': source(items)}, data, [page(['T1'])], 40_000)
+    row, = rows
+    donor = row['view']['pages']['p1']
+    target = {**donor, 'fragment_id': 'prior-held'}
+    answer = {'sections': [{'heading': 'Revision and approval', 'content': 'Test [S1-A1] [S1-A2]',
+                            'expressed': ['S1-A1', 'S1-A2']}],
+              'context': [], 'unresolved': [], 'inspected_assets': ['S1-A1', 'S1-A2']}
+    receipt = check_fragment(row, 'p1', answer)
+    reuse = equivalent_coverage(target, donor, receipt)
+    assert reuse['expressed'] == ['S1-A1', 'S1-A2']
+    expected[donor['id']]['fragments'].insert(0, target['fragment_id'])
+    assert build(expected, [receipt], [reuse])[donor['id']]['content'].count('Test [S1-A1]') == 1
+    answer['sections'] = [{'heading': ref, 'content': f'Test [{ref}]', 'expressed': [ref]}
+                          for ref in ('S1-A1', 'S1-A2')]
+    assert equivalent_coverage(target, donor, check_fragment(row, 'p1', answer)) is None

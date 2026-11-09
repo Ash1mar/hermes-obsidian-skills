@@ -73,3 +73,10 @@ python3 "<skill-dir>/scripts/run_short_evidence_test.py" stop \
 包装块可以由其完整表格承担引用。引用诊断包含具体编号，原始响应保持可复核。
 来源 QA 原样留存，另按信息性、影响待定位和已定位材料故障记录写作与发布影响。
 待定位 QA 保留发布审阅项，显式局部故障阻断其依赖片段。实验发布资格保持关闭。
+
+停止后，`reenter --from-node writing --fragment-repair <JSON>` 可选择原写页计划中的
+失败片段。清单固定 `short-fragment-repair/v1`、`expected_pages_sha256` 和
+`changes`。每项固定片段 ID、旧回执哈希或空值、处置及同页覆盖候选。
+`scope` 按原片段主题生成单槽职责及资产绑定，最多新调用一次。`equivalent` 先验证
+同页已验收正文的原文身份、关系、引用、整表查验及 QA，覆盖等价则只记录覆盖证明。
+`isolate` 保留原已消耗请求及实质缺口。其他片段沿用原回执，覆盖证明不重复组装正文。

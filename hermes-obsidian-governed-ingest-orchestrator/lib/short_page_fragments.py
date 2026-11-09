@@ -183,12 +183,22 @@ def pack(sources, reduced, specs, limit):
     return planned, held, expected
 
 
-def build(expected, checks):
+def build(expected, checks, covered=()):
     by_id = {row['fragment_id']: row for row in checks}
     require(len(by_id) == len(checks), 'duplicate fragment receipt')
+    reused = {row['fragment_id']: row for row in covered}
+    require(len(reused) == len(covered) and not reused.keys() & by_id.keys(), 'conflicting fragment coverage receipts')
     complete = {}
     for page_id, page in expected.items():
-        rows = [by_id.get(ref) for ref in page['fragments']]
+        coverage = [reused[ref] for ref in page['fragments'] if ref in reused]
+        for row in coverage:
+            donor = by_id.get(row['donor_fragment_id'])
+            require(row['page_id'] == page_id and donor is not None and donor['page_id'] == page_id
+                    and donor['fragment_id'] in page['fragments']
+                    and donor['receipt_sha256'] == row['donor_receipt_sha256']
+                    and fingerprint({k: v for k, v in row.items() if k != 'coverage_sha256'}) == row['coverage_sha256'],
+                    'invalid same-page coverage receipt')
+        rows = [by_id.get(ref) for ref in page['fragments'] if ref not in reused]
         if not rows or any(row is None or row['state'] != 'structurally_valid' for row in rows):
             continue
         sections = {}
@@ -204,4 +214,6 @@ def build(expected, checks):
             'qa_publication_review': sorted({qid for row in rows for qid in row['qa_publication_review']}),
             'publication_eligible': False,
         }
+        if coverage:
+            complete[page_id]['coverage_receipts'] = [row['coverage_sha256'] for row in coverage]
     return complete

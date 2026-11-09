@@ -214,13 +214,16 @@ def coordination_issues(answer, topics):
     return issues
 
 
-def body_request(group, limit):
+def body_request(group, limit, *, repair_contract=None):
     require(1 <= len(group) <= 2 and (len(group) == 1 or not any(p['images'] for p in group)),
             'fragment request requires independently transportable slots')
     slots = {f'p{i}': p['view'] for i, p in enumerate(group, 1)}
     estimate = sum(900 + sum(len(m['text'] or '') for m in p['materials'].values()) // 2
                    + 20 * len(p['materials']) for p in slots.values())
-    return request('short-write', {'page_contract': CONTRACT, 'pages': slots}, dict.fromkeys(slots, RESULT),
+    view = {'page_contract': CONTRACT, 'pages': slots}
+    if repair_contract:
+        view['fragment_repair'] = repair_contract
+    return request('short-write', view, dict.fromkeys(slots, RESULT),
                    estimate, limit, [image for p in group for image in p['images']], slots=True)
 
 

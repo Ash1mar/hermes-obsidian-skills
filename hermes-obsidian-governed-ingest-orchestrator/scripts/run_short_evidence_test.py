@@ -123,7 +123,8 @@ def run_job(root, job, own):
     row = original
     slots = row.get('missing_slots', ['r'])
     attempts = []
-    for ordinal in (1, 2):
+    ordinals = (1,) if original['view'].get('fragment_repair') else (1, 2)
+    for ordinal in ordinals:
         if not row['budget']['fits']:
             break
         grant = own()
@@ -164,7 +165,7 @@ def run_job(root, job, own):
         if not captured['held']:
             return {'state': 'settled', 'attempts': attempts}
         slots = list(captured['held'])
-        if ordinal == 1:
+        if ordinal < ordinals[-1]:
             row = build_call(original, diagnostic='; '.join(captured['held'].values()), slots=slots)
     return {'state': 'held', 'attempts': attempts, 'unsettled_slots': slots}
 
@@ -513,7 +514,7 @@ def attempt_index(root):
     return previous
 
 
-def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, page_contract):
+def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, page_contract, fragment_repair=None):
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', entry), 'valid stable reentry ID required')
     kb, kc, _ = runtime()
     board = operation['board']
@@ -523,9 +524,13 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
                     for task in kb.list_tasks(conn)), 'node reentry requires a stopped native board')
     directory = root / 'reentries' / entry
     require(not directory.exists(), 'reentry ID already used')
-    plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, page_contract=page_contract)
+    plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, page_contract=page_contract,
+                   fragment_repair=fragment_repair)
     current = reentry_node(plan, node)
     previous = attempt_index(root)
+    if fragment_repair is not None:
+        original = plan.get('fragment_repair', {}).get('original_requests', [])
+        require(original and set(original) <= previous.keys(), 'repair requires original reserved writing requests')
     pending = plan.get('requests', [])
     control = {
         'entry': entry, 'from_node': node, 'effective_node': current, 'stage': plan['stage'],
@@ -536,17 +541,21 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
         'prior_reservations': {row['id']: previous[row['id']] for row in pending if row['id'] in previous},
         'started_at': time.time(),
     }
+    if fragment_repair is not None:
+        control['fragment_repair'] = fragment_repair
+        control['fragment_repair_preview'] = plan['fragment_repair']
     if dry_run:
         return {**control, 'model_calls': 0}
     save(directory / 'control.json', control)
     paths = [*root.glob('metrics-*.json'), *root.glob('reentries/*/metrics-*.json')]
     metrics = sorted((_load_json(path) for path in paths), key=lambda row: row['started_at'])
     return run_stages(root, operation, sources, seeds, groups, metrics, entry=entry,
-                      directory=directory, previous=previous, page_contract=page_contract)
+                      directory=directory, previous=previous, page_contract=page_contract,
+                      fragment_repair=fragment_repair)
 
 
 def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=False,
-               entry=None, directory=None, previous=None, page_contract=None):
+               entry=None, directory=None, previous=None, page_contract=None, fragment_repair=None):
     kb, kc, _ = runtime()
     output = directory or root
     board = operation['board']
@@ -556,7 +565,7 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
         live(root, operation, resumed=resumed, entry=entry)
         planning_started = time.monotonic()
         plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, native_holds=holds,
-                       page_contract=page_contract)
+                       page_contract=page_contract, fragment_repair=fragment_repair)
         planning_seconds = time.monotonic() - planning_started
         rows = plan.get('requests', [])
         consumed_unknown = [r['id'] for r in rows if r['id'] in previous and not previous[r['id']]]
@@ -601,7 +610,7 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
 
 
 def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=None, entry=None, dry_run=False,
-          page_contract=None):
+          page_contract=None, fragment_repair=None):
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
             'trusted operator must start the experiment')
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', operation_id), 'invalid experiment operation ID')
@@ -627,13 +636,14 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
                 controls = [_load_json(path) for path in (root / 'reentries').glob('*/control.json')]
                 versions = [row for row in controls
                             if row['operation_sha256'] == operation_sha and row.get('page_contract')]
-                active_contract = (max(versions, key=lambda row: row['started_at'])['page_contract']
-                                   if versions else operation.get('page_contract'))
+                active = max(versions, key=lambda row: row['started_at']) if versions else operation
+                active_contract = active.get('page_contract')
                 selected = page_contract or active_contract
                 if page_contract and page_contract != active_contract:
                     require(node == 'coordination', 'new page contract requires a coordination reentry')
                 return reenter(root, operation, sources, seeds, groups, node, entry,
-                               dry_run=dry_run, page_contract=selected)
+                               dry_run=dry_run, page_contract=selected,
+                               fragment_repair=fragment_repair or active.get('fragment_repair'))
             metrics = resume_mapping(root, operation, sources, seeds, groups)
         else:
             require(not (root / 'operation.json').exists(), 'operation already exists; inspect its durable evidence')
@@ -658,6 +668,7 @@ def main():
     parser.add_argument('--from-node', choices=tuple(NODE_ORDER))
     parser.add_argument('--reentry-id')
     parser.add_argument('--page-contract', choices=(FRAGMENT_CONTRACT,))
+    parser.add_argument('--fragment-repair', type=Path)
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     root = args.output.resolve()
@@ -678,12 +689,15 @@ def main():
     else:
         if args.action == 'reenter' and not (args.from_node and args.reentry_id):
             parser.error('reenter requires --from-node and --reentry-id')
+        if args.fragment_repair and (args.action != 'reenter' or args.from_node != 'writing'):
+            parser.error('fragment repair requires writing reentry')
         if args.action != 'reenter' and (args.from_node or args.reentry_id or args.dry_run):
             parser.error('node and dry-run arguments require reenter')
         result = start(root, args.vault.resolve(strict=True), args.origin_workflow, _load_json(args.sources),
                        args.operation_id, resumed=args.action == 'resume-mapping',
                        node=args.from_node, entry=args.reentry_id, dry_run=args.dry_run,
-                       page_contract=args.page_contract)
+                       page_contract=args.page_contract,
+                       fragment_repair=_load_json(args.fragment_repair) if args.fragment_repair else None)
         print(json.dumps(result, ensure_ascii=False))
 
 
