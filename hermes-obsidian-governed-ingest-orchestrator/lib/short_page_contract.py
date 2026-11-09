@@ -235,6 +235,7 @@ def check_fragment(row, slot, answer):
     duties = view['obligations']
     known = set(duties)
     state, diagnostic = 'structurally_valid', None
+    qa_observations = []
     if 'blocked' in answer:
         block = answer['blocked']
         require(set(block['refs']) <= known and block['detail'].strip() and block['effect'].strip(),
@@ -264,6 +265,17 @@ def check_fragment(row, slot, answer):
         require(len(unresolved) == len(answer['unresolved']) and all(x['reason'].strip() for x in answer['unresolved']),
                 'each unresolved item needs one reason')
         require(not (expressed & context or expressed & unresolved or context & unresolved), 'overlapping evidence dispositions')
+        # Known nonblocking QA identifiers may be mentioned as observations.
+        # They are never evidence, cannot cover a source obligation, and do
+        # not resolve the preserved publication review.
+        qa_ids = {q['id'] for q in view['qa_impact'] if q['writing'] == 'allow'}
+        qa_observations = [
+            {'qa_id': entry['item'], 'status': 'unresolved', 'reason': entry['reason']}
+            for entry in answer['unresolved'] if entry['item'] in qa_ids
+        ]
+        qa_observations.extend({'qa_id': key, 'status': 'context'} for key in answer['context'] if key in qa_ids)
+        unresolved -= qa_ids
+        context -= qa_ids
         accounted = expressed | context | unresolved
         required = {key for key, duty in duties.items() if duty['express']}
         assets = {key for key, duty in duties.items() if duty['inspect']}
@@ -280,4 +292,6 @@ def check_fragment(row, slot, answer):
             'page_id': view['id'], 'fragment_position': view['fragment_position'], 'fragment_sha256': fingerprint(view),
             'answer': answer, 'state': state, 'diagnostic': diagnostic, 'qa_publication_review': release,
             'independent_review': 'not_performed', 'publication_eligible': False}
+    if qa_observations:
+        body.update(contract='short-evidence-fragment-receipt/v2.1', qa_observations=qa_observations)
     return {**body, 'receipt_sha256': fingerprint(body)}

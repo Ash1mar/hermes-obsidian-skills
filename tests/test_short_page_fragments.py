@@ -123,3 +123,21 @@ def test_coordinator_needs_a_real_page_reason_field():
     with pytest.raises(ValueError, match='grouping reason'):
         check_coordination({'topics': {'T1': {}, 'T2': {}}},
                            {'pages': [{**spec, 'grouping_reason': ' '}], 'unresolved': []})
+
+
+def test_known_qa_observation_does_not_fill_evidence_or_clear_review():
+    items = {'S1-B1': item('block', 'Keep the requirement.', 's')}
+    requests, _, _ = pack({'S1': source(items)}, mapped(items, {'T1': [link('S1-B1', 'evidence')]}),
+                          [page(['T1'])], 40_000)
+    row, = requests
+    qa = row['view']['pages']['p1']['qa_impact'][0]['id']
+    response = {'sections': [{'heading': 'Requirement', 'content': 'Keep the requirement. [S1-B1]',
+                              'expressed': ['S1-B1']}], 'context': [],
+                'unresolved': [{'item': qa, 'reason': 'Original QA scope remains unknown.'}], 'inspected_assets': []}
+    accepted = check_fragment(row, 'p1', response)
+    assert accepted['state'] == 'structurally_valid'
+    assert accepted['contract'].endswith('/v2.1')
+    assert accepted['qa_publication_review'] == [qa] and accepted['qa_observations'][0]['qa_id'] == qa
+    response['sections'][0].update(content='Coverage omitted.', expressed=[])
+    with pytest.raises(ValueError, match='required_expressions_missing=S1-B1'):
+        check_fragment(row, 'p1', response)
