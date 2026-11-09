@@ -7,6 +7,10 @@ description: Start, resume and inspect a persistent Vault-authoritative governed
 
 For a short request that creates a new Vault and runs it through Final Acceptance, read `references/vault-startup.md` and use `python3 "<skill-dir>/scripts/start_vault_workflow.py"`. This entry associates Bootstrap and workflow evidence and supports continuous execution, workflow-local capacity and small-batch Canary. Existing workflows keep their saved contracts and pauses.
 
+For the isolated offline topic and evidence mapping experiment, read
+`references/short-evidence-test.md` and use `python3 "<skill-dir>/scripts/prepare_short_evidence_test.py"`
+with exact source pins and a report path outside the Vault.
+
 Within one reconciliation, reuse pure completion proofs only against current
 slice/batch/reduction/recovery bytes and membership; changed dependencies force
 fresh proof. Terminal native projections survive refresh only when their full
