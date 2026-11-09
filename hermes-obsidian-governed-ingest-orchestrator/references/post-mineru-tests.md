@@ -16,7 +16,10 @@ The ordinary startup request is extended by `test_mode: post-mineru-test/v1` and
 `source_sha256`, `bundle_ref` (directory relative to the origin Vault) and an exact
 `files` map of every Bundle-relative file to SHA-256, including manifest.json.
 The request/record identity pins these values before dispatch. Origins must be
-terminal with no native consumers, and each Bundle must be a ready source outcome
+terminal with no native consumers or held at a verified independent short-path
+`exact_plan` source handoff with no consumers, runnable cards or live claims.
+The latter requires the full conversion scope and verifies the import receipt
+and the latched source outcomes. Each Bundle must be a ready source outcome
 of that exact workflow. Source originals must match. Symlinks, inventory drift,
 changed bytes, conflicting targets and source mismatch fail before dispatch.
 

@@ -22,6 +22,7 @@ from hermes_source_units.source_units import _load_json, _vault_path
 from hermes_source_units.validation import fingerprint
 from native_stop_inventory import workflow_processes
 from orchestration import configuration
+from post_mineru_test import imported_source_boundary
 from prepare_short_evidence_test import advance, inventory, save, seal
 from short_evidence_pass import load_sources, mapping_groups, request, require, seed_requests
 from short_page_contract import CONTRACT as FRAGMENT_CONTRACT, WRITE_CONTRACT, retry_slots, writing_retry
@@ -55,20 +56,7 @@ def source_boundary(vault, workflow_id, pins, registry_revision=None):
     path = _vault_path(vault, f'_system/ledgers/ingest-workflows/{workflow_id}.json')
     before = sha(path)
     origin = _load_json(path)
-    pause = origin.get('pause_control', {})
-    provisioned = origin['scope'].get('pause_after') == ['exact_plan'] and pause.get('boundary') == 'exact_plan'
-    if provisioned:
-        startup = _load_json(_vault_path(vault, origin['scope']['bootstrap_ref']))
-        imported = startup['test_bundle_import']
-        import_path = _vault_path(vault, imported['ref'])
-        report = _load_json(import_path)
-        latch = _load_json(_vault_path(vault, pause['report_ref']))
-        require(imported['contract'] == report['contract'] == 'post-mineru-test/v1'
-                and imported['sha256'] == sha(import_path) and report['workflow_id'] == workflow_id
-                and report['mineru_calls'] == 0 and report['semantic_results_imported'] is False
-                and latch['contract'] == 'hermes-ingest-pause/v1'
-                and latch['evidence_digest'] == pause['evidence_digest'] == 'sha256:' + fingerprint(latch['evidence']),
-                'independent short path requires a latched, imported source boundary')
+    provisioned = imported_source_boundary(vault, workflow_id, origin) if origin['state'] not in ('completed', 'partial') else None
     require((origin['state'] in ('completed', 'partial') or provisioned) and
             not workflow_processes(workflow_id, origin['kanban']['board_id']), 'origin must be settled and idle')
     sources = load_sources(vault, pins)
