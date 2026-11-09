@@ -57,3 +57,14 @@ evidence. A confirmed content issue can be isolated before release with
 `--content-isolation <JSON>`, binding the page ID, revision, body hash, cited
 source references and reason. Record the interrupted run as an automation
 failure even if delivery recovery succeeds.
+
+For a settled legacy mapping failure within the short path, resume the existing
+test with `--from-node mapping --reentry-id <id> --mapping-recovery <JSON>`.
+The JSON names exact failed request IDs and the completed prior short Build.
+If source qualification advanced the registry, provide the original
+`--source-registry-revision`; current source hashes and access are still
+verified. Original model envelopes and native transcript proofs must match.
+Recovered records use a separate versioned receipt. Only affected topic
+dependencies reenter downstream stages, and previously committed pages and
+known exclusions remain in the base. Full asset inspection and primary
+expression are independent of the asset's semantic role.

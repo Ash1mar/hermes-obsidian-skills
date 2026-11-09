@@ -49,7 +49,7 @@ RULES = {
 }
 
 
-def repair_requests(sources, mapping_rows, receipts):
+def repair_requests(sources, mapping_rows, receipts, mapping_contract=None):
     """At most one bounded follow-up for an explicitly pending item."""
     rows = []
     for row in mapping_rows:
@@ -67,6 +67,7 @@ def repair_requests(sources, mapping_rows, receipts):
             candidate = mapping_request(
                 key, source, [target], view['seed_topics'], context=context,
                 issue={'item': target, 'reason': disposition['reason'], 'parent_request': row['id']},
+                mapping_contract=mapping_contract,
             )
             rows.append(candidate)
     return rows

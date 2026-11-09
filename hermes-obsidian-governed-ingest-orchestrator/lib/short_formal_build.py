@@ -78,7 +78,8 @@ def final_plan(root, operation, authorization, runner):
     result_path = directory / 'result.json'
     control, result = _load_json(control_path), _load_json(result_path)
     require((initial or (control['operation_sha256'] == runner.sha(root / 'operation.json')
-            and control['from_node'] == 'writing')) and control['page_contract'] == runner.FRAGMENT_CONTRACT
+            and (control['from_node'] == 'writing' or control.get('mapping_recovery'))))
+            and control['page_contract'] == runner.FRAGMENT_CONTRACT
             and result['last_stage'] == 'offline_build' and not result['native_active_or_ready']
             and result['origin'] == operation['origin'], 'a settled writing checkpoint is required')
     origin = _load_json(Path(operation['origin']['path']))
@@ -97,12 +98,24 @@ def final_plan(root, operation, authorization, runner):
         require(runner.sha(_vault_path(root.parent, pin['ref'])) == pin['sha256'],
                 'reviewed fragment exclusion evidence changed')
     origin = operation['origin']
-    sources, live = runner.source_boundary(Path(operation['vault']), origin['workflow_id'], operation['pins'])
+    sources, live = runner.source_boundary(Path(operation['vault']), origin['workflow_id'], operation['pins'],
+                                           control.get('registry_revision') if control.get('mapping_recovery') else None)
     require(live == origin, 'current post-MinerU origin differs from the native writing origin')
-    rebuilt = runner.advance(sources, seed_requests(sources), mapping_groups(sources), root / 'receipts',
+    mapping_contract = operation.get('mapping_contract')
+    overlay = directory / 'mapping-receipts' if control.get('mapping_recovery') else None
+    if overlay:
+        for path in overlay.glob('*.json'):
+            record = _load_json(path)
+            proof = record['native_replay']
+            require(path.stem in control['mapping_recovery']['requests']
+                    and all(runner.sha(_vault_path(root, proof[key])) == proof[key + '_sha256']
+                            for key in ('job', 'reservation', 'audit')),
+                    'historical mapping proof changed before formal Build')
+    rebuilt = runner.advance(sources, seed_requests(sources), mapping_groups(sources, mapping_contract), root / 'receipts',
                              operation['body_limit'], native_holds=result['execution_holds'],
                              page_contract=control['page_contract'], fragment_repair=control.get('fragment_repair'),
-                             fragment_exclusions=control.get('fragment_exclusions'))
+                             fragment_exclusions=control.get('fragment_exclusions'), mapping_contract=mapping_contract,
+                             mapping_overlay=overlay, preserved_pages=control.get('preserved_pages', ()))
     require(rebuilt == _load_json(saved_plan), 'formal Build requires reproducible writing, QA and coverage')
     return rebuilt, sources
 
@@ -180,6 +193,7 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
         'pages': candidates, 'excluded': excluded, 'fragment_exclusions': plan.get('fragment_exclusions', []),
         'mapping_gaps': plan['reduced']['unresolved'], 'coordination_gaps': plan['coordination_issues'],
         'mapping_holds': plan['held_repairs'],
+        **({'mapping_receipts': plan['reduced']['mapping_receipts']} if 'mapping_receipts' in plan['reduced'] else {}),
     }, bodies
 
 

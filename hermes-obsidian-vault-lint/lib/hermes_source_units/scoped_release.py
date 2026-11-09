@@ -52,6 +52,11 @@ def build_plan(service,request,state,runs,scopes):
         if run.get('short_evidence') and (advisory := qa_advisory(service.build,run)[0]):
             short_proofs.append(advisory)
     exclusions.update(short_excluded)
+    if prior and short_pages:
+        active_ids = {s['page_id'] for s in active}
+        for row in old.get('delivery', {}).get('excluded', []):
+            if row['page_id'] in active_ids - allowed:
+                exclusions.setdefault(row['page_id'], row)
     source_eligibility={r['resource_id']:r for r in service._source_eligibility(current,change_map) if r['resource_id']}
     from .page_governance import reasons as governance_reasons, release_pointer
     governance=request.get('page_governance')

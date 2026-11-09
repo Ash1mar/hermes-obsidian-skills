@@ -95,10 +95,12 @@ def preview(sources, seeds, groups):
     return result
 
 
-def collect(rows, saved):
+def collect(rows, saved, overlay=None):
     accepted, waiting = {}, []
     for row in rows:
         path = saved / f"{row['id']}.json"
+        if overlay is not None and not path.is_file():
+            path = overlay / path.name
         if path.is_file():
             record = _load_json(path)
             checked_answer(row, record)
@@ -109,26 +111,44 @@ def collect(rows, saved):
 
 
 def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_contract=None, fragment_repair=None,
-            fragment_exclusions=None):
+            fragment_exclusions=None, mapping_contract=None, mapping_overlay=None, preserved_pages=()):
+    from short_evidence_pass import MAP_CONTRACT, MAP_RECEIPT
+
     native_holds = native_holds or {}
     accepted, waiting = collect(seeds, saved)
     if waiting:
         if any(row['id'] in native_holds for row in waiting):
             return {'stage': 'topic_seed_held', 'held': [row['id'] for row in waiting], 'reused': list(accepted)}
         return {'stage': 'topic-seed', 'requests': waiting, 'reused': list(accepted)}
-    maps = map_requests(sources, groups, seeds, accepted)
-    mapped, waiting = collect(maps, saved)
+    maps = map_requests(sources, groups, seeds, accepted, mapping_contract)
+    mapped, waiting = collect(maps, saved, mapping_overlay)
     map_holds = {row['id']: native_holds[row['id']] for row in waiting if row['id'] in native_holds}
     waiting = [row for row in waiting if row['id'] not in map_holds]
     if waiting:
         return {'stage': 'map', 'requests': waiting, 'reused': list(mapped)}
-    repairs = repair_requests(sources, [row for row in maps if row['id'] in mapped], mapped)
+    repairs = repair_requests(sources, [row for row in maps if row['id'] in mapped], mapped,
+                              MAP_CONTRACT if mapping_overlay is not None else mapping_contract)
     held_repairs = [row for row in repairs if not row['budget']['fits']]
     available_repairs = [row for row in repairs if row['budget']['fits'] and row['id'] not in native_holds]
     repaired, waiting = collect(available_repairs, saved)
     if waiting:
         return {'stage': 'local-map', 'requests': waiting, 'held': held_repairs, 'reused': list(repaired)}
     reduced = reduce_mappings(sources, maps, {**mapped, **repaired}, available_repairs, execution_holds=map_holds)
+    versioned = {rid: {'issues': r['issues'], 'receipt_sha256': r['receipt_sha256'],
+                      **({'native_replay': r['native_replay']} if 'native_replay' in r else {})}
+                 for rid, r in {**mapped, **repaired}.items() if r['contract'] == MAP_RECEIPT}
+    if versioned:
+        reduced['mapping_receipts'] = versioned
+    if mapping_overlay is not None:
+        recovered = {item for item, d in reduced['dispositions'].items() if d['status'] == 'linked'
+                     and d['request'] in versioned and 'native_replay' in versioned[d['request']]}
+        affected = {tid: topic for tid, topic in reduced['topics'].items()
+                    if any(link['item'] in recovered or recovered.intersection(link['applies_to'])
+                           for link in topic['relations'])}
+        reduced['mapping_recovery'] = {'recovered_items': sorted(recovered), 'affected_topics': sorted(affected),
+                                       'preserved_pages': sorted(preserved_pages)}
+        reduced['topics'] = {tid: topic for tid, topic in affected.items()
+                             if fingerprint([topic['identity']]) not in preserved_pages}
     if page_contract == pages_v2.CONTRACT:
         return advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs,
                                  fragment_repair, fragment_exclusions)

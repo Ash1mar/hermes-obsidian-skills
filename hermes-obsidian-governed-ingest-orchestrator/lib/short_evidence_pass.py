@@ -13,6 +13,8 @@ from hermes_source_units.validation import _check_shape, fingerprint
 
 CONTRACT = 'short-evidence-ingest/v1'
 RECEIPT = 'short-evidence-result/v1'
+MAP_CONTRACT = 'short-evidence-mapping/v2'
+MAP_RECEIPT = 'short-evidence-mapping-receipt/v2'
 PASS_LIMIT = 30_000
 OUTPUT_LIMIT = 8192
 USABLE_OUTPUT = 7168
@@ -35,6 +37,9 @@ DISPOSITION = closed({
 })
 SEED_SCHEMA = closed({'topics': array(TOPIC)})
 MAP_SCHEMA = closed({'topics': array(TOPIC), 'dispositions': array(DISPOSITION)})
+SEMANTIC_LINK = closed({**LINK['properties'], 'role': {'enum': ROLES[:-1]}})
+SEMANTIC_DISPOSITION = closed({**DISPOSITION['properties'], 'links': array(SEMANTIC_LINK)})
+SEMANTIC_MAP_SCHEMA = closed({'topics': array(TOPIC), 'dispositions': array(SEMANTIC_DISPOSITION)})
 RULES = {
     'short-topics': (
         'Propose initial engineering topics in Chinese from this source outline. '
@@ -51,6 +56,12 @@ RULES = {
         'required evidence. Preserve QA limits and do not rewrite facts as candidate statements.'
     ),
 }
+MAP_RULE = RULES['short-map'].replace(
+    'Use asset for whole assets.',
+    'Material kind is already registered. Use the same semantic roles for blocks and whole assets; '
+    'a linked primary asset must contribute its relevant content to the eventual page. '
+    'Use context for an asset whose contribution is context, without changing its material kind.',
+)
 
 
 def require(condition, message):
@@ -221,7 +232,7 @@ def evidence(source, selected):
     return materials, images
 
 
-def mapping_request(key, source, assigned, topics, *, context=(), reserve=0, issue=None):
+def mapping_request(key, source, assigned, topics, *, context=(), reserve=0, issue=None, mapping_contract=None):
     order = list(source['items'])
     first, last = order.index(assigned[0]), order.index(assigned[-1])
     adjacent = order[max(0, first - 1):first] + order[last + 1:last + 2]
@@ -232,21 +243,26 @@ def mapping_request(key, source, assigned, topics, *, context=(), reserve=0, iss
     if issue is not None:
         view['issue'] = issue
     # Small per-item records, with room for several relations or a short new topic.
-    return request('short-map', view, MAP_SCHEMA, 768 + 144 * len(assigned), PASS_LIMIT, images, reserve=reserve)
+    if mapping_contract == MAP_CONTRACT:
+        view['mapping_contract'] = MAP_CONTRACT
+    return request('short-map', view, SEMANTIC_MAP_SCHEMA if mapping_contract == MAP_CONTRACT else MAP_SCHEMA,
+                   768 + 144 * len(assigned), PASS_LIMIT, images, reserve=reserve)
 
 
-def mapping_groups(sources):
+def mapping_groups(sources, mapping_contract=None):
     """Fix primary coverage and reserve room for seed output before it exists."""
     result = {}
     for key, source in sources.items():
         groups, group = [], []
         for item_id in source['items']:
             trial = [*group, item_id]
-            fits = mapping_request(key, source, trial, [], reserve=SEED_RESERVE)['budget']['fits']
+            fits = mapping_request(key, source, trial, [], reserve=SEED_RESERVE,
+                                   mapping_contract=mapping_contract)['budget']['fits']
             if group and not fits:
                 groups.append(group)
                 trial = [item_id]
-                fits = mapping_request(key, source, trial, [], reserve=SEED_RESERVE)['budget']['fits']
+                fits = mapping_request(key, source, trial, [], reserve=SEED_RESERVE,
+                                       mapping_contract=mapping_contract)['budget']['fits']
             require(fits,
                     f'complete material and required assets exceed the mapping budget: {item_id}')
             group = trial
@@ -263,7 +279,7 @@ def check_topics(rows):
     return ids
 
 
-def map_requests(sources, groups, seed_rows, receipts):
+def map_requests(sources, groups, seed_rows, receipts, mapping_contract=None):
     seeds = {key: [] for key in sources}
     for row in seed_rows:
         key = row['view']['source']
@@ -274,7 +290,7 @@ def map_requests(sources, groups, seed_rows, receipts):
         pending = list(packs)
         while pending:
             items = pending.pop(0)
-            row = mapping_request(key, sources[key], items, seeds[key])
+            row = mapping_request(key, sources[key], items, seeds[key], mapping_contract=mapping_contract)
             if row['budget']['fits']:
                 result.append(row)
                 continue
@@ -332,9 +348,81 @@ def normalize_map(row, answer):
     }}}
 
 
+def mapping_receipt(row, answer, replay=None):
+    """Keep valid sibling records and make every unusable assigned record visible."""
+    from hermes_source_units import ContractError
+
+    view = row['view']
+    require(row['phase'] == 'short-map' and row['budget']['fits']
+            and (view.get('mapping_contract') == MAP_CONTRACT or replay is not None),
+            'versioned mapping requires an exact request or a native replay')
+    require(isinstance(answer, dict) and set(answer) == {'results'} and isinstance(answer['results'], dict)
+            and set(answer['results']) == {'r'}, 'mapping response envelope is invalid')
+    response = answer['results']['r']
+    require(isinstance(response, dict) and set(response) == {'topics', 'dispositions'}
+            and all(isinstance(response[k], list) for k in response), 'mapping response arrays are required')
+    seeds = {t['id']: t for t in view['seed_topics']}
+    declarations, invalid, issues = {}, set(), []
+    for topic in response['topics']:
+        tid = topic.get('id') if isinstance(topic, dict) else None
+        if not isinstance(tid, str):
+            issues.append({'kind': 'invalid_topic'})
+            continue
+        if topic == seeds.get(tid):
+            continue
+        try:
+            _check_shape(TOPIC, topic, {}, '$')
+            require(tid not in seeds and tid not in declarations and topic['name'].strip()
+                    and topic['scope'].strip(), 'duplicate, shadowed or blank topic')
+        except (ContractError, ValueError):
+            invalid.add(tid)
+            issues.append({'kind': 'invalid_topic', 'topic': tid})
+        else:
+            declarations[tid] = topic
+    topics = {k: v for k, v in declarations.items() if k not in invalid}
+    assigned = set(view['assigned'])
+    groups = {}
+    for disposition in response['dispositions']:
+        item = disposition.get('item') if isinstance(disposition, dict) else None
+        if not isinstance(item, str) or item not in view['materials']:
+            issues.append({'kind': 'out_of_packet_disposition'})
+        elif item in assigned:
+            groups.setdefault(item, []).append(disposition)
+    normalized = []
+    for item in view['assigned']:
+        candidates = groups.get(item, [])
+        try:
+            require(len(candidates) == 1, 'missing or repeated disposition')
+            record = candidates[0]
+            _check_shape(DISPOSITION if replay else SEMANTIC_DISPOSITION, record, {}, '$')
+            links = record['links']
+            if record['status'] == 'excluded' and all(l['role'] == 'context' and not l['applies_to'] for l in links):
+                record = {**record, 'links': []}
+                links = []
+            require((record['status'] == 'linked') == bool(links)
+                    and (links or record['reason'].strip()), 'invalid disposition and relations')
+            for link in links:
+                require(link['topic'] not in invalid and link['topic'] in seeds.keys() | topics.keys()
+                        and set(link['applies_to']) <= view['materials'].keys(), 'unknown topic or relation')
+                if link['role'] == 'asset':
+                    material = view['materials'][item]
+                    require(material['kind'] == 'asset' or material['required_assets'], 'unregistered asset link')
+        except (ContractError, ValueError) as error:
+            issues.append({'kind': 'invalid_disposition', 'item': item, 'reason': str(error)})
+            record = {'item': item, 'status': 'pending', 'links': [], 'reason': 'mapping contract: ' + str(error)[:135]}
+        normalized.append(record)
+    body = {'contract': MAP_RECEIPT, 'request_sha256': row['id'], 'answer': answer,
+            'normalized': {'topics': list(topics.values()), 'dispositions': normalized}, 'issues': issues}
+    if replay is not None:
+        body['native_replay'] = replay
+    return {**body, 'receipt_sha256': fingerprint(body)}
+
+
 def receipt(row, answer):
     """Seal a verified experimental result. The envelope grants no native authority."""
     require(row['budget']['fits'], 'request does not fit its pinned budget')
+    if row['phase'] == 'short-map' and row['view'].get('mapping_contract') == MAP_CONTRACT:
+        return mapping_receipt(row, answer)
     if row['phase'] == 'short-map':
         answer = normalize_map(row, answer)
     else:
@@ -361,5 +449,9 @@ def receipt(row, answer):
 
 
 def checked_answer(row, saved):
+    if saved['contract'] == MAP_RECEIPT:
+        require(mapping_receipt(row, saved['answer'], saved.get('native_replay')) == saved,
+                'stale or changed versioned mapping receipt')
+        return saved['normalized']
     require(receipt(row, saved['answer']) == saved, 'stale or changed experimental receipt')
     return saved['answer']['results']['r']

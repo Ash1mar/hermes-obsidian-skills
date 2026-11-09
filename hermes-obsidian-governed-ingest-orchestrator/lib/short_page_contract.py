@@ -95,7 +95,7 @@ def obligations(sources, material, topics, primary):
         covers_by = []
         if item['kind'] == 'asset':
             classification = 'asset'
-            required = key in primary and 'asset' in roles
+            required = key in primary and bool(roles)
         elif roles & {'evidence', 'condition', 'exception', 'conflict', 'contrary'}:
             classification = 'substantive'
             required = key in primary
