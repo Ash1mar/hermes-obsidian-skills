@@ -61,8 +61,13 @@ def source_boundary(vault, workflow_id, pins):
                      'inventory_sha256': fingerprint(inventory(sources)), 'mineru_calls': 0}
 
 
-def live(root, operation):
-    require(not (root / 'stop.json').exists(), 'experiment stopped')
+def live(root, operation, *, resumed=False):
+    stop = root / 'stop.json'
+    if resumed:
+        require(_load_json(root / 'resume.json')['stop_sha256'] == sha(stop)
+                and not (root / 'stop-resume.json').exists(), 'resumed experiment stopped or authority changed')
+    else:
+        require(not stop.exists(), 'experiment stopped')
     require(sha(Path(operation['origin']['path'])) == operation['origin']['sha256'],
             'pinned origin workflow changed')
 
@@ -97,6 +102,8 @@ def checked_projection(row):
 def run_job(root, job, own):
     payload = _load_json(job)
     original = payload['request']
+    if payload.get('replay'):
+        return replay_mapping(root, original, own)
     row = original
     slots = row.get('missing_slots', ['r'])
     attempts = []
@@ -146,6 +153,40 @@ def run_job(root, job, own):
     return {'state': 'held', 'attempts': attempts, 'unsettled_slots': slots}
 
 
+def replay_mapping(root, row, own):
+    """Native read-only proof replay. It never constructs a model caller."""
+    from fixed_semantic_recovery import transcript_reply
+    require(row['phase'] == 'short-map', 'mapping-only recovery')
+    kb, kc, _ = runtime()
+    grant = own()
+    old_job = root / 'jobs' / (row['id'] + '.json')
+    reserved = _load_json(old_job.with_name(old_job.stem + '.attempt-1.json'))
+    audit_path = old_job.with_name(old_job.stem + '.audit-1.json')
+    audit = _load_json(audit_path)
+    require(_load_json(old_job)['request'] == row and reserved['request'] == row
+            and audit['request_id'] == row['id'] and audit['state'] == 'returned'
+            and audit['grant'] == reserved['grant'], 'saved native mapping does not match the original reservation')
+    old = audit['grant']
+    with closing(kc.connect(board=grant['board'])) as conn:
+        prior = kb.get_task(conn, old['task_id'])
+        runs = kb.list_runs(conn, old['task_id'], include_active=False)
+    require(old['board'] == grant['board'] and prior.created_by == CONTRACT and prior.body == task_body(root, old_job)
+            and any(run.id == old['run_id'] for run in runs), 'saved mapping lacks a matching ended native claim')
+    projection = checked_projection(row)
+    model = audit['model']
+    require(model['parent_native_run_id'] == str(old['run_id']) and model['fixed_request_checks'] > 0,
+            'saved model response does not bind the old native worker')
+    wire = projection['wire']
+    proof = {'model': model, 'response_sha256': fingerprint(audit['raw']), 'user_sha256': fingerprint(wire['user']),
+             'image_inputs': [{k: v for k, v in image.items() if k != 'url'} for image in row['image_inputs']]}
+    require(transcript_reply(proof, wire) == audit['raw'], 'native transcript no longer matches the exact response')
+    answer, _ = decode_semantic_response(audit['raw'])
+    own()
+    seal({'requests': [row]}, row['id'], answer, root / 'receipts')
+    return {'state': 'settled', 'attempts': [], 'replayed_from': str(audit_path.relative_to(root)),
+            'source_audit_sha256': sha(audit_path), 'model_calls': 0}
+
+
 def worker(root, job):
     kb, kc, kd = runtime()
     operation = _load_json(root / 'operation.json')
@@ -154,10 +195,11 @@ def worker(root, job):
     run = int(os.environ['HERMES_KANBAN_RUN_ID'])
     claim = os.environ['HERMES_KANBAN_CLAIM_LOCK']
     require(board == operation['board'] and job.parent == root / 'jobs', 'invalid native experiment binding')
+    resumed = _load_json(job).get('resumed', False)
 
     def own(*, stopped=False):
         if not stopped:
-            live(root, operation)
+            live(root, operation, resumed=resumed)
         with closing(kc.connect(board=board)) as conn:
             task = kb.get_task(conn, task_id)
         require(task and task.created_by == CONTRACT and task.status == 'running'
@@ -196,7 +238,8 @@ def worker(root, job):
     try:
         result = run_job(root, job, own)
         own()
-        save(job.with_suffix('.result.json'), {**result, 'task_id': task_id, 'run_id': run, 'request_id': job.stem})
+        save(job.with_suffix('.result.json'), {**result, 'task_id': task_id, 'run_id': run,
+                                               'request_id': _load_json(job)['request']['id']})
         with closing(kc.connect(board=board)) as conn:
             require(kb.complete_task(conn, task_id, expected_run_id=run, result=json.dumps({
                 'state': result['state'], 'result_ref': str(job.with_suffix('.result.json')),
@@ -213,11 +256,12 @@ def worker(root, job):
 
 
 @contextmanager
-def drain_on_error(root, conn, kb, kd, active):
+def drain_on_error(root, conn, kb, kd, active, resumed):
     try:
         yield
     except BaseException:
-        save(root / 'stop.json', {'operation': CONTRACT, 'reason': 'controller interrupted or stage failed'})
+        marker = 'stop-resume.json' if resumed else 'stop.json'
+        save(root / marker, {'operation': CONTRACT, 'reason': 'controller interrupted or stage failed'})
         for proc, _ in active.values():
             if proc.poll() is None:
                 proc.terminate()
@@ -233,20 +277,24 @@ def drain_on_error(root, conn, kb, kd, active):
         raise
 
 
-def stage(root, operation, rows, capacity):
+def stage(root, operation, rows, capacity, *, resumed=False, replay=False):
     kb, kc, kd = runtime()
     board = operation['board']
     pending = []
     for row in rows:
-        job = root / 'jobs' / (row['id'] + '.json')
-        save(job, {'request': row})
+        name = ('replay-' if replay else '') + row['id']
+        job = root / 'jobs' / (name + '.json')
+        payload = {'request': row}
+        if resumed:
+            payload.update(resumed=True, replay=replay)
+        save(job, payload)
         pending.append(job)
     active, results = {}, []
     native_cap = kd.resolve_max_in_progress(kd.configured_max_in_progress())
     capacity_wait = time.monotonic()
-    with closing(kc.connect(board=board)) as conn, drain_on_error(root, conn, kb, kd, active):
+    with closing(kc.connect(board=board)) as conn, drain_on_error(root, conn, kb, kd, active, resumed):
         while pending or active:
-            live(root, operation)
+            live(root, operation, resumed=resumed)
             for tid, (proc, job) in list(active.items()):
                 if proc.poll() is None:
                     continue
@@ -261,7 +309,7 @@ def stage(root, operation, rows, capacity):
                         kd._record_task_failure(conn, tid, 'native worker exited before acknowledgement',
                                                 outcome='worker_exited', force_trip=True, release_claim=True, end_run=True)
                     results.append({'state': 'held', 'task_id': tid, 'returncode': proc.returncode,
-                                    'request_id': job.stem, 'attempts': []})
+                                    'request_id': _load_json(job)['request']['id'], 'attempts': []})
                 del active[tid]
             while pending and len(active) < capacity:
                 pressure = kd._memory_pressure_level()
@@ -330,30 +378,71 @@ def stage_metrics(root, rows, results, start, end):
     }
 
 
-def start(root, vault, workflow_id, pins, operation_id):
+def resume_mapping(root, operation, sources, seeds, groups):
+    kb, kc, _ = runtime()
+    stop = root / 'stop.json'
+    board = operation['board']
+    require(stop.is_file() and not (root / 'resume.json').exists()
+            and not workflow_processes(operation['origin']['workflow_id'], board), 'exact drained stop required')
+    with closing(kc.connect(board=board)) as conn:
+        require(all(task.status not in ('ready', 'running', 'todo', 'triage') and not task.claim_lock
+                    for task in kb.list_tasks(conn)), 'native board has live claims')
+    observed = _load_json(root / 'stage-02-map.json')
+    plan = advance(sources, seeds, groups, root / 'receipts', LIMIT)
+    require(plan['stage'] == 'map' and all(row in observed['requests'] for row in plan['requests']),
+            'recovery requires unchanged original mapping requests')
+    results = []
+    for row in observed['requests']:
+        stem = row['id']
+        job = root / 'jobs' / (stem + '.json')
+        attempts = [_load_json(p) for p in sorted(job.parent.glob(stem + '.audit-*.json'))]
+        reserved = _load_json(job.with_name(stem + '.attempt-1.json'))
+        result = job.with_suffix('.result.json')
+        results.append({'task_id': reserved['grant']['task_id'], 'attempts': attempts,
+                        'state': _load_json(result)['state'] if result.is_file() else 'held'})
+    item = stage_metrics(root, observed['requests'], results,
+                         (root / 'stage-02-map.json').stat().st_mtime, stop.stat().st_mtime)
+    item.update(state='interrupted', prepare_seconds=0)
+    save(root / 'metrics-02-short-map.json', item)
+    save(root / 'resume.json', {'stop_sha256': sha(stop), 'replay_request_ids': [row['id'] for row in plan['requests']]})
+    began = time.monotonic()
+    replay = stage(root, operation, plan['requests'], operation['pass_capacity'], resumed=True, replay=True)
+    save(root / 'mapping-replay.json', {'results': replay, 'seconds': time.monotonic() - began, 'model_calls': 0})
+    require(all(row['state'] == 'settled' for row in replay), 'native replay did not validate every affected request')
+    return [_load_json(root / 'metrics-01-short-topics.json'), item]
+
+
+def start(root, vault, workflow_id, pins, operation_id, *, resumed=False):
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
             'trusted operator must start the experiment')
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', operation_id), 'invalid experiment operation ID')
     require(not root.is_relative_to(vault), 'write experiment evidence outside the source Vault')
     root.mkdir(parents=True, exist_ok=True)
     with exclusive_lock(root / 'controller.lock', timeout=0, marker=False):
-        require(not (root / 'operation.json').exists(), 'operation already exists; inspect its durable evidence')
         sources, origin = source_boundary(vault, workflow_id, pins)
         board = 'short-' + operation_id
         kb, kc, kd = runtime()
         from hermes_cli.profiles import profile_exists
         require(not profile_exists(ASSIGNEE), 'reserved program assignee is also a profile')
-        require(not any(meta['slug'] == board for meta in kb.list_boards()), 'native test board already exists')
-        kb.create_board(board, name='Short evidence ' + operation_id, default_workdir=str(root))
         cfg = configuration()
         operation = {'contract': CONTRACT, 'board': board, 'origin': origin, 'body_limit': LIMIT,
                      'vault': str(vault), 'pins': pins, 'started_at': time.time(),
                      'pass_capacity': cfg['pass_worker_concurrency'], 'page_capacity': cfg['reduce_page_concurrency']}
-        save(root / 'operation.json', operation)
         seeds, groups = seed_requests(sources), mapping_groups(sources)
-        metrics, holds = [], {}
+        holds = {}
+        if resumed:
+            operation = _load_json(root / 'operation.json')
+            require(operation['board'] == board and operation['origin'] == origin and operation['pins'] == pins
+                    and operation['body_limit'] == LIMIT, 'resume input identity changed')
+            metrics = resume_mapping(root, operation, sources, seeds, groups)
+        else:
+            require(not (root / 'operation.json').exists(), 'operation already exists; inspect its durable evidence')
+            require(not any(meta['slug'] == board for meta in kb.list_boards()), 'native test board already exists')
+            kb.create_board(board, name='Short evidence ' + operation_id, default_workdir=str(root))
+            save(root / 'operation.json', operation)
+            metrics = []
         while True:
-            live(root, operation)
+            live(root, operation, resumed=resumed)
             planning_started = time.monotonic()
             plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, native_holds=holds)
             planning_seconds = time.monotonic() - planning_started
@@ -367,7 +456,7 @@ def start(root, vault, workflow_id, pins, operation_id):
             phase = rows[0]['phase']
             capacity = operation['page_capacity'] if phase == 'short-write' else operation['pass_capacity']
             stage_start = time.time()
-            results = stage(root, operation, rows, capacity)
+            results = stage(root, operation, rows, capacity, resumed=resumed)
             item = stage_metrics(root, rows, results, stage_start, time.time())
             item['prepare_seconds'] = planning_seconds
             metrics.append(item)
@@ -393,7 +482,7 @@ def start(root, vault, workflow_id, pins, operation_id):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=('start', 'worker'))
+    parser.add_argument('action', choices=('start', 'resume-mapping', 'worker'))
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--vault', type=Path)
     parser.add_argument('--origin-workflow')
@@ -405,7 +494,8 @@ def main():
     if args.action == 'worker':
         worker(root, args.job.resolve(strict=True))
     else:
-        start(root, args.vault.resolve(strict=True), args.origin_workflow, _load_json(args.sources), args.operation_id)
+        start(root, args.vault.resolve(strict=True), args.origin_workflow, _load_json(args.sources), args.operation_id,
+              resumed=args.action == 'resume-mapping')
 
 
 if __name__ == '__main__':

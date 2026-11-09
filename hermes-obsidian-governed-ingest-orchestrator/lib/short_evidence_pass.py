@@ -1,5 +1,6 @@
 """Isolated Pass contract for mapping complete source units to topics."""
 import base64
+import copy
 import hashlib
 
 from fixed_semantic_media import IMAGE_TYPES, images_fit
@@ -298,14 +299,38 @@ def accept_map(view, response):
         for link in row['links']:
             require(link['topic'] in seeds | new and set(link['applies_to']) <= view['materials'].keys(),
                     'unknown topic or out-of-packet relation')
-            is_asset = view['materials'][row['item']]['kind'] == 'asset'
-            require(is_asset == (link['role'] == 'asset'), 'asset role must match a whole asset')
+            material = view['materials'][row['item']]
+            if link['role'] == 'asset':
+                require(material['kind'] == 'asset' or material['required_assets'],
+                        'asset role requires a whole asset or an explicit registered link')
+            elif material['kind'] == 'asset':
+                require(False, 'whole asset needs the asset role')
+
+
+def normalize_map(row, answer):
+    """Keep exact native meaning while resolving redundant local presentation."""
+    schema = copy.deepcopy(row['schema'])
+    fields = schema['properties']['results']['properties']['r']['properties']
+    fields['dispositions']['items']['properties']['links']['items']['properties']['note']['maxLength'] = 512
+    _check_shape(schema, answer, {}, '$')
+    view = row['view']
+    result = answer['results']['r']
+    seed = {t['id']: t for t in view['seed_topics']}
+    assigned = set(view['assigned'])
+    require(all(d['item'] in view['materials'] for d in result['dispositions']), 'disposition refers outside the packet')
+    return {'results': {'r': {
+        'topics': [t for t in result['topics'] if t != seed.get(t['id'])],
+        'dispositions': [d for d in result['dispositions'] if d['item'] in assigned],
+    }}}
 
 
 def receipt(row, answer):
     """Seal a verified experimental result. The envelope grants no native authority."""
     require(row['budget']['fits'], 'request does not fit its pinned budget')
-    _check_shape(row['schema'], answer, {}, '$')
+    if row['phase'] == 'short-map':
+        answer = normalize_map(row, answer)
+    else:
+        _check_shape(row['schema'], answer, {}, '$')
     response = answer['results']['r']
     if row['phase'] == 'short-topics':
         check_topics(response['topics'])
