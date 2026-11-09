@@ -16,7 +16,7 @@ from hermes_source_units.short_build import record_content_isolation
 from hermes_source_units.source_units import _load_json, _vault_path
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from short_evidence_pass import require
-from short_formal_build import delivery as publish, execute
+from short_formal_build import delivery as publish, execute, final_plan
 from short_fragment_disposition import delivery_partition
 
 
@@ -166,8 +166,10 @@ def main():
     parser.add_argument('--provider-state', type=Path, required=True)
     parser.add_argument('--resume-delivery', action='store_true')
     parser.add_argument('--content-isolation', type=Path)
-    parser.add_argument('--from-node', choices=('mapping',))
+    parser.add_argument('--from-node', choices=('mapping', 'writing'))
     parser.add_argument('--reentry-id')
+    parser.add_argument('--prior-entry')
+    parser.add_argument('--fragment-repair', type=Path)
     parser.add_argument('--mapping-recovery', type=Path)
     parser.add_argument('--source-registry-revision', type=int)
     args = parser.parse_args()
@@ -179,40 +181,62 @@ def main():
     with runner.exclusive_lock(root / 'pipeline.lock', timeout=0, marker=False):
         short = root / 'native'
         marker = root / 'pipeline-start.json'
-        if args.from_node == 'mapping':
+        provider = None
+        if args.from_node:
             import re
-            require(args.reentry_id and re.fullmatch(r'[a-z0-9][a-z0-9-]{0,31}', args.reentry_id)
-                    and args.mapping_recovery and not args.resume_delivery and not args.content_isolation,
-                    'mapping recovery requires its own stable reentry and manifest')
+            entry_pattern = r'[a-z0-9][a-z0-9-]{0,31}'
+            writing = args.from_node == 'writing'
+            require(args.reentry_id and re.fullmatch(entry_pattern, args.reentry_id)
+                    and not args.resume_delivery and not args.content_isolation
+                    and (bool(args.fragment_repair) and not args.mapping_recovery if writing else
+                         bool(args.mapping_recovery) and not args.fragment_repair)
+                    and (not args.prior_entry or (writing and re.fullmatch(entry_pattern, args.prior_entry))),
+                    'supplement requires a stable reentry and its node-specific manifest')
             start = time.time()
             prior = _load_json(marker)
             require(prior['request_sha256'] == runner.sha(args.request), 'supplement request identity changed')
             handoff = _load_json(root / 'source-handoff.json')
             qualification = _load_json(root / 'source-qualification.json')
-            original = _load_json(root / 'final-acceptance.json')
+            prior_output = short / 'reentries' / args.prior_entry if args.prior_entry else root
+            original = _load_json(prior_output / 'final-acceptance.json')
             service = FileVaultFinalizeService(vault)
             base_release = original['delivery']['release_id']
             require(service.status()['current_release_id'] == base_release and service.validate(base_release)['ok'],
                     'prior release must remain the exact supplement base')
-            recovery = _load_json(args.mapping_recovery)
-            require(recovery['prior_build'] == original['delivery']['run_id'], 'supplement prior Build changed')
-            print('Replaying the exact affected mapping requests', flush=True)
+            recovery = _load_json(args.mapping_recovery) if not writing else None
+            if recovery:
+                require(recovery['prior_build'] == original['delivery']['run_id'], 'supplement prior Build changed')
+            print(f"Recovering the affected {args.from_node} work", flush=True)
             result = runner.start(short, vault, handoff['workflow_id'], handoff['pins'], request['operation_id'],
-                                  node='mapping', entry=args.reentry_id, mapping_recovery=recovery,
+                                  node=args.from_node, entry=args.reentry_id, mapping_recovery=recovery,
+                                  fragment_repair=_load_json(args.fragment_repair) if writing else None,
                                   registry_revision=args.source_registry_revision)
             directory = short / 'reentries' / args.reentry_id
             require(result['last_stage'] == 'offline_build', 'supplement did not reach a settled writing checkpoint')
             plan_path = sorted(directory.glob('stage-*-offline_build.json'))[-1]
             partition = delivery_partition(_load_json(plan_path))
-            require(partition['included'], 'supplement found no complete affected pages')
+            published = {p['short_id'] for p in original['delivery']['candidates'] if p['published']} if writing else set()
+            selected = [pid for pid in partition['included'] if pid not in published]
             authorization = {'contract': 'short-formal-authorization/v1', 'writing_entry': args.reentry_id,
                              'checkpoint': {'control_sha256': runner.sha(directory / 'control.json'),
                                             'result_sha256': runner.sha(directory / 'result.json'),
                                             'plan_sha256': runner.sha(plan_path)},
-                             'actor': request['actor'], 'pages': partition['included'], 'base_release': base_release,
+                             'actor': request['actor'], 'pages': selected, 'base_release': base_release,
                              'publish': True, 'policy': POLICY}
             runner.save(directory / 'formal-authorization.json', authorization)
-            delivery = execute(short, 'formal-' + args.reentry_id, authorization, False, runner)
+            if selected:
+                delivery = execute(short, 'formal-' + args.reentry_id, authorization, False, runner)
+            else:
+                require(writing, 'mapping supplement found no complete affected pages')
+                final_plan(short, _load_json(short / 'operation.json'), authorization, runner)
+                delivery = original['delivery']
+                provider_result = _load_json(prior_output / 'provider-result.json')
+                provider = provider_result['index']
+                runner.save(directory / 'provider-result.json', {**provider_result, 'reused_from': str(prior_output)})
+                runner.save(directory / 'delivery-reuse.json', {
+                    'release_id': base_release, 'provider_generation': provider['index_generation'],
+                    'writing_entry': args.reentry_id, 'no_new_complete_page': True,
+                    'excluded': partition['excluded'], 'retained_short_pages': sorted(published)})
         elif args.resume_delivery:
             prior = _load_json(marker)
             require(prior['request_sha256'] == runner.sha(args.request)
@@ -253,9 +277,12 @@ def main():
             print(f"{len(partition['included'])} complete pages; executing formal Build and release", flush=True)
             delivery = execute(short, 'formal-fifth-release', authorization, False, runner)
         require(delivery['release_id'], 'formal eligibility produced no releasable pages')
-        print(f"Release {delivery['release_id']} applied; synchronizing Provider", flush=True)
-        output = directory if args.from_node == 'mapping' else root
-        provider = synchronize(vault, output, delivery['release_id'], args.provider_config.resolve())
+        output = directory if args.from_node else root
+        if provider is None:
+            print(f"Release {delivery['release_id']} applied; synchronizing Provider", flush=True)
+            provider = synchronize(vault, output, delivery['release_id'], args.provider_config.resolve())
+        else:
+            print(f"Verifying unchanged release {delivery['release_id']} and its existing Provider index", flush=True)
         final = accept(vault, _load_json(short / 'operation.json'), delivery, provider, args.provider_state.resolve())
         final.update(source_handoff=handoff, short_result=result, delivery=delivery, wall_seconds=time.time() - start,
                      source_qualification=qualification, whole_run_continuous_automation=not args.resume_delivery)

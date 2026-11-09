@@ -111,7 +111,8 @@ def collect(rows, saved, overlay=None):
 
 
 def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_contract=None, fragment_repair=None,
-            fragment_exclusions=None, mapping_contract=None, mapping_overlay=None, preserved_pages=()):
+            fragment_exclusions=None, mapping_contract=None, mapping_overlay=None, preserved_pages=(),
+            writing_contract=None):
     from short_evidence_pass import MAP_CONTRACT, MAP_RECEIPT
 
     native_holds = native_holds or {}
@@ -150,6 +151,8 @@ def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_con
         reduced['topics'] = {tid: topic for tid, topic in affected.items()
                              if fingerprint([topic['identity']]) not in preserved_pages}
     if page_contract == pages_v2.CONTRACT:
+        if writing_contract:
+            reduced['writing_contract'] = writing_contract
         return advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs,
                                  fragment_repair, fragment_exclusions)
     coordination = coordination_request(sources, reduced)

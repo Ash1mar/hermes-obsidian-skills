@@ -8,7 +8,8 @@ import pytest
 SKILL = Path(__file__).resolve().parents[1] / 'hermes-obsidian-governed-ingest-orchestrator'
 sys.path[:0] = [str(SKILL / 'lib'), str(SKILL / 'scripts')]
 
-from short_page_contract import check_coordination, check_fragment, obligations, qa_impacts
+from short_page_contract import (WRITE_CONTRACT, check_coordination, check_fragment, obligations, qa_impacts,
+                                 table_navigation, writing_retry)
 from short_page_fragments import build, pack
 from short_fragment_repair import equivalent_coverage, form_navigation
 from short_fragment_disposition import exact_continuations, verify_block
@@ -49,6 +50,53 @@ def test_primary_context_asset_keeps_whole_inspection_and_expression():
     duty = obligations(sources, items, topic, {'S1-A1'})['S1-A1']
     assert duty['mapped_roles'] == ['context']
     assert duty['inspect'] and duty['express']
+
+
+def test_numbered_table_navigation_requires_all_links_and_no_substantive_text():
+    block = {'kind': 'block', 'required_assets': ['S1-A96', 'S1-A97'], 'text': (
+        '#### 中国核电工程有限公司\n**工程设计计算书校审记录表 编号： 共2页 第1页**\n'
+        '[查看表格](tables/first.md)\n<!-- table-id: first; source-page: 21; qa: pass -->\n'
+        'CNPE-MSD-END-006-R03A（续）\n中国核电工程有限公司\n'
+        '**工程设计计算书校审记录表 编号： 共2页 第2页**\n[查看表格](tables/second.md)')}
+    assets = {'S1-A96': {'kind': 'asset', 'label': 'tables/first.md'},
+              'S1-A97': {'kind': 'asset', 'label': 'tables/second.md'},
+              'S1-A98': {'kind': 'asset', 'label': 'tables/list.md'}}
+    checklist = {'kind': 'block', 'required_assets': ['S1-A98'], 'text': (
+        '#### 设计文件校审清单\n**校审清单编号：JSQD-X-XX-XXX-XX-XX 共 页 第 页**\n'
+        '[查看表格](tables/list.md)\n<!-- source-page: 24 -->')}
+    assert table_navigation(block, assets) == ['S1-A96', 'S1-A97']
+    assert table_navigation(checklist, assets) == ['S1-A98']
+    assert not table_navigation(block, {'S1-A96': assets['S1-A96']})
+    assert not table_navigation({**checklist, 'text': checklist['text'] + '\n应由专业负责人签署。'}, assets)
+
+
+def test_writing_uses_inline_coverage_and_retains_inspection_in_scoped_retry():
+    items = {
+        'S1-B1': item('block', 'Must preserve the condition.', 'Conditions'),
+        'S1-A2': item('asset', 'Full table', 'Records'),
+        'S1-B3': item('block', 'Independent instructions.', 'Independent'),
+    }
+    sources = {'S1': source(items)}
+    reduced = mapped(items, {'T1': [link('S1-B1', 'condition'), link('S1-A2', 'asset')],
+                             'T2': [link('S1-B3', 'evidence')]})
+    reduced['writing_contract'] = WRITE_CONTRACT
+    requests, held, _ = pack(sources, reduced, [page(['T1']), page(['T2'])], 40_000)
+    row, = requests
+    assert not held and set(row['view']['pages']) == {'p1', 'p2'}
+    slot = next(key for key, view in row['view']['pages'].items() if 'S1-A2' in view['materials'])
+    view = row['view']['pages'][slot]
+    assert not view['qa_impact'] and view['qa_annotations'] and 'publication' not in view['qa_annotations'][0]
+    assert 'release-review issue' not in row['system']
+    answer = {'sections': [{'heading': 'Requirements', 'content': 'Required condition. [S1-B1]'}],
+              'context': [], 'unresolved': [], 'inspected_assets': []}
+    with pytest.raises(ValueError, match='required_expressions_missing=S1-A2; asset_inspections_missing=S1-A2') as error:
+        check_fragment(row, slot, answer)
+    retry = writing_retry(row, [slot], {slot: answer}, {slot: str(error.value)})
+    assert retry['budget']['fits'] and set(retry['view']['pages']) == {slot}
+    assert retry['view']['structural_retry']['slots'][slot]['previous_answer'] == answer
+    answer['sections'][0]['content'] += ' Table requirements. [S1-A2]'
+    answer['inspected_assets'].append('S1-A2')
+    assert check_fragment(row, slot, answer)['state'] == 'structurally_valid'
 
 
 def test_oversized_whole_asset_without_unresolved_mapping_is_serializable():

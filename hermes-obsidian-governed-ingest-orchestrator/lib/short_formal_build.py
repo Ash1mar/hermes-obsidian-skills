@@ -13,7 +13,7 @@ from hermes_source_units.validation import fingerprint
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from short_evidence_pass import mapping_groups, require, seed_requests
 from short_fragment_disposition import delivery_partition
-from short_page_contract import check_fragment
+from short_page_contract import auditable_qa, check_fragment
 
 
 def native_fragment(root, receipt, attempts, conn, runner):
@@ -30,8 +30,7 @@ def native_fragment(root, receipt, attempts, conn, runner):
         if slot not in call['view']['pages'] or call['phase'] != 'short-write':
             continue
         if call['id'] != prior['id']:
-            retry = call['view']['structural_retry']['reason']
-            if runner.build_call(prior, diagnostic=retry, slots=list(call['view']['pages'])) != call:
+            if not runner.checked_retry(prior, call, job):
                 continue
         grant = audit['grant']
         native = kb.get_task(conn, grant['task_id'])
@@ -102,7 +101,8 @@ def final_plan(root, operation, authorization, runner):
                                            control.get('registry_revision') if control.get('mapping_recovery') else None)
     require(live == origin, 'current post-MinerU origin differs from the native writing origin')
     mapping_contract = operation.get('mapping_contract')
-    overlay = directory / 'mapping-receipts' if control.get('mapping_recovery') else None
+    overlay = (root / 'reentries' / control['mapping_overlay_entry'] if control.get('mapping_overlay_entry')
+               else directory) / 'mapping-receipts' if control.get('mapping_recovery') else None
     if overlay:
         for path in overlay.glob('*.json'):
             record = _load_json(path)
@@ -115,7 +115,8 @@ def final_plan(root, operation, authorization, runner):
                              operation['body_limit'], native_holds=result['execution_holds'],
                              page_contract=control['page_contract'], fragment_repair=control.get('fragment_repair'),
                              fragment_exclusions=control.get('fragment_exclusions'), mapping_contract=mapping_contract,
-                             mapping_overlay=overlay, preserved_pages=control.get('preserved_pages', ()))
+                             mapping_overlay=overlay, preserved_pages=control.get('preserved_pages', ()),
+                             writing_contract=operation.get('writing_contract'))
     require(rebuilt == _load_json(saved_plan), 'formal Build requires reproducible writing, QA and coverage')
     return rebuilt, sources
 
@@ -164,7 +165,7 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
                                                        for ref in sorted(assets)},
                                    'source_revisions': view['source_revisions'],
                                    'registered_packet_and_coverage': 'verified'})
-                for q in view['qa_impact']:
+                for q in auditable_qa(view):
                     if q['publication'] != 'allow':
                         qa[q['id']] = q
             if page_id in proof_holds:

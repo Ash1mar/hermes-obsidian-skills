@@ -3,7 +3,7 @@ import re
 
 from hermes_source_units.validation import fingerprint
 from short_evidence_pass import USABLE_OUTPUT, evidence, require, source_revision
-from short_page_contract import CONTRACT, body_request, obligations, qa_impacts, topic_items
+from short_page_contract import CONTRACT, WRITE_CONTRACT, body_request, obligations, qa_impacts, topic_items, writing_view
 
 SHARED = {'condition', 'exception', 'conflict', 'contrary', 'definition', 'context'}
 _UNIT_BOUNDARY = re.compile(r'^(?:#{1,6}\s|\d+(?:\.\d+)+(?:\s|[、.)])|\d+[、.)]\s|第[一二三四五六七八九十\d]+[条节章])')
@@ -65,7 +65,8 @@ def make_fragment(sources, reduced, page, position, topics, primary):
         images.extend(pictures)
         raw_qa[key] = source['qa']
         revisions[key] = source_revision(source)
-    duties = obligations(sources, material, topics, primary)
+    modern = reduced.get('writing_contract') == WRITE_CONTRACT
+    duties = obligations(sources, material, topics, primary, modern=modern)
     impacts = qa_impacts(sources, selection, material, duties)
     anchors = {ref for topic in topics.values() for relation in topic['relations'] for ref in relation['applies_to']}
     hold = {item for item, duty in duties.items()
@@ -79,6 +80,8 @@ def make_fragment(sources, reduced, page, position, topics, primary):
         'topics': {key: {k: v[k] for k in ('name', 'scope', 'relations')} for key, v in topics.items()},
         'materials': material, 'obligations': duties,
     }
+    if modern:
+        writing_view(view)
     view['fragment_id'] = fingerprint([CONTRACT, view])
     return {'view': view, 'images': images, 'hold': sorted(hold)}
 

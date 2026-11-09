@@ -68,3 +68,19 @@ Recovered records use a separate versioned receipt. Only affected topic
 dependencies reenter downstream stages, and previously committed pages and
 known exclusions remain in the base. Full asset inspection and primary
 expression are independent of the asset's semantic role.
+
+For failed writing slots with a saved native draft, use the same short test
+request and output with `--from-node writing --reentry-id <id>` and
+`--fragment-repair <JSON>`. If the current release came from a supplement,
+pass its reentry ID in `--prior-entry`. A `revise` change pins the original
+job, first reservation and first native response by path and hash. The
+controller verifies the transcript, supplies the failed slot and its saved
+draft, and keeps verified sibling slots. A complete new page can enter formal
+Build and partial publication. If no new page is complete, final acceptance
+verifies the existing release and Provider generation and records the gaps.
+
+New writing requests derive coverage identifiers from Markdown citations.
+Whole-asset inspections still need explicit acknowledgment. A pure table
+wrapper can be accounted for by its supplied, cited and inspected tables.
+Unlocated source QA is annotation metadata. An identifiable missing or
+unreadable required item still holds its dependent work.
