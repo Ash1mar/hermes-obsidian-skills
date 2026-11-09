@@ -340,17 +340,23 @@ def receipt(row, answer):
     else:
         _check_shape(row['schema'], answer, {}, '$')
     response = answer['results']['r']
+    contract = RECEIPT
     if row['phase'] == 'short-topics':
         check_topics(response['topics'])
     elif row['phase'] == 'short-map':
         accept_map(row['view'], response)
     elif row['phase'] == 'short-coordinate':
-        from short_evidence_reduce import check_coordination
-        check_coordination(row['view'], response)
+        from short_page_contract import CONTRACT as PAGE_CONTRACT, check_coordination as check_v2
+        if row['view'].get('page_contract') == PAGE_CONTRACT:
+            check_v2(row['view'], response)
+            contract = 'short-evidence-coordination-receipt/v2'
+        else:
+            from short_evidence_reduce import check_coordination
+            check_coordination(row['view'], response)
     elif row['phase'] == 'short-detail' and 'sections' in response:
         from short_evidence_reduce import check_sections
         check_sections(row['view']['page']['topics'], response['sections'])
-    body = {'contract': RECEIPT, 'request_sha256': row['id'], 'answer': answer}
+    body = {'contract': contract, 'request_sha256': row['id'], 'answer': answer}
     return {**body, 'receipt_sha256': fingerprint(body)}
 
 

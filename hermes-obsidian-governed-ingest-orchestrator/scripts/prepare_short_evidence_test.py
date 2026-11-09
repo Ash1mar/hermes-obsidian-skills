@@ -19,6 +19,8 @@ from short_evidence_reduce import (
     build_sections, check_page, coordination_request, detail_request, expand_sections, pack_pages,
     page_plan, page_view, reduce_mappings, repair_requests,
 )
+import short_page_contract as pages_v2
+import short_page_fragments as fragments_v2
 
 
 def inventory(sources):
@@ -104,7 +106,7 @@ def collect(rows, saved):
     return accepted, waiting
 
 
-def advance(sources, seeds, groups, saved, limit, *, native_holds=None):
+def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_contract=None):
     native_holds = native_holds or {}
     accepted, waiting = collect(seeds, saved)
     if waiting:
@@ -124,6 +126,8 @@ def advance(sources, seeds, groups, saved, limit, *, native_holds=None):
     if waiting:
         return {'stage': 'local-map', 'requests': waiting, 'held': held_repairs, 'reused': list(repaired)}
     reduced = reduce_mappings(sources, maps, {**mapped, **repaired}, available_repairs, execution_holds=map_holds)
+    if page_contract == pages_v2.CONTRACT:
+        return advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs)
     coordination = coordination_request(sources, reduced)
     coordinated = None
     resolutions = {}
@@ -184,6 +188,63 @@ def advance(sources, seeds, groups, saved, limit, *, native_holds=None):
             'coordination_issues': coordination_issues}
 
 
+def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs):
+    common = {'page_contract': pages_v2.CONTRACT, 'reduced': reduced, 'held_repairs': held_repairs}
+    topics = reduced['topics']
+    coordination = pages_v2.coordination_request(sources, reduced)
+    issues = []
+    if coordination is None:
+        specs = [{'name': topic['name'], 'scope': topic['scope'], 'topics': [tid], 'sections': [],
+                  'reader_question': topic['scope'], 'grouping_reason': 'One mapped topic.',
+                  'grouping_basis': 'single_topic'} for tid, topic in topics.items()]
+    else:
+        rid = coordination['id']
+        if not coordination['budget']['fits'] or rid in native_holds:
+            return {**common, 'stage': 'coordination_held', 'held': [coordination]}
+        verified, waiting = collect([coordination], saved)
+        if waiting:
+            return {**common, 'stage': 'coordination', 'requests': waiting}
+        answer = checked_answer(coordination, verified[rid])
+        review = pages_v2.coordination_issues(answer, topics)
+        reviewed = {tid for issue in review for tid in issue['topics']}
+        specs = [page for page in answer['pages'] if not reviewed.intersection(page['topics'])]
+        local = [(issue, pages_v2.coordination_request(sources, reduced, issue)) for issue in review]
+        eligible = [row for _, row in local if row['budget']['fits'] and row['id'] not in native_holds]
+        verified, waiting = collect(eligible, saved)
+        if waiting:
+            return {**common, 'stage': 'local_coordination', 'requests': waiting, 'reused': list(verified)}
+        for issue, row in local:
+            if row['id'] in verified:
+                outcome = checked_answer(row, verified[row['id']])
+                specs.extend(outcome['pages'])
+                issues.extend(outcome['unresolved'])
+            else:
+                issues.append({**issue, 'request': row['id'], 'budget': row['budget']})
+    planned, held, expected = fragments_v2.pack(sources, reduced, specs, limit)
+    checks, requests = [], []
+    for row in planned:
+        rid = row['id']
+        missing = []
+        for slot, view in row['view']['pages'].items():
+            path = saved / f'{rid}-{slot}.json'
+            if path.is_file():
+                record = _load_json(path)
+                require(pages_v2.check_fragment(row, slot, record['answer']) == record, 'changed fragment receipt')
+                checks.append(record)
+            elif rid in native_holds:
+                held.append({'page': view['id'], 'fragment_id': view['fragment_id'], 'slot': slot,
+                             'reason': 'native_fragment_request_held', 'request': rid})
+            else:
+                missing.append(slot)
+        if missing:
+            requests.append({**row, 'missing_slots': missing})
+    return {
+        **common, 'stage': 'writing' if requests else 'offline_build', 'requests': requests, 'checks': checks,
+        'expected_pages': expected, 'assembled_sections': fragments_v2.build(expected, checks),
+        'held': held, 'coordination_issues': issues,
+    }
+
+
 def save(path, value):
     with exclusive_lock(path.with_suffix(path.suffix + '.lock'), timeout=5, marker=False):
         if path.is_file():
@@ -209,7 +270,8 @@ def seal(plan, request_id, response, saved):
     for slot in row['missing_slots']:
         try:
             require(slot in results, 'missing page result')
-            record = check_page(row, slot, results[slot])
+            validator = pages_v2.check_fragment if row['view'].get('page_contract') == pages_v2.CONTRACT else check_page
+            record = validator(row, slot, results[slot])
             save(saved / f'{request_id}-{slot}.json', record)
             sealed.append(slot)
         except (ValueError, ContractError) as error:

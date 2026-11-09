@@ -24,6 +24,7 @@ from native_stop_inventory import workflow_processes
 from orchestration import configuration
 from prepare_short_evidence_test import advance, inventory, save, seal
 from short_evidence_pass import load_sources, mapping_groups, request, require, seed_requests
+from short_page_contract import CONTRACT as FRAGMENT_CONTRACT
 from workflow_metrics import usage_for
 
 CONTRACT = 'native-short-evidence-test/v1'
@@ -512,7 +513,7 @@ def attempt_index(root):
     return previous
 
 
-def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run):
+def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, page_contract):
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', entry), 'valid stable reentry ID required')
     kb, kc, _ = runtime()
     board = operation['board']
@@ -522,12 +523,13 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run):
                     for task in kb.list_tasks(conn)), 'node reentry requires a stopped native board')
     directory = root / 'reentries' / entry
     require(not directory.exists(), 'reentry ID already used')
-    plan = advance(sources, seeds, groups, root / 'receipts', LIMIT)
+    plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, page_contract=page_contract)
     current = reentry_node(plan, node)
     previous = attempt_index(root)
     pending = plan.get('requests', [])
     control = {
         'entry': entry, 'from_node': node, 'effective_node': current, 'stage': plan['stage'],
+        'page_contract': page_contract,
         'operation_sha256': sha(root / 'operation.json'),
         'upstream_receipts': {p.name: sha(p) for p in sorted((root / 'receipts').glob('*.json'))},
         'pending_requests': [row['id'] for row in pending],
@@ -540,11 +542,11 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run):
     paths = [*root.glob('metrics-*.json'), *root.glob('reentries/*/metrics-*.json')]
     metrics = sorted((_load_json(path) for path in paths), key=lambda row: row['started_at'])
     return run_stages(root, operation, sources, seeds, groups, metrics, entry=entry,
-                      directory=directory, previous=previous)
+                      directory=directory, previous=previous, page_contract=page_contract)
 
 
 def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=False,
-               entry=None, directory=None, previous=None):
+               entry=None, directory=None, previous=None, page_contract=None):
     kb, kc, _ = runtime()
     output = directory or root
     board = operation['board']
@@ -553,7 +555,8 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
     while True:
         live(root, operation, resumed=resumed, entry=entry)
         planning_started = time.monotonic()
-        plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, native_holds=holds)
+        plan = advance(sources, seeds, groups, root / 'receipts', LIMIT, native_holds=holds,
+                       page_contract=page_contract)
         planning_seconds = time.monotonic() - planning_started
         rows = plan.get('requests', [])
         consumed_unknown = [r['id'] for r in rows if r['id'] in previous and not previous[r['id']]]
@@ -588,6 +591,7 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
     with closing(kc.connect(board=board)) as conn:
         remaining = [task.id for task in kb.list_tasks(conn) if task.status in ('ready', 'running', 'todo', 'triage')]
     result = {'state': final, 'stages': metrics, 'last_stage': plan['stage'], 'origin': operation['origin'], 'board': board,
+              'page_contract': page_contract, 'complete_pages': len(plan.get('assembled_sections', {})),
               'native_active_or_ready': remaining, 'mineru_calls': 0, 'independent_build_review_calls': 0,
               'build_checks': len(plan.get('checks', [])), 'publication_eligible': False,
               'build_check_seconds': planning_seconds if plan['stage'] == 'offline_build' else None,
@@ -596,7 +600,8 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
     return result
 
 
-def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=None, entry=None, dry_run=False):
+def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=None, entry=None, dry_run=False,
+          page_contract=None):
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
             'trusted operator must start the experiment')
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', operation_id), 'invalid experiment operation ID')
@@ -618,15 +623,27 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
             require(operation['board'] == board and operation['origin'] == origin and operation['pins'] == pins
                     and operation['body_limit'] == LIMIT, 'resume input identity changed')
             if node:
-                return reenter(root, operation, sources, seeds, groups, node, entry, dry_run=dry_run)
+                operation_sha = sha(root / 'operation.json')
+                controls = [_load_json(path) for path in (root / 'reentries').glob('*/control.json')]
+                versions = [row for row in controls
+                            if row['operation_sha256'] == operation_sha and row.get('page_contract')]
+                active_contract = (max(versions, key=lambda row: row['started_at'])['page_contract']
+                                   if versions else operation.get('page_contract'))
+                selected = page_contract or active_contract
+                if page_contract and page_contract != active_contract:
+                    require(node == 'coordination', 'new page contract requires a coordination reentry')
+                return reenter(root, operation, sources, seeds, groups, node, entry,
+                               dry_run=dry_run, page_contract=selected)
             metrics = resume_mapping(root, operation, sources, seeds, groups)
         else:
             require(not (root / 'operation.json').exists(), 'operation already exists; inspect its durable evidence')
             require(not any(meta['slug'] == board for meta in kb.list_boards()), 'native test board already exists')
             kb.create_board(board, name='Short evidence ' + operation_id, default_workdir=str(root))
+            page_contract = page_contract or FRAGMENT_CONTRACT
+            operation['page_contract'] = page_contract
             save(root / 'operation.json', operation)
             metrics = []
-        return run_stages(root, operation, sources, seeds, groups, metrics, resumed=resumed)
+        return run_stages(root, operation, sources, seeds, groups, metrics, resumed=resumed, page_contract=page_contract)
 
 
 def main():
@@ -640,6 +657,7 @@ def main():
     parser.add_argument('--job', type=Path)
     parser.add_argument('--from-node', choices=tuple(NODE_ORDER))
     parser.add_argument('--reentry-id')
+    parser.add_argument('--page-contract', choices=(FRAGMENT_CONTRACT,))
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
     root = args.output.resolve()
@@ -664,7 +682,8 @@ def main():
             parser.error('node and dry-run arguments require reenter')
         result = start(root, args.vault.resolve(strict=True), args.origin_workflow, _load_json(args.sources),
                        args.operation_id, resumed=args.action == 'resume-mapping',
-                       node=args.from_node, entry=args.reentry_id, dry_run=args.dry_run)
+                       node=args.from_node, entry=args.reentry_id, dry_run=args.dry_run,
+                       page_contract=args.page_contract)
         print(json.dumps(result, ensure_ascii=False))
 
 

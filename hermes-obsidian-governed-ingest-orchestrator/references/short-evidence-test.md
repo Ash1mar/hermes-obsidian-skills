@@ -58,3 +58,18 @@ python3 "<skill-dir>/scripts/run_short_evidence_test.py" reenter \
 python3 "<skill-dir>/scripts/run_short_evidence_test.py" stop \
   --output <experiment-dir> --reentry-id <stable-reentry-id>
 ```
+
+新实验固定 `short-evidence-pages/v2`。已停止的旧实验可从协调节点显式选择该合同。
+使用 `reenter --from-node coordination --page-contract short-evidence-pages/v2`，其余参数沿用
+原实验。入口复用原映射回执，旧协调与写页响应仍由原合同解释。后续重进沿用当前合同。
+
+协调要求每页提供读者问题、适用范围和归组理由。目录附带每主题完整材料与资产体量。
+结构完整性由程序检查，合并语义仍由协调负责。明显过宽的分组只安排一次局部协调。
+写页沿原章节、主题和可分的原文单元形成片段。锚定条件、例外和整张表跟随片段，适用
+范围未细分的上下文可重复。原子依赖超限时记录具体材料，其他片段仍可独立生成。
+组装要求全部预期片段验证成功。
+
+片段回执分别记录正文小节内的证据、上下文、未解决项和资产查验。经程序确认的纯导航
+包装块可以由其完整表格承担引用。引用诊断包含具体编号，原始响应保持可复核。
+来源 QA 原样留存，另按信息性、影响待定位和已定位材料故障记录写作与发布影响。
+待定位 QA 保留发布审阅项，显式局部故障阻断其依赖片段。实验发布资格保持关闭。
