@@ -687,7 +687,7 @@ def verify_revision_drafts(root, board, repair):
 
 def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, page_contract, fragment_repair=None,
             fragment_exclusions=None, mapping_recovery=None, registry_revision=None, inherited=None,
-            split_output=None):
+            split_output=None, replay_only=False):
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', entry), 'valid stable reentry ID required')
     kb, kc, _ = runtime()
     board = operation['board']
@@ -706,6 +706,14 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
     holds = {}
     overlay = None
     preserved = []
+    if replay_only:
+        original = _load_json(root / 'result.json')
+        require(node == 'writing' and original['last_stage'] == 'offline_build'
+                and original['origin'] == operation['origin'] and not original['native_active_or_ready']
+                and not any((fragment_repair, fragment_exclusions, mapping_recovery, inherited)),
+                'zero-call writing replay requires the settled original writing checkpoint')
+        holds = {rid: hold for rid, hold in original['execution_holds'].items()
+                 if not previous.get(rid) or _load_json(root / previous[rid][0]['job'])['request']['phase'] != 'short-write'}
     if inherited:
         predecessor = root / 'reentries' / inherited['entry']
         prior_result = _load_json(predecessor / 'result.json')
@@ -749,6 +757,9 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
         require(original and set(original) <= previous.keys(), 'repair requires original reserved writing requests')
         verify_revision_drafts(root, board, fragment_repair)
     pending = plan.get('requests', [])
+    if replay_only:
+        require(all(row['phase'] == 'short-write' and previous.get(row['id']) for row in pending),
+                'writing replay requires exact returned native attempts')
     control = {
         'entry': entry, 'from_node': node, 'effective_node': current, 'stage': plan['stage'],
         'page_contract': page_contract,
@@ -758,6 +769,8 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
         'prior_reservations': {row['id']: previous[row['id']] for row in pending if row['id'] in previous},
         'started_at': time.time(),
     }
+    if replay_only:
+        control['replay_only'] = True
     if fragment_repair is not None:
         control['fragment_repair'] = fragment_repair
         control['fragment_repair_preview'] = plan['fragment_repair']
@@ -782,13 +795,13 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
                       directory=directory, previous=previous, page_contract=page_contract,
                       fragment_repair=fragment_repair, fragment_exclusions=fragment_exclusions,
                       mapping_overlay=overlay, preserved_pages=preserved, registry_revision=registry_revision,
-                      initial_holds=holds, split_output=split_output)
+                      initial_holds=holds, split_output=split_output, replay_only=replay_only)
 
 
 def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=False,
                entry=None, directory=None, previous=None, page_contract=None, fragment_repair=None,
                fragment_exclusions=None, mapping_overlay=None, preserved_pages=(), registry_revision=None,
-               initial_holds=None, split_output=None):
+               initial_holds=None, split_output=None, replay_only=False):
     kb, kc, _ = runtime()
     output = directory or root
     board = operation['board']
@@ -806,6 +819,9 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
                        page_namespace=operation.get('page_namespace'), card_layout=operation.get('card_layout'))
         planning_seconds = time.monotonic() - planning_started
         rows = plan.get('requests', [])
+        if replay_only:
+            require(all(row['phase'] == 'short-write' and previous.get(row['id']) for row in rows),
+                    'writing replay cannot dispatch a new model request')
         consumed_unknown = [r['id'] for r in rows if r['id'] in previous and not previous[r['id']]]
         if consumed_unknown:
             holds.update({rid: {'request_id': rid, 'reason': 'prior reserved completion remains unknown'}
@@ -850,7 +866,7 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
 def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=None, entry=None, dry_run=False,
           page_contract=None, fragment_repair=None, fragment_exclusions=None, mapping_recovery=None,
           registry_revision=None, split_output=None, separate_page_identities=False, mapping_from=None,
-          transport_profile='shared', mapping_fences=()):
+          transport_profile='shared', mapping_fences=(), replay_only=False):
     from short_evidence_pass import MAP_CONTRACT
 
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
@@ -900,7 +916,8 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
                                fragment_repair=fragment_repair or active.get('fragment_repair'),
                                fragment_exclusions=fragment_exclusions or active.get('fragment_exclusions'),
                                mapping_recovery=mapping_recovery, registry_revision=registry_revision, inherited=inherited,
-                               split_output=split_output or active.get('split_output') or operation.get('split_output'))
+                               split_output=split_output or active.get('split_output') or operation.get('split_output'),
+                               replay_only=replay_only)
             metrics = resume_mapping(root, operation, sources, seeds, groups)
         else:
             require(not (root / 'operation.json').exists(), 'operation already exists; inspect its durable evidence')

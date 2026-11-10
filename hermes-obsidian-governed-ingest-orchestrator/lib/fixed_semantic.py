@@ -521,7 +521,7 @@ def system_prompt(phase,view,correction=None):
                    'For a form wrapper, use the whole asset identified by asset_bindings. Inherited headings '
                    'are navigation only and do not identify a different form. Describe each required asset '
                    'using its own table content and include its actual citation.'
-                   if view.get('fragment_repair') else '')
+                   if view.get('fragment_repair') or view.get('local_fragment_scope') else '')
                 + (' Use source_continuations only to locate the original section and other planned coverage. '
                    'An excluded destination is an audit location, not a published link. Do not claim source '
                    'material is missing based on this packet. If an essential requirement cannot be answered, '

@@ -146,6 +146,22 @@ def writing_view(view):
     return view
 
 
+def local_task(view, bindings):
+    """Project the writing question from the slot's own topics and evidence."""
+    view.pop('reader_question', None)
+    view['name'] = view['fragment_position']['name']
+    scopes = list(dict.fromkeys(topic['scope'] for topic in view['topics'].values()))
+    view['scope'] = '；'.join(scopes)
+    view['fragment_task'] = {
+        'question': f"仅就「{view['name']}」片段，所分配的原文给出了哪些要求和依据？",
+        'deliverable_scope': scopes,
+        'required_evidence': [key for key, duty in view['obligations'].items() if duty['express']],
+        'preserve_limitations': [key for key, duty in view['obligations'].items()
+                                 if set(duty['mapped_roles']) & {'condition', 'exception', 'conflict', 'contrary'}],
+        'asset_bindings': bindings,
+    }
+
+
 def auditable_qa(view):
     return [*view['qa_impact'], *[{**q, 'writing': 'allow', 'publication': 'review'}
             for q in view.get('qa_annotations', ()) if q['status'] == 'unlocated']]
@@ -313,6 +329,8 @@ def body_request(group, limit, *, repair_contract=None):
         view['writing_contract'] = WRITE_CONTRACT
     if any(p.get('card_contract') for p in slots.values()):
         view['card_content'] = True
+    if any(p.get('fragment_task') for p in slots.values()) and not repair_contract:
+        view['local_fragment_scope'] = True
     if repair_contract:
         view['fragment_repair'] = repair_contract
     return request('short-write', view, dict.fromkeys(slots, WRITING_RESULT if modern else RESULT),
@@ -394,6 +412,15 @@ def check_fragment(row, slot, answer):
         verify_fragment(answer['sections'])
     duties = view['obligations']
     known = set(duties)
+    if view.get('card_contract') and 'sections' in answer:
+        cited = set().union(*(section_citations(section) for section in answer['sections']))
+        accounted = cited | set(answer['context'])
+        # A duplicate checkmark on accounted text cannot establish asset inspection.
+        # Preserve unknown IDs, real asset attestations and unresolved content.
+        redundant = {key for key in answer['inspected_assets'] if key in accounted
+                     and view['materials'].get(key, {}).get('kind') == 'block' and not duties[key]['inspect']}
+        if redundant:
+            answer = {**answer, 'inspected_assets': [key for key in answer['inspected_assets'] if key not in redundant]}
     state, diagnostic = 'structurally_valid', None
     qa_observations = []
     block_locations = None

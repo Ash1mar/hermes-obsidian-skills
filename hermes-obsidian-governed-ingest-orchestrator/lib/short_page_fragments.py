@@ -4,7 +4,7 @@ import re
 
 from hermes_source_units.validation import fingerprint
 from short_evidence_pass import USABLE_OUTPUT, evidence, require, source_revision
-from short_page_contract import CONTRACT, WRITE_CONTRACT, body_request, obligations, qa_impacts, topic_items, writing_view
+from short_page_contract import CONTRACT, WRITE_CONTRACT, body_request, local_task, obligations, qa_impacts, topic_items, writing_view
 
 SHARED = {'condition', 'exception', 'conflict', 'contrary', 'definition', 'context'}
 _UNIT_BOUNDARY = re.compile(r'^(?:#{1,6}\s|\d+(?:\.\d+)+(?:\s|[、.)])|\d+[、.)]\s|第[一二三四五六七八九十\d]+[条节章])')
@@ -87,6 +87,9 @@ def make_fragment(sources, reduced, page, position, topics, primary):
         writing_view(view)
     if card:
         view['card_contract'] = card['contract']
+        if card.get('local_fragment_scope'):
+            local_task(view, {key: {ref: material[ref]['label'] for ref in item['required_assets']}
+                              for key, item in material.items() if item['required_assets']})
     view['fragment_id'] = fingerprint([CONTRACT, view])
     return {'view': view, 'images': images, 'hold': sorted(hold)}
 
