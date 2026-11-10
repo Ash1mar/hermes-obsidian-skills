@@ -1,7 +1,7 @@
 """Authenticate saved short-path fragments and hand them to formal Build."""
 from contextlib import closing
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 import re
 
 from hermes_source_units import ContractError
@@ -123,7 +123,7 @@ def final_plan(root, operation, authorization, runner):
                              mapping_overlay=overlay, preserved_pages=control.get('preserved_pages', ()),
                              writing_contract=operation.get('writing_contract'),
                              split_output=control.get('split_output', operation.get('split_output')),
-                             page_namespace=operation.get('page_namespace'))
+                             page_namespace=operation.get('page_namespace'), card_layout=operation.get('card_layout'))
     require(rebuilt == _load_json(saved_plan), 'formal Build requires reproducible writing, QA and coverage')
     return rebuilt, sources
 
@@ -150,6 +150,7 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
             cited = sorted(set(re.findall(r'\[(S[0-9]+-[AB][0-9]+)\]', content)))
             support = [refs[ref] for ref in cited]
             proof, qa, checks = [], {}, []
+            card_path = page.get('card_path')
             for receipt in page['fragment_receipts']:
                 try:
                     view, native = native_fragment(root, by_hash[receipt], attempts, conn, runner)
@@ -160,7 +161,7 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
                                             'reopen_condition': 'recover the exact acknowledged native fragment'}
                     break
                 proof.append(native)
-                if dependencies is not None:
+                if dependencies is not None or card_path:
                     inspected = set(by_hash[receipt]['answer']['inspected_assets'])
                     assets = {ref for ref, duty in view['obligations'].items() if duty['inspect']}
                     require(assets == inspected, 'verified fragment lacks its required whole-asset inspection')
@@ -172,6 +173,11 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
                                                        for ref in sorted(assets)},
                                    'source_revisions': view['source_revisions'],
                                    'registered_packet_and_coverage': 'verified'})
+                    if card_path:
+                        checks[-1].update(inspected_assets=sorted(inspected),
+                                          expressed=sorted({ref for section in by_hash[receipt]['answer']['sections']
+                                                            for ref in re.findall(r'\[(S[0-9]+-[AB][0-9]+)\]', section['content'])}),
+                                          obligations=view['obligations'])
                 for q in auditable_qa(view):
                     if q['publication'] != 'allow':
                         qa[q['id']] = q
@@ -190,6 +196,9 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
                                'qa_issues': list(qa.values()), 'qa_status': 'qa_required' if qa else 'usable',
                                'source_eligible_at_admission': current_support,
                                'publication_authorized': authorization['publish'] and current_support and not qa})
+            if card_path:
+                candidates[-1]['card_path'] = card_path
+                candidates[-1]['coverage'] = checks
     exclusions = {**partition['excluded'], **proof_holds}
     excluded = [{'short_id': key, 'name': plan['expected_pages'][key]['name'],
                  'disposition': exclusions.get(key, {'category': 'delivery_conditions',
@@ -201,6 +210,12 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
         'pages': candidates, 'excluded': excluded, 'fragment_exclusions': plan.get('fragment_exclusions', []),
         'mapping_gaps': plan['reduced']['unresolved'], 'coordination_gaps': plan['coordination_issues'],
         'mapping_holds': plan['held_repairs'],
+        **({'material_coverage': {
+            'inventory': {ref: {'source_sha256': source['source_sha256'], 'locator': item['locator'],
+                                'sha256': item['sha256'], 'source_ref': item['source_ref']}
+                          for source in sources.values() for ref, item in source['items'].items()},
+            'mapping': plan['reduced']['dispositions'], 'writing_holds': plan['held'],
+        }} if operation.get('card_layout') else {}),
         **({'mapping_receipts': plan['reduced']['mapping_receipts']} if 'mapping_receipts' in plan['reduced'] else {}),
     }, bodies
 
@@ -286,11 +301,16 @@ def delivery(vault, run_id, authorization, *, replay=False):
                                                    if q['page_id'] == page['page_id']), None),
                            'coverage_proofs': row['same_page_coverage'], 'published': page['page_id'] in released,
                            'exclusion': exclusions.get(page['page_id'])})
-    return {'run_id': run_id, 'build_revision': run['revision'], 'build_evidence': run['short_evidence'],
+    result = {'run_id': run_id, 'build_revision': run['revision'], 'build_evidence': run['short_evidence'],
             'qa_advisory': advisory_pointer,
             'candidates': candidates, 'isolated_pages': proof['scope']['excluded'],
             'release_id': release['release_id'] if release else None, 'base_release': authorization['base_release'],
             'blockers': plan['blockers'], 'model_calls': 0}
+    if release and 'material_coverage' in proof['scope']:
+        from short_cards import write_navigation
+        directories = {str(PurePosixPath(row['path']).parent) for row in candidates if row['published']}
+        result['card_navigation'] = write_navigation(service, release, directories)
+    return result
 
 
 def execute(root, entry, authorization, dry_run, runner, *, existing_build=None, replay_build=None):

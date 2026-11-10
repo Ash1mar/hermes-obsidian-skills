@@ -2,7 +2,8 @@
 from contextlib import closing
 import json
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
+import re
 
 from .partial_finalize import pin, pinned
 from .source_units import _exclusive_lock, _json_bytes, _load_json, _sha, _vault_path, _write_atomic
@@ -27,15 +28,25 @@ def identity(service, short_id, name):
         fingerprint({'vault_id': vault_id, 'subject_id': subject}))
 
 
-def output_path(short_id):
-    return f'20_Notes/ShortEvidence/{short_id}.md'
+def output_path(short_id, card_path=None):
+    if card_path is None:
+        return f'20_Notes/ShortEvidence/{short_id}.md'
+    parts = PurePosixPath(card_path).parts
+    require(len(parts) == 3 and parts[0] == '30_Cards' and '/'.join(parts) == card_path
+            and parts[2].endswith('.md') and parts[2].casefold() != '00_目录.md'
+            and all(part not in ('.', '..') and part == part.strip(' .')
+                    and not re.search(r'[<>:"/\\|?*\[\]#^\x00-\x1f]', part)
+                    and not re.fullmatch(r'(?i:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?', part)
+                    and len(part.encode('utf-8')) <= 180 for part in (parts[1], parts[2], parts[2][:-3])),
+            'short card path must be a portable topic directory and readable Markdown name')
+    return card_path
 
 
 def projection(service, row):
     subject, page_id = identity(service, row['short_id'], row['name'])
     page = {'contract': 'hermes-knowledge-page-revision/v1', 'page_id': page_id,
             'subject_id': subject['subject_id'], 'parent_revision_id': None, 'action': 'create',
-            'path': output_path(row['short_id']), 'authored_sha256': row['authored_sha256'],
+            'path': output_path(row['short_id'], row.get('card_path')), 'authored_sha256': row['authored_sha256'],
             'support_refs': row['support_refs'], 'qa_status': row['qa_status'],
             'business_status': 'unassessed', 'visibility': 'draft'}
     page['revision_id'] = fingerprint({k: v for k, v in page.items() if k != 'contract'})
@@ -271,6 +282,15 @@ def admit(service, scope, bodies, root, job):
         pages, decisions = zip(*(projection(service, row) for row in scope['pages']), strict=True)
         require(not any(p['subject_id'] in occupied or _vault_path(service.vault, p['path']).exists()
                         for p in pages), 'short Build cannot overwrite an existing page or identity')
+        card_paths = [p['path'] for row, p in zip(scope['pages'], pages, strict=True) if row.get('card_path')]
+        registered = {s['current_path'].casefold() for s in registry['subjects']}
+        require(len({path.casefold() for path in card_paths}) == len(card_paths), 'duplicate short card path')
+        for card_path in card_paths:
+            target = _vault_path(service.vault, card_path)
+            require(target == service.vault / card_path and card_path.casefold() not in registered
+                    and (not target.parent.exists() or (target.parent.is_dir() and all(
+                        sibling.name.casefold() != target.name.casefold() for sibling in target.parent.iterdir()))),
+                    'short card path collides with an existing Vault entry')
         proof = {'contract': POLICY, 'vault_id': service.source.vault_id, 'scope': scope, 'admission': admission}
         if proof_path.exists():
             old = _load_json(proof_path)

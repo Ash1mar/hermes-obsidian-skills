@@ -135,7 +135,7 @@ def delivery_partition(plan):
     candidates, reasons = [], {}
     for page_id, spec in plan['expected_pages'].items():
         body = pages.get(page_id)
-        candidates.append({'page_id': page_id, 'path': f'20_Notes/ShortEvidence/{page_id}.md',
+        candidates.append({'page_id': page_id, 'path': spec.get('card_path', f'20_Notes/ShortEvidence/{page_id}.md'),
                            'identity': {'canonical_name': spec['name']}, 'content': body['content'] if body else ''})
         if not body:
             reasons[page_id] = {'category': 'unresolved', 'reason': 'missing accepted fragment coverage',

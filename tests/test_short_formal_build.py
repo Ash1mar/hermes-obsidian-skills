@@ -14,7 +14,8 @@ from hermes_source_units.validation import fingerprint
 
 
 @pytest.mark.parametrize('advisory', [False, True])
-def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_path, monkeypatch, advisory):
+@pytest.mark.parametrize('cards', [False, True])
+def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_path, monkeypatch, advisory, cards):
     ref, = publish_sources(vault, ['# One\n\nSource evidence.\n'])
     service = FileVaultFinalizeService(vault)
     root = tmp_path / 'experiment'
@@ -33,6 +34,9 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
                    'qa_status': 'qa_required' if i else 'usable', 'publication_authorized': not i,
                    'source_eligible_at_admission': True}
                   for i, key in enumerate(ids[:2])]
+    if cards:
+        for i, candidate in enumerate(candidates):
+            candidate['card_path'] = f'30_Cards/工程设计/设计卡片 {i}.md'
     scope = {'actor': 'agent', 'authorization': grant, 'origin': operation['origin'], 'coverage_complete': False,
              'operation_sha256': _sha((root / 'operation.json').read_bytes()), 'pages': candidates,
              'excluded': [{'short_id': ids[2], 'name': 'Isolated', 'disposition': {
@@ -66,6 +70,20 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
     release = apply(service, plan)['release']
     assert {p['page_id'] for p in release['subjects']} == selected
     assert service.validate(release['release_id'])['subject_count'] == len(selected)
+    if cards:
+        from short_cards import write_navigation
+
+        expected = [{'path': '30_Cards/工程设计/00_目录.md', 'state': 'ready', 'pages': len(selected)}]
+        assert write_navigation(service, release, {'30_Cards/工程设计'}) == expected
+        nav = vault / expected[0]['path']
+        contents = nav.read_bytes()
+        assert b'Page 0' in contents and (b'Page 1' in contents) is advisory
+        assert write_navigation(service, release, {'30_Cards/工程设计'}) == expected
+        assert nav.read_bytes() == contents
+        nav.write_text('Manual index', encoding='utf-8')
+        assert write_navigation(service, release, {'30_Cards/工程设计'}) == [
+            {'path': expected[0]['path'], 'state': 'occupied'}]
+        assert nav.read_text(encoding='utf-8') == 'Manual index'
     proof = vault / pins[-1]['ref']
     proof.write_bytes(proof.read_bytes() + b' ')
     with pytest.raises(ContractError, match='changed'):

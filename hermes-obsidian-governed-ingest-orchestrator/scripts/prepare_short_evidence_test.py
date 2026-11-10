@@ -112,7 +112,7 @@ def collect(rows, saved, overlay=None):
 
 def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_contract=None, fragment_repair=None,
             fragment_exclusions=None, mapping_contract=None, mapping_overlay=None, preserved_pages=(),
-            writing_contract=None, split_output=None, page_namespace=None):
+            writing_contract=None, split_output=None, page_namespace=None, card_layout=None):
     from short_evidence_pass import MAP_CONTRACT, MAP_RECEIPT
 
     native_holds = native_holds or {}
@@ -153,6 +153,8 @@ def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_con
     if page_contract == pages_v2.CONTRACT:
         if writing_contract:
             reduced['writing_contract'] = writing_contract
+        if card_layout:
+            reduced['card_layout'] = card_layout
         return advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs,
                                  fragment_repair, fragment_exclusions, split_output, page_namespace)
     coordination = coordination_request(sources, reduced)

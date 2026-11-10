@@ -738,7 +738,8 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
                    fragment_repair=fragment_repair, fragment_exclusions=fragment_exclusions,
                    mapping_contract=operation.get('mapping_contract'), mapping_overlay=overlay,
                    preserved_pages=preserved, native_holds=holds, writing_contract=operation.get('writing_contract'),
-                   split_output=split_output, page_namespace=operation.get('page_namespace'))
+                   split_output=split_output, page_namespace=operation.get('page_namespace'),
+                   card_layout=operation.get('card_layout'))
     current = reentry_node(plan, node)
     if mapping_recovery is not None:
         require(plan['stage'] == 'map' and {r['id'] for r in plan['requests']} == set(mapping_recovery['requests']),
@@ -802,7 +803,7 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
                        mapping_overlay=mapping_overlay, preserved_pages=preserved_pages,
                        writing_contract=operation.get('writing_contract'),
                        split_output=split_output if split_output is not None else operation.get('split_output'),
-                       page_namespace=operation.get('page_namespace'))
+                       page_namespace=operation.get('page_namespace'), card_layout=operation.get('card_layout'))
         planning_seconds = time.monotonic() - planning_started
         rows = plan.get('requests', [])
         consumed_unknown = [r['id'] for r in rows if r['id'] in previous and not previous[r['id']]]
@@ -904,11 +905,13 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
         else:
             require(not (root / 'operation.json').exists(), 'operation already exists; inspect its durable evidence')
             require(not any(meta['slug'] == board for meta in kb.list_boards()), 'native test board already exists')
-            kb.create_board(board, name='Short evidence ' + operation_id, default_workdir=str(root))
             page_contract = page_contract or FRAGMENT_CONTRACT
             operation['page_contract'] = page_contract
             operation['mapping_contract'] = MAP_CONTRACT
             operation['writing_contract'] = WRITE_CONTRACT
+            if page_contract == FRAGMENT_CONTRACT:
+                from short_cards import snapshot
+                operation['card_layout'] = snapshot(vault)
             operation['split_output'] = True
             if mapping_from is not None:
                 from model_transport import policy
@@ -920,6 +923,7 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
             groups = mapping_groups(sources, MAP_CONTRACT)
             if mapping_from is not None:
                 holds = mapping_comparison(root, mapping_from, operation, sources, seeds, groups, mapping_fences)
+            kb.create_board(board, name='Short evidence ' + operation_id, default_workdir=str(root))
             save(root / 'operation.json', operation)
             metrics = []
         return run_stages(root, operation, sources, seeds, groups, metrics, resumed=resumed,
