@@ -293,14 +293,20 @@ def main():
             handoff = _load_json(root / 'source-handoff.json')
             result = _load_json(short / 'result.json')
             authorization = _load_json(root / 'formal-authorization.json')
-            first = _load_json(short / 'reentries/formal-fifth-release/result.json')
-            service = FileVaultFinalizeService(vault)
-            run = _load_json(service.build._run_path(first['run_id']))
-            if args.content_isolation:
-                record_content_isolation(service, run, _load_json(args.content_isolation), authorization)
             qualification = qualify_sources(vault, root, handoff, request)
-            print('Source qualification settled; reusing the existing Build for release', flush=True)
-            delivery = publish(vault, first['run_id'], authorization)
+            first = short / 'reentries/formal-fifth-release/result.json'
+            if first.is_file():
+                committed = _load_json(first)
+                if args.content_isolation:
+                    service = FileVaultFinalizeService(vault)
+                    run = _load_json(service.build._run_path(committed['run_id']))
+                    record_content_isolation(service, run, _load_json(args.content_isolation), authorization)
+                print('Source qualification settled; reusing the existing Build for release', flush=True)
+                delivery = publish(vault, committed['run_id'], authorization)
+            else:
+                require(not args.content_isolation, 'content isolation requires a completed Build')
+                print('Reusing the settled writing checkpoint for one formal Build recovery', flush=True)
+                delivery = execute(short, 'formal-build-recovery', authorization, False, runner)
         else:
             require(not marker.exists() and not args.content_isolation, 'stable run already started or unsupported early isolation')
             start = time.time()

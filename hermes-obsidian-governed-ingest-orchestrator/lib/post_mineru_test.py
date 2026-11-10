@@ -120,7 +120,13 @@ def verify_import_board(board):
 
     if not board:
         fail('origin source handoff is missing its native board')
-    with closing(kanban_db_connect.connect(board=board)) as conn:
+    # A native short worker carries a DB override for its own board. Resolve
+    # the explicitly bound source board independently of that worker override.
+    path = (kanban_db.kanban_home() if board == kanban_db.DEFAULT_BOARD else
+            kanban_db.board_dir(board)) / 'kanban.db'
+    if not path.is_file():
+        fail('origin source handoff is missing its native board database')
+    with closing(kanban_db_connect.connect(db_path=path)) as conn:
         if any(task.claim_lock or task.status in ('ready', 'running', 'todo', 'triage')
                for task in kanban_db.list_tasks(conn)):
             fail('origin source handoff has runnable cards or live claims')

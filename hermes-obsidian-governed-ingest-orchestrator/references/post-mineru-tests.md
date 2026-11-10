@@ -66,6 +66,10 @@ evidence. A confirmed content issue can be isolated before release with
 `--content-isolation <JSON>`, binding the page ID, revision, body hash, cited
 source references and reason. Record the interrupted run as an automation
 failure even if delivery recovery succeeds.
+After a formal Build worker stops without a committed Build result, the same
+delivery entry can run one stable formal recovery on the drained board. It
+reuses the exact writing checkpoint and authorization. The old card and error
+remain auditable, and recovery grants no additional semantic calls.
 
 For another independent downstream round in the same test Vault, pass
 `--repeat-from <first-pipeline-output>` and `--round-id <stable-round-id>`
