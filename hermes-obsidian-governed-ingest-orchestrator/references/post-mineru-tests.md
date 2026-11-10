@@ -53,6 +53,39 @@ and writing stages, authenticates the completed fragments, then executes
 formal Build, eligible partial release, Provider sync and exact-scope
 verification. The new Vault must have its own source registration, release
 and Provider namespace. A material hold remains visible in the run evidence.
+
+New native short runs pin the short-card layout before coordination. The same
+coordination call groups reader questions into shared topic directories and sees
+the names of existing registered directories. The program keeps the stable page
+identity separate from the safe `30_Cards/<topic>/<title>.md` path and records
+the exact destination in Build. A name collision receives a stable disambiguator.
+An already registered identity retains its destination and is held for a
+separately authorized revision. Older operation records retain their paths and
+writing rules.
+
+The program renders a page title, ordered section headings, a linked contents
+list and `knowledge-card` metadata from verified fragments. After release it
+refreshes managed `00_目录.md` files from the eligible release subjects.
+Navigation is outside the knowledge corpus. An existing user-managed index is
+reported as occupied and preserved.
+
+The new writing contract requires primary definitions to be expressed. It
+attempts to separate independent evidence components when a local dependency
+holds, preserving shared conditions, explicit whole-table dependencies and the
+required-fragment gate. Formal proof records source identity, mapping, supplied
+materials, required expressions, actual citations, inspection and held scope.
+The original page-selection and model correction budgets still apply. Citation
+and inspection checks do not certify the semantic accuracy of a paraphrase or
+table cell. No independent semantic reviewer is added.
+
+For a same-material comparison, run
+`python3 "<skill-dir>/scripts/compare_short_coverage.py"` with `--baseline-vault`,
+`--baseline-workflow`, `--baseline-manifest`, and the corresponding `--candidate-*`
+options. Manifest paths are relative to their Vault and may select an archived
+release. The command validates both registered inventories, verifies published
+page body hashes, and lists retained, missing and gained citation locations by
+stable material. Use that list for separate checks of the actual definitions,
+conditions, exceptions and table details. It is read-only and does not dispatch.
 To test from a new Vault and raw PDFs, use the same short-path controller with
 `test_mode: bootstrap-short-test/v1` and omit `reuse_conversion`. The native
 bootstrap and source workers run fresh conversion. The controller verifies the

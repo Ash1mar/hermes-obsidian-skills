@@ -10,10 +10,11 @@ SHARED = {'condition', 'exception', 'conflict', 'contrary', 'definition', 'conte
 _UNIT_BOUNDARY = re.compile(r'^(?:#{1,6}\s|\d+(?:\.\d+)+(?:\s|[、.)])|\d+[、.)]\s|第[一二三四五六七八九十\d]+[条节章])')
 
 
-def connected_groups(source, relations):
+def connected_groups(source, relations, *, join_adjacent=True):
     """Keep reference edges and whole registered assets within the same unit of work."""
-    common = {row['item'] for row in relations if row['role'] in SHARED and not row['applies_to']}
-    owned = {row['item'] for row in relations if row['role'] not in SHARED or row['applies_to']}
+    shared = SHARED if join_adjacent else SHARED - {'definition'}
+    common = {row['item'] for row in relations if row['role'] in shared and not row['applies_to']}
+    owned = {row['item'] for row in relations if row['role'] not in shared or row['applies_to']}
     items = source['items']
     parents = {key: key for key in owned}
 
@@ -31,7 +32,7 @@ def connected_groups(source, relations):
         if key not in owned or item['kind'] != 'block':
             continue
         text = re.sub(r'<!--[^<>]*-->', '', item['text'] or '').lstrip()
-        if (previous is not None and item.get('section') == items[previous].get('section')
+        if (join_adjacent and previous is not None and item.get('section') == items[previous].get('section')
                 and not item['required_assets'] and not _UNIT_BOUNDARY.match(text)):
             join(previous, key)
         previous = key
@@ -67,7 +68,8 @@ def make_fragment(sources, reduced, page, position, topics, primary):
         raw_qa[key] = source['qa']
         revisions[key] = source_revision(source)
     modern = reduced.get('writing_contract') == WRITE_CONTRACT
-    duties = obligations(sources, material, topics, primary, modern=modern)
+    card = reduced.get('card_layout')
+    duties = obligations(sources, material, topics, primary, modern=modern, card=bool(card))
     impacts = qa_impacts(sources, selection, material, duties)
     anchors = {ref for topic in topics.values() for relation in topic['relations'] for ref in relation['applies_to']}
     hold = {item for item, duty in duties.items()
@@ -83,6 +85,8 @@ def make_fragment(sources, reduced, page, position, topics, primary):
     }
     if modern:
         writing_view(view)
+    if card:
+        view['card_contract'] = card['contract']
     view['fragment_id'] = fingerprint([CONTRACT, view])
     return {'view': view, 'images': images, 'hold': sorted(hold)}
 
@@ -99,9 +103,9 @@ def fits(fragment, limit):
     return body_request([fragment], limit)['budget']['fits']
 
 
-def split_topic(sources, reduced, page, position, tid, topic, limit):
+def split_topic(sources, reduced, page, position, tid, topic, limit, *, isolate_holds=False):
     source = sources[topic['source']]
-    common, groups = connected_groups(source, topic['relations'])
+    common, groups = connected_groups(source, topic['relations'], join_adjacent=not isolate_holds)
     if len(groups) < 2:
         return [make_fragment(sources, reduced, page, position, {tid: topic}, primary_items({tid: topic}))]
 
@@ -114,9 +118,13 @@ def split_topic(sources, reduced, page, position, tid, topic, limit):
     result, pending = [], set()
     for group in groups:
         trial = pending | group
-        if pending and not fits(part(trial, len(result) + 1), limit):
-            result.append(part(pending, len(result) + 1))
-            trial = group
+        if pending:
+            number = len(result) + 1
+            candidate = part(trial, number)
+            separated = isolate_holds and (bool(part(pending, number)['hold']) != bool(part(group, number)['hold']))
+            if separated or not fits(candidate, limit):
+                result.append(part(pending, number))
+                trial = group
         pending = trial
     if pending:
         result.append(part(pending, len(result) + 1))
@@ -137,10 +145,11 @@ def page_fragments(sources, reduced, page, limit):
         for part, (tid, topic) in enumerate(topics.items(), 1):
             pos = {**position, 'part': part, 'topic': topic['name']}
             one = make_fragment(sources, reduced, page, pos, {tid: topic}, primary_items({tid: topic}))
-            if fits(one, limit):
+            isolate = bool(reduced.get('card_layout') and one['hold'])
+            if not isolate and fits(one, limit):
                 result.append(one)
             else:
-                result.extend(split_topic(sources, reduced, page, pos, tid, topic, limit))
+                result.extend(split_topic(sources, reduced, page, pos, tid, topic, limit, isolate_holds=isolate))
     return result
 
 
@@ -185,15 +194,24 @@ def page_identity(identities, namespace):
 
 def pack(sources, reduced, specs, limit, *, split_output=False, oversized=None, page_namespace=None):
     pending, planned, held, expected = [], [], [], {}
-    for spec in specs:
-        topics = selected_topics(reduced, spec['topics'])
-        page = {**spec, 'id': page_identity((topic['identity'] for topic in topics.values()), page_namespace)}
+    pages = [{**spec, 'id': page_identity((reduced['topics'][tid]['identity'] for tid in spec['topics']), page_namespace)}
+             for spec in specs]
+    if layout := reduced.get('card_layout'):
+        from short_cards import place
+        pages = place(layout, pages)
+    for page in pages:
+        page_id = page['id']
+        expected[page_id] = {'name': page['name'], 'reader_question': page['reader_question'],
+                             'scope': page['scope'], 'fragments': []}
+        if 'registered_path' in page:
+            held.append({'page': page_id, 'reason': 'registered_page_requires_revision', 'path': page['registered_path']})
+            continue
+        if 'card_path' in page:
+            expected[page_id]['card_path'] = page['card_path']
         fragments = page_fragments(sources, reduced, page, limit)
         if split_output:
             fragments = [part for fragment in fragments for part in (split_atomic_output(fragment, limit) or [fragment])]
-        page_id = page['id']
-        expected[page_id] = {'name': page['name'], 'reader_question': page['reader_question'],
-                             'scope': page['scope'], 'fragments': [f['view']['fragment_id'] for f in fragments]}
+        expected[page_id]['fragments'] = [f['view']['fragment_id'] for f in fragments]
         require(len(expected[page_id]['fragments']) == len(set(expected[page_id]['fragments'])),
                 'duplicate fragment identity')
         for fragment in fragments:
@@ -262,6 +280,9 @@ def build(expected, checks, covered=(), *, excluded_receipts=()):
             'qa_publication_review': sorted({qid for row in rows for qid in row['qa_publication_review']}),
             'publication_eligible': False,
         }
+        if 'card_path' in page:
+            from short_cards import render
+            complete[page_id].update(card_path=page['card_path'], content=render(page, sections))
         if coverage:
             complete[page_id]['coverage_receipts'] = [row['coverage_sha256'] for row in coverage]
     return complete

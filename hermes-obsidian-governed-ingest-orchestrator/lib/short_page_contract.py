@@ -17,6 +17,9 @@ PAGE = closed({
     'grouping_basis': {'enum': ['single_topic', 'shared_reader_task', 'inseparable_conditions', 'comparison']},
 })
 COORDINATION = closed({'pages': array(PAGE), 'unresolved': array(ISSUE)})
+CARD_COORDINATION = closed({**COORDINATION['properties'], 'pages': array(closed({
+    **PAGE['properties'], 'theme_directory': NAME,
+}))})
 SECTION_BODY = closed({
     'heading': NAME, 'content': {'type': 'string', 'minLength': 1}, 'expressed': array(REF),
 })
@@ -148,7 +151,11 @@ def auditable_qa(view):
             for q in view.get('qa_annotations', ()) if q['status'] == 'unlocated']]
 
 
-def obligations(sources, material, topics, primary, *, modern=False):
+def obligations(sources, material, topics, primary, *, modern=False, card=False):
+    substantive = {'evidence', 'condition', 'exception', 'conflict', 'contrary'}
+    if card:
+        substantive.add('definition')
+    protected_roles = substantive - {'evidence'}
     by_item = {}
     for topic in topics.values():
         for link in topic['relations']:
@@ -158,15 +165,14 @@ def obligations(sources, material, topics, primary, *, modern=False):
         source = sources[key.split('-', 1)[0]]
         roles = by_item.get(key, set())
         covers_by = []
-        navigation = table_navigation(item, material) if modern and not roles & {
-            'condition', 'exception', 'conflict', 'contrary'} else []
+        navigation = table_navigation(item, material) if modern and not roles & protected_roles else []
         if item['kind'] == 'asset':
             classification = 'asset'
             required = key in primary and bool(roles)
         elif navigation:
             classification, required = 'navigation', False
             covers_by = navigation
-        elif roles & {'evidence', 'condition', 'exception', 'conflict', 'contrary'}:
+        elif roles & substantive:
             classification = 'substantive'
             required = key in primary
         elif 'asset' in roles:
@@ -260,7 +266,11 @@ def coordination_request(sources, reduced, issue=None):
         view['issue'] = issue
     else:
         view['unresolved_materials'] = reduced['unresolved']
-    return request('short-coordinate', view, COORDINATION, 720 + 166 * len(topics), PASS_LIMIT, images.values())
+    layout = reduced.get('card_layout')
+    if layout:
+        view['existing_theme_directories'] = layout['themes']
+    return request('short-coordinate', view, CARD_COORDINATION if layout else COORDINATION,
+                   720 + (190 if layout else 166) * len(topics), PASS_LIMIT, images.values())
 
 
 def check_coordination(view, answer):
@@ -270,6 +280,8 @@ def check_coordination(view, answer):
                 'reader question and grouping reason are required')
         require((len(page['topics']) == 1) == (page['grouping_basis'] == 'single_topic'),
                 'grouping basis must match the page membership')
+        if 'existing_theme_directories' in view:
+            require(page['theme_directory'].strip(), 'a shared theme directory is required')
 
 
 def coordination_issues(answer, topics):
@@ -299,6 +311,8 @@ def body_request(group, limit, *, repair_contract=None):
     modern = all(p.get('writing_contract') == WRITE_CONTRACT for p in slots.values())
     if modern:
         view['writing_contract'] = WRITE_CONTRACT
+    if any(p.get('card_contract') for p in slots.values()):
+        view['card_content'] = True
     if repair_contract:
         view['fragment_repair'] = repair_contract
     return request('short-write', view, dict.fromkeys(slots, WRITING_RESULT if modern else RESULT),
@@ -375,6 +389,9 @@ def check_fragment(row, slot, answer):
     view = row['view']['pages'][slot]
     modern = view.get('writing_contract') == WRITE_CONTRACT
     _check_shape(WRITING_RESULT if modern else RESULT, answer, {}, '$')
+    if view.get('card_contract') and 'sections' in answer:
+        from short_cards import verify_fragment
+        verify_fragment(answer['sections'])
     duties = view['obligations']
     known = set(duties)
     state, diagnostic = 'structurally_valid', None

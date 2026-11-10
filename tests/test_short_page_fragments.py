@@ -43,6 +43,55 @@ def page(topics, sections=()):
             'grouping_basis': 'single_topic' if len(topics) == 1 else 'shared_reader_task'}
 
 
+def test_new_card_keeps_definition_and_limits_a_local_table_hold():
+    from short_cards import CONTRACT
+
+    items = {'S1-B1': item('block', 'A design record means the required document.', 'Section'),
+             'S1-B2': item('block', 'Inspection conditions are in the table.', 'Section', ['S1-A3']),
+             'S1-A3': item('asset', '| Table condition |', 'Section')}
+    sources = {'S1': source(items)}
+    reduced = mapped(items, {'T1': [link('S1-B1', 'definition'), link('S1-B2', 'evidence')]})
+    reduced['writing_contract'] = WRITE_CONTRACT
+    layout = {'contract': CONTRACT, 'themes': ['设计管理'], 'directories': [], 'occupied': [], 'existing': {}}
+    spec = {**page(['T1']), 'name': '设计文件定义', 'theme_directory': '设计管理'}
+    old, _, _ = pack(sources, reduced, [spec], 40_000)
+    assert not old[0]['view']['pages']['p1']['obligations']['S1-B1']['express']
+    reduced['card_layout'] = layout
+    reduced['dispositions']['S1-A3']['status'] = 'pending'
+    requests, held, expected = pack(sources, reduced, [spec], 40_000)
+    assert len(held) == 1 and held[0]['unresolved'] == ['S1-A3']
+    row, = requests
+    view = row['view']['pages']['p1']
+    assert view['obligations']['S1-B1']['express'] and set(view['materials']) == {'S1-B1'}
+    answer = {'sections': [{'heading': '设计文件', 'content': '定义 [S1-B1]'}],
+              'context': [], 'unresolved': [], 'inspected_assets': []}
+    accepted = check_fragment(row, 'p1', answer)
+    assert not build(expected, [accepted])
+    with pytest.raises(ValueError, match='required_expressions_missing=S1-B1'):
+        check_fragment(row, 'p1', {**answer, 'context': ['S1-B1'],
+                                   'sections': [{'heading': '定义', 'content': '定义'}]})
+
+
+def test_card_path_is_readable_safe_and_stable_and_renders_toc():
+    from short_cards import CONTRACT, place, render
+
+    layout = {'contract': CONTRACT, 'themes': ['Design'], 'directories': ['design'],
+              'occupied': ['30_Cards/Design/表单－校核.md'], 'existing': {'old': '20_Notes/ShortEvidence/old.md'}}
+    first = {'id': '12345678a', 'name': '表单/校核', 'theme_directory': 'design'}
+    second = {'id': '23456789b', 'name': '表单/校核', 'theme_directory': 'Design'}
+    old = {'id': 'old', 'name': 'Old', 'theme_directory': 'Design'}
+    rows = place(layout, [first, second, old])
+    assert rows == list(reversed(place(layout, [old, second, first])))
+    assert rows[0]['card_path'] == '30_Cards/Design/表单－校核 · 12345678.md'
+    assert rows[1]['card_path'] == '30_Cards/Design/表单－校核 · 23456789.md'
+    assert rows[2]['registered_path'] == layout['existing']['old']
+    text = render(first, {(1, '适用范围'): [{'heading': '适用范围', 'content':
+                  '###### 额外说明\n应核对 [S1-B1]\n\n\x60\x60\x60\n# literal\n\x60\x60\x60'}]})
+    assert 'type: knowledge-card' in text and '# 表单/校核\n' in text
+    assert '## 目录' in text and '## 适用范围\n' in text and '### 适用范围（2）' in text
+    assert '#### 额外说明' in text and '# literal' in text and '[S1-B1]' in text
+
+
 def test_primary_context_asset_keeps_whole_inspection_and_expression():
     items = {'S1-A1': item('asset', '| controlled form |', 'Records')}
     sources = {'S1': source(items)}
