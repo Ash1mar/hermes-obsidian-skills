@@ -7,7 +7,7 @@ from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _sha, _vault_path
 from hermes_source_units.validation import fingerprint
 from short_evidence_pass import require
-from short_page_contract import (WRITE_CONTRACT, auditable_qa, body_request, check_fragment, navigation_wrapper,
+from short_page_contract import (WRITE_CONTRACT, auditable_qa, body_request, check_fragment, local_task, navigation_wrapper,
                                  section_citations, table_navigation, writing_retry, writing_view)
 
 CONTRACT = 'short-fragment-repair/v1'
@@ -42,7 +42,6 @@ def scoped_request(row, slot, limit, *, locations=None, continuations=(), modern
     """Build a single slot with explicit local authority and source-bound form references."""
     old = row['view']['pages'][slot]
     view = copy.deepcopy(old)
-    position = view['fragment_position']
     materials = view['materials']
     bindings = {}
     for key, item in materials.items():
@@ -59,18 +58,7 @@ def scoped_request(row, slot, limit, *, locations=None, continuations=(), modern
             duty.update(role='navigation', express=False,
                         covers_by=navigation if modern else linked if duty['assignment'] == 'primary' else [])
         bindings[key] = assets
-    view.pop('reader_question', None)
-    view['name'] = position['name']
-    scopes = list(dict.fromkeys(topic['scope'] for topic in view['topics'].values()))
-    view['scope'] = '；'.join(scopes)
-    view['fragment_task'] = {
-        'question': f"仅就「{position['name']}」片段，所分配的原文给出了哪些要求和依据？",
-        'deliverable_scope': scopes,
-        'required_evidence': [key for key, duty in view['obligations'].items() if duty['express']],
-        'preserve_limitations': [key for key, duty in view['obligations'].items()
-                                 if set(duty['mapped_roles']) & {'condition', 'exception', 'conflict', 'contrary'}],
-        'asset_bindings': bindings,
-    }
+    local_task(view, bindings)
     if locations is not None:
         view['source_continuations'] = list(continuations)
         view['material_locations_sha256'] = fingerprint(locations)

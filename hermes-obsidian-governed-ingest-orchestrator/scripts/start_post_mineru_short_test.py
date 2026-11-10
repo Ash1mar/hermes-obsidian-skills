@@ -202,6 +202,8 @@ def main():
     parser.add_argument('--reentry-id')
     parser.add_argument('--prior-entry')
     parser.add_argument('--fragment-repair', type=Path)
+    parser.add_argument('--replay-writing', action='store_true',
+                        help='Recover an unpublished writing checkpoint from exact returned attempts with zero model calls')
     parser.add_argument('--split-atomic-fragment')
     parser.add_argument('--mapping-recovery', type=Path)
     parser.add_argument('--source-registry-revision', type=int)
@@ -214,6 +216,9 @@ def main():
     request = _load_json(args.request.resolve(strict=True))
     root = args.output.resolve()
     vault = Path(request['vault_path']).resolve()
+    require(not args.replay_writing or (args.from_node == 'writing' and not any((
+        args.fragment_repair, args.split_atomic_fragment, args.prior_entry, args.mapping_recovery,
+        args.resume_delivery, args.content_isolation))), 'writing replay requires an isolated writing reentry')
     require(not root.is_relative_to(vault), 'test evidence must remain outside the Vault')
     require(bool(args.repeat_from) == bool(args.round_id)
             and (not args.round_id or (re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', args.round_id)
@@ -263,7 +268,7 @@ def main():
             writing = args.from_node == 'writing'
             require(args.reentry_id and re.fullmatch(entry_pattern, args.reentry_id)
                     and not args.resume_delivery and not args.content_isolation
-                    and (bool(args.fragment_repair or args.split_atomic_fragment) and not args.mapping_recovery if writing else
+                    and (bool(args.fragment_repair or args.split_atomic_fragment or args.replay_writing) and not args.mapping_recovery if writing else
                          bool(args.mapping_recovery) and not args.fragment_repair and not args.split_atomic_fragment)
                     and (not args.prior_entry or (writing and re.fullmatch(entry_pattern, args.prior_entry))),
                     'supplement requires a stable reentry and its node-specific manifest')
@@ -273,11 +278,18 @@ def main():
             handoff = _load_json(root / 'source-handoff.json')
             qualification = _load_json(root / 'source-qualification.json')
             prior_output = short / 'reentries' / args.prior_entry if args.prior_entry else root
-            original = _load_json(prior_output / 'final-acceptance.json')
             service = FileVaultFinalizeService(vault)
-            base_release = original['delivery']['release_id']
-            require(service.status()['current_release_id'] == base_release and service.validate(base_release)['ok'],
-                    'prior release must remain the exact supplement base')
+            original = None
+            if args.replay_writing:
+                require(not (root / 'final-acceptance.json').exists()
+                        and not service.status()['current_release_id'] and 'test' in request['security_domain'].split('-'),
+                        'writing replay must preserve the unpublished isolated Vault')
+                base_release = None
+            else:
+                original = _load_json(prior_output / 'final-acceptance.json')
+                base_release = original['delivery']['release_id']
+                require(service.status()['current_release_id'] == base_release and service.validate(base_release)['ok'],
+                        'prior release must remain the exact supplement base')
             recovery = _load_json(args.mapping_recovery) if not writing else None
             if recovery:
                 require(recovery['prior_build'] == original['delivery']['run_id'], 'supplement prior Build changed')
@@ -287,12 +299,12 @@ def main():
                                   node=args.from_node, entry=args.reentry_id, mapping_recovery=recovery,
                                   fragment_repair=_load_json(args.fragment_repair) if args.fragment_repair else None,
                                   split_output=args.split_atomic_fragment,
-                                  registry_revision=args.source_registry_revision)
+                                  registry_revision=args.source_registry_revision, replay_only=args.replay_writing)
             directory = short / 'reentries' / args.reentry_id
             require(result['last_stage'] == 'offline_build', 'supplement did not reach a settled writing checkpoint')
             plan_path = sorted(directory.glob('stage-*-offline_build.json'))[-1]
             partition = delivery_partition(_load_json(plan_path))
-            published = {p['short_id'] for p in original['delivery']['candidates'] if p['published']} if writing else set()
+            published = {p['short_id'] for p in original['delivery']['candidates'] if p['published']} if writing and original else set()
             selected = [pid for pid in partition['included'] if pid not in published]
             authorization = {'contract': 'short-formal-authorization/v1', 'writing_entry': args.reentry_id,
                              'checkpoint': {'control_sha256': runner.sha(directory / 'control.json'),
@@ -304,7 +316,7 @@ def main():
             if selected:
                 delivery = execute(short, 'formal-' + args.reentry_id, authorization, False, runner)
             else:
-                require(writing, 'mapping supplement found no complete affected pages')
+                require(writing and original, 'recovery found no complete affected pages')
                 final_plan(short, _load_json(short / 'operation.json'), authorization, runner)
                 delivery = original['delivery']
                 provider_result = _load_json(prior_output / 'provider-result.json')
@@ -396,7 +408,8 @@ def main():
         final = accept(vault, _load_json(short / 'operation.json'), delivery, provider, args.provider_state.resolve())
         final.update(source_handoff=handoff, short_result=result, delivery=delivery, wall_seconds=time.time() - start,
                      source_qualification=qualification,
-                     whole_run_continuous_automation=not args.resume_delivery and args.from_node != 'formal-build')
+                     whole_run_continuous_automation=not (args.resume_delivery or args.replay_writing)
+                     and args.from_node != 'formal-build')
         if args.from_node == 'formal-build':
             final.update(replayed_from='formal-build', supplement_continuous_automation=True)
         runner.save(output / 'final-acceptance.json', final)
