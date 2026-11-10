@@ -11,6 +11,7 @@ from hermes_source_units.source_units import _load_json,_write_atomic,_json_byte
 from hermes_source_units.validation import fingerprint
 
 CONTRACT='post-mineru-test/v1'
+BOOTSTRAP_SHORT='bootstrap-short-test/v1'
 
 def fail(message):raise ContractError('TEST_BUNDLE_IMPORT_INVALID','$',message)
 def sha(data):return hashlib.sha256(data).hexdigest()
@@ -47,31 +48,70 @@ def _verify_row(vault,row):
     if sha((_vault_path(vault,row['raw_ref'])).read_bytes())!=row['source_sha256']:fail('target original changed')
     return bundle
 
-def imported_source_boundary(vault, workflow_id, workflow):
-    """Read the latched source handoff used by independent short runs."""
+def _source_pause(vault, workflow_id, workflow):
     scope = workflow['scope']
     pause = workflow.get('pause_control', {})
     if scope.get('pause_after') != ['exact_plan'] or pause.get('boundary') != 'exact_plan':
         return None
     if workflow.get('cancel_requested') or workflow['state'] in ('cancelled', 'failed'):
         fail('origin source handoff was stopped')
-    startup = _load_json(_vault_path(vault, scope['bootstrap_ref']))
+    latch = _load_json(_vault_path(vault, pause['report_ref']))
+    evidence = latch['evidence']
+    if (latch['contract'] != 'hermes-ingest-pause/v1' or evidence['workflow_id'] != workflow_id
+            or evidence['boundary'] != 'exact_plan' or evidence['source_outcomes'] != workflow['source_outcomes']
+            or latch['evidence_digest'] != pause['evidence_digest']
+            or latch['evidence_digest'] != 'sha256:' + fingerprint(evidence)):
+        fail('origin source pause evidence changed')
+    return _load_json(_vault_path(vault, scope['bootstrap_ref']))
+
+
+def imported_source_boundary(vault, workflow_id, workflow):
+    """Read the latched source handoff used by independent conversion imports."""
+    startup = _source_pause(vault, workflow_id, workflow)
+    if not startup or 'test_bundle_import' not in startup:
+        return None
     pointer = startup['test_bundle_import']
     path = _vault_path(vault, pointer['ref'])
     payload = path.read_bytes()
     report = json.loads(payload)
-    latch = _load_json(_vault_path(vault, pause['report_ref']))
-    evidence = latch['evidence']
     if (pointer['contract'] != CONTRACT or report['contract'] != CONTRACT
             or pointer['sha256'] != sha(payload) or report['workflow_id'] != workflow_id
             or report['vault_id'] != _load_json(vault / '_system/vault.json')['vault']['id']
-            or report['mineru_calls'] != 0 or report['semantic_results_imported'] is not False
-            or latch['contract'] != 'hermes-ingest-pause/v1' or evidence['workflow_id'] != workflow_id
-            or evidence['boundary'] != 'exact_plan' or evidence['source_outcomes'] != workflow['source_outcomes']
-            or latch['evidence_digest'] != pause['evidence_digest']
-            or latch['evidence_digest'] != 'sha256:' + fingerprint(evidence)):
+            or report['mineru_calls'] != 0 or report['semantic_results_imported'] is not False):
         fail('origin requires a verified imported source handoff')
     return report
+
+
+def bootstrap_source_boundary(vault, workflow_id, workflow):
+    """Verify fresh native conversion evidence for every ready source at the latch."""
+    startup = _source_pause(vault, workflow_id, workflow)
+    if not startup or startup.get('test_mode') != BOOTSTRAP_SHORT:
+        return None
+    identity = _load_json(vault / '_system/vault.json')['vault']
+    if (startup['workflow_id'] != workflow_id or startup['vault_id'] != identity['id']
+            or 'test' not in identity['security_domain'].split('-') or 'test_bundle_import' in startup):
+        fail('origin requires an isolated fresh bootstrap')
+    pins = []
+    for row in workflow['source_outcomes']:
+        if row['status'] != 'ready':
+            continue
+        matches = [ref for ref in row['artifact_refs'] if ref.startswith('_system/reports/source-bundles/')
+                   and ref.endswith('/manifest.json')]
+        if len(matches) != 1:
+            fail('ready source requires one bound native conversion Bundle')
+        manifest = _vault_path(vault, matches[0])
+        diagnostic = _load_json(manifest.with_name('conversion-result.json'))
+        if (diagnostic.get('schema_version') != 'hermes-conversion-result/v1'
+                or diagnostic.get('status') != 'converted'
+                or diagnostic.get('source_sha256') != row['content_sha256']
+                or sha(_vault_path(vault, row['path']).read_bytes()) != row['content_sha256']
+                or row['content_sha256'] not in startup['source_hashes'].values()):
+            fail('native conversion does not match the bootstrap original')
+        pins.append({'original': row['path'], 'resource_id': row['resource_id'],
+                     'unit_set_id': row['unit_set_id'], 'bundle_manifest': matches[0]})
+    if not pins:
+        fail('no verified fresh source remains for the short path')
+    return pins
 
 
 def verify_import_board(board):
@@ -80,7 +120,13 @@ def verify_import_board(board):
 
     if not board:
         fail('origin source handoff is missing its native board')
-    with closing(kanban_db_connect.connect(board=board)) as conn:
+    # A native short worker carries a DB override for its own board. Resolve
+    # the explicitly bound source board independently of that worker override.
+    path = (kanban_db.kanban_home() if board == kanban_db.DEFAULT_BOARD else
+            kanban_db.board_dir(board)) / 'kanban.db'
+    if not path.is_file():
+        fail('origin source handoff is missing its native board database')
+    with closing(kanban_db_connect.connect(db_path=path)) as conn:
         if any(task.claim_lock or task.status in ('ready', 'running', 'todo', 'triage')
                for task in kanban_db.list_tasks(conn)):
             fail('origin source handoff has runnable cards or live claims')

@@ -22,7 +22,7 @@ from hermes_source_units.source_units import _load_json, _vault_path
 from hermes_source_units.validation import fingerprint
 from native_stop_inventory import workflow_processes
 from orchestration import configuration
-from post_mineru_test import imported_source_boundary
+from post_mineru_test import bootstrap_source_boundary, imported_source_boundary, verify_import_board
 from prepare_short_evidence_test import advance, inventory, save, seal
 from short_evidence_pass import load_sources, mapping_groups, request, require, seed_requests
 from short_page_contract import CONTRACT as FRAGMENT_CONTRACT, WRITE_CONTRACT, retry_slots, writing_retry
@@ -56,8 +56,13 @@ def source_boundary(vault, workflow_id, pins, registry_revision=None):
     path = _vault_path(vault, f'_system/ledgers/ingest-workflows/{workflow_id}.json')
     before = sha(path)
     origin = _load_json(path)
-    provisioned = imported_source_boundary(vault, workflow_id, origin) if origin['state'] not in ('completed', 'partial') else None
-    require((origin['state'] in ('completed', 'partial') or provisioned) and
+    terminal = origin['state'] in ('completed', 'partial')
+    if not terminal:
+        fresh = bootstrap_source_boundary(vault, workflow_id, origin)
+        require(fresh == pins if fresh else imported_source_boundary(vault, workflow_id, origin),
+                'origin must be a verified source handoff')
+        verify_import_board(origin['kanban']['board_id'])
+    require((terminal or origin.get('pause_control', {}).get('boundary') == 'exact_plan') and
             not workflow_processes(workflow_id, origin['kanban']['board_id']), 'origin must be settled and idle')
     sources = load_sources(vault, pins)
     if registry_revision is not None:

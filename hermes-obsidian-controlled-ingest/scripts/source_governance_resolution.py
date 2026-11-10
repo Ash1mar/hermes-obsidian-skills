@@ -40,19 +40,13 @@ def operator_guard(repo,request):
         w=service.status(wid);service.assert_execution_ready(w)
         if request.get('source_boundary') == 'post-mineru-short/v1':
             from native_stop_inventory import workflow_processes
+            from post_mineru_test import bootstrap_source_boundary, imported_source_boundary
             pause = w.get('pause_control', {})
-            startup = load_json(_vault_path(repo.vault, w['scope']['bootstrap_ref']))
-            pointer = startup['test_bundle_import']
-            imported = _vault_path(repo.vault, pointer['ref'])
-            report = load_json(imported)
             ready = {o['resource_id'] for o in w['source_outcomes'] if o['status'] == 'ready'}
             if (w['actor'] != request['actor'] or w['revision'] != request.get('expected_workflow_revision')
                     or w['scope'].get('pause_after') != ['exact_plan'] or pause.get('boundary') != 'exact_plan'
                     or pause.get('evidence_digest') != request.get('pause_digest') or w.get('release_id')
-                    or startup['workflow_id'] != wid or report['workflow_id'] != wid
-                    or pointer['contract'] != 'post-mineru-test/v1' or report['contract'] != 'post-mineru-test/v1'
-                    or hashlib.sha256(imported.read_bytes()).hexdigest() != pointer['sha256']
-                    or report['mineru_calls'] != 0 or report['semantic_results_imported'] is not False
+                    or not (bootstrap_source_boundary(repo.vault, wid, w) or imported_source_boundary(repo.vault, wid, w))
                     or set(request['resource_ids']) != ready
                     or any(path != service._path(wid) for path in (repo.vault / WORKFLOW_ROOT).glob('*.json'))
                     or workflow_processes(wid, w['kanban']['board_id'])):

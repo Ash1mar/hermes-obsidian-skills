@@ -35,6 +35,13 @@ def start(request, record, bootstrap_skill, *, before_workflow=None):
     if not sources or any(not p.is_file() for p in sources) or len({p.name for p in sources})!=len(sources):
         raise ValueError('unique source basenames required')
     cfg=configuration()
+    from post_mineru_test import BOOTSTRAP_SHORT
+    bootstrap_short = request.get('test_mode') == BOOTSTRAP_SHORT
+    if bootstrap_short and (before_workflow is not None or 'reuse_conversion' in request
+            or 'test' not in request['security_domain'].split('-') or request.get('pause_after') != ['exact_plan']
+            or request.get('retrieval_policy', {}).get('sync_enabled') is not True
+            or request['retrieval_policy'].get('query_enabled') is not False):
+        raise ValueError('fresh short startup requires an isolated exact-plan handoff and scoped Provider')
     policy={k:cfg[k] for k in ('source_prepare_concurrency','program_worker_concurrency','reduce_page_concurrency','pass_worker_concurrency','reduce_worker_concurrency')}
     policy.update(request.get('execution_policy',{}))
     from hermes_source_units.recovery_policy import DEFAULT, validate as validate_recovery
@@ -107,6 +114,7 @@ def start(request, record, bootstrap_skill, *, before_workflow=None):
             'source_hashes':identity['source_hashes'],'execution_policy':state['execution_policy']}
         if 'recovery_policy' in state:report['recovery_policy']=state['recovery_policy']
         if test_import is not None:report['test_bundle_import']=test_import
+        if bootstrap_short:report['test_mode']=BOOTSTRAP_SHORT
         rp=vault/ref
         if rp.exists() and json.loads(rp.read_text())!=report: raise ValueError('startup report conflict')
         if not rp.exists(): _write_atomic(rp,_json_bytes(report))
