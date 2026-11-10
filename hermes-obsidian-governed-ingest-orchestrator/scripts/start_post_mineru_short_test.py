@@ -197,6 +197,9 @@ def main():
     parser.add_argument('--source-registry-revision', type=int)
     parser.add_argument('--repeat-from', type=Path, help='Reuse the exact source handoff in a previous round directory')
     parser.add_argument('--round-id', help='Stable board and page namespace for a new same-Vault round')
+    parser.add_argument('--mapping-from', type=Path, help='Start a matched mapping comparison using a settled short pipeline')
+    parser.add_argument('--mapping-fence-from', type=Path, action='append', default=[])
+    parser.add_argument('--transport-profile', choices=('concentrated', 'paced'))
     args = parser.parse_args()
     request = _load_json(args.request.resolve(strict=True))
     root = args.output.resolve()
@@ -207,6 +210,9 @@ def main():
                                       and args.round_id != request['operation_id']
                                       and not args.from_node and not args.resume_delivery)),
             'a fresh same-Vault round requires its own ID and previous source handoff')
+    require(bool(args.mapping_from) == bool(args.transport_profile) and (not args.mapping_from or args.repeat_from)
+            and (not args.mapping_fence_from or args.mapping_from),
+            'a matched mapping comparison requires a same-Vault round and a transport profile')
     root.mkdir(parents=True, exist_ok=True)
     with (runner.exclusive_lock(vault.parent / ('.' + vault.name + '-short-pipeline.lock'), timeout=0, marker=False),
           runner.exclusive_lock(root / 'pipeline.lock', timeout=0, marker=False)):
@@ -312,9 +318,15 @@ def main():
                 print('Starting independent native source preparation', flush=True)
                 handoff = prepare(vault, request, root, args.provisioner_skill.resolve(), args.bootstrap_skill.resolve())
                 qualification = qualify_sources(vault, root, handoff, request)
+            mapping_from = args.mapping_from.resolve(strict=True) / 'native' if args.mapping_from else None
+            fences = tuple(p.resolve(strict=True) / 'native' for p in args.mapping_fence_from)
+            if mapping_from:
+                require(all(not p.is_relative_to(vault) and p != short for p in (mapping_from, *fences)),
+                        'mapping evidence must be independent')
             print(f"Source handoff verified at revision {handoff['revision']}; starting short stages", flush=True)
             result = runner.start(short, vault, handoff['workflow_id'], handoff['pins'], round_id,
-                                  separate_page_identities=bool(args.repeat_from))
+                                  separate_page_identities=bool(args.repeat_from), mapping_from=mapping_from,
+                                  transport_profile=args.transport_profile or 'shared', mapping_fences=fences)
             require(result['last_stage'] == 'offline_build', 'short stages did not produce a settled Build input')
             plan_path = sorted(short.glob('stage-*-offline_build.json'))[-1]
             partition = delivery_partition(_load_json(plan_path))
