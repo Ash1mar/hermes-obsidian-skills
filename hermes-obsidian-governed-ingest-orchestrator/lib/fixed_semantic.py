@@ -126,6 +126,13 @@ class HermesCaller:
                 self._fixed_preflight(api_kwargs)
                 return self._fixed_api(super()._interruptible_streaming_api_call,api_kwargs,*args,**kwargs)
 
+            def _create_request_openai_client(self, **kwargs):
+                client = super()._create_request_openai_client(**kwargs)
+                transport = getattr(self, 'fixed_http_transport', None)
+                if transport is not None:
+                    transport.attach(client)
+                return client
+
             def _run_codex_stream(self,api_kwargs,*args,**kwargs):
                 # This hook receives the final Responses payload after SDK conversion.
                 from native_call_state import StopNativeCall
@@ -176,6 +183,9 @@ class HermesCaller:
 
             def _fixed_api(self,call,api_kwargs,*args,**kwargs):
                 from native_call_state import classify,StopNativeCall,request_identity,checked_response
+                transport = getattr(self, 'fixed_http_transport', None)
+                if transport is not None and getattr(self, 'fixed_http_active', False):
+                    return call(api_kwargs, *args, **kwargs)
                 self.fixed_network_payload=api_kwargs
                 self.fixed_final_request_sha256=request_identity(api_kwargs)
                 exact_request_sha256=self.fixed_final_request_sha256
@@ -183,6 +193,12 @@ class HermesCaller:
                       request_sha256=self.fixed_final_request_sha256,
                       scope='native SDK boundary; not physical HTTP attempts')
                 self.fixed_final_output_format=copy.deepcopy(api_kwargs.get('text',{}).get('format',api_kwargs.get('response_format')))
+                if transport is not None:
+                    self.fixed_http_active = True
+                    try:
+                        return self._fixed_http_api(transport, call, api_kwargs, args, kwargs, exact_request_sha256)
+                    finally:
+                        self.fixed_http_active = False
                 while True:
                     try:
                         response=call(api_kwargs,*args,**kwargs)
@@ -204,8 +220,54 @@ class HermesCaller:
                                 network_failure_ordinal=len(self.fixed_network_retry_refs))
                             continue
                         outcome=classify(exc)
-                        if outcome['retryable']:raise
                         raise StopNativeCall(outcome) from exc
+
+            def _fixed_http_api(self, transport, call, api_kwargs, args, kwargs, digest):
+                from types import SimpleNamespace
+                from native_call_state import classify, StopNativeCall, request_identity, checked_response
+
+                while True:
+                    transport.accepting = True
+                    response = None
+                    error = None
+                    try:
+                        response = call(api_kwargs, *args, **kwargs)
+                        pending = getattr(self, 'fixed_thread_stop', None)
+                        if pending is not None:
+                            raise pending
+                        if getattr(response, 'status', None) in ('failed', 'incomplete', 'cancelled'):
+                            detail = getattr(response, 'error', None) or {}
+                            if hasattr(detail, 'model_dump'):
+                                detail = detail.model_dump()
+                            outcome = classify(SimpleNamespace(body={'error': detail, 'output': getattr(response, 'output', None)},
+                                                               response_id=getattr(response, 'id', None)))
+                        else:
+                            checked_response(self, response)
+                            if transport.row is None:
+                                raise RuntimeError('fixed model response bypassed the observed HTTP boundary')
+                            outcome = None
+                    except StopNativeCall as exc:
+                        outcome = exc.outcome
+                    except Exception as exc:
+                        error, outcome = exc, classify(exc)
+                    if outcome and outcome.get('source') != 'local_request_guard':
+                        recovered = transport.retrieve(outcome)
+                        if recovered is not None:
+                            try:
+                                response = checked_response(self, recovered)
+                                outcome = None
+                            except StopNativeCall as exc:
+                                outcome = exc.outcome
+                    retry = transport.finish(response=response, error=error, outcome=outcome)
+                    if outcome is None:
+                        return response
+                    if not retry:
+                        raise StopNativeCall({**outcome, 'retryable': False, 'http_transport': transport.evidence()})
+                    self._fixed_preflight(api_kwargs, apply=False)
+                    if request_identity(api_kwargs) != digest:
+                        raise StopNativeCall({'contract':'native-call-outcome/v1','state':'request_rejected',
+                            'retryable':False,'source':'local_request_guard',
+                            'error':{'class':'ChangedNativeRequest','message':'exact network retry payload changed'}})
 
             def _apply_fixed_format(self, api_kwargs):
                 output=({'type':'json_schema','name':'semantic_task_slots','strict':True,
@@ -305,6 +367,14 @@ class HermesCaller:
                 'control_check':prepared.get('live_control_check') or prepared['fresh_control_check'],
                 'fresh_check':prepared['fresh_control_check']} if context and prepared.get('fresh_control_check') else None)
             agent.fixed_network_retry_refs=[];agent.fixed_network_wait_ms=0
+            agent.fixed_http_transport = None
+            if context and getattr(agent, 'api_mode', None) in ('codex_responses', 'chat_completions', 'openai_responses'):
+                from model_transport import Transport, transport_context
+
+                transport = transport_context(context, prepared)
+                if transport:
+                    agent.fixed_http_transport = Transport(transport, agent.session_id, agent.model,
+                        input_size=prepared['input_size'], output_cap=getattr(self, 'output_token_limit', OUTPUT_TOKENS))
             from native_call_state import StopNativeCall,record
             try:
                 with span('sdk_model_request',phase=phase,session_id=agent.session_id):
@@ -314,7 +384,10 @@ class HermesCaller:
                         pass
                     result=agent.run_conversation(content,system_message=prompt['system'])
             except StopNativeCall as exc:
-                record(exc.outcome,prepared,agent.session_id,request_sha256=getattr(agent,'fixed_final_request_sha256',None),
+                outcome = exc.outcome
+                if agent.fixed_http_transport:
+                    outcome = {**outcome, 'http_transport': agent.fixed_http_transport.evidence()}
+                record(outcome,prepared,agent.session_id,request_sha256=getattr(agent,'fixed_final_request_sha256',None),
                     output_format=getattr(agent,'fixed_final_output_format',None))
             if result.get('error') or result.get('partial'):
                 record({'contract':'native-call-outcome/v1','state':'completion_unknown','retryable':False,
@@ -340,6 +413,7 @@ class HermesCaller:
                     'first_event_clock':'SDK wall only; monotonic unavailable',
                     'physical_attempts':None,'backend_revision':None,
                     'scope':'paired clocks at native entry/guard/delta/return; SDK first event is wall only; not physical HTTP timing'},
+                **({'http_transport': agent.fixed_http_transport.evidence()} if agent.fixed_http_transport else {}),
                 'network_retries':{'contract':'native-connection-retry/v1','failure_evidence':copy.deepcopy(agent.fixed_network_retry_refs),
                     'connection_retries':len(agent.fixed_network_retry_refs),'wait_ms':agent.fixed_network_wait_ms,
                     'semantic_ordinals_granted':0,'physical_http_attempts':None},

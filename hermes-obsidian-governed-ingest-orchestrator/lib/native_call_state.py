@@ -19,13 +19,15 @@ def classify(error):
     detail=body.get('error',body);detail=detail if isinstance(detail,dict) else {}
     status=getattr(error,'status_code',None) or detail.get('status_code')
     kind=detail.get('type') or getattr(error,'type',None)
-    partial=bool(getattr(error,'response_id',None) or body.get('output') or body.get('partial'))
+    response_id = getattr(error,'response_id',None) or detail.get('response_id') or body.get('response_id')
+    partial=bool(response_id or body.get('output') or body.get('partial') or body.get('choices'))
     rejected=not partial and (status in (400,401,403,404,405,413,415,422) or kind in
         ('invalid_request_error','authentication_error','permission_error','not_found_error'))
     retryable=not partial and status==429
     return {'contract':CONTRACT,'state':'request_rejected' if rejected or retryable else 'completion_unknown',
         'retryable':retryable,'error':{'class':type(error).__name__,'type':kind,'status_code':status,
-        'code':detail.get('code'),'param':detail.get('param'),'message':str(detail.get('message') or error)[:2048]}}
+        'code':detail.get('code') or getattr(error,'code',None),'response_id':response_id,
+        'param':detail.get('param'),'message':str(detail.get('message') or error)[:2048]}}
 
 
 def request_identity(api_kwargs):

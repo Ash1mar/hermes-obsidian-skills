@@ -18,19 +18,20 @@ def fixture(sdk,tmp_path,monkeypatch,control=lambda:None,fresh=lambda:None):
     agent.fixed_network_retry_refs=[];agent.fixed_network_wait_ms=0
     return agent
 
-def connection():return APIConnectionError(request=httpx.Request('POST','https://offline.invalid'))
+def connection():
+    error = APIConnectionError(request=httpx.Request('POST', 'https://offline.invalid'))
+    error.__cause__ = httpx.ConnectError('isolated pre-connect failure')
+    return error
 
 @pytest.mark.parametrize('status',[502,503,504])
-def test_transient_gateway_retries_same_request_without_new_semantic_allowance(sdk,tmp_path,monkeypatch,status):
+def test_gateway_status_without_rejection_proof_is_held(sdk,tmp_path,monkeypatch,status):
     a=fixture(sdk,tmp_path,monkeypatch);calls=[];expected=api_request(a);a._apply_fixed_format(expected)
     def backend(payload):
         calls.append(copy.deepcopy(payload))
-        if len(calls)<4:raise APIStatusError('isolated gateway',response=httpx.Response(status,request=httpx.Request('POST','https://offline.invalid')),body=None)
-        return NS(choices=[NS(message=NS(content='native result'))])
-    assert a._fixed_api(backend,expected)
-    assert len(calls)==4 and all(c==calls[0] for c in calls)
-    records=[json.loads((tmp_path/r['ref']).read_text()) for r in a.fixed_network_retry_refs]
-    assert len(records)==3 and all(r['status_code']==status and r['semantic_ordinals_granted']==0 for r in records)
+        raise APIStatusError('isolated gateway',response=httpx.Response(status,request=httpx.Request('POST','https://offline.invalid')),body=None)
+    with pytest.raises(StopNativeCall):
+        a._fixed_api(backend,expected)
+    assert len(calls)==1 and not a.fixed_network_retry_refs
 
 @pytest.mark.parametrize('status',[400,401,403,409,429,500])
 def test_other_http_errors_do_not_gain_transport_retries(status):
@@ -45,14 +46,15 @@ def test_more_than_one_connection_retry_preserves_payload_and_single_semantic_re
         calls.append(copy.deepcopy(payload))
         if len(calls)<=8:raise connection()
         return response
-    assert a._fixed_api(backend,request) is response
-    assert len(calls)==9 and all(c==before for c in calls) and len(fresh)==8
+    with pytest.raises(StopNativeCall):
+        a._fixed_api(backend,request)
+    assert len(calls)==3 and all(c==before for c in calls) and len(fresh)==2
     assert a.run_budget_seconds==600 and a._run_budget_started_at==123
     records=[json.loads((tmp_path/r['ref']).read_text()) for r in a.fixed_network_retry_refs]
-    assert len(records)==8 and [r['network_failure_ordinal'] for r in records]==list(range(1,9))
+    assert len(records)==2 and [r['network_failure_ordinal'] for r in records]==[1,2]
     assert all(r['state']=='completion_unknown' and r['semantic_ordinals_granted']==0 and not r['response_received'] for r in records)
-    assert [r['next_backoff_seconds'] for r in records]==[5,10,20,40,60,60,60,60]
-    assert all(fingerprint(r) for r in records) and a.fixed_network_wait_ms==315000
+    assert [r['next_backoff_seconds'] for r in records]==[5,10]
+    assert all(fingerprint(r) for r in records) and a.fixed_network_wait_ms==15000
 
 @pytest.mark.parametrize('error',[TimeoutError(),ConnectionError(),APITimeoutError(request=httpx.Request('POST','https://offline.invalid'))])
 def test_other_unknowns_keep_existing_hold(sdk,tmp_path,monkeypatch,error):

@@ -70,6 +70,29 @@ Only the source handoff is reused. The round runs fresh semantic work, adds its
 eligible page revisions to the verified base release, and verifies its exact new
 revisions as well as the cumulative Provider index. Query remains disabled.
 
+For a scoped transport comparison, add `--mapping-from <settled-round-output>`
+and `--transport-profile concentrated|paced` to the same-Vault entry. The
+mapping cohort starts at the exact native topic receipts and excludes unresolved
+reserved packets. Pass `--mapping-fence-from <subsequent-round-output>` for
+each stopped comparison with spent unresolved requests. Compare only shared
+request IDs when this fence changes the cohort. Keep per-round publication
+and the cumulative release separate in the results.
+
+Fixed OpenAI-wire workers record HTTP sends before dispatch and use a
+host-local admission journal shared by endpoint, account and model. The shared
+default starts at up to 10 in flight and one start per second. The paced
+comparison caps at five; concentrated retains the ordinary 10 and permits
+simultaneous starts. An overload pauses the route, lowers its cap to five,
+and raises it by one after five successes outside cooldown. A confirmed
+HTTP 429 without an output or response identity, or a typed failure before
+connection, may resend the same request at most twice with at most 120 seconds
+of cumulative waiting. Stream overload without such proof stays unresolved.
+An available stored response on the direct Responses route may be retrieved
+by exact ID. This does not enable response storage or retrieval on other routes.
+The SDK's extra send attempts are blocked at the HTTP boundary. Compare
+physical sends, `http-sends` records, and accepted coverage independently
+from native semantic correction ordinals.
+
 For a settled legacy mapping failure within the short path, resume the existing
 test with `--from-node mapping --reentry-id <id> --mapping-recovery <JSON>`.
 The JSON names exact failed request IDs and the completed prior short Build.

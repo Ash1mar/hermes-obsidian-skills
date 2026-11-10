@@ -13,12 +13,14 @@ CONTRACT='native-connection-retry/v1'
 
 
 def connection_error(error):
+    import httpx
     from openai import APIConnectionError
     # APITimeoutError is a subclass, but has a separate unknown/timeout policy.
     body=getattr(error,'body',None)
     if getattr(error,'response_id',None) or isinstance(body,dict) and (body.get('partial') or body.get('output') or body.get('choices')):
         return False
-    return type(error) is APIConnectionError or getattr(error,'status_code',None) in (502,503,504)
+    return type(error) is APIConnectionError and isinstance(error.__cause__,
+        (httpx.ConnectError, httpx.ConnectTimeout, httpx.PoolTimeout))
 
 
 def retry(agent,error,request_sha256):
@@ -35,7 +37,9 @@ def retry(agent,error,request_sha256):
                 'retryable':False,'source':'local_request_guard',
                 'error':{'class':type(exc).__name__,'message':str(exc)}}) from exc
     refs=agent.fixed_network_retry_refs
-    ordinal=len(refs)+1;delay=min(60,5*2**min(ordinal-1,4))
+    ordinal=len(refs)+1;delay=5*2**(ordinal-1)
+    if ordinal > 2 or agent.fixed_network_wait_ms + delay * 1000 > 120000:
+        return False
     binding=context['binding'];vault=Path(context['vault'])
     relative=f"_system/ledgers/ingest-workflows/{binding['workflow_id']}/network-retries/{agent.session_id}-{ordinal}.json"
     record={'contract':CONTRACT,'session_id':agent.session_id,'binding':copy.deepcopy(binding),
@@ -43,7 +47,7 @@ def retry(agent,error,request_sha256):
         'network_failure_ordinal':ordinal,'state':'completion_unknown','error_class':type(error).__name__,
         'status_code':getattr(error,'status_code',None),
         'recorded_at_ms':int(time.time()*1000),'next_backoff_seconds':delay,
-        'semantic_ordinals_granted':0,'response_received':False,'retry_until':'connection_returns_or_control_stops',
+        'semantic_ordinals_granted':0,'response_received':False,'retry_until':'bounded_transport_budget',
         'previous_failure_ref':refs[-1]['ref'] if refs else None}
     path=vault/relative
     if path.exists():raise RuntimeError('network failure evidence identity collision')

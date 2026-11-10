@@ -189,6 +189,7 @@ def run_job(root, job, own):
         return replay_node_output(root, original, payload['saved_attempts'], own, mapping_overlay=overlay)
     if payload.get('replay'):
         return replay_mapping(root, original, own)
+    profile = _load_json(root / 'operation.json').get('transport_profile', 'shared')
     row = original
     slots = row.get('missing_slots', ['r'])
     attempts = []
@@ -202,7 +203,6 @@ def run_job(root, job, own):
         grant = own()
         p = checked_projection(row)
         p['live_control_check'] = own
-        p['audit_context'] = {'short_evidence_root': str(root), 'binding': grant, 'phase': row['phase']}
         reservation = job.with_name(job.stem + f'.attempt-{ordinal}.json')
         require(not reservation.exists(), 'a consumed or unknown ordinal cannot be resent')
         started = time.monotonic()
@@ -213,6 +213,10 @@ def run_job(root, job, own):
         caller.images = row['image_inputs']
         # Persist the exact payload before entering the SDK.
         save(reservation, {'request': row, 'ordinal': ordinal, 'grant': grant, 'started_at': wall})
+        p['audit_context'] = {'short_evidence_root': str(root), 'binding': grant, 'phase': row['phase'],
+                              'reservation': {'ref': reservation.relative_to(root).as_posix(), 'sha256': sha(reservation),
+                                              'ordinal': ordinal, 'request_sha256': row['id']},
+                              'transport_profile': profile}
         audit_path = job.with_name(job.stem + f'.audit-{ordinal}.json')
         audit = {'phase': row['phase'], 'request_id': row['id'], 'ordinal': ordinal, 'grant': grant,
                  'started_at': wall}
@@ -598,6 +602,66 @@ def attempt_index(root):
     return previous
 
 
+def mapping_comparison(root, prior, operation, sources, seeds, groups, fences=()):
+    """Use authenticated topic receipts and fence spent unknown mapping packets."""
+    from short_evidence_pass import checked_answer, map_requests, receipt
+
+    original = _load_json(prior / 'operation.json')
+    result = _load_json(prior / 'result.json')
+    require(original['origin'] == operation['origin'] and original['pins'] == operation['pins']
+            and original['mapping_contract'] == operation['mapping_contract']
+            and result['last_stage'] == 'offline_build' and not result['native_active_or_ready'],
+            'mapping comparison requires a settled run of the exact source boundary')
+    kb, kc, _ = runtime()
+    board = original['board']
+    require(not workflow_processes(operation['origin']['workflow_id'], board), 'prior native workers still active')
+    previous = attempt_index(prior)
+    accepted, proofs = {}, {}
+    with closing(kc.connect(board=board)) as conn:
+        for seed in seeds:
+            rid = seed['id']
+            path = prior / 'receipts' / f'{rid}.json'
+            saved = _load_json(path)
+            checked_answer(seed, saved)
+            for proof in previous.get(rid, []):
+                job, reservation, audit = (_vault_path(prior, proof[k]) for k in ('job', 'reservation', 'audit'))
+                reserved, reply = _load_json(reservation), _load_json(audit)
+                grant = reserved['grant']
+                task = kb.get_task(conn, grant['task_id'])
+                if (not task or task.status != 'done' or task.claim_lock or task.body != task_body(prior, job)
+                        or not any(run.id == grant['run_id'] for run in kb.list_runs(conn, task.id, include_active=False))
+                        or grant != reply['grant'] or _load_json(job)['request'] != seed
+                        or not authentic_reply(reply, reserved['request'])):
+                    continue
+                answer, _ = decode_semantic_response(reply['raw'])
+                if receipt(seed, answer) == saved:
+                    proofs[rid] = {**proof, 'receipt_sha256': sha(path)}
+                    accepted[rid] = saved
+                    break
+            require(rid in proofs, 'topic receipt lacks acknowledged native provenance')
+    rows = map_requests(sources, groups, seeds, accepted, operation['mapping_contract'])
+    holds = dict(result['execution_holds'])
+    for folder in fences:
+        fenced = _load_json(folder / 'result.json')
+        require(fenced['origin'] == operation['origin'] and not fenced['native_active_or_ready'],
+                'comparison fence requires a stopped run of the same source boundary')
+        holds.update(fenced['execution_holds'])
+    cohort = [row['id'] for row in rows if row['id'] not in holds]
+    for row in rows:
+        rid = row['id']
+        if rid in cohort:
+            checked_answer(row, _load_json(prior / 'receipts' / f'{rid}.json'))
+    require(cohort, 'no previously settled mapping packets available for a matched comparison')
+    for rid, saved in accepted.items():
+        save(root / 'receipts' / f'{rid}.json', saved)
+    save(root / 'mapping-comparison.json', {'source_operation_sha256': sha(prior / 'operation.json'),
+         'source_result_sha256': sha(prior / 'result.json'), 'source_board': board, 'topic_receipts': proofs,
+         'cohort': cohort, 'held_prior_mapping': {r['id']: holds[r['id']] for r in rows if r['id'] in holds},
+         'fence_result_hashes': [sha(folder / 'result.json') for folder in fences],
+         'transport_profile': operation['transport_profile']})
+    return holds
+
+
 def verify_revision_drafts(root, board, repair):
     kb, kc, _ = runtime()
     for change in repair['changes']:
@@ -779,7 +843,8 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
 
 def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=None, entry=None, dry_run=False,
           page_contract=None, fragment_repair=None, fragment_exclusions=None, mapping_recovery=None,
-          registry_revision=None, split_output=None, separate_page_identities=False):
+          registry_revision=None, split_output=None, separate_page_identities=False, mapping_from=None,
+          transport_profile='shared', mapping_fences=()):
     from short_evidence_pass import MAP_CONTRACT
 
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
@@ -813,6 +878,7 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
                      'vault': str(vault), 'pins': pins, 'started_at': time.time(),
                      'pass_capacity': cfg['pass_worker_concurrency'], 'page_capacity': cfg['reduce_page_concurrency']}
         seeds = seed_requests(sources)
+        holds = None
         if resumed or node:
             operation = _load_json(root / 'operation.json')
             groups = mapping_groups(sources, operation.get('mapping_contract'))
@@ -839,12 +905,20 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
             operation['mapping_contract'] = MAP_CONTRACT
             operation['writing_contract'] = WRITE_CONTRACT
             operation['split_output'] = True
+            if mapping_from is not None:
+                from model_transport import policy
+
+                policy(transport_profile)
+                operation['transport_profile'] = transport_profile
             if separate_page_identities:
                 operation['page_namespace'] = operation_id
             groups = mapping_groups(sources, MAP_CONTRACT)
+            if mapping_from is not None:
+                holds = mapping_comparison(root, mapping_from, operation, sources, seeds, groups, mapping_fences)
             save(root / 'operation.json', operation)
             metrics = []
-        return run_stages(root, operation, sources, seeds, groups, metrics, resumed=resumed, page_contract=page_contract)
+        return run_stages(root, operation, sources, seeds, groups, metrics, resumed=resumed,
+                          page_contract=page_contract, initial_holds=holds)
 
 
 def main():
