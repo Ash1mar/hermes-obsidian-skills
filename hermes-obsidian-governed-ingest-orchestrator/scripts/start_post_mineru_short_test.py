@@ -12,6 +12,7 @@ import sys
 import time
 
 import run_short_evidence_test as runner
+from post_mineru_test import BOOTSTRAP_SHORT, CONTRACT as IMPORT_TEST, bootstrap_source_boundary
 from hermes_source_units.page_governance import POLICY, validate_retrieval_snapshot
 from hermes_source_units.short_build import record_content_isolation
 from hermes_source_units.source_units import _load_json, _vault_path
@@ -23,14 +24,16 @@ from short_fragment_disposition import delivery_partition
 
 def prepare(vault, request, root, provisioner, bootstrap):
     wid = 'ingest-' + request['operation_id']
-    require(request['test_mode'] == 'post-mineru-test/v1' and request['pause_after'] == ['exact_plan']
+    fresh = request['test_mode'] == BOOTSTRAP_SHORT
+    require(request['test_mode'] in (BOOTSTRAP_SHORT, IMPORT_TEST) and request['pause_after'] == ['exact_plan']
             and request['retrieval_policy']['sync_enabled'] and not request['retrieval_policy']['query_enabled'],
             'independent short test requires an isolated exact-plan source boundary and scoped Provider')
     path = root / 'provisioning-request.json'
     runner.save(path, request)
     receipt = root / 'provisioning-receipt.json'
     start = time.time()
-    cmd = [sys.executable, '-B', str(provisioner / 'scripts/start_post_mineru_test.py'),
+    entry = 'start_vault_workflow.py' if fresh else 'start_post_mineru_test.py'
+    cmd = [sys.executable, '-B', str(provisioner / 'scripts' / entry),
            '--request', str(path), '--record', str(receipt), '--bootstrap-skill', str(bootstrap)]
     result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', timeout=180)
     require(result.returncode == 0, 'native source provisioning entry failed: ' + result.stderr[-2500:])
@@ -49,20 +52,27 @@ def prepare(vault, request, root, provisioner, bootstrap):
                 break
         require(time.monotonic() < deadline, 'native source handoff timed out')
         time.sleep(2)
-    startup = _load_json(_vault_path(vault, workflow['scope']['bootstrap_ref']))
-    imported = _load_json(_vault_path(vault, startup['test_bundle_import']['ref']))
-    ready = {r['path']: r for r in workflow['source_outcomes'] if r['status'] == 'ready'}
-    pins = []
-    for entry in imported['sources']:
-        outcome = ready[entry['raw_ref']]
-        manifest = entry['bundle_ref'] + '/manifest.json'
-        require(manifest in outcome['artifact_refs'], 'source handoff lost imported Bundle identity')
-        pins.append({'original': entry['raw_ref'], 'resource_id': outcome['resource_id'],
-                     'unit_set_id': outcome['unit_set_id'], 'bundle_manifest': manifest})
+    if fresh:
+        pins = bootstrap_source_boundary(vault, wid, workflow)
+        require(pins, 'native bootstrap source handoff is missing')
+        metadata = {'fresh_converted_sources': len(pins), 'imported_files': 0,
+                    'source_outcomes': workflow['source_outcomes']}
+    else:
+        startup = _load_json(_vault_path(vault, workflow['scope']['bootstrap_ref']))
+        imported = _load_json(_vault_path(vault, startup['test_bundle_import']['ref']))
+        ready = {r['path']: r for r in workflow['source_outcomes'] if r['status'] == 'ready'}
+        pins = []
+        for entry in imported['sources']:
+            outcome = ready[entry['raw_ref']]
+            manifest = entry['bundle_ref'] + '/manifest.json'
+            require(manifest in outcome['artifact_refs'], 'source handoff lost imported Bundle identity')
+            pins.append({'original': entry['raw_ref'], 'resource_id': outcome['resource_id'],
+                         'unit_set_id': outcome['unit_set_id'], 'bundle_manifest': manifest})
+        metadata = {'import_receipt': startup['test_bundle_import'], 'mineru_calls': imported['mineru_calls'],
+                    'imported_files': sum(len(s['origin_files']) for s in imported['sources'])}
     runner.source_boundary(vault, wid, pins)
     handoff = {'workflow_id': wid, 'revision': workflow['revision'], 'pause': workflow['pause_control'],
-               'import_receipt': startup['test_bundle_import'], 'pins': pins, 'seconds': time.time() - start,
-               'mineru_calls': imported['mineru_calls'], 'imported_files': sum(len(s['origin_files']) for s in imported['sources'])}
+               'pins': pins, 'seconds': time.time() - start, **metadata}
     runner.save(root / 'source-handoff.json', handoff)
     return handoff
 
@@ -123,7 +133,7 @@ def qualify_sources(vault, root, handoff, request):
         org, registry = repo.load_state()
         resolution = {'workflow_id': wid, 'workflow_ref': workflow_ref, 'actor': request['actor'],
                       'operation_id': request['operation_id'] + '-short-source',
-                      'reason': 'Authorized independent post-MinerU short test; existing deterministic source resolution.',
+                      'reason': 'Authorized independent short test; existing deterministic source resolution.',
                       'source_boundary': 'post-mineru-short/v1',
                       'pause_digest': handoff['pause']['evidence_digest'],
                       'automatic_approval_activation': True, 'expected_workflow_revision': workflow['revision'],
@@ -296,7 +306,8 @@ def main():
             start = time.time()
             round_id = args.round_id or request['operation_id']
             launch = {'started_at': start, 'operation_id': request['operation_id'],
-                      'path': 'post-mineru-short', 'request_sha256': runner.sha(args.request)}
+                      'path': 'bootstrap-short' if request['test_mode'] == BOOTSTRAP_SHORT else 'post-mineru-short',
+                      'request_sha256': runner.sha(args.request)}
             base_release = None
             if args.repeat_from:
                 previous = args.repeat_from.resolve(strict=True)

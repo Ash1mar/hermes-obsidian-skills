@@ -53,6 +53,11 @@ and writing stages, authenticates the completed fragments, then executes
 formal Build, eligible partial release, Provider sync and exact-scope
 verification. The new Vault must have its own source registration, release
 and Provider namespace. A material hold remains visible in the run evidence.
+To test from a new Vault and raw PDFs, use the same short-path controller with
+`test_mode: bootstrap-short-test/v1` and omit `reuse_conversion`. The native
+bootstrap and source workers run fresh conversion. The controller verifies the
+exact-plan latch and fresh conversion evidence before admitting the ready
+sources to the same short path. Failed sources remain in the handoff audit.
 The controller verifies exact declared source identity and applies the existing
 scoped source qualification before semantic dispatch. If a completed short
 Build reaches a first-release eligibility issue, use the same request and
