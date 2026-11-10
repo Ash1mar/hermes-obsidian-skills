@@ -71,6 +71,15 @@ delivery entry can run one stable formal recovery on the drained board. It
 reuses the exact writing checkpoint and authorization. The old card and error
 remain auditable, and recovery grants no additional semantic calls.
 
+For a settled short run, use the same request and output with `--from-node
+formal-build --reentry-id <id>` to retest the writing-to-Build handoff. A new
+native Build card reconstructs the exact original Build from the saved writing
+checkpoint and current source proofs. Its committed Build and release must
+match the accepted identities. The ordinary release validation, Provider sync
+and final acceptance run in order. The identical publication is replayed
+idempotently. Evidence goes under `native/reentries/formal-replay-<id>` and
+the original acceptance record stays intact. This entry grants no model calls.
+
 For another independent downstream round in the same test Vault, pass
 `--repeat-from <first-pipeline-output>` and `--round-id <stable-round-id>`
 with the original request and a fresh output directory. The program revalidates

@@ -219,6 +219,9 @@ def build(root, job, request, own, runner):
         own()
         record_qa_advisory(service.build, run, dependencies, root, job)
         return {'state': 'settled', 'attempts': [], 'formal_run_id': run['run_id']}
+    if 'run_id' in request['view']:
+        require(request['view']['run_id'] == 'short-build-' + fingerprint(scope),
+                'formal replay must reproduce the exact committed Build and exclusions')
     if not scope['pages']:
         return {'state': 'settled', 'attempts': [], 'formal_holds': scope['excluded']}
     own()
@@ -237,7 +240,11 @@ def build(root, job, request, own, runner):
     return {'state': 'settled', 'attempts': [], 'formal_run_id': run['run_id']}
 
 
-def delivery(vault, run_id, authorization):
+def release_identity(run_id, authorization):
+    return 'release-short-' + fingerprint({'run_id': run_id, 'base_release': authorization['base_release']})[:24]
+
+
+def delivery(vault, run_id, authorization, *, replay=False):
     service = FileVaultFinalizeService(vault)
     run = _load_json(service.build._run_path(run_id))
     proof = evidence(service.build, run)
@@ -245,7 +252,7 @@ def delivery(vault, run_id, authorization):
     require(proof['scope']['authorization'] == authorization, 'publication authorization differs from Build')
     service.build.validate_run(run_id)
     state = service.status()
-    release_id = 'release-short-' + fingerprint({'run_id': run_id, 'base_release': authorization['base_release']})[:24]
+    release_id = release_identity(run_id, authorization)
     request = {'release_id': release_id, 'actor': run['actor'], 'expected_state_revision': state['revision'],
                'build_run_ids': [run_id], 'reason': 'Exact short-path partial delivery; retain prior published pages and all gaps.'}
     if state['current_release_id'] == release_id:
@@ -253,7 +260,8 @@ def delivery(vault, run_id, authorization):
         service.validate(release_id)
         plan = _load_json(service._plan_path(release_id))
     else:
-        require(state['current_release_id'] == authorization['base_release'], 'base release changed before delivery')
+        require(not replay and state['current_release_id'] == authorization['base_release'],
+                'base or replay release changed before delivery')
         plan = service._build_plan(request)
         release = None
         if authorization['publish'] and not plan['blockers']:
@@ -285,7 +293,7 @@ def delivery(vault, run_id, authorization):
             'blockers': plan['blockers'], 'model_calls': 0}
 
 
-def execute(root, entry, authorization, dry_run, runner, *, existing_build=None):
+def execute(root, entry, authorization, dry_run, runner, *, existing_build=None, replay_build=None):
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
             'trusted operator must authorize formal short Build')
     require(re.fullmatch(r'formal-[a-z0-9][a-z0-9-]{0,39}', entry)
@@ -293,7 +301,8 @@ def execute(root, entry, authorization, dry_run, runner, *, existing_build=None)
             and set(authorization) == {'contract', 'writing_entry', 'checkpoint', 'actor', 'pages',
                                         'base_release', 'publish', 'policy'}
             and authorization['contract'] == 'short-formal-authorization/v1'
-            and type(authorization['publish']) is bool and authorization['policy'] == POLICY,
+            and type(authorization['publish']) is bool and authorization['policy'] == POLICY
+            and not (existing_build and replay_build),
             'formal short Build requires exact operator authorization and policy')
     with runner.exclusive_lock(root / 'controller.lock', timeout=0, marker=False):
         operation = _load_json(root / 'operation.json')
@@ -307,19 +316,27 @@ def execute(root, entry, authorization, dry_run, runner, *, existing_build=None)
         state = service.status()
         directory = root / 'reentries' / entry
         result_path = directory / 'result.json'
-        if result_path.exists():
+        if result_path.exists() and not replay_build:
             return _load_json(result_path)
         view = {'entry': entry, 'authorization': authorization}
-        if existing_build:
-            require(re.fullmatch(r'short-build-[0-9a-f]{64}', existing_build), 'invalid existing short Build identity')
-            existing = _load_json(service.build._run_path(existing_build))
+        pinned_build = existing_build or replay_build
+        if pinned_build:
+            require(re.fullmatch(r'short-build-[0-9a-f]{64}', pinned_build), 'invalid existing short Build identity')
+            existing = _load_json(service.build._run_path(pinned_build))
             require(existing['state'] == 'completed'
                     and evidence(service.build, existing)['scope']['authorization'] == authorization,
                     'release reentry requires exact completed Build authorization')
-            view['run_id'] = existing_build
+            view['run_id'] = pinned_build
+        expected_release = release_identity(replay_build, authorization) if replay_build else authorization['base_release']
+        if replay_build:
+            require(state['current_release_id'] == expected_release and service.validate(expected_release)['ok'],
+                    'formal replay requires the exact current verified release')
         row = {'id': fingerprint(view), 'phase': 'short-formal-qa' if existing_build else 'short-formal-build', 'view': view}
         job = root / 'jobs' / f'entry-{entry}-{row["id"]}.json'
         control = {'entry': entry, 'operation_sha256': runner.sha(root / 'operation.json'), 'formal_request': row['id']}
+        control_path = directory / 'control.json'
+        if replay_build and control_path.exists():
+            require(_load_json(control_path) == control, 'formal replay operation identity changed')
         if dry_run:
             _, scope, _ = collect(root, operation, authorization, runner)
             return {'scope': scope, 'expected_run_id': 'short-build-' + fingerprint(scope), 'model_calls': 0}
@@ -331,15 +348,19 @@ def execute(root, entry, authorization, dry_run, runner, *, existing_build=None)
                         and any(r.id == finished['run_id'] for r in kb.list_runs(conn, task.id, include_active=False)),
                         'formal native completion is unacknowledged')
         else:
-            require(state['current_release_id'] == authorization['base_release'], 'exact base release required')
-            runner.save(directory / 'control.json', control)
+            require(state['current_release_id'] == expected_release, 'exact base or replay release required')
+            runner.save(control_path, control)
             finished, = runner.stage(root, operation, [row], 1, entry=entry)
         require(finished['request_id'] == row['id'] and finished['state'] == 'settled',
                 'formal native Build held before verified completion')
-        result = (delivery(operation['vault'], finished['formal_run_id'], authorization)
+        require(not replay_build or finished.get('formal_run_id') == replay_build, 'native replay returned another Build')
+        result = (delivery(operation['vault'], finished['formal_run_id'], authorization, replay=bool(replay_build))
                   if 'formal_run_id' in finished else {
                       'candidates': [], 'isolated_pages': finished['formal_holds'], 'release_id': None,
                       'base_release': authorization['base_release'], 'blockers': ['no-native-build-candidates'],
                       'model_calls': 0})
-        runner.save(result_path, result)
+        if replay_build and result_path.exists():
+            require(_load_json(result_path) == result, 'prior formal replay result changed')
+        else:
+            runner.save(result_path, result)
         return result
