@@ -18,7 +18,7 @@ from hermes_source_units.short_build import record_content_isolation
 from hermes_source_units.source_units import _load_json, _vault_path
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from short_evidence_pass import require
-from short_formal_build import delivery as publish, execute, final_plan
+from short_formal_build import delivery as publish, execute, final_plan, release_identity
 from short_fragment_disposition import delivery_partition
 
 
@@ -198,7 +198,7 @@ def main():
     parser.add_argument('--provider-state', type=Path, required=True)
     parser.add_argument('--resume-delivery', action='store_true')
     parser.add_argument('--content-isolation', type=Path)
-    parser.add_argument('--from-node', choices=('mapping', 'writing'))
+    parser.add_argument('--from-node', choices=('mapping', 'writing', 'formal-build'))
     parser.add_argument('--reentry-id')
     parser.add_argument('--prior-entry')
     parser.add_argument('--fragment-repair', type=Path)
@@ -229,7 +229,36 @@ def main():
         short = root / 'native'
         marker = root / 'pipeline-start.json'
         provider = None
-        if args.from_node:
+        if args.from_node == 'formal-build':
+            require(args.reentry_id and re.fullmatch(r'[a-z0-9][a-z0-9-]{0,31}', args.reentry_id)
+                    and not any((args.resume_delivery, args.content_isolation, args.prior_entry,
+                                 args.fragment_repair, args.split_atomic_fragment, args.mapping_recovery,
+                                 args.source_registry_revision is not None)),
+                    'formal replay requires its own stable entry and the original writing checkpoint')
+            start = time.time()
+            prior = _load_json(marker)
+            operation = _load_json(short / 'operation.json')
+            original = _load_json(root / 'final-acceptance.json')
+            handoff = _load_json(root / 'source-handoff.json')
+            qualification = _load_json(root / 'source-qualification.json')
+            result = _load_json(short / 'result.json')
+            authorization = _load_json(root / 'formal-authorization.json')
+            committed = original['delivery']
+            from hermes_source_units.runtime_policy import POLICY_REF
+            policy = _load_json(_vault_path(vault, POLICY_REF))
+            require(prior['request_sha256'] == runner.sha(args.request) and Path(operation['vault']) == vault
+                    and 'test' in request['security_domain'].split('-') and policy == request['retrieval_policy']
+                    and policy['sync_enabled'] is True and policy['query_enabled'] is False
+                    and original['final_acceptance'] and original['short_result'] == result
+                    and original['source_handoff'] == handoff and qualification == original['source_qualification']
+                    and committed['release_id'] == release_identity(committed['run_id'], authorization),
+                    'formal replay requires the exact accepted isolated short delivery')
+            entry = 'formal-replay-' + args.reentry_id
+            directory = short / 'reentries' / entry
+            print('Replaying the settled writing checkpoint through a new native formal Build', flush=True)
+            delivery = execute(short, entry, authorization, False, runner, replay_build=committed['run_id'])
+            require(delivery == committed, 'formal replay changed the accepted page revisions or exclusions')
+        elif args.from_node:
             entry_pattern = r'[a-z0-9][a-z0-9-]{0,31}'
             writing = args.from_node == 'writing'
             require(args.reentry_id and re.fullmatch(entry_pattern, args.reentry_id)
@@ -366,7 +395,10 @@ def main():
             print(f"Verifying unchanged release {delivery['release_id']} and its existing Provider index", flush=True)
         final = accept(vault, _load_json(short / 'operation.json'), delivery, provider, args.provider_state.resolve())
         final.update(source_handoff=handoff, short_result=result, delivery=delivery, wall_seconds=time.time() - start,
-                     source_qualification=qualification, whole_run_continuous_automation=not args.resume_delivery)
+                     source_qualification=qualification,
+                     whole_run_continuous_automation=not args.resume_delivery and args.from_node != 'formal-build')
+        if args.from_node == 'formal-build':
+            final.update(replayed_from='formal-build', supplement_continuous_automation=True)
         runner.save(output / 'final-acceptance.json', final)
         print(json.dumps(final['release'], ensure_ascii=False), flush=True)
 
