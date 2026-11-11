@@ -270,6 +270,13 @@ def build(expected, checks, covered=(), *, excluded_receipts=()):
         rows = [by_id.get(ref) for ref in page['fragments'] if ref not in reused]
         if not rows or any(row is None or row['state'] != 'structurally_valid' for row in rows):
             continue
+        if derived := page.get('derived_from'):
+            parent = expected[derived['page_id']]
+            require(all(row['page_id'] == derived['page_id'] for row in rows)
+                    and set(page['fragments']) <= set(parent['fragments'])
+                    and all(row['fragment_position']['section'] == derived['section'] for row in rows)
+                    and derived['receipt_sha256'] == [row['receipt_sha256'] for row in rows],
+                    'independent section lost its exact parent native proof')
         sections = {}
         for row in rows:
             pos = row['fragment_position']
@@ -286,6 +293,60 @@ def build(expected, checks, covered=(), *, excluded_receipts=()):
         if 'card_path' in page:
             from short_cards import render
             complete[page_id].update(card_path=page['card_path'], content=render(page, sections))
+        if page.get('derived_from'):
+            complete[page_id]['derived_from'] = page['derived_from']
         if coverage:
             complete[page_id]['coverage_receipts'] = [row['coverage_sha256'] for row in coverage]
     return complete
+
+
+def independent_sections(expected, checks, covered, specs, reduced, planned, held):
+    """Deliver whole confirmed sections only; never salvage arbitrary successful pieces."""
+    from short_cards import place
+
+    expected = copy.deepcopy(expected)
+    complete = build(expected, checks, covered)
+    by_id = {row['fragment_id']: row for row in checks}
+    views = {v['fragment_id']: v for row in planned for v in row['view']['pages'].values()}
+    covered_ids = {row['fragment_id'] for row in covered}
+    positions = {row['fragment_id']: row['position'] for row in held if row.get('fragment_id') and row.get('position')}
+    positions.update({fid: view['fragment_position'] for fid, view in views.items()})
+    proposals = []
+    for spec in specs:
+        pid = page_identity((reduced['topics'][tid]['identity'] for tid in spec['topics']), reduced.get('page_namespace'))
+        if pid not in expected or pid in complete or spec['grouping_basis'] in ('inseparable_conditions', 'comparison'):
+            continue
+        parent = expected[pid]
+        if not parent.get('card_path'):
+            continue
+        # Missing/over-budget pieces are not present in views, so their section can never be complete.
+        for number, section in enumerate(spec['sections'], 1):
+            members = [fid for fid in parent['fragments'] if positions.get(fid, {}).get('section') == number]
+            rows = [by_id.get(fid) for fid in members]
+            if (not members or any(fid not in positions for fid in parent['fragments']) or covered_ids.intersection(members)
+                    or any(row is None or row['state'] != 'structurally_valid' for row in rows)):
+                continue
+            material = {ref for fid in members for ref in views[fid]['materials']}
+            relations = [link for tid in section['topics'] for link in reduced['topics'][tid]['relations']]
+            edges = {(link['item'], dep) for link in relations for dep in link['applies_to']}
+            if not all({item, dep} <= material for item, dep in edges):
+                continue
+            # Definitions, conditions, exceptions and all source dependencies assigned to this section remain mandatory.
+            if not {link['item'] for link in relations} <= material:
+                continue
+            scopes = list(dict.fromkeys(reduced['topics'][tid]['scope'] for tid in section['topics']))
+            identity = fingerprint(['short-independent-section/v1', pid, number,
+                                    sorted(reduced['topics'][tid]['identity'] for tid in section['topics'])])
+            proposals.append({'id': identity, 'name': section['name'], 'scope': '；'.join(scopes),
+                              'reader_question': f"关于「{section['name']}」，原文有哪些规定和依据？",
+                              'theme_directory': spec['theme_directory'], 'fragments': members,
+                              'derived_from': {'contract': 'short-independent-section/v1', 'page_id': pid,
+                                               'section': number, 'topics': section['topics'],
+                                               'receipt_sha256': [row['receipt_sha256'] for row in rows],
+                                               'dependency_edges': [list(edge) for edge in sorted(edges)]}})
+    layout = copy.deepcopy(reduced['card_layout'])
+    layout['occupied'] = sorted(set(layout['occupied']) | {p['card_path'] for p in expected.values() if p.get('card_path')})
+    for page in place(layout, proposals):
+        require('registered_path' not in page, 'independent section identity already registered')
+        expected[page['id']] = {k: v for k, v in page.items() if k not in ('id', 'theme_directory')}
+    return expected

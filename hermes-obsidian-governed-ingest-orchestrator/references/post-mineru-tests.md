@@ -183,3 +183,27 @@ keeps the full evidence, registered tables and relationship graph in each
 request. It assigns text requirements and form coverage separately and checks
 each complete request and output estimate. An unresolved dependency or an
 oversized input remains held. The split stays inside the existing page.
+# Content outcome recovery and independent section delivery
+
+New readable-card operations pin `content_outcome_recovery`. After writing
+settles, the controller authenticates held native receipts and counts actual
+slot reservations, including unknown completions and replacement descendants.
+A slot with exactly one prior call may receive one targeted content call after
+local task scope and explicit registered same-source asset closure are repaired.
+Unusable conversion evidence, unavailable required assets and exhausted slots
+remain isolated. Valid receipts survive; no retry budget is refreshed.
+
+For an authorized same-Vault writing supplement use
+`python3 "<skill-dir>/scripts/start_post_mineru_short_test.py"` with the original
+request/output and deployment arguments, `--from-node writing`, a fresh stable
+`--reentry-id`, `--prior-entry <accepted-entry>` when applicable, and
+`--recover-held-content`. The program creates a hash-bound recovery manifest;
+the operator must not author domain results or manually attach evidence.
+
+Incomplete parents remain excluded. A whole planned section with every required
+fragment and its explicit dependencies verified may become a narrower readable
+card with its own stable identity, title, scope and original native proofs.
+Inseparable/comparison plans and incomplete sections cannot be salvaged this way.
+Derived cards retain their parent/section lineage in formal Build evidence;
+neither the parent nor missing material is counted as covered. Continuous
+automation and partial coverage are separate acceptance results.

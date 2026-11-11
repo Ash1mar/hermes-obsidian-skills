@@ -195,6 +195,11 @@ def run_job(root, job, own):
     if payload.get('replay'):
         return replay_mapping(root, original, own)
     profile = _load_json(root / 'operation.json').get('transport_profile', 'shared')
+    if original['view'].get('fragment_repair') == 'short-content-recovery/v1':
+        from short_content_recovery import slot_attempts
+        require(all(len(slot_attempts(root, view['repair_of_fragment'])) == 1
+                    for view in original['view']['pages'].values()),
+                'content recovery allowance already consumed or original completion unknown')
     row = original
     slots = row.get('missing_slots', ['r'])
     attempts = []
@@ -687,7 +692,7 @@ def verify_revision_drafts(root, board, repair):
 
 def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, page_contract, fragment_repair=None,
             fragment_exclusions=None, mapping_recovery=None, registry_revision=None, inherited=None,
-            split_output=None, replay_only=False):
+            split_output=None, replay_only=False, content_recovery=False):
     require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', entry), 'valid stable reentry ID required')
     kb, kc, _ = runtime()
     board = operation['board']
@@ -704,6 +709,15 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
                 'fragment exclusion evidence changed')
     previous = attempt_index(root)
     holds = {}
+    if content_recovery:
+        require(node == 'writing' and not any((fragment_repair, replay_only, mapping_recovery)),
+                'content recovery requires its own writing entry')
+        results = [p for p in [root / 'result.json', *root.glob('reentries/*/result.json')]
+                   if _load_json(p).get('last_stage') == 'offline_build']
+        previous_result = max((_load_json(p) for p in results), key=lambda r: len(r.get('stages', [])))
+        require(not previous_result['native_active_or_ready'] and previous_result['origin'] == operation['origin'],
+                'content recovery requires a settled native checkpoint')
+        holds = previous_result['execution_holds']
     overlay = None
     preserved = []
     if replay_only:
@@ -771,6 +785,8 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
     }
     if replay_only:
         control['replay_only'] = True
+    if content_recovery:
+        control['content_outcome_recovery'] = True
     if fragment_repair is not None:
         control['fragment_repair'] = fragment_repair
         control['fragment_repair_preview'] = plan['fragment_repair']
@@ -795,18 +811,23 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
                       directory=directory, previous=previous, page_contract=page_contract,
                       fragment_repair=fragment_repair, fragment_exclusions=fragment_exclusions,
                       mapping_overlay=overlay, preserved_pages=preserved, registry_revision=registry_revision,
-                      initial_holds=holds, split_output=split_output, replay_only=replay_only)
+                      initial_holds=holds, split_output=split_output, replay_only=replay_only,
+                      content_recovery=content_recovery)
 
 
 def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=False,
                entry=None, directory=None, previous=None, page_contract=None, fragment_repair=None,
                fragment_exclusions=None, mapping_overlay=None, preserved_pages=(), registry_revision=None,
-               initial_holds=None, split_output=None, replay_only=False):
+               initial_holds=None, split_output=None, replay_only=False, content_recovery=False):
     kb, kc, _ = runtime()
     output = directory or root
     board = operation['board']
     holds = dict(initial_holds or {})
     previous = previous or {}
+    recovery_path = output / 'content-recovery.json'
+    recovery_enabled = content_recovery or (not entry and operation.get('card_layout', {}).get('content_outcome_recovery'))
+    if recovery_path.is_file():
+        fragment_repair = _load_json(recovery_path)
     while True:
         live(root, operation, resumed=resumed, entry=entry)
         planning_started = time.monotonic()
@@ -819,6 +840,13 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
                        page_namespace=operation.get('page_namespace'), card_layout=operation.get('card_layout'))
         planning_seconds = time.monotonic() - planning_started
         rows = plan.get('requests', [])
+        if not rows and plan['stage'] == 'offline_build' and recovery_enabled and not recovery_path.exists():
+            require(fragment_repair is None, 'automatic content recovery cannot replace an existing repair contract')
+            from short_content_recovery import plan_recovery
+            fragment_repair = plan_recovery(root, plan, sources, sys.modules[__name__])
+            save(recovery_path, fragment_repair)
+            # Historical exhausted/unknown requests remain fenced; the new calls have distinct bound identities.
+            continue
         if replay_only:
             require(all(row['phase'] == 'short-write' and previous.get(row['id']) for row in rows),
                     'writing replay cannot dispatch a new model request')
@@ -848,7 +876,7 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
         for row in results:
             if row['state'] == 'held':
                 holds[row['request_id']] = {'task_id': row['task_id'], 'request_id': row['request_id']}
-        if results and all(r['state'] == 'held' for r in results) and not entry:
+        if results and all(r['state'] == 'held' for r in results) and not entry and not recovery_enabled:
             final = 'held'
             break
     with closing(kc.connect(board=board)) as conn:
@@ -866,7 +894,7 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
 def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=None, entry=None, dry_run=False,
           page_contract=None, fragment_repair=None, fragment_exclusions=None, mapping_recovery=None,
           registry_revision=None, split_output=None, separate_page_identities=False, mapping_from=None,
-          transport_profile='shared', mapping_fences=(), replay_only=False):
+          transport_profile='shared', mapping_fences=(), replay_only=False, content_recovery=False):
     from short_evidence_pass import MAP_CONTRACT
 
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
@@ -917,7 +945,7 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
                                fragment_exclusions=fragment_exclusions or active.get('fragment_exclusions'),
                                mapping_recovery=mapping_recovery, registry_revision=registry_revision, inherited=inherited,
                                split_output=split_output or active.get('split_output') or operation.get('split_output'),
-                               replay_only=replay_only)
+                               replay_only=replay_only, content_recovery=content_recovery)
             metrics = resume_mapping(root, operation, sources, seeds, groups)
         else:
             require(not (root / 'operation.json').exists(), 'operation already exists; inspect its durable evidence')

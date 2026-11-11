@@ -263,7 +263,7 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
             planned, expected, saved, fragment_repair, limit, sources=sources, excluded=excluded)
         planned.extend(added)
         held.extend(isolated)
-        common['fragment_repair'] = {'contract': short_fragment_repair.CONTRACT,
+        common['fragment_repair'] = {'contract': fragment_repair['contract'],
                                      'original_requests': consumed, 'replaced_or_isolated': sorted(replaced),
                                      'coverage_receipts': covered}
     if selected_split:
@@ -300,6 +300,10 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 missing.append(slot)
         if missing:
             requests.append({**row, 'missing_slots': missing})
+    if fragment_repair and fragment_repair.get('section_delivery'):
+        require(bool(reduced.get('card_layout')), 'section delivery requires readable short cards')
+        expected = fragments_v2.independent_sections(expected, checks, covered, specs,
+            {**reduced, 'page_namespace': page_namespace}, planned, held)
     return {
         **common, 'stage': 'writing' if requests else 'offline_build', 'requests': requests, 'checks': checks,
         'expected_pages': expected, 'assembled_sections': fragments_v2.build(
@@ -325,7 +329,7 @@ def seal(plan, request_id, response, saved, *, call=None, drafts=None):
     if row['phase'] != 'short-write':
         save(saved / f'{request_id}.json', receipt(row, response))
         return {'sealed': ['r'], 'held': {}}
-    sealed, held = [], {}
+    sealed, held, content_held = [], {}, {}
     require(isinstance(response, dict) and set(response) == {'results'} and isinstance(response['results'], dict),
             'page response requires result slots')
     results = response['results']
@@ -338,9 +342,11 @@ def seal(plan, request_id, response, saved, *, call=None, drafts=None):
             record = validator(row, slot, answer)
             save(saved / f'{request_id}-{slot}.json', record)
             sealed.append(slot)
+            if record.get('state') == 'held':
+                content_held[slot] = record.get('diagnostic')
         except (ValueError, ContractError) as error:
             held[slot] = str(error)
-    return {'sealed': sealed, 'held': held}
+    return {'sealed': sealed, 'held': held, **({'content_held': content_held} if content_held else {})}
 
 
 def main():

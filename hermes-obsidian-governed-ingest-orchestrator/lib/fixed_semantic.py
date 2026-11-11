@@ -522,6 +522,13 @@ def system_prompt(phase,view,correction=None):
                    'are navigation only and do not identify a different form. Describe each required asset '
                    'using its own table content and include its actual citation.'
                    if view.get('fragment_repair') or view.get('local_fragment_scope') else '')
+                + (' This is the single content recovery opportunity. Reassess content_recovery.previous_answer '
+                   'against this corrected local assignment and the supplied original evidence. A registered held '
+                   'reply did not complete the content. Do not require sibling-section material to answer this '
+                   'fragment. Check the explicit asset_bindings and read the whole bound assets. Preserve genuine '
+                   'missing evidence or unreadable content as unresolved; never turn a missing requirement into '
+                   'context merely to pass. Report only IDs supplied to this slot and account for every one.'
+                   if any(p.get('content_recovery') for p in view.get('pages', {}).values()) else '')
                 + (' Use source_continuations only to locate the original section and other planned coverage. '
                    'An excluded destination is an audit location, not a published link. Do not claim source '
                    'material is missing based on this packet. If an essential requirement cannot be answered, '

@@ -41,7 +41,8 @@ def snapshot(vault):
     themes = sorted({p.parts[1] for r in registry if r['status'] == 'active'
                      and (p := PurePosixPath(r['current_path'])).parts[0] == '30_Cards' and len(p.parts) >= 3})
     occupied_dirs = sorted({p.name for p in root.iterdir() if p.is_dir() and not p.is_symlink()}) if root.is_dir() else []
-    return {'contract': CONTRACT, 'local_fragment_scope': True, 'themes': themes, 'directories': occupied_dirs,
+    return {'contract': CONTRACT, 'local_fragment_scope': True, 'content_outcome_recovery': True,
+            'themes': themes, 'directories': occupied_dirs,
             'occupied': sorted(paths | {r['current_path'] for r in registry}), 'existing': existing}
 
 
