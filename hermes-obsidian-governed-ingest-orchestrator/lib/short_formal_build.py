@@ -94,9 +94,14 @@ def final_plan(root, operation, authorization, runner):
                   key=lambda c: c['started_at'], default=operation)
     require(current == control, 'writing checkpoint is superseded by another reentry')
     saved_plan = sorted(directory.glob('stage-*-offline_build.json'))[-1]
-    require(authorization['checkpoint'] == {
+    checkpoint = {
         'control_sha256': runner.sha(control_path), 'result_sha256': runner.sha(result_path),
-        'plan_sha256': runner.sha(saved_plan)}, 'authorized writing checkpoint changed')
+        'plan_sha256': runner.sha(saved_plan)}
+    recovery_path = directory / 'content-recovery.json'
+    recovery = _load_json(recovery_path) if recovery_path.is_file() else None
+    if recovery is not None:
+        checkpoint['content_recovery_sha256'] = runner.sha(recovery_path)
+    require(authorization['checkpoint'] == checkpoint, 'authorized writing checkpoint changed')
     if control.get('fragment_exclusions'):
         pin = control['fragment_exclusions']['evidence']
         require(runner.sha(_vault_path(root.parent, pin['ref'])) == pin['sha256'],
@@ -118,7 +123,7 @@ def final_plan(root, operation, authorization, runner):
                     'historical mapping proof changed before formal Build')
     rebuilt = runner.advance(sources, seed_requests(sources), mapping_groups(sources, mapping_contract), root / 'receipts',
                              operation['body_limit'], native_holds=result['execution_holds'],
-                             page_contract=control['page_contract'], fragment_repair=control.get('fragment_repair'),
+                             page_contract=control['page_contract'], fragment_repair=recovery or control.get('fragment_repair'),
                              fragment_exclusions=control.get('fragment_exclusions'), mapping_contract=mapping_contract,
                              mapping_overlay=overlay, preserved_pages=control.get('preserved_pages', ()),
                              writing_contract=operation.get('writing_contract'),
@@ -199,6 +204,8 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
             if card_path:
                 candidates[-1]['card_path'] = card_path
                 candidates[-1]['coverage'] = checks
+            if page.get('derived_from'):
+                candidates[-1]['independent_section'] = page['derived_from']
     exclusions = {**partition['excluded'], **proof_holds}
     excluded = [{'short_id': key, 'name': plan['expected_pages'][key]['name'],
                  'disposition': exclusions.get(key, {'category': 'delivery_conditions',

@@ -11,6 +11,7 @@ from short_page_contract import (WRITE_CONTRACT, auditable_qa, body_request, che
                                  section_citations, table_navigation, writing_retry, writing_view)
 
 CONTRACT = 'short-fragment-repair/v1'
+CONTENT_CONTRACT = 'short-content-recovery/v1'
 _ORG = r'[\u3400-\u9fff]{2,32}公司'
 _CODE = r'[A-Z][A-Z0-9]*(?:-[A-Z0-9]+){2,}'
 _CONTINUATION = rf'{_CODE}\s*[（(]续[）)]'
@@ -137,8 +138,11 @@ def equivalent_coverage(target, donor, receipt):
 
 def apply(planned, expected, saved, repair, limit, *, sources=None, excluded=None):
     """Transform only selected fragment identities, keeping old rows and audit readable."""
-    require(set(repair) == {'contract', 'expected_pages_sha256', 'changes'}
-            and repair['contract'] == CONTRACT and repair['expected_pages_sha256'] == fingerprint(expected),
+    content = repair['contract'] == CONTENT_CONTRACT
+    require(set(repair) == {'contract', 'expected_pages_sha256', 'changes'} | (
+                {'decisions', 'section_delivery'} if content else set())
+            and repair['contract'] in (CONTRACT, CONTENT_CONTRACT)
+            and repair['expected_pages_sha256'] == fingerprint(expected),
             'fragment repair does not match the exact writing plan')
     by_id = {v['fragment_id']: (row, slot, v) for row in planned for slot, v in row['view']['pages'].items()}
     expected = copy.deepcopy(expected)
@@ -175,9 +179,13 @@ def apply(planned, expected, saved, repair, limit, *, sources=None, excluded=Non
                 covered.append(proof)
                 continue
         else:
-            require(action in ('scope', 'context', 'revise') and change['donor_fragment_id'] is None,
+            require(action in ('scope', 'context', 'revise', 'content') and change['donor_fragment_id'] is None,
                     'unknown fragment repair action')
-        if action == 'context':
+        if action == 'content':
+            require(content and prior and prior['state'] == 'held', 'content repair requires a held native result')
+            from short_content_recovery import replacement
+            replacement = replacement(row, slot, prior, limit, sources)
+        elif action == 'context':
             from short_fragment_disposition import context_for, locations
             index = locations(sources, planned, excluded)
             relations = context_for(view, sources, index)
@@ -206,5 +214,5 @@ def apply(planned, expected, saved, repair, limit, *, sources=None, excluded=Non
         else:
             holds.append({'page': view['id'], 'fragment_id': new_id, 'request': replacement['id'],
                           'reason': 'repaired_fragment_over_budget', 'budget': replacement['budget']})
-    require(changed, 'repair must select at least one failed fragment')
+    require(changed or (content and repair['section_delivery']), 'repair must select failed content or scoped delivery')
     return added, changed, covered, holds, expected, sorted(consumed)

@@ -202,6 +202,8 @@ def main():
     parser.add_argument('--reentry-id')
     parser.add_argument('--prior-entry')
     parser.add_argument('--fragment-repair', type=Path)
+    parser.add_argument('--recover-held-content', action='store_true',
+                        help='Classify held native content, allow its one remaining call, and deliver complete sections')
     parser.add_argument('--replay-writing', action='store_true',
                         help='Recover an unpublished writing checkpoint from exact returned attempts with zero model calls')
     parser.add_argument('--split-atomic-fragment')
@@ -220,6 +222,9 @@ def main():
         args.fragment_repair, args.split_atomic_fragment, args.prior_entry, args.mapping_recovery,
         args.resume_delivery, args.content_isolation))), 'writing replay requires an isolated writing reentry')
     require(not root.is_relative_to(vault), 'test evidence must remain outside the Vault')
+    require(not args.recover_held_content or (args.from_node == 'writing'
+            and not any((args.fragment_repair, args.replay_writing, args.split_atomic_fragment))),
+            'content recovery requires an independent writing reentry')
     require(bool(args.repeat_from) == bool(args.round_id)
             and (not args.round_id or (re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', args.round_id)
                                       and args.round_id != request['operation_id']
@@ -268,7 +273,7 @@ def main():
             writing = args.from_node == 'writing'
             require(args.reentry_id and re.fullmatch(entry_pattern, args.reentry_id)
                     and not args.resume_delivery and not args.content_isolation
-                    and (bool(args.fragment_repair or args.split_atomic_fragment or args.replay_writing) and not args.mapping_recovery if writing else
+                    and (bool(args.fragment_repair or args.split_atomic_fragment or args.replay_writing or args.recover_held_content) and not args.mapping_recovery if writing else
                          bool(args.mapping_recovery) and not args.fragment_repair and not args.split_atomic_fragment)
                     and (not args.prior_entry or (writing and re.fullmatch(entry_pattern, args.prior_entry))),
                     'supplement requires a stable reentry and its node-specific manifest')
@@ -299,7 +304,8 @@ def main():
                                   node=args.from_node, entry=args.reentry_id, mapping_recovery=recovery,
                                   fragment_repair=_load_json(args.fragment_repair) if args.fragment_repair else None,
                                   split_output=args.split_atomic_fragment,
-                                  registry_revision=args.source_registry_revision, replay_only=args.replay_writing)
+                                  registry_revision=args.source_registry_revision, replay_only=args.replay_writing,
+                                  content_recovery=args.recover_held_content)
             directory = short / 'reentries' / args.reentry_id
             require(result['last_stage'] == 'offline_build', 'supplement did not reach a settled writing checkpoint')
             plan_path = sorted(directory.glob('stage-*-offline_build.json'))[-1]
@@ -312,6 +318,8 @@ def main():
                                             'plan_sha256': runner.sha(plan_path)},
                              'actor': request['actor'], 'pages': selected, 'base_release': base_release,
                              'publish': True, 'policy': POLICY}
+            if (directory / 'content-recovery.json').is_file():
+                authorization['checkpoint']['content_recovery_sha256'] = runner.sha(directory / 'content-recovery.json')
             runner.save(directory / 'formal-authorization.json', authorization)
             if selected:
                 delivery = execute(short, 'formal-' + args.reentry_id, authorization, False, runner)
@@ -395,6 +403,8 @@ def main():
                                             'plan_sha256': runner.sha(plan_path)},
                              'actor': request['actor'], 'pages': partition['included'], 'base_release': base_release,
                              'publish': True, 'policy': POLICY}
+            if (short / 'content-recovery.json').is_file():
+                authorization['checkpoint']['content_recovery_sha256'] = runner.sha(short / 'content-recovery.json')
             runner.save(root / 'formal-authorization.json', authorization)
             print(f"{len(partition['included'])} complete pages; executing formal Build and release", flush=True)
             delivery = execute(short, 'formal-fifth-release', authorization, False, runner)
