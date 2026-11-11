@@ -87,9 +87,9 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
                      'actor': 'agent', 'note': 'Program acceptance.', 'acceptance': record(assess(service.build, added, p))}
                     for p in added['page_revisions']]
         service.build.finalize({'run_id': added['run_id'], 'actor': 'agent', 'expected_revision': 1, 'reviews': reviews2})
-        proposal = service.plan(request('release-additive-test', [added['run_id']]))['plan']
+        proposal = service.plan(request('release-additive-test', [added['run_id']], state=service.status()['revision']))['plan']
         assert selected <= {p['page_id'] for p in proposal['subjects']}
-        assert proposal['delivery']['retained_selection_boundaries'][0]['page_id'] == page['page_id']
+        assert added['short_evidence'] in proposal['delivery']['inherited_coverage_gaps']
         # A material exclusion for the same old page remains effective.
         from hermes_source_units import scoped_release
         short_scope = scoped_release.short_scope
@@ -99,7 +99,7 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
             return selected_ids, omissions, pointers
         with monkeypatch.context() as patch:
             patch.setattr(scoped_release, 'short_scope', material_exclusion)
-            negative = service._build_plan(request('release-material-test', [added['run_id']]))
+            negative = service._build_plan(request('release-material-test', [added['run_id']], state=service.status()['revision']))
             assert page['page_id'] not in {p['page_id'] for p in negative['subjects']}
             assert page['page_id'] in {p['page_id'] for p in negative['delivery']['excluded']}
     if cards:

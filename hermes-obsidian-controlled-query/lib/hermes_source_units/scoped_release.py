@@ -48,7 +48,6 @@ def build_plan(service,request,state,runs,scopes):
         allowed.update(s['page_id'] for s in active if (s['page_id'],s['current_revision_id']) in published)
     exclusions={p['page_id']:{**p,'reason':p.get('reason','excluded by delivery scope')} for row in scopes.values() for p in row['scope']['excluded']}
     short_pages,short_excluded,short_proofs=short_scope(service,runs)
-    retained_selection_boundaries=[]
     if prior:
         unchanged={s['page_id']:s for s in active if (s['page_id'],s['current_revision_id']) in published}
         for pid,row in list(short_excluded.items()):
@@ -58,8 +57,6 @@ def build_plan(service,request,state,runs,scopes):
                     and row.get('reason')=='outside-exact-short-build-selection'):
                 scope=pinned(service.vault,row['original_scope'])['scope']
                 if scope['authorization']['base_release']==prior:
-                    retained_selection_boundaries.append({'page_id':pid,
-                        'revision_id':unchanged[pid]['current_revision_id'],'original_scope':row['original_scope']})
                     del short_excluded[pid]
     for run in runs:
         if run.get('short_evidence') and (advisory := qa_advisory(service.build,run)[0]):
@@ -150,8 +147,6 @@ def build_plan(service,request,state,runs,scopes):
         'coverage_gap_summaries':[{'scope_id':r['scope']['scope_id'],'held_page_count':r['scope']['coverage_gaps'].get('held_page_count',0),
             'deferred_candidate_occurrences':r['scope']['coverage_gaps'].get('deferred_candidate_occurrences',0)} for r in scopes.values()],
         'raw_source_indexing':False,'dependencies':[{'page_id':k,'depends_on':v} for k,v in partition['dependencies'].items()]}
-    if retained_selection_boundaries:
-        delivery['retained_selection_boundaries']=retained_selection_boundaries
     plan={'contract':'hermes-vault-finalize-plan/v1','release_id':str(request['release_id']),
         'revision':1,'state':'draft','actor':str(request['actor']),'expected_state_revision':state['revision'],
         'identity_registry_revision':registry['revision'],'build_runs':[{'run_id':r['run_id'],'revision':r['revision']} for r in runs],
