@@ -116,6 +116,10 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
         assert write_navigation(service, release, {'30_Cards/工程设计'}) == [
             {'path': expected[0]['path'], 'state': 'occupied'}]
         assert nav.read_text(encoding='utf-8') == 'Manual index'
+    if cards and advisory:
+        additional_release = apply(service, proposal)['release']
+        assert selected <= {p['page_id'] for p in additional_release['subjects']}
+        assert service.validate(additional_release['release_id'])['subject_count'] == len(selected) + 1
     proof = vault / pins[-1]['ref']
     proof.write_bytes(proof.read_bytes() + b' ')
     with pytest.raises(ContractError, match='changed'):
