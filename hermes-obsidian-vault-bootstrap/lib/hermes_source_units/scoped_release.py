@@ -34,6 +34,20 @@ def short_scope(service, runs):
                                        'original_scope': pointer}
     return selected, excluded, proofs
 
+
+def retained_exclusions(service, exclusions, base_id, previous, current):
+    """A selection boundary cannot retract an unchanged qualified base revision."""
+    prior={(p['page_id'],p['current_revision_id']) for p in previous}
+    unchanged={p['page_id'] for p in current if (p['page_id'],p['current_revision_id']) in prior}
+    result=dict(exclusions)
+    for pid,row in list(result.items()):
+        if (pid in unchanged and row.get('category')=='delivery_conditions'
+                and row.get('reason')=='outside-exact-short-build-selection'):
+            scope=pinned(service.vault,row['original_scope'])['scope']
+            if scope['authorization']['base_release']==base_id:
+                del result[pid]
+    return result
+
 def build_plan(service,request,state,runs,scopes):
     current=service._current_sets();changes=service._source_changes(request.get('source_changes',[]),current)
     change_map={r['resource_id']:r for r in changes};registry=service._registry()
@@ -49,15 +63,7 @@ def build_plan(service,request,state,runs,scopes):
     exclusions={p['page_id']:{**p,'reason':p.get('reason','excluded by delivery scope')} for row in scopes.values() for p in row['scope']['excluded']}
     short_pages,short_excluded,short_proofs=short_scope(service,runs)
     if prior:
-        unchanged={s['page_id']:s for s in active if (s['page_id'],s['current_revision_id']) in published}
-        for pid,row in list(short_excluded.items()):
-            # Outside this incremental selection is not a defect in an unchanged published revision.
-            # Keep the original audit scope and still run source/governance/dependency checks below.
-            if (pid in unchanged and row.get('category')=='delivery_conditions'
-                    and row.get('reason')=='outside-exact-short-build-selection'):
-                scope=pinned(service.vault,row['original_scope'])['scope']
-                if scope['authorization']['base_release']==prior:
-                    del short_excluded[pid]
+        short_excluded=retained_exclusions(service,short_excluded,prior,old['subjects'],active)
     for run in runs:
         if run.get('short_evidence') and (advisory := qa_advisory(service.build,run)[0]):
             short_proofs.append(advisory)
@@ -182,13 +188,15 @@ def validate_manifest(service,plan,release,*,scopes=None):
         allowed.update(p['page_id'] for p in run['page_revisions'])
     required_exclusions={p['page_id'] for row in scopes.values() for p in row['scope']['excluded']}
     short_pages,short_excluded,short_proofs=short_scope(service,completed)
-    required_exclusions.update(short_excluded)
     if any(p not in release['delivery']['inherited_coverage_gaps'] for p in short_proofs):
         fail('release omitted short Build coverage evidence','SOURCE_CHANGED')
     if release['delivery'].get('base_release'):
         previous=pinned(service.vault,release['delivery']['base_release'])
+        short_excluded=retained_exclusions(service,short_excluded,previous['release_id'],
+                                           previous['subjects'],release['subjects'])
         prior={(p['page_id'],p['current_revision_id']) for p in previous['subjects']}
         allowed.update(p['page_id'] for p in release['subjects'] if (p['page_id'],p['current_revision_id']) in prior)
+    required_exclusions.update(short_excluded)
     if not selected.issubset(allowed) or not required_exclusions.issubset(excluded):
         fail('release omitted exclusions or exceeded its delivery','SOURCE_CHANGED')
     if (selected&excluded or selected!={s['page_id'] for s in release['subjects']}
