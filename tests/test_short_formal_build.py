@@ -70,6 +70,38 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
     release = apply(service, plan)['release']
     assert {p['page_id'] for p in release['subjects']} == selected
     assert service.validate(release['release_id'])['subject_count'] == len(selected)
+    # An additive Build may describe an unchanged earlier page as outside its own selection.
+    # That scope boundary must not retract the previously published revision.
+    if cards and advisory:
+        new_id = fingerprint('additive')
+        grant2 = {**grant, 'pages': [new_id], 'base_release': release['release_id']}
+        body2 = {new_id: b'# Additive\n\nSource evidence.\n'}
+        candidate2 = {**candidates[0], 'short_id': new_id, 'name': 'Additive',
+                      'authored_sha256': _sha(body2[new_id]), 'card_path': '30_Cards/工程设计/新增.md'}
+        scope2 = {**scope, 'authorization': grant2, 'pages': [candidate2], 'excluded': [{
+            'short_id': ids[0], 'name': 'Page 0', 'disposition': {'category': 'delivery_conditions',
+            'reason': 'outside-exact-short-build-selection', 'reopen_condition': 'authorize the exact page'}}]}
+        job.write_bytes(_json_bytes({'request': {'phase': 'short-formal-build', 'view': {'authorization': grant2}}}))
+        added = short_build.admit(service.build, scope2, body2, root, job)
+        reviews2 = [{'page_id': p['page_id'], 'authored_sha256': p['authored_sha256'], 'parent_authored_sha256': None,
+                     'actor': 'agent', 'note': 'Program acceptance.', 'acceptance': record(assess(service.build, added, p))}
+                    for p in added['page_revisions']]
+        service.build.finalize({'run_id': added['run_id'], 'actor': 'agent', 'expected_revision': 1, 'reviews': reviews2})
+        proposal = service.plan(request('release-additive-test', [added['run_id']], state=service.status()['revision']))['plan']
+        assert selected <= {p['page_id'] for p in proposal['subjects']}
+        assert added['short_evidence'] in proposal['delivery']['inherited_coverage_gaps']
+        # A material exclusion for the same old page remains effective.
+        from hermes_source_units import scoped_release
+        short_scope = scoped_release.short_scope
+        def material_exclusion(*args):
+            selected_ids, omissions, pointers = short_scope(*args)
+            omissions[page['page_id']].update(category='unresolved', reason='missing required evidence')
+            return selected_ids, omissions, pointers
+        with monkeypatch.context() as patch:
+            patch.setattr(scoped_release, 'short_scope', material_exclusion)
+            negative = service._build_plan(request('release-material-test', [added['run_id']], state=service.status()['revision']))
+            assert page['page_id'] not in {p['page_id'] for p in negative['subjects']}
+            assert page['page_id'] in {p['page_id'] for p in negative['delivery']['excluded']}
     if cards:
         from short_cards import write_navigation
 

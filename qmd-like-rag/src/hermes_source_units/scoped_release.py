@@ -48,6 +48,16 @@ def build_plan(service,request,state,runs,scopes):
         allowed.update(s['page_id'] for s in active if (s['page_id'],s['current_revision_id']) in published)
     exclusions={p['page_id']:{**p,'reason':p.get('reason','excluded by delivery scope')} for row in scopes.values() for p in row['scope']['excluded']}
     short_pages,short_excluded,short_proofs=short_scope(service,runs)
+    if prior:
+        unchanged={s['page_id']:s for s in active if (s['page_id'],s['current_revision_id']) in published}
+        for pid,row in list(short_excluded.items()):
+            # Outside this incremental selection is not a defect in an unchanged published revision.
+            # Keep the original audit scope and still run source/governance/dependency checks below.
+            if (pid in unchanged and row.get('category')=='delivery_conditions'
+                    and row.get('reason')=='outside-exact-short-build-selection'):
+                scope=pinned(service.vault,row['original_scope'])['scope']
+                if scope['authorization']['base_release']==prior:
+                    del short_excluded[pid]
     for run in runs:
         if run.get('short_evidence') and (advisory := qa_advisory(service.build,run)[0]):
             short_proofs.append(advisory)
