@@ -73,7 +73,7 @@ def make_fragment(sources, reduced, page, position, topics, primary):
     modern = reduced.get('writing_contract') == WRITE_CONTRACT
     card = reduced.get('card_layout')
     duties = obligations(sources, material, topics, primary, modern=modern, card=bool(card))
-    basis_refs = set(page.get('project_basis', {}).get('refs', ())) & primary
+    basis_refs = set((page.get('project_basis') or {}).get('refs', ())) & primary
     for key in basis_refs:
         duties[key].update(role='substantive', express=True, covers_by=[])
     impacts = qa_impacts(sources, selection, material, duties)

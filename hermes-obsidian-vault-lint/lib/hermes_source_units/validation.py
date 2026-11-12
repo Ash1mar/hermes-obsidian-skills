@@ -380,10 +380,12 @@ def validate_record(kind: str, record: Mapping[str, Any]) -> None:
     if kind == "page_revision":
         if (record["state"] == "draft") != (record["review"] is None):
             _fail("INVALID_STATE", "$.review", "draft pages are unreviewed; committed pages require review")
-        expected = fingerprint({key: record[key] for key in (
+        revision = {key: record[key] for key in (
             "page_id", "subject_id", "parent_revision_id", "action", "path",
-            "authored_sha256", "support_refs", "qa_status", "business_status", "visibility")})
-        if record["revision_id"] != expected:
+            "authored_sha256", "support_refs", "qa_status", "business_status", "visibility")}
+        if "page_type" in record:
+            revision["page_type"] = record["page_type"]
+        if record["revision_id"] != fingerprint(revision):
             _fail("IDENTITY_MISMATCH", "$.revision_id", "page revision identity does not match content and support")
     if kind == "build_run":
         if "short_evidence" in record:
