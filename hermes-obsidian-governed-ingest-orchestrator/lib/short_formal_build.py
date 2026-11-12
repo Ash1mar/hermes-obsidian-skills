@@ -79,6 +79,8 @@ def native_fragment(root, receipt, attempts, conn, runner):
 
 
 def final_plan(root, operation, authorization, runner):
+    if authorization['writing_entry'] == 'organization-replay':
+        return organization_replay(root, operation, authorization, runner)
     initial = authorization['writing_entry'] == 'initial'
     directory = root if initial else root / 'reentries' / authorization['writing_entry']
     control_path = directory / ('operation.json' if initial else 'control.json')
@@ -134,6 +136,66 @@ def final_plan(root, operation, authorization, runner):
                              page_namespace=operation.get('page_namespace'), card_layout=operation.get('card_layout'))
     require(rebuilt == _load_json(saved_plan), 'formal Build requires reproducible writing, QA and coverage')
     return rebuilt, sources
+
+
+def organization_replay(root, operation, authorization, runner):
+    """Rebuild one omitted organization page from settled coordination and native writing."""
+    from short_knowledge_plan import syntheses
+    from short_page_contract import coordination_batches, coordination_request
+    from short_page_fragments import build as assemble, pack, spec_identity
+    from short_evidence_pass import checked_answer
+
+    checkpoint = authorization['checkpoint']
+    require(set(checkpoint) == {'control_sha256', 'prior_root', 'prior_authorization_sha256',
+                                'coordination_request', 'writing_receipts'},
+            'organization replay requires exact prior coordination and writing pins')
+    require(checkpoint['control_sha256'] == runner.sha(root / 'operation.json')
+            and operation['card_layout'].get('organization_targets')
+            and len(authorization['pages']) == 1 and authorization['base_release'],
+            'organization replay requires one authorized page and a published base')
+    prior = Path(checkpoint['prior_root']).resolve(strict=True)
+    previous = _load_json(prior / 'operation.json')
+    require(prior != root and previous['board'] != operation['board']
+            and all(previous.get(key) == operation.get(key) for key in ('vault', 'origin', 'pins', 'page_namespace')),
+            'organization replay must use the same pinned source and a separate native writing board')
+    prior_grant = prior.parent / 'formal-authorization.json'
+    require(runner.sha(prior_grant) == checkpoint['prior_authorization_sha256'], 'prior authorization changed')
+    grant = _load_json(prior_grant)
+    require(grant['writing_entry'] == 'initial' and grant['actor'] == authorization['actor'],
+            'organization replay requires the owning settled initial coordination')
+    prior_plan, sources = final_plan(prior, previous, grant, runner)
+    reduced = {k: v for k, v in prior_plan['reduced'].items() if k != 'bounded_coordination'}
+    full = coordination_request(sources, reduced)
+    request_id = checkpoint['coordination_request']
+    require(full is not None, 'prior coordination request is absent')
+    request = next((row for row in coordination_batches(sources, reduced, full) if row['id'] == request_id), None)
+    require(request is not None, 'organization replay requires an exact prior coordination request')
+    answer = checked_answer(request, _load_json(prior / 'receipts' / f'{request_id}.json'))
+    reduced = {**prior_plan['reduced'], 'card_layout': operation['card_layout']}
+    namespace = operation.get('page_namespace')
+    page_id, = authorization['pages']
+    require(page_id not in prior_plan['expected_pages'], 'organization replay cannot replace a prior planned page')
+    specs, _ = syntheses(reduced, answer['syntheses'], answer['pages'], namespace=namespace,
+                         entry_id=lambda spec: spec_identity(reduced, spec, namespace))
+    selected = [spec for spec in specs if spec['synthesis_basis'].get('required_entries') is True
+                and spec_identity(reduced, spec, namespace) == page_id]
+    require(len(selected) == 1, 'organization replay did not reproduce the authorized page')
+    rows, held, expected = pack(sources, reduced, selected, operation['body_limit'], page_namespace=namespace)
+    require(not held, 'organization replay requires a complete bounded writing plan')
+    checks, seen = [], {}
+    for row in rows:
+        for slot in row['view']['pages']:
+            name = f"{row['id']}-{slot}.json"
+            path = root / 'receipts' / name
+            seen[name] = runner.sha(path)
+            record = _load_json(path)
+            require(check_fragment(row, slot, record['answer']) == record, 'organization writing receipt changed')
+            checks.append(record)
+    require(seen and seen == checkpoint['writing_receipts'], 'organization writing receipt pins differ')
+    assembled = assemble(expected, checks)
+    require(set(assembled) == {page_id}, 'organization replay lacks a complete writing result')
+    return {'expected_pages': expected, 'checks': checks, 'assembled_sections': assembled,
+            'reduced': reduced, 'held': [], 'held_repairs': [], 'coordination_issues': []}, sources
 
 
 def collect(root, operation, authorization, runner, *, dependencies=None):
