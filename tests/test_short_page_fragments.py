@@ -224,6 +224,60 @@ def test_coordination_keeps_primary_page_when_optional_dispositions_fail():
     assert len(response['pages'][0]['sections']) == 2
 
 
+def test_coordination_isolates_ambiguous_primary_members_and_keeps_disjoint_page():
+    from short_knowledge_plan import SCOPE_CONTRACT
+    from short_page_contract import scoped_coordination_result
+
+    ownership = {'only_navigation': False, 'primary_refs': [], 'navigation_refs': {}}
+    view = {'scope_contract': SCOPE_CONTRACT, 'local_coordination_failures': True,
+            'topics': {f'T{i}': {'evidence_ownership': ownership} for i in range(1, 6)}}
+    answer = {'pages': [page(['T1']), page(['T2', 'T3']), page(['T3'])],
+              'unresolved': [], 'navigation_only': [{'topics': ['T4'], 'reason': 'Only index'}]}
+    check_coordination(view, answer)
+    result = scoped_coordination_result(view, answer)
+    assert [row['topics'] for row in result['pages']] == [['T1']]
+    assert [row['topics'] for row in result['primary_assignment_holds']] == [['T2'], ['T3'], ['T5']]
+    assert result['navigation_holds'][0]['topics'] == ['T4']
+    with pytest.raises(ValueError, match='no safely attributable'):
+        check_coordination(view, {**answer, 'pages': answer['pages'][1:]})
+
+
+def test_organization_splits_steps_without_splitting_evidence_or_page_identity():
+    from hermes_source_units.short_build import TYPED_LAYOUT
+    from short_knowledge_plan import CONTRACT, SCOPE_CONTRACT, syntheses
+    from short_page_contract import body_request
+    from short_page_fragments import page_fragments, spec_identity
+
+    items = {'S1-B1': item('block', 'Revision. ' * 510, 'Revision', ['S1-A4']),
+             'S1-B2': item('block', 'Acceptance. ' * 510, 'Acceptance'),
+             'S1-B3': item('block', 'Only approved changes.', 'Limit'),
+             'S1-A4': item('asset', '| Revision |', 'Revision table'),
+             'S1-B5': item('block', 'Background.', 'Context', ['S1-A6']),
+             'S1-A6': item('asset', '| Optional |', 'Optional table')}
+    reduced = {**mapped(items, {'T1': [link('S1-B1', 'evidence'), link('S1-B3', 'condition', 'S1-B1')],
+                               'T2': [link('S1-B2', 'evidence'), link('S1-B5', 'context', 'S1-B1')]}),
+               'writing_contract': WRITE_CONTRACT,
+               'card_layout': {'contract': TYPED_LAYOUT, 'knowledge_plan': CONTRACT, 'local_fragment_scope': True,
+                               'scope_contract': SCOPE_CONTRACT, 'organization_fragments': True}}
+    entries = [{**page([key]), 'name': key, 'page_type': 'card'} for key in ('T1', 'T2')]
+    proposal = {'name': 'Reading path', 'scope': 'Choose the applicable stage', 'reader_question': 'Where to start?',
+                'theme_directory': 'Design', 'purpose': 'organization',
+                'anchors': [{'topic': 'T2', 'ref': 'S1-B2'}, {'topic': 'T1', 'ref': 'S1-B1'}]}
+    specs, gaps = syntheses(reduced, [proposal], entries, entry_id=lambda row: spec_identity(reduced, row, None))
+    assert not gaps
+    spec, = specs
+    spec['id'] = spec_identity(reduced, spec, None)
+    sources = {'S1': source(items)}
+    parts = page_fragments(sources, reduced, spec, 12_000)
+    assert len(parts) == 2 and all(body_request([part], 12_000)['budget']['fits'] for part in parts)
+    first, second = [part['view'] for part in parts]
+    assert [first['id'], second['id']] == [spec['id']] * 2
+    assert first['synthesis_task']['entries'][0]['name'] == 'T2'
+    assert set(first['materials']) == {'S1-B2'}
+    assert set(second['materials']) == {'S1-B1', 'S1-B3', 'S1-A4'}
+    assert second['obligations']['S1-B3']['express'] and second['obligations']['S1-A4']['inspect']
+
+
 def test_page_scope_survives_context_wrapper_and_keeps_anchored_exception():
     from hermes_source_units.short_build import TYPED_LAYOUT
     from short_knowledge_plan import CONTRACT, SCOPE_CONTRACT

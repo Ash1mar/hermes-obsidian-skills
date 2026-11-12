@@ -8,7 +8,7 @@ from hermes_source_units.short_build import project_refs
 from hermes_source_units.validation import fingerprint
 from short_evidence_pass import USABLE_OUTPUT, evidence, require, source_revision
 from short_knowledge_plan import CONTRACT as KNOWLEDGE_PLAN, SCOPE_CONTRACT
-from short_knowledge_plan import enabled as knowledge_plan, matching_pages, synthesis_id, synthesis_topics
+from short_knowledge_plan import enabled as knowledge_plan, matching_pages, organization_topics, synthesis_id, synthesis_topics
 from short_page_contract import CONTRACT, WRITE_CONTRACT, body_request, local_task, obligations, qa_impacts, topic_items, writing_view
 
 SHARED = {'condition', 'exception', 'conflict', 'contrary', 'definition', 'context'}
@@ -126,6 +126,8 @@ def make_fragment(sources, reduced, page, position, topics, primary):
                                   'anchors': sorted(synthesis_refs), 'entries': synthesis['entries']}
         if 'purpose' in synthesis:
             view['synthesis_task']['purpose'] = synthesis['purpose']
+        if 'organization_units' in page:
+            view['synthesis_task']['reading_steps'] = [entry['short_id'] for entry in synthesis['entries']]
     if card:
         view['card_contract'] = card['contract']
         if card.get('local_fragment_scope'):
@@ -175,8 +177,37 @@ def split_topic(sources, reduced, page, position, tid, topic, limit, *, isolate_
     return result
 
 
+def organization_fragments(sources, reduced, page, limit):
+    """Keep all anchors for a reading step together, and assemble steps under one page ID."""
+    basis = page['synthesis_basis']
+    entries = basis['entries']
+    units = page['organization_units']
+
+    def part(steps, index):
+        anchors = [anchor for entry in steps for anchor in units[entry['short_id']]]
+        topics = organization_topics(reduced, anchors)
+        name = page['name'] if len(steps) == len(entries) else ' → '.join(entry['name'] for entry in steps)
+        local = {**page, 'synthesis_basis': {**basis, 'anchors': anchors, 'entries': steps}}
+        return make_fragment(sources, {**reduced, 'topics': topics}, local,
+                             {'section': index, 'name': name, 'part': 0}, topics, primary_items(topics))
+
+    result, pending = [], []
+    for entry in entries:
+        if pending:
+            trial = part([*pending, entry], len(result) + 1)
+            if trial['hold'] or not fits(trial, limit):
+                result.append(part(pending, len(result) + 1))
+                pending = []
+        pending.append(entry)
+    if pending:
+        result.append(part(pending, len(result) + 1))
+    return result
+
+
 def page_fragments(sources, reduced, page, limit):
     """Fit each confirmed section independently; finer cuts keep original evidence dependencies."""
+    if 'organization_units' in page:
+        return organization_fragments(sources, reduced, page, limit)
     if 'synthesis_basis' in page:
         # A bounded relationship requires its complete evidence packet in one slot.
         topics = synthesis_topics(reduced, page)

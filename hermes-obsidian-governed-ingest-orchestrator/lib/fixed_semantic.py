@@ -585,6 +585,12 @@ def system_prompt(phase,view,correction=None):
                    'The navigation projection adds links to entries that qualify for release.'
                    if phase == 'short-write' and any(slot.get('scope_contract')
                                                     for slot in view.get('pages', {}).values()) else '')
+                + (' A reading_steps assignment covers only the listed entries in the supplied order. '
+                   'Explain when to consult them and how to choose among them within this fragment. '
+                   'Keep each entry’s applicable limits with its guidance. Leave other steps and '
+                   'link generation to assembly.'
+                   if phase == 'short-write' and any('reading_steps' in slot.get('synthesis_task', {})
+                                                    for slot in view.get('pages', {}).values()) else '')
                 + (' This is a single replacement slot. Its fragment_task question and deliverable_scope '
                    'define the entire assignment. Do not answer sibling sections or infer a larger page task. '
                    'Preserve each condition and exception in preserve_limitations with its full trigger and scope. '

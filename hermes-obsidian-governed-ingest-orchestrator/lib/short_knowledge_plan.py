@@ -71,6 +71,11 @@ def syntheses(reduced, proposed, entries, *, namespace=None, entry_id):
                                                     for key in order]}}
             if 'purpose' in row:
                 spec['synthesis_basis']['purpose'] = row['purpose']
+            if row.get('purpose') == 'organization' and (reduced.get('card_layout') or {}).get('organization_fragments'):
+                units = {key: [] for key in order}
+                for anchor in anchors:
+                    units[entry_id(owners[anchor['topic']])].append(anchor)
+                spec['organization_units'] = units
             key = synthesis_id(reduced, spec, namespace)
             if len(related) < 2:
                 reason = 'synthesis_requires_two_independent_pages'
@@ -105,3 +110,36 @@ def synthesis_topics(reduced, page):
                     active.update(deps)
         if len(active) == before:
             return selected
+
+
+def organization_topics(reduced, anchors):
+    """Follow scoped requirements without traversing neighboring entries' context."""
+    members = {anchor['topic'] for anchor in anchors}
+    anchor_refs = {anchor['ref'] for anchor in anchors}
+    active = set(anchor_refs)
+    selected = {}
+    for tid, topic in reduced['topics'].items():
+        for link in topic['relations']:
+            if (tid in members and link['role'] in DEPENDENCY_ROLES - {'asset'}
+                    and not link['applies_to']):
+                active.add(link['item'])
+    while True:
+        previous = active.copy()
+        for tid, topic in reduced['topics'].items():
+            for link in topic['relations']:
+                role, ref, deps = link['role'], link['item'], link['applies_to']
+                applicable = active.intersection(deps)
+                if role == 'context' or not (ref in active or role in DEPENDENCY_ROLES and applicable):
+                    continue
+                if role in DEPENDENCY_ROLES and deps:
+                    if not applicable and ref not in anchor_refs:
+                        continue
+                    link = {**link, 'applies_to': [dep for dep in deps if dep in applicable or ref in anchor_refs]}
+                active.add(ref)
+                if ref in anchor_refs:
+                    active.update(deps)
+                group = selected.setdefault(tid, {**topic, 'relations': {}})
+                group['relations'][(ref, role, tuple(deps))] = link
+        if active == previous:
+            return {tid: {**topic, 'relations': list(topic['relations'].values())}
+                    for tid, topic in selected.items()}

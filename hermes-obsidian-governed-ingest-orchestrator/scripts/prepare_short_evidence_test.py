@@ -226,6 +226,7 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
     syntheses = []
     navigation = []
     layout_diagnostics = []
+    coordination_diagnostics = []
     if coordination is None:
         specs = [{'name': topic['name'], 'scope': topic['scope'], 'topics': [tid], 'sections': [],
                   'reader_question': topic['scope'], 'grouping_reason': 'One mapped topic.',
@@ -248,6 +249,8 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 syntheses.extend(part.get('syntheses', []))
                 navigation.extend(part.get('navigation_only', []))
                 issues.extend(part.get('navigation_holds', []))
+                issues.extend(part.get('primary_assignment_holds', []))
+                coordination_diagnostics.extend(part.get('coordination_diagnostics', []))
                 layout_diagnostics.extend(part.get('discarded_section_layouts', []))
             else:
                 issues.append({'topics': list(row['view']['topics']), 'request': row['id'], 'budget': row['budget'],
@@ -267,6 +270,8 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 issues.extend(outcome['unresolved'])
                 navigation.extend(outcome.get('navigation_only', []))
                 issues.extend(outcome.get('navigation_holds', []))
+                issues.extend(outcome.get('primary_assignment_holds', []))
+                coordination_diagnostics.extend(outcome.get('coordination_diagnostics', []))
                 layout_diagnostics.extend(outcome.get('discarded_section_layouts', []))
             else:
                 issues.append({**issue, 'request': row['id'], 'budget': row['budget']})
@@ -277,6 +282,8 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
             common['navigation_only'] = navigation
         if layout_diagnostics:
             common['discarded_section_layouts'] = layout_diagnostics
+        if coordination_diagnostics:
+            common['coordination_diagnostics'] = coordination_diagnostics
     if syntheses:
         from short_knowledge_plan import syntheses as plan_syntheses
         shared, gaps = plan_syntheses(reduced, syntheses, specs, namespace=page_namespace,

@@ -1,4 +1,5 @@
 """Versioned page planning, scoped evidence obligations and fragment acceptance."""
+from collections import Counter
 import re
 
 from hermes_source_units import ContractError
@@ -185,6 +186,8 @@ def local_task(view, bindings):
     }
     if synthesis := view.get('synthesis_task'):
         view['fragment_task'].update(question=synthesis['question'], deliverable_scope=[synthesis['scope']])
+        if 'reading_steps' in synthesis:
+            view['fragment_task']['reading_steps'] = synthesis['reading_steps']
 
 
 def auditable_qa(view):
@@ -355,6 +358,8 @@ def coordination_request(sources, reduced, issue=None, *, members=None):
     if scoped:
         view['scope_contract'] = SCOPE_CONTRACT
         schema = SCOPED_SYNTHESIS if can_synthesize else SCOPED_COORDINATION
+        if layout.get('local_coordination_failures'):
+            view['local_coordination_failures'] = True
     return request('short-coordinate', view, schema,
                    720 + (215 if typed else 190 if layout else 166) * len(topics), PASS_LIMIT, images.values())
 
@@ -378,11 +383,57 @@ def coordination_batches(sources, reduced, full):
             for part in split(keys, coordination_request(sources, reduced, members=keys))]
 
 
+def check_page_identity(view, page):
+    require(page['name'].strip() and page['scope'].strip(), 'empty page identity or scope')
+    require(page['reader_question'].strip() and page['grouping_reason'].strip(),
+            'reader question and grouping reason are required')
+    require((len(page['topics']) == 1) == (page['grouping_basis'] == 'single_topic'),
+            'grouping basis must match the page membership')
+    if 'existing_theme_directories' in view:
+        require(page['theme_directory'].strip(), 'a shared theme directory is required')
+    if view.get('typed_pages'):
+        require(page['page_type'] == 'project' or page['project_basis'] is None,
+                'only a Project can declare project basis')
+
+
+def partition_locally(view, pages, unresolved, navigation):
+    """Discard only invalid owners, leaving a disjoint remainder and explicit gaps."""
+    keys = set(view['topics'])
+    counts = Counter(tid for row in [*pages, *unresolved, *navigation] for tid in row['topics'])
+    diagnostics = []
+
+    def retain(rows, *, primary=False):
+        result = []
+        for row in rows:
+            members = row['topics']
+            try:
+                require(members and all(tid in keys and counts[tid] == 1 for tid in members),
+                        'empty, unknown or multiply assigned topic')
+                if primary:
+                    check_page_identity(view, row)
+                else:
+                    require(row['reason'].strip(), 'empty coordination issue')
+            except ValueError as error:
+                diagnostics.append({'topics': members, 'reason': str(error)})
+            else:
+                result.append(row)
+        return result
+
+    kept = retain(pages, primary=True)
+    unresolved, navigation = retain(unresolved), retain(navigation)
+    require(kept or not pages and not diagnostics, 'coordination has no safely attributable primary page')
+    accounted = {tid for row in [*kept, *unresolved, *navigation] for tid in row['topics']}
+    gaps = [{'topics': [tid], 'reason': 'coordination lacks an unambiguous valid assignment'}
+            for tid in view['topics'] if tid not in accounted]
+    return kept, unresolved, navigation, gaps, diagnostics
+
+
 def scoped_coordination_result(view, answer):
     """Defer unsupported omissions and discard invalid optional section layouts."""
     if view.get('scope_contract') != SCOPE_CONTRACT:
         return answer
     navigation = answer.get('navigation_only', [])
+    unresolved = answer['unresolved']
     pages, discarded = [], []
     for page in answer['pages']:
         if page['sections']:
@@ -392,7 +443,13 @@ def scoped_coordination_result(view, answer):
                 discarded.append({'topics': page['topics'], 'reason': 'invalid optional section partition'})
                 page = {**page, 'sections': []}
         pages.append(page)
-    check_partition(view, {'pages': pages, 'unresolved': [*answer['unresolved'], *navigation]})
+    gaps, diagnostics = [], []
+    if view.get('local_coordination_failures'):
+        pages, unresolved, navigation, gaps, diagnostics = partition_locally(view, pages, unresolved, navigation)
+        navigation = [{**row, 'topics': [tid]} for row in navigation for tid in row['topics']]
+        if view.get('allow_syntheses') and not answer['syntheses'] and not answer['no_synthesis_reason'].strip():
+            diagnostics.append({'topics': [], 'reason': 'no reason recorded for omitting a topic'})
+    check_partition(view, {'pages': pages, 'unresolved': [*unresolved, *navigation, *gaps]})
     ownership = {key: row['evidence_ownership'] for key, row in view['topics'].items()}
     covered = {ref for page in pages for key in page['topics']
                for ref in (*ownership[key]['primary_refs'],
@@ -406,26 +463,22 @@ def scoped_coordination_result(view, answer):
         else:
             held.append({**row, 'reason': 'navigation-only disposition lacks owned underlying material',
                          'model_reason': row['reason']})
-    return {**answer, 'pages': pages, 'navigation_only': eligible, 'navigation_holds': held,
-            'discarded_section_layouts': discarded}
+    return {**answer, 'pages': pages, 'unresolved': unresolved, 'navigation_only': eligible, 'navigation_holds': held,
+            'discarded_section_layouts': discarded,
+            **({'primary_assignment_holds': gaps} if gaps else {}),
+            **({'coordination_diagnostics': diagnostics} if diagnostics else {})}
 
 
 def check_coordination(view, answer):
     answer = scoped_coordination_result(view, answer)
     check_partition(view, {**answer, 'unresolved': [*answer['unresolved'], *answer.get('navigation_only', []),
-                                                    *answer.get('navigation_holds', [])]})
-    if view.get('scope_contract') == SCOPE_CONTRACT and view.get('allow_syntheses') and not answer['syntheses']:
+                                                    *answer.get('navigation_holds', []),
+                                                    *answer.get('primary_assignment_holds', [])]})
+    if (view.get('scope_contract') == SCOPE_CONTRACT and not view.get('local_coordination_failures')
+            and view.get('allow_syntheses') and not answer['syntheses']):
         require(answer['no_synthesis_reason'].strip(), 'record a brief reason for omitting a topic')
     for page in answer['pages']:
-        require(page['reader_question'].strip() and page['grouping_reason'].strip(),
-                'reader question and grouping reason are required')
-        require((len(page['topics']) == 1) == (page['grouping_basis'] == 'single_topic'),
-                'grouping basis must match the page membership')
-        if 'existing_theme_directories' in view:
-            require(page['theme_directory'].strip(), 'a shared theme directory is required')
-        if view.get('typed_pages'):
-            require(page['page_type'] == 'project' or page['project_basis'] is None,
-                    'only a Project can declare project basis')
+        check_page_identity(view, page)
 
 
 def coordination_issues(answer, topics):
