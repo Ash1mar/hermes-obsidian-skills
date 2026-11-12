@@ -58,6 +58,7 @@ def snapshot(vault):
             'knowledge_plan': KNOWLEDGE_PLAN, 'registered_pages': registered_pages,
             'scope_contract': SCOPE_CONTRACT,
             'local_coordination_failures': True, 'organization_fragments': True,
+            'candidate_destinations': True,
             'navigation_contract': NAVIGATION_CONTRACT,
             'themes': themes, 'directories': occupied_dirs,
             'occupied': sorted(paths | {r['current_path'] for r in registry}), 'existing': existing}

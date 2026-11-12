@@ -225,6 +225,7 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
     issues = []
     syntheses = []
     navigation = []
+    navigation_dispositions = []
     layout_diagnostics = []
     coordination_diagnostics = []
     if coordination is None:
@@ -248,6 +249,7 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 answer['unresolved'].extend(part['unresolved'])
                 syntheses.extend(part.get('syntheses', []))
                 navigation.extend(part.get('navigation_only', []))
+                navigation_dispositions.extend([*part.get('navigation_only', []), *part.get('navigation_holds', [])])
                 issues.extend(part.get('navigation_holds', []))
                 issues.extend(part.get('primary_assignment_holds', []))
                 coordination_diagnostics.extend(part.get('coordination_diagnostics', []))
@@ -269,6 +271,7 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 specs.extend(outcome['pages'])
                 issues.extend(outcome['unresolved'])
                 navigation.extend(outcome.get('navigation_only', []))
+                navigation_dispositions.extend([*outcome.get('navigation_only', []), *outcome.get('navigation_holds', [])])
                 issues.extend(outcome.get('navigation_holds', []))
                 issues.extend(outcome.get('primary_assignment_holds', []))
                 coordination_diagnostics.extend(outcome.get('coordination_diagnostics', []))
@@ -344,10 +347,26 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
         require(bool(reduced.get('card_layout')), 'section delivery requires readable short cards')
         expected = fragments_v2.independent_sections(expected, checks, covered, specs,
             {**reduced, 'page_namespace': page_namespace}, planned, held)
+    assembled = fragments_v2.build(expected, checks, covered,
+                                   excluded_receipts={row['receipt_sha256'] for row in excluded.values()})
+    if (reduced.get('card_layout') or {}).get('candidate_destinations') and not requests:
+        destinations = pages_v2.candidate_destinations(
+            sources, reduced, specs, navigation_dispositions, checks, assembled,
+            lambda spec: fragments_v2.spec_identity(reduced, spec, page_namespace))
+        common['candidate_destinations'] = destinations
+        resolved = {record['topic'] for record in destinations
+                    if record['destination'] == 'navigation' and record['state'] == 'covered'}
+        common.pop('navigation_only', None)
+        if resolved:
+            common['navigation_only'] = [{'topics': [key], 'reason': row.get('model_reason', row['reason'])}
+                                         for row in navigation_dispositions for key in row['topics'] if key in resolved]
+        issues = [issue for issue in issues if not issue.get('model_reason') or not set(issue['topics']) <= resolved]
+        issues.extend({'topics': [record['topic']], 'reason': 'destination lacks verified expression',
+                       'missing_refs': record['missing_refs'], 'destination': record['destination']}
+                      for record in destinations if record['state'] == 'gap')
     return {
         **common, 'stage': 'writing' if requests else 'offline_build', 'requests': requests, 'checks': checks,
-        'expected_pages': expected, 'assembled_sections': fragments_v2.build(
-            expected, checks, covered, excluded_receipts={row['receipt_sha256'] for row in excluded.values()}),
+        'expected_pages': expected, 'assembled_sections': assembled,
         'held': held, 'coordination_issues': issues,
     }
 

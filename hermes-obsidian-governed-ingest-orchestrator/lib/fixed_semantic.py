@@ -541,6 +541,11 @@ def system_prompt(phase,view,correction=None):
                    'its evidence-owning page or record it in navigation_only when its underlying material is '
                    'owned by primary pages. Count each topic once among pages, unresolved and navigation_only.'
                    if phase == 'short-coordinate' and view.get('scope_contract') else '')
+                + (' Use navigation_only exclusively for pure pointers to original material demonstrably '
+                   'carried by another primary page. Source-specific version, identity or approval records '
+                   'still need a real destination. Keep them in a properly scoped primary page when '
+                   'supported, or record an unresolved source-summary destination when none is available.'
+                   if phase == 'short-coordinate' and view.get('candidate_destinations') else '')
                 + (' Consider Topics that organize reading as well as Topics that explain relationships. '
                    'Use purpose organization when scope and reading sequence give readers more guidance than '
                    'the index. An organization Topic need not invent a new conclusion. Use purpose explanation '

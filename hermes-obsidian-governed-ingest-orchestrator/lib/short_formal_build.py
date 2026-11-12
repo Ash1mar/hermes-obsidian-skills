@@ -232,6 +232,7 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
         'pages': candidates, 'excluded': excluded, 'fragment_exclusions': plan.get('fragment_exclusions', []),
         'mapping_gaps': plan['reduced']['unresolved'], 'coordination_gaps': plan['coordination_issues'],
         'mapping_holds': plan['held_repairs'],
+        **({'candidate_destinations': plan['candidate_destinations']} if 'candidate_destinations' in plan else {}),
         **({'navigation_only': plan['navigation_only']} if plan.get('navigation_only') else {}),
         **({'navigation_contract': NAVIGATION_CONTRACT}
            if (operation.get('card_layout') or {}).get('navigation_contract') == NAVIGATION_CONTRACT else {}),
@@ -332,6 +333,13 @@ def delivery(vault, run_id, authorization, *, replay=False):
             'candidates': candidates, 'isolated_pages': proof['scope']['excluded'],
             'release_id': release['release_id'] if release else None, 'base_release': authorization['base_release'],
             'blockers': plan['blockers'], 'model_calls': 0}
+    if 'candidate_destinations' in proof['scope']:
+        qualified = {row['short_id'] for row in candidates if row['published']}
+        result['candidate_destinations'] = []
+        for disposition in proof['scope']['candidate_destinations']:
+            missing = [ref for ref, pages in disposition['bindings'].items() if not qualified.intersection(pages)]
+            state = 'published' if disposition['state'] == 'covered' and not missing else 'gap'
+            result['candidate_destinations'].append({**disposition, 'state': state, 'missing_refs': missing})
     if release and 'material_coverage' in proof['scope']:
         from short_cards import write_navigation
         directories = {str(PurePosixPath(row['path']).parent) for row in candidates if row['published']}

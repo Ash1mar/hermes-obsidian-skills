@@ -278,6 +278,23 @@ def topic_items(topics):
     return result
 
 
+def evidence_ownership(topic, items):
+    """Classify original material before projecting compact coordination hints."""
+    roles = {}
+    for relation in topic['relations']:
+        if relation['role'] != 'context':
+            roles.setdefault(relation['item'], set()).add(relation['role'])
+    wrappers, primary = {}, set()
+    for ref, assigned in roles.items():
+        item = items[ref]
+        targets = table_navigation(item, items) if item['kind'] == 'block' else []
+        if targets and assigned <= {'asset', 'evidence'}:
+            wrappers[ref] = sorted(targets)
+        else:
+            primary.add(ref)
+    return primary, wrappers
+
+
 def coordination_request(sources, reduced, issue=None, *, members=None):
     keys = issue['topics'] if issue is not None else members
     topics = reduced['topics'] if keys is None else {key: reduced['topics'][key] for key in keys}
@@ -296,8 +313,10 @@ def coordination_request(sources, reduced, issue=None, *, members=None):
         if issue is not None and not visible:
             # Coordination judges reader scope. Supply focused scope anchors and
             # their entire dependencies without importing the oversized page.
-            scoped = [link for link in topic['relations'] if link['role'] in ('condition', 'exception', 'definition')]
-            visible = (scoped or topic['relations'])[:1]
+            focused = [link for link in topic['relations'] if link['role'] in ('condition', 'exception', 'definition')]
+            visible = (focused or topic['relations'])[:1]
+            if not (layout or {}).get('candidate_destinations'):
+                scoped = bool(focused)
         if visible:
             focus = dict.fromkeys(item for link in visible for item in (link['item'], *link['applies_to']))
             originals, attachments = evidence(source, focus)
@@ -315,17 +334,20 @@ def coordination_request(sources, reduced, issue=None, *, members=None):
                 and items[link['item']]['kind'] == 'block' and items[link['item']]['text']
             })
         if scoped:
-            wrappers, primary = {}, set()
-            for link in topic['relations']:
-                ref = link['item']
-                if link['role'] == 'context':
-                    continue
-                item = items[ref]
-                targets = table_navigation(item, items) if item['kind'] == 'block' else []
-                if targets and link['role'] in ('asset', 'evidence'):
-                    wrappers[ref] = sorted(targets)
-                else:
-                    primary.add(ref)
+            if (layout or {}).get('candidate_destinations'):
+                primary, wrappers = evidence_ownership(topic, items)
+            else:
+                wrappers, primary = {}, set()
+                for link in topic['relations']:
+                    ref = link['item']
+                    if link['role'] == 'context':
+                        continue
+                    item = items[ref]
+                    targets = table_navigation(item, items) if item['kind'] == 'block' else []
+                    if targets and link['role'] in ('asset', 'evidence'):
+                        wrappers[ref] = sorted(targets)
+                    else:
+                        primary.add(ref)
             catalogue[key]['evidence_ownership'] = {
                 'primary_refs': sorted(primary)[:12], 'navigation_refs': dict(list(sorted(wrappers.items()))[:8]),
                 'only_navigation': bool(wrappers) and not primary and len(wrappers) <= 8,
@@ -358,8 +380,10 @@ def coordination_request(sources, reduced, issue=None, *, members=None):
     if scoped:
         view['scope_contract'] = SCOPE_CONTRACT
         schema = SCOPED_SYNTHESIS if can_synthesize else SCOPED_COORDINATION
-        if layout.get('local_coordination_failures'):
+        if (layout or {}).get('local_coordination_failures'):
             view['local_coordination_failures'] = True
+        if (layout or {}).get('candidate_destinations'):
+            view['candidate_destinations'] = True
     return request('short-coordinate', view, schema,
                    720 + (215 if typed else 190 if layout else 166) * len(topics), PASS_LIMIT, images.values())
 
@@ -491,6 +515,59 @@ def coordination_issues(answer, topics):
             issues.append({'topics': page['topics'],
                            'reason': 'One section groups many distinct applicability scopes. Reassess the reader task.'})
     return issues
+
+
+def candidate_destinations(sources, reduced, specs, navigation, checks, assembled, page_id):
+    """Bind merges and navigation to exact references expressed by complete owning pages."""
+    inventories = {}
+    assets = {ref for source in sources.values() for ref, item in source['items'].items() if item['kind'] == 'asset'}
+    for key, topic in reduced['topics'].items():
+        source = sources[topic['source']]
+        material, _ = evidence(source, topic_items({key: topic})[topic['source']])
+        primary, wrappers = evidence_ownership(topic, material)
+        refs = primary | {ref for targets in wrappers.values() for ref in targets}
+        for ref in list(primary):
+            refs.update(evidence(source, [ref])[0])
+        inventories[key] = (refs, bool(wrappers) and not primary)
+
+    expressed = {}
+    for row in checks:
+        if row['state'] != 'structurally_valid' or row['page_id'] not in assembled:
+            continue
+        answer = row['answer']
+        citations = set().union(*(section_citations(section) for section in answer['sections']))
+        bound = (citations - assets) | (citations & set(answer['inspected_assets']))
+        for ref in bound:
+            expressed.setdefault(ref, {}).setdefault(row['page_id'], set()).add(row['receipt_sha256'])
+
+    records, owned = [], {}
+    for spec in specs:
+        if 'synthesis_basis' in spec:
+            continue
+        pid = page_id(spec)
+        for key in spec['topics']:
+            owned[key] = pid
+    owners = set(owned.values())
+
+    def record(key, destination, allowed, reason=None, intended_page=None):
+        refs, _ = inventories[key]
+        bindings = {ref: {pid: sorted(receipts) for pid, receipts in expressed.get(ref, {}).items() if pid in allowed}
+                    for ref in sorted(refs)}
+        missing = [ref for ref, matches in bindings.items() if not matches]
+        return {'topic': key, 'destination': destination, 'intended_page': intended_page, 'bindings': bindings,
+                'missing_refs': missing, 'state': 'covered' if allowed and refs and not missing else 'gap',
+                **({'reason': reason} if reason else {})}
+
+    for spec in specs:
+        if 'synthesis_basis' not in spec and len(spec['topics']) > 1:
+            pid = page_id(spec)
+            records.extend(record(key, 'merged_page', {pid}, intended_page=pid) for key in spec['topics'])
+    for row in navigation:
+        for key in row['topics']:
+            _, wrapper_only = inventories[key]
+            records.append(record(key, 'navigation', owners if wrapper_only else set(),
+                                  None if wrapper_only else 'substantive source material needs a registered destination'))
+    return records
 
 
 def writing_output(page):

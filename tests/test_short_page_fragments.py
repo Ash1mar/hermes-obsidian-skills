@@ -268,14 +268,45 @@ def test_organization_splits_steps_without_splitting_evidence_or_page_identity()
     spec, = specs
     spec['id'] = spec_identity(reduced, spec, None)
     sources = {'S1': source(items)}
-    parts = page_fragments(sources, reduced, spec, 12_000)
-    assert len(parts) == 2 and all(body_request([part], 12_000)['budget']['fits'] for part in parts)
+    parts = page_fragments(sources, reduced, spec, 18_000)
+    assert len(parts) == 2 and all(body_request([part], 18_000)['budget']['fits'] for part in parts)
     first, second = [part['view'] for part in parts]
     assert [first['id'], second['id']] == [spec['id']] * 2
     assert first['synthesis_task']['entries'][0]['name'] == 'T2'
     assert set(first['materials']) == {'S1-B2'}
     assert set(second['materials']) == {'S1-B1', 'S1-B3', 'S1-A4'}
     assert second['obligations']['S1-B3']['express'] and second['obligations']['S1-A4']['inspect']
+
+
+def test_candidate_destinations_require_complete_expressions_and_inspected_assets():
+    from short_page_contract import candidate_destinations
+
+    items = {'S1-B1': item('block', 'Retain approved revisions.', 'Revision'),
+             'S1-B2': item('block', 'Except withdrawn records.', 'Limit'),
+             'S1-B3': item('block', '[表格](tables/Approval.md)', 'Wrapper', ['S1-A4']),
+             'S1-A4': item('asset', '| Approval |', 'Approval'),
+             'S1-B5': item('block', 'Version 4 took effect in June.', 'Version')}
+    reduced = mapped(items, {'T1': [link('S1-B1', 'evidence')], 'T2': [link('S1-B2', 'exception', 'S1-B1')],
+                             'T3': [link('S1-B3', 'asset')], 'T4': [link('S1-B5', 'evidence')],
+                             'T5': [link('S1-A4', 'asset')]})
+    specs = [{**page(['T1', 'T2']), 'name': 'requirements'}, {**page(['T5']), 'name': 'approval'}]
+    navigation = [{'topics': ['T3', 'T4'], 'reason': 'Source material'}]
+    checks = [
+        {'state': 'structurally_valid', 'page_id': 'requirements', 'receipt_sha256': 'rules',
+         'answer': {'sections': [{'content': 'Rule [S1-B1] and exception [S1-B2]'}], 'inspected_assets': []}},
+        {'state': 'structurally_valid', 'page_id': 'approval', 'receipt_sha256': 'form',
+         'answer': {'sections': [{'content': 'Approval [S1-A4]'}], 'inspected_assets': ['S1-A4']}},
+    ]
+    def dispositions(assembled):
+        return {row['topic']: row for row in candidate_destinations(
+            {'S1': source(items)}, reduced, specs, navigation, checks, assembled, lambda spec: spec['name'])}
+
+    rows = dispositions({'requirements', 'approval'})
+    assert rows['T2']['bindings'] == {'S1-B2': {'requirements': ['rules']}}
+    assert rows['T3']['bindings'] == {'S1-A4': {'approval': ['form']}}
+    assert rows['T3']['state'] == 'covered'
+    assert rows['T4']['state'] == 'gap' and rows['T4']['missing_refs'] == ['S1-B5']
+    assert dispositions({'requirements'})['T3']['state'] == 'gap'
 
 
 def test_page_scope_survives_context_wrapper_and_keeps_anchored_exception():
