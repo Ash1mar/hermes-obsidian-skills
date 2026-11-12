@@ -1,10 +1,31 @@
 from __future__ import annotations
 
 import json
+import os
 from typing import Any
 
 from .embedding_cache import valid_vector
+from ..local_models import cached_model_path
 from ..sync_support import fingerprint
+
+
+def sentence_transformer_embedding(config: Any):
+    from chromadb.utils import embedding_functions
+
+    model_name = config.embedding_model
+    if config.local_files_only:
+        model_name = cached_model_path(
+            model_name, config.embedding_revision,
+            cache_dir=os.getenv("SENTENCE_TRANSFORMERS_HOME") or os.getenv("TRANSFORMERS_CACHE"),
+            default_namespace="sentence-transformers",
+        )
+    revision = {"revision": config.embedding_revision} if config.embedding_revision is not None else {}
+    embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
+        model_name=model_name, device=config.device, local_files_only=config.local_files_only, **revision,
+    )
+    # Persist the configured identity in Chroma, while caching the loaded model by snapshot path.
+    embed_fn.model_name = config.embedding_model
+    return embed_fn
 
 
 class ChromaStore:
@@ -29,14 +50,7 @@ class ChromaStore:
             self.embed_fn = None
             self.embedding_dimension = self.embedder.embedding_dimension
         else:
-            from chromadb.utils import embedding_functions
-
-            self.embed_fn = embedding_functions.SentenceTransformerEmbeddingFunction(
-                model_name=config.embedding_model,
-                device=config.device,
-                revision=config.embedding_revision,
-                local_files_only=config.local_files_only,
-            )
+            self.embed_fn = sentence_transformer_embedding(config)
             self.embedder = None
             self.embedding_dimension = int(self.embed_fn._model.get_sentence_embedding_dimension())
             if config.embedding_dimension is not None and self.embedding_dimension != config.embedding_dimension:
