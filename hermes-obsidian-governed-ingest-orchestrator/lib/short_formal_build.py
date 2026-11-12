@@ -13,6 +13,7 @@ from hermes_source_units.validation import fingerprint
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from short_evidence_pass import mapping_groups, require, seed_requests
 from short_fragment_disposition import delivery_partition
+from short_knowledge_plan import enabled as knowledge_plan
 from short_page_contract import auditable_qa, check_fragment, restore_locked_draft, retry_slots
 from short_page_fragments import page_metadata
 
@@ -209,6 +210,8 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
             if card_path:
                 candidates[-1]['card_path'] = card_path
                 candidates[-1]['coverage'] = checks
+            if knowledge_plan(operation.get('card_layout')):
+                candidates[-1].update(reader_scope=page['scope'], reader_question=page['reader_question'])
             if page.get('derived_from'):
                 candidates[-1]['independent_section'] = page['derived_from']
     exclusions = {**partition['excluded'], **proof_holds}
@@ -220,6 +223,8 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
                              'reason': 'outside-exact-short-build-selection', 'reopen_condition': 'authorize the exact page'})})
         if 'page_type' in spec and 'card_path' in spec:
             excluded[-1].update(page_type=spec['page_type'], card_path=spec['card_path'])
+        if 'existing_page_hints' in spec:
+            excluded[-1]['existing_page_hints'] = spec['existing_page_hints']
     return service, {
         'origin': operation['origin'], 'actor': authorization['actor'], 'authorization': authorization,
         'operation_sha256': runner.sha(root / 'operation.json'), 'coverage_complete': False,

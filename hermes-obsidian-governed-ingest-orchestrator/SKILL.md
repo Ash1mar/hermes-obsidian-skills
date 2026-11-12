@@ -15,6 +15,9 @@ New native short-path plans classify complete pages as Card, Concept, Entity,
 Topic, or Project. Use the directory and project evidence rules in
 `references/short-evidence-test.md`. Keep existing paths and identities when
 reading or replaying historical operations.
+Plan independently useful entries and evidence-based topical syntheses in the
+same coordination step. Use registered page matches as revision hints and
+preserve each entry's conditions, exceptions, evidence and coverage.
 
 Within one reconciliation, reuse pure completion proofs only against current
 slice/batch/reduction/recovery bytes and membership; changed dependencies force

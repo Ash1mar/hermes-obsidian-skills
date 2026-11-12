@@ -104,6 +104,7 @@ def test_typed_plan_holds_only_the_project_without_source_basis():
                'card_layout': {'contract': TYPED_LAYOUT, 'themes': [], 'directories': [],
                                'occupied': [], 'existing': {}}}
     coordinate = coordination_request(sources, reduced)
+    assert 'allow_syntheses' not in coordinate['view']
     assert coordinate['view']['topics']['T1']['project_text_refs'] == ['S1-B1']
     topic = {**page(['T2']), 'name': '设计输出', 'theme_directory': '设计', 'page_type': 'topic',
              'project_basis': None}
@@ -126,6 +127,92 @@ def test_typed_plan_holds_only_the_project_without_source_basis():
                 if view['page_type'] == 'project')
     assert view['project_basis_refs'] == ['S1-B1']
     assert view['obligations']['S1-B1']['express']
+
+
+def test_shared_synthesis_reuses_evidence_without_owning_the_entries(tmp_path):
+    from hermes_source_units.short_build import TYPED_LAYOUT
+    from prepare_short_evidence_test import advance_fragments, seal
+    from short_knowledge_plan import CONTRACT
+
+    items = {
+        'S1-B1': item('block', 'Retain design revision.', 'Versions'),
+        'S1-B2': item('block', 'Check the revision before acceptance.', 'Acceptance'),
+        'S1-B3': item('block', 'Applies only to approved revisions.', 'Conditions'),
+        'S1-B4': item('block', 'Archive transmittals under their local reference.', 'Archive'),
+    }
+    sources = {'S1': source(items)}
+    reduced = {**mapped(items, {'T1': [link('S1-B1', 'evidence'), link('S1-B3', 'condition', 'S1-B1'),
+                                      link('S1-B4', 'evidence')],
+                               'T2': [link('S1-B2', 'evidence')]}),
+               'unresolved': [], 'writing_contract': WRITE_CONTRACT,
+               'card_layout': {'contract': TYPED_LAYOUT, 'knowledge_plan': CONTRACT, 'local_fragment_scope': True,
+                               'themes': [], 'directories': [], 'occupied': [], 'existing': {}}}
+    coord = advance_fragments(sources, reduced, tmp_path, 40_000, {}, [])
+    row, = coord['requests']
+    assert coord['stage'] == 'coordination' and row['view']['allow_syntheses']
+    entries = [{**page([key]), 'name': name, 'theme_directory': '设计', 'page_type': 'card', 'project_basis': None}
+               for key, name in (('T1', '版本保留'), ('T2', '验收核对'))]
+    synthesis = {'name': '版本和验收的关系', 'scope': '已批准版本', 'reader_question': '版本如何约束验收？',
+                 'theme_directory': '设计', 'anchors': [{'topic': 'T1', 'ref': 'S1-B1'}, {'topic': 'T2', 'ref': 'S1-B2'}]}
+    invalid = {**synthesis, 'name': '越界依据',
+               'anchors': [synthesis['anchors'][0], {'topic': 'T2', 'ref': 'S1-B4'}]}
+    seal(coord, row['id'], {'results': {'r': {'pages': entries, 'unresolved': [], 'syntheses': [synthesis, invalid]}}}, tmp_path)
+    plan = advance_fragments(sources, reduced, tmp_path, 40_000, {}, [])
+    assert plan['stage'] == 'writing' and len(plan['expected_pages']) == 3
+    assert plan['coordination_issues'][0]['reason'] == 'synthesis_anchor_lacks_independent_owner_or_mapped_evidence'
+    ready, topic_id, synthesis_receipt = [], None, None
+    for request in plan['requests']:
+        for slot, view in request['view']['pages'].items():
+            if 'synthesis_task' in view:
+                topic_id = view['id']
+                assert set(view['materials']) == {'S1-B1', 'S1-B2', 'S1-B3'}
+                assert view['fragment_task']['question'] == synthesis['reader_question']
+                missing = {'sections': [{'heading': '关系', 'content': '[S1-B1] [S1-B2]'}],
+                           'context': ['S1-B3'], 'unresolved': [], 'inspected_assets': []}
+                with pytest.raises(ValueError, match='required_expressions_missing=S1-B3'):
+                    check_fragment(request, slot, missing)
+                synthesis_receipt = check_fragment(request, slot, {
+                    **missing, 'context': [],
+                    'sections': [{'heading': '关系', 'content': 'Only approved revisions [S1-B3] connect '
+                                  'retention [S1-B1] with acceptance [S1-B2].'}]})
+                continue
+            ready.append(check_fragment(request, slot, {
+                'sections': [{'heading': '要求', 'content': ' '.join(f'[{ref}]' for ref in view['materials'])}],
+                'context': [], 'unresolved': [], 'inspected_assets': []}))
+    completed = build(plan['expected_pages'], ready)
+    assert topic_id not in completed and len(completed) == 2
+    assert all(p['page_type'] == 'card' for p in completed.values())
+    assert {row['short_id'] for row in plan['expected_pages'][topic_id]['synthesis_basis']['entries']} == completed.keys()
+    topic = build(plan['expected_pages'], [*ready, synthesis_receipt])[topic_id]
+    assert topic['page_type'] == 'topic' and topic['card_path'].startswith('50_Projects/专题/')
+    assert '[S1-B3]' in topic['content'] and '[S1-B4]' not in topic['content']
+
+
+def test_knowledge_plan_records_existing_match_without_using_title_as_identity():
+    from hermes_source_units.short_build import TYPED_LAYOUT
+    from short_knowledge_plan import CONTRACT
+    from short_page_fragments import spec_identity
+
+    items = {'S1-B1': item('block', 'Retain the current revision.', 'Version')}
+    sources = {'S1': source(items)}
+    spec = {**page(['T1']), 'name': '版本要求', 'theme_directory': '设计', 'page_type': 'card'}
+    reduced = {**mapped(items, {'T1': [link('S1-B1', 'evidence')]}), 'writing_contract': WRITE_CONTRACT}
+    prior = {'name': spec['name'], 'page_id': 'prior', 'revision_id': 'old-revision', 'page_type': 'card',
+             'path': '30_Cards/设计/版本要求.md', 'short_id': 'different-identity'}
+    layout = {'contract': TYPED_LAYOUT, 'knowledge_plan': CONTRACT, 'themes': [], 'directories': [],
+              'occupied': [prior['path']], 'existing': {}, 'registered_pages': {'prior': prior}}
+    reduced['card_layout'] = layout
+    planned, _, expected = pack(sources, reduced, [spec], 40_000)
+    candidate, = expected.values()
+    assert planned and candidate['card_path'] != prior['path']
+    assert candidate['existing_page_hints'][0]['match'] == 'name_only'
+    pid = spec_identity(reduced, spec, None)
+    layout['registered_pages']['prior'] = {**prior, 'short_id': pid}
+    layout['existing'][pid] = prior['path']
+    planned, held, expected = pack(sources, reduced, [spec], 40_000)
+    assert not planned and held[0]['reason'] == 'registered_page_requires_revision'
+    assert expected[pid]['existing_page_hints'][0]['revision_id'] == 'old-revision'
+    assert expected[pid]['existing_page_hints'][0]['match'] == 'registered_identity'
 
 
 def test_primary_context_asset_keeps_whole_inspection_and_expression():

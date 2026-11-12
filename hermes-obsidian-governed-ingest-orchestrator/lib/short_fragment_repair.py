@@ -45,6 +45,7 @@ def scoped_request(row, slot, limit, *, locations=None, continuations=(), modern
     view = copy.deepcopy(old)
     materials = view['materials']
     bindings = {}
+    protected = set(view.get('synthesis_task', {}).get('anchors', ()))
     for key, item in materials.items():
         linked = item['required_assets']
         if not linked:
@@ -55,7 +56,7 @@ def scoped_request(row, slot, limit, *, locations=None, continuations=(), modern
         assets = {ref: materials[ref]['label'] for ref in linked}
         duty = view['obligations'][key]
         navigation = table_navigation(item, materials) if modern else form_navigation(item, set(assets.values()))
-        if set(duty['mapped_roles']) <= {'asset', 'context', 'definition'} and navigation:
+        if key not in protected and set(duty['mapped_roles']) <= {'asset', 'context', 'definition'} and navigation:
             duty.update(role='navigation', express=False,
                         covers_by=navigation if modern else linked if duty['assignment'] == 'primary' else [])
         bindings[key] = assets

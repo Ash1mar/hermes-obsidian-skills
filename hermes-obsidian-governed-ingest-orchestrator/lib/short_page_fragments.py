@@ -7,6 +7,8 @@ from hermes_source_units import ContractError
 from hermes_source_units.short_build import project_refs
 from hermes_source_units.validation import fingerprint
 from short_evidence_pass import USABLE_OUTPUT, evidence, require, source_revision
+from short_knowledge_plan import CONTRACT as KNOWLEDGE_PLAN
+from short_knowledge_plan import enabled as knowledge_plan, matching_pages, synthesis_id, synthesis_topics
 from short_page_contract import CONTRACT, WRITE_CONTRACT, body_request, local_task, obligations, qa_impacts, topic_items, writing_view
 
 SHARED = {'condition', 'exception', 'conflict', 'contrary', 'definition', 'context'}
@@ -74,7 +76,9 @@ def make_fragment(sources, reduced, page, position, topics, primary):
     card = reduced.get('card_layout')
     duties = obligations(sources, material, topics, primary, modern=modern, card=bool(card))
     basis_refs = set((page.get('project_basis') or {}).get('refs', ())) & primary
-    for key in basis_refs:
+    synthesis = page.get('synthesis_basis')
+    synthesis_refs = {row['ref'] for row in synthesis['anchors']} if synthesis else set()
+    for key in basis_refs | synthesis_refs:
         duties[key].update(role='substantive', express=True, covers_by=[])
     impacts = qa_impacts(sources, selection, material, duties)
     anchors = {ref for topic in topics.values() for relation in topic['relations'] for ref in relation['applies_to']}
@@ -95,6 +99,11 @@ def make_fragment(sources, reduced, page, position, topics, primary):
         view['page_type'] = page['page_type']
         if basis_refs:
             view['project_basis_refs'] = sorted(basis_refs)
+    if 'knowledge_plan' in page:
+        view['knowledge_plan'] = page['knowledge_plan']
+    if synthesis:
+        view['synthesis_task'] = {'question': page['reader_question'], 'scope': page['scope'],
+                                  'anchors': sorted(synthesis_refs), 'entries': synthesis['entries']}
     if card:
         view['card_contract'] = card['contract']
         if card.get('local_fragment_scope'):
@@ -146,6 +155,11 @@ def split_topic(sources, reduced, page, position, tid, topic, limit, *, isolate_
 
 def page_fragments(sources, reduced, page, limit):
     """Fit each confirmed section independently; finer cuts keep original evidence dependencies."""
+    if 'synthesis_basis' in page:
+        # A bounded relationship requires its complete evidence packet in one slot.
+        topics = synthesis_topics(reduced, page)
+        position = {'section': 1, 'name': page['name'], 'part': 0}
+        return [make_fragment(sources, {**reduced, 'topics': topics}, page, position, topics, primary_items(topics))]
     result = []
     sections = page['sections'] or [{'name': page['name'], 'topics': page['topics']}]
     for number, section in enumerate(sections, 1):
@@ -169,6 +183,8 @@ def page_fragments(sources, reduced, page, limit):
 def split_atomic_output(fragment, limit):
     """Split output ownership while duplicating the entire input dependency closure."""
     original = fragment['view']
+    if 'synthesis_task' in original:
+        return []
     budget = body_request([fragment], limit)['budget']
     if (fragment['hold'] or budget['fits'] or budget['input_size'] > budget['input_cap']
             or budget['estimated_output_tokens'] <= budget['usable_output_tokens']):
@@ -207,8 +223,15 @@ def page_identity(identities, namespace):
     return fingerprint([namespace, ordered] if namespace else ordered)
 
 
+def spec_identity(reduced, page, namespace):
+    if 'synthesis_basis' in page:
+        return synthesis_id(reduced, page, namespace)
+    return page_identity((reduced['topics'][tid]['identity'] for tid in page['topics']), namespace)
+
+
 def page_metadata(page):
-    return {key: page[key] for key in ('page_type', 'project_basis') if page.get(key) is not None}
+    return {key: page[key] for key in ('page_type', 'project_basis', 'knowledge_plan', 'synthesis_basis', 'existing_page_hints')
+            if page.get(key) is not None}
 
 
 def project_supported(sources, reduced, page):
@@ -233,15 +256,21 @@ def project_supported(sources, reduced, page):
 
 def pack(sources, reduced, specs, limit, *, split_output=False, oversized=None, page_namespace=None):
     pending, planned, held, expected = [], [], [], {}
-    pages = [{**spec, 'id': page_identity((reduced['topics'][tid]['identity'] for tid in spec['topics']), page_namespace)}
-             for spec in specs]
-    if layout := reduced.get('card_layout'):
+    pages = [{**spec, 'id': spec_identity(reduced, spec, page_namespace)} for spec in specs]
+    layout = reduced.get('card_layout')
+    if layout:
         from short_cards import place
         pages = place(layout, pages)
     for page in pages:
         page_id = page['id']
+        if knowledge_plan(layout):
+            page['knowledge_plan'] = KNOWLEDGE_PLAN
         expected[page_id] = {'name': page['name'], 'reader_question': page['reader_question'],
                              'scope': page['scope'], 'fragments': [], **page_metadata(page)}
+        if knowledge_plan(layout):
+            matches = matching_pages(layout, [page['name']], short_id=page_id)
+            if matches:
+                expected[page_id]['existing_page_hints'] = matches
         if 'registered_path' in page:
             held.append({'page': page_id, 'reason': 'registered_page_requires_revision', 'path': page['registered_path']})
             continue
@@ -260,10 +289,12 @@ def pack(sources, reduced, specs, limit, *, split_output=False, oversized=None, 
             single = body_request([fragment], limit)
             view = fragment['view']
             if fragment['hold'] or not single['budget']['fits']:
-                if oversized is not None and not fragment['hold']:
+                synthesis = 'synthesis_task' in view
+                if oversized is not None and not fragment['hold'] and not synthesis:
                     oversized[view['fragment_id']] = fragment
                 held.append({'page': page_id, 'fragment_id': view['fragment_id'], 'position': view['fragment_position'],
-                             'reason': 'required_material_unresolved' if fragment['hold'] else 'atomic_evidence_over_budget',
+                             'reason': ('required_material_unresolved' if fragment['hold'] else
+                                        'synthesis_evidence_over_budget' if synthesis else 'atomic_evidence_over_budget'),
                              'unresolved': fragment['hold'], 'material_ids': list(view['materials']),
                              'assets': [key for key, duty in view['obligations'].items() if duty['inspect']],
                              'budget': single['budget']})
@@ -358,7 +389,9 @@ def independent_sections(expected, checks, covered, specs, reduced, planned, hel
     positions.update({fid: view['fragment_position'] for fid, view in views.items()})
     proposals = []
     for spec in specs:
-        pid = page_identity((reduced['topics'][tid]['identity'] for tid in spec['topics']), reduced.get('page_namespace'))
+        if 'synthesis_basis' in spec:
+            continue
+        pid = spec_identity(reduced, spec, reduced.get('page_namespace'))
         if pid not in expected or pid in complete or spec['grouping_basis'] in ('inseparable_conditions', 'comparison'):
             continue
         parent = expected[pid]
@@ -386,6 +419,7 @@ def independent_sections(expected, checks, covered, specs, reduced, planned, hel
                               'reader_question': f"关于「{section['name']}」，原文有哪些规定和依据？",
                               'theme_directory': spec['theme_directory'], 'fragments': members,
                               **({'page_type': 'card'} if 'page_type' in parent else {}),
+                              **({'knowledge_plan': KNOWLEDGE_PLAN} if 'knowledge_plan' in parent else {}),
                               'derived_from': {'contract': 'short-independent-section/v1', 'page_id': pid,
                                                'section': number, 'topics': section['topics'],
                                                'receipt_sha256': [row['receipt_sha256'] for row in rows],

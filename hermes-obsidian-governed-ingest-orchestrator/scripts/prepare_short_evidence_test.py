@@ -223,6 +223,7 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
     topics = reduced['topics']
     coordination = pages_v2.coordination_request(sources, reduced)
     issues = []
+    syntheses = []
     if coordination is None:
         specs = [{'name': topic['name'], 'scope': topic['scope'], 'topics': [tid], 'sections': [],
                   'reader_question': topic['scope'], 'grouping_reason': 'One mapped topic.',
@@ -235,6 +236,7 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
         if waiting:
             return {**common, 'stage': 'coordination', 'requests': waiting}
         answer = checked_answer(coordination, verified[rid])
+        syntheses = answer.get('syntheses', [])
         review = pages_v2.coordination_issues(answer, topics)
         reviewed = {tid for issue in review for tid in issue['topics']}
         specs = [page for page in answer['pages'] if not reviewed.intersection(page['topics'])]
@@ -250,6 +252,12 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 issues.extend(outcome['unresolved'])
             else:
                 issues.append({**issue, 'request': row['id'], 'budget': row['budget']})
+    if syntheses:
+        from short_knowledge_plan import syntheses as plan_syntheses
+        shared, gaps = plan_syntheses(reduced, syntheses, specs, namespace=page_namespace,
+                                     entry_id=lambda spec: fragments_v2.spec_identity(reduced, spec, page_namespace))
+        specs.extend(shared)
+        issues.extend(gaps)
     selected_split = split_output if isinstance(split_output, str) else None
     oversized = {} if selected_split else None
     planned, held, expected = fragments_v2.pack(sources, reduced, specs, limit, split_output=split_output is True,

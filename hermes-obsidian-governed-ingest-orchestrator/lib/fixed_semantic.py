@@ -519,6 +519,20 @@ def system_prompt(phase,view,correction=None):
                    'project_text_refs from this page’s assigned topics that establish the actual project; '
                    'use null for every other type. Choose only types justified by the material.'
                    if phase == 'short-coordinate' and view.get('typed_pages') else '')
+                + (' Let independently usable definitions, requirements and entities own their evidence topics '
+                   'as separate pages when each can retain its own necessary conditions and exceptions. Combine '
+                   'topics when they answer one reader question and separating them would lose context. '
+                   'Existing page hints are registry observations only; similar names may have different scope or '
+                   'version. Never infer reuse or overwrite a page from a name match.'
+                   if phase == 'short-coordinate' and 'existing_page_hints' in view else '')
+                + (' Return zero or more short syntheses in syntheses alongside the primary pages. Each synthesis '
+                   'answers a distinct question about a relationship among at least two independent Card, Concept '
+                   'or Entity pages. Select two to eight exact topic/ref anchors from their synthesis_anchor_refs. '
+                   'Select only the original evidence needed for that relationship. The primary pages or '
+                   'unresolved list still account for every topic exactly once. A synthesis shares evidence; '
+                   'it does not own a topic or replace an independent entry. Omit a synthesis if it only repeats '
+                   'a page or if the evidence cannot support a distinct conclusion.'
+                   if phase == 'short-coordinate' and view.get('allow_syntheses') else '')
                 + (' Express each required definition in its owning slot. For a required whole table, retain '
                    'the applicable headers, values, conditions, exceptions and footnotes that support the answer. '
                    'Cite the exact asset. If an essential part cannot be read, identify its exact material and '
@@ -532,6 +546,18 @@ def system_prompt(phase,view,correction=None):
                    'beyond this slot or make claims unsupported by its evidence.'
                    if phase == 'short-write' and any('page_type' in slot for slot in view.get('pages', {}).values())
                    else '')
+                + (' Begin the local content with what the reader can use and where it applies. Keep conditions '
+                   'and exceptions next to the rule they limit. A slot completes only its own assigned work; '
+                   'keep the prose understandable without assuming the reader saw the previous fragment.'
+                   if phase == 'short-write' and any('knowledge_plan' in slot
+                                                    for slot in view.get('pages', {}).values()) else '')
+                + (' A synthesis_task asks for a specific relationship, not a second copy of the entry pages. '
+                   'The entry names and scopes orient the reader; cite the supplied original anchor evidence '
+                   'and applicable conditions and exceptions for the new explanation. The synthesis must stand '
+                   'on that evidence even if an entry is not delivered. Do not generate links to planned entries '
+                   'or treat their names and scopes as evidence.'
+                   if phase == 'short-write' and any('synthesis_task' in slot
+                                                    for slot in view.get('pages', {}).values()) else '')
                 + (' This is a single replacement slot. Its fragment_task question and deliverable_scope '
                    'define the entire assignment. Do not answer sibling sections or infer a larger page task. '
                    'Preserve each condition and exception in preserve_limitations with its full trigger and scope. '

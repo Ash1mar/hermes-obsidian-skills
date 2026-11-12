@@ -7,6 +7,7 @@ from hermes_source_units.short_build import PAGE_TYPES, TYPED_LAYOUT
 from hermes_source_units.validation import _check_shape, fingerprint
 from short_evidence_pass import NAME, NOTE, PASS_LIMIT, REF, array, evidence, request, require, source_revision
 from short_evidence_reduce import SECTION, ISSUE, check_coordination as check_partition
+from short_knowledge_plan import anchor_options, enabled as knowledge_plan, matching_pages
 
 CONTRACT = 'short-evidence-pages/v2'
 WRITE_CONTRACT = 'short-evidence-writing/v3'
@@ -25,6 +26,10 @@ TYPED_COORDINATION = closed({**COORDINATION['properties'], 'pages': array(closed
     **PAGE['properties'], 'theme_directory': NAME, 'page_type': {'enum': list(PAGE_TYPES)},
     'project_basis': {'anyOf': [closed({'name': NAME, 'refs': {**array(REF), 'minItems': 1}}),
                                 {'type': 'null'}]},
+}))})
+SYNTHESIS_COORDINATION = closed({**TYPED_COORDINATION['properties'], 'syntheses': array(closed({
+    'name': NAME, 'scope': {**NOTE, 'minLength': 1}, 'reader_question': EXPLANATION,
+    'theme_directory': NAME, 'anchors': array(closed({'topic': REF, 'ref': REF})),
 }))})
 SECTION_BODY = closed({
     'heading': NAME, 'content': {'type': 'string', 'minLength': 1}, 'expressed': array(REF),
@@ -166,6 +171,8 @@ def local_task(view, bindings):
                                  if set(duty['mapped_roles']) & {'condition', 'exception', 'conflict', 'contrary'}],
         'asset_bindings': bindings,
     }
+    if synthesis := view.get('synthesis_task'):
+        view['fragment_task'].update(question=synthesis['question'], deliverable_scope=[synthesis['scope']])
 
 
 def auditable_qa(view):
@@ -260,6 +267,8 @@ def coordination_request(sources, reduced, issue=None):
     topics = reduced['topics'] if issue is None else {key: reduced['topics'][key] for key in issue['topics']}
     layout = reduced.get('card_layout')
     typed = bool(layout and layout['contract'] == TYPED_LAYOUT)
+    planning = typed and knowledge_plan(layout)
+    can_synthesize = planning and issue is None and len(topics) > 1
     if issue is None and (not topics or (len(topics) < 2 and not typed)):
         return None
     flagged, images, catalogue = {}, {}, {}
@@ -288,6 +297,12 @@ def coordination_request(sources, reduced, issue=None):
                 link['item'] for link in topic['relations'] if link['role'] in ('evidence', 'definition')
                 and items[link['item']]['kind'] == 'block' and items[link['item']]['text']
             })
+        if can_synthesize:
+            options = anchor_options(topic)
+            notes = {link['item']: link['note'] for link in topic['relations'] if link['item'] in options}
+            catalogue[key]['synthesis_anchor_refs'] = {
+                ref: notes[ref][:72] or items[ref].get('label', '')[:72] for ref in options
+            }
     view = {'page_contract': CONTRACT, 'map_sha256': fingerprint(reduced),
             'revisions': {key: source_revision(src) for key, src in sources.items()},
             'topics': catalogue, 'flagged_evidence': flagged}
@@ -299,7 +314,12 @@ def coordination_request(sources, reduced, issue=None):
         view['existing_theme_directories'] = layout['themes']
     if typed:
         view['typed_pages'] = True
+    if planning:
+        view['existing_page_hints'] = matching_pages(layout, (topic['name'] for topic in topics.values()))
+        view['allow_syntheses'] = can_synthesize
     schema = TYPED_COORDINATION if typed else CARD_COORDINATION if layout else COORDINATION
+    if can_synthesize:
+        schema = SYNTHESIS_COORDINATION
     return request('short-coordinate', view, schema,
                    720 + (215 if typed else 190 if layout else 166) * len(topics), PASS_LIMIT, images.values())
 

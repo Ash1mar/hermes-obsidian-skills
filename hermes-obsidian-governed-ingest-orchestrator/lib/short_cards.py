@@ -10,6 +10,7 @@ from hermes_source_units.short_build import PAGE_DIRECTORIES, PAGE_TYPES, TYPED_
 from hermes_source_units.source_units import _exclusive_lock, _vault_path, _write_atomic
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from short_evidence_pass import require
+from short_knowledge_plan import CONTRACT as KNOWLEDGE_PLAN
 
 CONTRACT = 'short-card-layout/v1'
 INDEX = '00_目录.md'
@@ -42,10 +43,17 @@ def snapshot(vault):
             paths.update(p.relative_to(vault).as_posix() for p in directory.iterdir())
     existing = {r['identity_key'].removeprefix('short-evidence:'): r['current_path']
                 for r in registry if r['identity_key'].startswith('short-evidence:')}
+    registered_pages = {r['page_id']: {
+        'name': r['canonical_name'], 'path': r['current_path'], 'page_id': r['page_id'],
+        'revision_id': r['current_revision_id'], 'page_type': r.get('page_type'),
+        'short_id': (r['identity_key'].removeprefix('short-evidence:')
+                     if r['identity_key'].startswith('short-evidence:') else None)}
+        for r in registry if r['status'] == 'active'}
     themes = sorted({p.parts[1] for r in registry if r['status'] == 'active'
                      and (p := PurePosixPath(r['current_path'])).parts[0] == '30_Cards' and len(p.parts) >= 3})
     occupied_dirs = sorted({p.name for p in root.iterdir() if p.is_dir() and not p.is_symlink()}) if root.is_dir() else []
     return {'contract': TYPED_LAYOUT, 'local_fragment_scope': True, 'content_outcome_recovery': True,
+            'knowledge_plan': KNOWLEDGE_PLAN, 'registered_pages': registered_pages,
             'themes': themes, 'directories': occupied_dirs,
             'occupied': sorted(paths | {r['current_path'] for r in registry}), 'existing': existing}
 
@@ -119,6 +127,8 @@ def render(page, sections):
         metadata += '\npage_type: ' + page['page_type']
         if basis := page.get('project_basis'):
             metadata += '\nproject: ' + json.dumps(basis['name'], ensure_ascii=False)
+    if 'knowledge_plan' in page:
+        metadata += '\nscope: ' + json.dumps(label(page['scope']), ensure_ascii=False)
     metadata += '\n---'
     return '\n\n'.join([metadata, '# ' + heading(page['name']), '## 目录', '\n'.join(toc), *body]) + '\n'
 
