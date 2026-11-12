@@ -14,6 +14,7 @@ from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from short_evidence_pass import mapping_groups, require, seed_requests
 from short_fragment_disposition import delivery_partition
 from short_knowledge_plan import enabled as knowledge_plan
+from short_navigation import CONTRACT as NAVIGATION_CONTRACT, OPTIONAL_ERRORS, refresh
 from short_page_contract import auditable_qa, check_fragment, restore_locked_draft, retry_slots
 from short_page_fragments import page_metadata
 
@@ -231,6 +232,8 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
         'pages': candidates, 'excluded': excluded, 'fragment_exclusions': plan.get('fragment_exclusions', []),
         'mapping_gaps': plan['reduced']['unresolved'], 'coordination_gaps': plan['coordination_issues'],
         'mapping_holds': plan['held_repairs'],
+        **({'navigation_contract': NAVIGATION_CONTRACT}
+           if (operation.get('card_layout') or {}).get('navigation_contract') == NAVIGATION_CONTRACT else {}),
         **({'material_coverage': {
             'inventory': {ref: {'source_sha256': source['source_sha256'], 'locator': item['locator'],
                                 'sha256': item['sha256'], 'source_ref': item['source_ref']}
@@ -331,8 +334,19 @@ def delivery(vault, run_id, authorization, *, replay=False):
     if release and 'material_coverage' in proof['scope']:
         from short_cards import write_navigation
         directories = {str(PurePosixPath(row['path']).parent) for row in candidates if row['published']}
-        result['card_navigation'] = write_navigation(service, release, directories,
-                                                     typed=any('page_type' in row for row in candidates))
+        if proof['scope'].get('navigation_contract') == NAVIGATION_CONTRACT:
+            # Reader navigation is derived after the release. Its failure does not undo delivery.
+            try:
+                result['card_navigation'] = write_navigation(service, release, directories, typed=True, guarded=True)
+            except OPTIONAL_ERRORS as error:
+                result['card_navigation'] = [{'state': 'deferred', 'reason': str(error)}]
+            try:
+                result['knowledge_navigation'] = refresh(service, release, apply=True)
+            except OPTIONAL_ERRORS as error:
+                result['knowledge_navigation'] = {'state': 'deferred', 'reason': str(error)}
+        else:
+            result['card_navigation'] = write_navigation(service, release, directories,
+                                                         typed=any('page_type' in row for row in candidates))
     return result
 
 

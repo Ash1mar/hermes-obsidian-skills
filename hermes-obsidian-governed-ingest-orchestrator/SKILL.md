@@ -18,6 +18,10 @@ reading or replaying historical operations.
 Plan independently useful entries and evidence-based topical syntheses in the
 same coordination step. Use registered page matches as revision hints and
 preserve each entry's conditions, exceptions, evidence and coverage.
+Refresh reader navigation from the current committed release using
+`python3 "<skill-dir>/scripts/refresh_short_navigation.py"` with the exact
+Vault and release ID. Preview by default; apply only when navigation writes
+are authorized. See `references/short-evidence-test.md`.
 
 Within one reconciliation, reuse pure completion proofs only against current
 slice/batch/reduction/recovery bytes and membership; changed dependencies force

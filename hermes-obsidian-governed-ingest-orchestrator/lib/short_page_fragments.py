@@ -230,7 +230,8 @@ def spec_identity(reduced, page, namespace):
 
 
 def page_metadata(page):
-    return {key: page[key] for key in ('page_type', 'project_basis', 'knowledge_plan', 'synthesis_basis', 'existing_page_hints')
+    return {key: page[key] for key in ('page_type', 'project_basis', 'knowledge_plan', 'synthesis_basis',
+                                      'existing_page_hints', 'navigation_theme')
             if page.get(key) is not None}
 
 
@@ -259,12 +260,15 @@ def pack(sources, reduced, specs, limit, *, split_output=False, oversized=None, 
     pages = [{**spec, 'id': spec_identity(reduced, spec, page_namespace)} for spec in specs]
     layout = reduced.get('card_layout')
     if layout:
-        from short_cards import place
+        from short_cards import label, place
+        from short_navigation import CONTRACT as NAVIGATION_CONTRACT
         pages = place(layout, pages)
     for page in pages:
         page_id = page['id']
         if knowledge_plan(layout):
             page['knowledge_plan'] = KNOWLEDGE_PLAN
+        if layout and layout.get('navigation_contract') == NAVIGATION_CONTRACT:
+            page['navigation_theme'] = label(page.get('theme_directory') or page['name'])
         expected[page_id] = {'name': page['name'], 'reader_question': page['reader_question'],
                              'scope': page['scope'], 'fragments': [], **page_metadata(page)}
         if knowledge_plan(layout):
@@ -420,6 +424,7 @@ def independent_sections(expected, checks, covered, specs, reduced, planned, hel
                               'theme_directory': spec['theme_directory'], 'fragments': members,
                               **({'page_type': 'card'} if 'page_type' in parent else {}),
                               **({'knowledge_plan': KNOWLEDGE_PLAN} if 'knowledge_plan' in parent else {}),
+                              **({'navigation_theme': parent['navigation_theme']} if 'navigation_theme' in parent else {}),
                               'derived_from': {'contract': 'short-independent-section/v1', 'page_id': pid,
                                                'section': number, 'topics': section['topics'],
                                                'receipt_sha256': [row['receipt_sha256'] for row in rows],

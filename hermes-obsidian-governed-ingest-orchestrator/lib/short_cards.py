@@ -32,6 +32,8 @@ def segment(value, fallback):
 
 def snapshot(vault):
     """Pin a view of existing identities and occupied paths for deterministic replay."""
+    from short_navigation import CONTRACT as NAVIGATION_CONTRACT
+
     service = FileVaultFinalizeService(vault)
     registry = service.build._registry()['subjects']
     root = _vault_path(vault, '30_Cards')
@@ -54,6 +56,7 @@ def snapshot(vault):
     occupied_dirs = sorted({p.name for p in root.iterdir() if p.is_dir() and not p.is_symlink()}) if root.is_dir() else []
     return {'contract': TYPED_LAYOUT, 'local_fragment_scope': True, 'content_outcome_recovery': True,
             'knowledge_plan': KNOWLEDGE_PLAN, 'registered_pages': registered_pages,
+            'navigation_contract': NAVIGATION_CONTRACT,
             'themes': themes, 'directories': occupied_dirs,
             'occupied': sorted(paths | {r['current_path'] for r in registry}), 'existing': existing}
 
@@ -165,23 +168,30 @@ def verify_fragment(sections):
         nested_markdown(section['content'], heading)
 
 
-def write_navigation(service, release, directories, *, typed=False):
+def write_navigation(service, release, directories, *, typed=False, guarded=False):
     """Refresh only managed indexes, from the exact eligible release under its lock."""
+    if guarded:
+        from short_navigation import MARKER, OPTIONAL_ERRORS, managed_index
+
+    def is_index(path):
+        if (guarded and path.resolve() != path) or path.is_symlink() or not path.is_file():
+            return False
+        data = path.read_bytes()
+        return data.startswith((MANAGED + '\n').encode()) or (guarded and MARKER.fullmatch(data.partition(b'\n')[0]))
+
     paths = []
     lock = _vault_path(service.vault, '_system/knowledge-releases/.finalize.lock')
     with _exclusive_lock(lock):
         require(service.status()['current_release_id'] == release['release_id'], 'release changed before navigation')
-        root = _vault_path(service.vault, '30_Cards')
+        root = service.vault / '30_Cards' if guarded else _vault_path(service.vault, '30_Cards')
         directories = set(directories) | {p.parent.relative_to(service.vault).as_posix()
-                                         for p in root.glob(f'*/{INDEX}') if not p.is_symlink() and p.is_file()
-                                         and p.read_bytes().startswith((MANAGED + '\n').encode())}
+                                         for p in root.glob(f'*/{INDEX}') if is_index(p)}
         if typed:
             for prefix in PAGE_DIRECTORIES.values():
                 if len(prefix) == 2:
                     directory = '/'.join(prefix)
-                    index = _vault_path(service.vault, f'{directory}/{INDEX}')
-                    if index == service.vault / directory / INDEX and index.is_file() and index.read_bytes().startswith(
-                            (MANAGED + '\n').encode()):
+                    index = service.vault / directory / INDEX if guarded else _vault_path(service.vault, f'{directory}/{INDEX}')
+                    if index == service.vault / directory / INDEX and is_index(index):
                         directories.add(directory)
         eligible = {r['id'] for r in release['index_eligibility'] if r['kind'] == 'knowledge_page' and r['eligible']}
         names = {row['page_id']: row['canonical_name'] for row in service.build._registry()['subjects']}
@@ -192,16 +202,23 @@ def write_navigation(service, release, directories, *, typed=False):
                 pages[str(path.parent)].append((names[row['page_id']], path.name))
         for directory in sorted(directories):
             ref = f'{directory}/{INDEX}'
+            entries = sorted(pages[directory])
+            body = '\n'.join(['# ' + heading(PurePosixPath(directory).name), '',
+                              *(f'- [{markdown_label(name)}]({quote(filename, safe="")})' for name, filename in entries), ''])
+            if guarded:
+                try:
+                    if entries or (service.vault / ref).exists():
+                        paths.append({**managed_index(service.vault, ref, body, apply=True), 'pages': len(entries)})
+                except OPTIONAL_ERRORS as error:
+                    paths.append({'path': ref, 'state': 'deferred', 'reason': str(error)})
+                continue
             path = _vault_path(service.vault, ref)
             if path != service.vault / ref or (path.exists() and (
                     not path.is_file() or not path.read_bytes().startswith((MANAGED + '\n').encode()))):
                 paths.append({'path': ref, 'state': 'occupied'})
                 continue
-            entries = sorted(pages[directory])
-            text = '\n'.join([MANAGED, '', '# ' + heading(PurePosixPath(directory).name), '',
-                              *(f'- [{markdown_label(name)}]({quote(filename, safe="")})' for name, filename in entries), ''])
             if entries or path.exists():
-                data = text.encode('utf-8')
+                data = (MANAGED + '\n\n' + body).encode('utf-8')
                 if not path.exists() or path.read_bytes() != data:
                     _write_atomic(path, data)
                 paths.append({'path': ref, 'state': 'ready', 'pages': len(entries)})
