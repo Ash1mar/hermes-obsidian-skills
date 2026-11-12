@@ -7,7 +7,7 @@ from hermes_source_units.short_build import PAGE_TYPES, TYPED_LAYOUT
 from hermes_source_units.validation import _check_shape, fingerprint
 from short_evidence_pass import NAME, NOTE, PASS_LIMIT, REF, array, evidence, request, require, source_revision
 from short_evidence_reduce import SECTION, ISSUE, check_coordination as check_partition
-from short_knowledge_plan import anchor_options, enabled as knowledge_plan, matching_pages
+from short_knowledge_plan import SCOPE_CONTRACT, anchor_options, enabled as knowledge_plan, matching_pages
 
 CONTRACT = 'short-evidence-pages/v2'
 WRITE_CONTRACT = 'short-evidence-writing/v3'
@@ -31,6 +31,15 @@ SYNTHESIS_COORDINATION = closed({**TYPED_COORDINATION['properties'], 'syntheses'
     'name': NAME, 'scope': {**NOTE, 'minLength': 1}, 'reader_question': EXPLANATION,
     'theme_directory': NAME, 'anchors': array(closed({'topic': REF, 'ref': REF})),
 }))})
+SCOPED_COORDINATION = closed({**TYPED_COORDINATION['properties'], 'navigation_only': array(ISSUE)})
+SCOPED_SYNTHESIS = closed({
+    **SCOPED_COORDINATION['properties'],
+    'syntheses': array(closed({
+        **SYNTHESIS_COORDINATION['properties']['syntheses']['items']['properties'],
+        'purpose': {'enum': ['organization', 'explanation']},
+    })),
+    'no_synthesis_reason': NOTE,
+})
 SECTION_BODY = closed({
     'heading': NAME, 'content': {'type': 'string', 'minLength': 1}, 'expressed': array(REF),
 })
@@ -159,10 +168,13 @@ def writing_view(view):
 
 def local_task(view, bindings):
     """Project the writing question from the slot's own topics and evidence."""
-    view.pop('reader_question', None)
     view['name'] = view['fragment_position']['name']
-    scopes = list(dict.fromkeys(topic['scope'] for topic in view['topics'].values()))
-    view['scope'] = '；'.join(scopes)
+    if view.get('scope_contract') == SCOPE_CONTRACT:
+        scopes = [view['scope']]
+    else:
+        view.pop('reader_question', None)
+        scopes = list(dict.fromkeys(topic['scope'] for topic in view['topics'].values()))
+        view['scope'] = '；'.join(scopes)
     view['fragment_task'] = {
         'question': f"仅就「{view['name']}」片段，所分配的原文给出了哪些要求和依据？",
         'deliverable_scope': scopes,
@@ -269,6 +281,7 @@ def coordination_request(sources, reduced, issue=None, *, members=None):
     layout = reduced.get('card_layout')
     typed = bool(layout and layout['contract'] == TYPED_LAYOUT)
     planning = typed and knowledge_plan(layout)
+    scoped = planning and layout.get('scope_contract') == SCOPE_CONTRACT
     can_synthesize = planning and issue is None and len(topics) > 1
     if issue is None and (not topics or (len(topics) < 2 and not typed)):
         return None
@@ -298,6 +311,22 @@ def coordination_request(sources, reduced, issue=None, *, members=None):
                 link['item'] for link in topic['relations'] if link['role'] in ('evidence', 'definition')
                 and items[link['item']]['kind'] == 'block' and items[link['item']]['text']
             })
+        if scoped:
+            wrappers, primary = {}, set()
+            for link in topic['relations']:
+                ref = link['item']
+                if link['role'] == 'context':
+                    continue
+                item = items[ref]
+                targets = table_navigation(item, items) if item['kind'] == 'block' else []
+                if targets and link['role'] in ('asset', 'evidence'):
+                    wrappers[ref] = sorted(targets)
+                else:
+                    primary.add(ref)
+            catalogue[key]['evidence_ownership'] = {
+                'primary_refs': sorted(primary)[:12], 'navigation_refs': dict(list(sorted(wrappers.items()))[:8]),
+                'only_navigation': bool(wrappers) and not primary and len(wrappers) <= 8,
+            }
         if can_synthesize:
             options = anchor_options(topic)
             notes = {link['item']: link['note'] for link in topic['relations'] if link['item'] in options}
@@ -323,6 +352,9 @@ def coordination_request(sources, reduced, issue=None, *, members=None):
     schema = TYPED_COORDINATION if typed else CARD_COORDINATION if layout else COORDINATION
     if can_synthesize:
         schema = SYNTHESIS_COORDINATION
+    if scoped:
+        view['scope_contract'] = SCOPE_CONTRACT
+        schema = SCOPED_SYNTHESIS if can_synthesize else SCOPED_COORDINATION
     return request('short-coordinate', view, schema,
                    720 + (215 if typed else 190 if layout else 166) * len(topics), PASS_LIMIT, images.values())
 
@@ -347,7 +379,19 @@ def coordination_batches(sources, reduced, full):
 
 
 def check_coordination(view, answer):
-    check_partition(view, answer)
+    navigation = answer.get('navigation_only', [])
+    check_partition(view, {**answer, 'unresolved': [*answer['unresolved'], *navigation]})
+    if view.get('scope_contract') == SCOPE_CONTRACT:
+        ownership = {key: row['evidence_ownership'] for key, row in view['topics'].items()}
+        covered = {ref for page in answer['pages'] for key in page['topics']
+                   for ref in (*ownership[key]['primary_refs'],
+                               *(asset for refs in ownership[key]['navigation_refs'].values() for asset in refs))}
+        for row in navigation:
+            require(all(ownership[key]['only_navigation'] and all(
+                set(refs) <= covered for refs in ownership[key]['navigation_refs'].values())
+                        for key in row['topics']), 'navigation-only topics require owned underlying material')
+        if view.get('allow_syntheses') and not answer['syntheses']:
+            require(answer['no_synthesis_reason'].strip(), 'record a brief reason for omitting a topic')
     for page in answer['pages']:
         require(page['reader_question'].strip() and page['grouping_reason'].strip(),
                 'reader question and grouping reason are required')

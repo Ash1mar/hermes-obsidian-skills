@@ -102,6 +102,7 @@ def project(service, release):
                       'theme': theme, 'project': (metadata.get('project_basis') or {}).get('name'),
                       'entries': [entry['short_id'] for entry in
                                   metadata.get('synthesis_basis', {}).get('entries', ())],
+                      'ordered_entries': metadata.get('synthesis_basis', {}).get('purpose') == 'organization',
                       'resources': {ref['unit_ref']['resource_id'] for ref in row['active_support_refs']}}
     relations = {}
     for pid, page in pages.items():
@@ -109,7 +110,11 @@ def project(service, release):
         if len(members) < len(set(page['entries'])):
             gaps.append({'page_id': pid, 'reason': 'optional_entry_not_in_qualified_release'})
         if members:
-            relations[pid] = members
+            if page['ordered_entries']:
+                relations[pid] = list(dict.fromkeys(short_ids[key] for key in page['entries']
+                                                     if short_ids.get(key) in members))
+            else:
+                relations[pid] = members
     project_members = {}
     if any(page['type'] == 'project' for page in pages.values()):
         try:
@@ -165,7 +170,9 @@ def render(pages, sources, relations, project_members):
         lines.extend(['', '## 专题与独立条目'])
         for topic in sorted(relations, key=page_key):
             lines.append(f'- {link(topic)}')
-            lines.extend(f'  - {link(pid)}' for pid in sorted(relations[topic], key=page_key))
+            members = relations[topic]
+            ordered = members if isinstance(members, list) else sorted(members, key=page_key)
+            lines.extend(f'  - {link(pid)}' for pid in ordered)
     return '\n'.join([*lines, ''])
 
 

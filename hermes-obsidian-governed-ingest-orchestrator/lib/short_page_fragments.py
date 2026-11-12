@@ -7,7 +7,7 @@ from hermes_source_units import ContractError
 from hermes_source_units.short_build import project_refs
 from hermes_source_units.validation import fingerprint
 from short_evidence_pass import USABLE_OUTPUT, evidence, require, source_revision
-from short_knowledge_plan import CONTRACT as KNOWLEDGE_PLAN
+from short_knowledge_plan import CONTRACT as KNOWLEDGE_PLAN, SCOPE_CONTRACT
 from short_knowledge_plan import enabled as knowledge_plan, matching_pages, synthesis_id, synthesis_topics
 from short_page_contract import CONTRACT, WRITE_CONTRACT, body_request, local_task, obligations, qa_impacts, topic_items, writing_view
 
@@ -54,6 +54,8 @@ def connected_groups(source, relations, *, join_adjacent=True):
 
 def make_fragment(sources, reduced, page, position, topics, primary):
     # An anchored exception or condition from a sibling topic follows its target.
+    scoped = (reduced.get('card_layout') or {}).get('scope_contract') == SCOPE_CONTRACT
+    owning_scopes = list(dict.fromkeys(topic['scope'] for topic in topics.values()))
     topics = {key: {**topic, 'relations': list(topic['relations'])} for key, topic in topics.items()}
     related = reduced['topics'] if reduced.get('bounded_coordination') else page['topics']
     for tid in related:
@@ -61,28 +63,42 @@ def make_fragment(sources, reduced, page, position, topics, primary):
         for link in original['relations']:
             if link['role'] not in SHARED or not primary.intersection(link['applies_to']):
                 continue
+            if scoped and link['role'] == 'context':
+                link = {**link, 'applies_to': [ref for ref in link['applies_to'] if ref in primary]}
             part = topics.setdefault(tid, {**original, 'relations': []})
             if link not in part['relations']:
                 part['relations'].append(link)
     selection = topic_items(topics)
+    relations = [link for topic in topics.values() for link in topic['relations']]
+    context_only = ({link['item'] for link in relations if link['role'] == 'context'}
+                    - {link['item'] for link in relations if link['role'] != 'context'}
+                    - {ref for link in relations if link['role'] != 'context' for ref in link['applies_to']}) if scoped else set()
+    required_support = {link['item'] for link in relations
+                        if link['role'] in {'condition', 'exception', 'definition', 'conflict', 'contrary'}
+                        and primary.intersection(link['applies_to'])} if scoped else set()
     material, images, raw_qa, revisions = {}, [], {}, {}
     for key, ids in selection.items():
         source = sources[key]
-        supplied, pictures = evidence(source, ids)
+        supplied, pictures = evidence(source, ids, context_only=context_only)
         material.update(supplied)
         images.extend(pictures)
         raw_qa[key] = source['qa']
         revisions[key] = source_revision(source)
     modern = reduced.get('writing_contract') == WRITE_CONTRACT
     card = reduced.get('card_layout')
-    duties = obligations(sources, material, topics, primary, modern=modern, card=bool(card))
+    duties = obligations(sources, material, topics, primary | required_support, modern=modern, card=bool(card))
+    for key in context_only:
+        duties[key].update(role='context', express=False, inspect=False, covers_by=[], assignment='shared')
     basis_refs = set((page.get('project_basis') or {}).get('refs', ())) & primary
     synthesis = page.get('synthesis_basis')
     synthesis_refs = {row['ref'] for row in synthesis['anchors']} if synthesis else set()
     for key in basis_refs | synthesis_refs:
         duties[key].update(role='substantive', express=True, covers_by=[])
     impacts = qa_impacts(sources, selection, material, duties)
-    anchors = {ref for topic in topics.values() for relation in topic['relations'] for ref in relation['applies_to']}
+    for impact in impacts:
+        if impact['items'] and set(impact['items']) <= context_only:
+            impact.update(writing='allow', publication='allow')
+    anchors = {ref for link in relations if not scoped or link['role'] != 'context' for ref in link['applies_to']}
     hold = {item for item, duty in duties.items()
             if (duty['express'] or duty['inspect'] or item in anchors)
             and reduced['dispositions'][item]['status'] != 'linked'}
@@ -96,6 +112,9 @@ def make_fragment(sources, reduced, page, position, topics, primary):
     }
     if modern:
         writing_view(view)
+    if scoped:
+        view.update(scope_contract=SCOPE_CONTRACT, assigned_topic_scopes=owning_scopes,
+                    context_only=sorted(context_only))
     if 'page_type' in page:
         view['page_type'] = page['page_type']
         if basis_refs:
@@ -105,6 +124,8 @@ def make_fragment(sources, reduced, page, position, topics, primary):
     if synthesis:
         view['synthesis_task'] = {'question': page['reader_question'], 'scope': page['scope'],
                                   'anchors': sorted(synthesis_refs), 'entries': synthesis['entries']}
+        if 'purpose' in synthesis:
+            view['synthesis_task']['purpose'] = synthesis['purpose']
     if card:
         view['card_contract'] = card['contract']
         if card.get('local_fragment_scope'):

@@ -35,7 +35,7 @@ def replacement(row, slot, receipt, limit, sources):
     images = list(row['image_inputs'])
     for source_id in sorted({key.split('-', 1)[0] for key in original['materials']}):
         ids = [key for key in original['materials'] if key.startswith(source_id + '-')]
-        material, pictures = evidence(sources[source_id], ids)
+        material, pictures = evidence(sources[source_id], ids, context_only=original.get('context_only', ()))
         for key, item in material.items():
             if key in view['materials']:
                 require(item == view['materials'][key], 'content recovery evidence changed')

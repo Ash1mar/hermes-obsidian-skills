@@ -232,6 +232,7 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
         'pages': candidates, 'excluded': excluded, 'fragment_exclusions': plan.get('fragment_exclusions', []),
         'mapping_gaps': plan['reduced']['unresolved'], 'coordination_gaps': plan['coordination_issues'],
         'mapping_holds': plan['held_repairs'],
+        **({'navigation_only': plan['navigation_only']} if plan.get('navigation_only') else {}),
         **({'navigation_contract': NAVIGATION_CONTRACT}
            if (operation.get('card_layout') or {}).get('navigation_contract') == NAVIGATION_CONTRACT else {}),
         **({'material_coverage': {

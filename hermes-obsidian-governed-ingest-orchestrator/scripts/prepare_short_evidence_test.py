@@ -224,6 +224,7 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
     coordination = pages_v2.coordination_request(sources, reduced)
     issues = []
     syntheses = []
+    navigation = []
     if coordination is None:
         specs = [{'name': topic['name'], 'scope': topic['scope'], 'topics': [tid], 'sections': [],
                   'reader_question': topic['scope'], 'grouping_reason': 'One mapped topic.',
@@ -244,6 +245,7 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 answer['pages'].extend(part['pages'])
                 answer['unresolved'].extend(part['unresolved'])
                 syntheses.extend(part.get('syntheses', []))
+                navigation.extend(part.get('navigation_only', []))
             else:
                 issues.append({'topics': list(row['view']['topics']), 'request': row['id'], 'budget': row['budget'],
                                'reason': 'bounded coordination unavailable'})
@@ -260,11 +262,14 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 outcome = checked_answer(row, verified[row['id']])
                 specs.extend(outcome['pages'])
                 issues.extend(outcome['unresolved'])
+                navigation.extend(outcome.get('navigation_only', []))
             else:
                 issues.append({**issue, 'request': row['id'], 'budget': row['budget']})
         if batches != [coordination]:
             reduced = {**reduced, 'bounded_coordination': True}
             common['reduced'] = reduced
+        if navigation:
+            common['navigation_only'] = navigation
     if syntheses:
         from short_knowledge_plan import syntheses as plan_syntheses
         shared, gaps = plan_syntheses(reduced, syntheses, specs, namespace=page_namespace,

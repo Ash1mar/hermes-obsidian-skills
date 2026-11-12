@@ -208,6 +208,40 @@ def test_oversized_coordination_keeps_exact_primary_topic_partition(tmp_path):
     assert len(members) == len(set(members)) and set(members) == set(reduced['topics'])
 
 
+def test_page_scope_survives_context_wrapper_and_keeps_anchored_exception():
+    from hermes_source_units.short_build import TYPED_LAYOUT
+    from short_knowledge_plan import CONTRACT, SCOPE_CONTRACT
+    from short_fragment_repair import scoped_request
+
+    items = {'S1-B1': item('block', 'Keep the revision.', 'Revision', ['S1-A4']),
+             'S1-B2': item('block', 'See both tables.', 'Wrapper', ['S1-A4', 'S1-A5']),
+             'S1-B3': item('block', 'Except withdrawn versions.', 'Limit'),
+             'S1-A4': item('asset', '| Revision |', 'Revision table'),
+             'S1-A5': item('asset', '| Reviews |', 'Review table')}
+    sources = {'S1': source(items)}
+    reduced = {**mapped(items, {'T1': [link('S1-B1', 'evidence')],
+                               'T2': [link('S1-B2', 'context', 'S1-B1'),
+                                      link('S1-B3', 'exception', 'S1-B1')]}),
+               'bounded_coordination': True, 'writing_contract': WRITE_CONTRACT,
+               'card_layout': {'contract': TYPED_LAYOUT, 'knowledge_plan': CONTRACT, 'scope_contract': SCOPE_CONTRACT,
+                               'local_fragment_scope': True, 'themes': [], 'directories': [],
+                               'occupied': [], 'existing': {}}}
+    reduced['topics']['T2']['scope'] = 'Wide review procedure'
+    spec = {**page(['T1']), 'name': 'Revision', 'theme_directory': 'Design', 'page_type': 'card'}
+    requests, held, _ = pack(sources, reduced, [spec], 40_000)
+    row, = requests
+    assert not held
+    view = row['view']['pages']['p1']
+    assert view['reader_question'] == spec['reader_question']
+    assert view['fragment_task']['deliverable_scope'] == [spec['scope']]
+    assert view['materials']['S1-B2']['required_assets'] == ['S1-A4'] and 'S1-A5' not in view['materials']
+    assert not view['obligations']['S1-B2']['express']
+    assert view['obligations']['S1-B3']['express'] and view['obligations']['S1-A4']['inspect']
+    retry = scoped_request(row, 'p1', 40_000, modern=True)['view']['pages']['p1']
+    assert retry['fragment_task']['deliverable_scope'] == [spec['scope']]
+    assert not retry['obligations']['S1-B2']['covers_by']
+
+
 def test_knowledge_plan_records_existing_match_without_using_title_as_identity():
     from hermes_source_units.short_build import TYPED_LAYOUT
     from short_knowledge_plan import CONTRACT

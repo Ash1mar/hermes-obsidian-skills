@@ -210,12 +210,15 @@ def source_revision(source):
     )})
 
 
-def evidence(source, selected):
+def evidence(source, selected, *, context_only=()):
     """Expand transitive explicit asset dependencies without losing primary IDs."""
     items = source['items']
     ordered = dict.fromkeys(selected)
     queue = list(ordered)
+    context_only = set(context_only)
     for item_id in queue:
+        if item_id in context_only:
+            continue
         for dep in items[item_id]['required_assets']:
             if dep not in ordered:
                 ordered[dep] = None
@@ -224,6 +227,8 @@ def evidence(source, selected):
     for item_id in ordered:
         item = items[item_id]
         row = {k: item[k] for k in ('kind', 'text', 'heading', 'required_assets')}
+        if item_id in context_only:
+            row['required_assets'] = [ref for ref in item['required_assets'] if ref in ordered]
         if item['kind'] == 'asset':
             row['label'] = item['locator']['path']
         if 'image' in item:

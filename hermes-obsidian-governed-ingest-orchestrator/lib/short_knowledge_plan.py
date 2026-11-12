@@ -4,6 +4,7 @@ import unicodedata
 from hermes_source_units.validation import fingerprint
 
 CONTRACT = 'short-knowledge-plan/v1'
+SCOPE_CONTRACT = 'short-page-scope/v1'
 ENTRY_TYPES = {'card', 'concept', 'entity'}
 ANCHOR_ROLES = {'evidence', 'definition', 'asset'}
 DEPENDENCY_ROLES = {'condition', 'exception', 'definition', 'conflict', 'contrary', 'asset'}
@@ -58,13 +59,18 @@ def syntheses(reduced, proposed, entries, *, namespace=None, entry_id):
             reason = 'synthesis_anchor_lacks_independent_owner_or_mapped_evidence'
         else:
             related = {entry_id(owners[key]): owners[key] for key in members}
+            order = sorted(related)
+            if row.get('purpose') == 'organization':
+                order = list(dict.fromkeys(entry_id(owners[a['topic']]) for a in anchors))
             spec = {**{key: row[key] for key in ('name', 'scope', 'reader_question', 'theme_directory')},
                     'page_type': 'topic', 'topics': members, 'sections': [],
                     'grouping_basis': 'shared_reader_task', 'grouping_reason': 'A scoped synthesis of independent pages.',
                     'synthesis_basis': {'anchors': sorted(anchors, key=lambda a: (a['topic'], a['ref'])),
                                         'entries': [{'short_id': key, **{field: related[key][field]
                                                      for field in ('name', 'scope', 'page_type')}}
-                                                    for key in sorted(related)]}}
+                                                    for key in order]}}
+            if 'purpose' in row:
+                spec['synthesis_basis']['purpose'] = row['purpose']
             key = synthesis_id(reduced, spec, namespace)
             if len(related) < 2:
                 reason = 'synthesis_requires_two_independent_pages'

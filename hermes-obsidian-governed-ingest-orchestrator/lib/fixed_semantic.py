@@ -532,7 +532,24 @@ def system_prompt(phase,view,correction=None):
                    'unresolved list still account for every topic exactly once. A synthesis shares evidence; '
                    'it does not own a topic or replace an independent entry. Omit a synthesis if it only repeats '
                    'a page or if the evidence cannot support a distinct conclusion.'
-                   if phase == 'short-coordinate' and view.get('allow_syntheses') else '')
+                   if phase == 'short-coordinate' and view.get('allow_syntheses') and not view.get('scope_contract') else '')
+                + (' Compare neighboring candidates for duplication, containment and complementary scope. Use '
+                   'evidence_ownership to distinguish actual evidence from navigation wrappers and detect shared '
+                   'references. Shared evidence alone does not justify merging. Merge overlapping purposes, '
+                   'narrow the reader question and scope, or let one Topic organize distinct entries. Explain '
+                   'in grouping_reason what distinguishes adjacent pages. Fold a wrapper-only candidate into '
+                   'its evidence-owning page or record it in navigation_only when its underlying material is '
+                   'owned by primary pages. Count each topic once among pages, unresolved and navigation_only.'
+                   if phase == 'short-coordinate' and view.get('scope_contract') else '')
+                + (' Consider Topics that organize reading as well as Topics that explain relationships. '
+                   'Use purpose organization when scope and reading sequence give readers more guidance than '
+                   'the index. An organization Topic need not invent a new conclusion. Use purpose explanation '
+                   'when original evidence supports a distinct relationship. Choose two to eight exact '
+                   'topic/ref anchors from synthesis_anchor_refs, spanning at least two independent Card, Concept '
+                   'or Entity pages. For organization, list the anchors in intended reading order. Keep original '
+                   'conditions and exceptions. If neither purpose adds value, leave syntheses empty and briefly '
+                   'explain why in no_synthesis_reason. A Topic never takes ownership of an entry topic.'
+                   if phase == 'short-coordinate' and view.get('scope_contract') and view.get('allow_syntheses') else '')
                 + (' Express each required definition in its owning slot. For a required whole table, retain '
                    'the applicable headers, values, conditions, exceptions and footnotes that support the answer. '
                    'Cite the exact asset. If an essential part cannot be read, identify its exact material and '
@@ -556,7 +573,17 @@ def system_prompt(phase,view,correction=None):
                    'and applicable conditions and exceptions for the new explanation. The synthesis must stand '
                    'on that evidence even if an entry is not delivered. Do not generate links to planned entries '
                    'or treat their names and scopes as evidence.'
-                   if phase == 'short-write' and any('synthesis_task' in slot
+                   if phase == 'short-write' and any('synthesis_task' in slot and not slot.get('scope_contract')
+                                                    for slot in view.get('pages', {}).values()) else '')
+                + (' The coordinated reader_question and scope define the page boundary. Answer only the '
+                   'fragment_task using its assigned material and necessary conditions. Shared context can help '
+                   'interpret the evidence but does not add duties or widen the page. Do not infer that all '
+                   'tables referenced by a shared wrapper are required. For a synthesis_task with purpose '
+                   'organization, explain scope, how to choose entries and why the reading sequence helps. '
+                   'Do not reproduce entry bodies. For explanation, support new conclusions directly from '
+                   'the anchors. Cite the original anchors and retain applicable conditions and exceptions. '
+                   'The navigation projection adds links to entries that qualify for release.'
+                   if phase == 'short-write' and any(slot.get('scope_contract')
                                                     for slot in view.get('pages', {}).values()) else '')
                 + (' This is a single replacement slot. Its fragment_task question and deliverable_scope '
                    'define the entire assignment. Do not answer sibling sections or infer a larger page task. '

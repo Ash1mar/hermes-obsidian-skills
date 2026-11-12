@@ -46,6 +46,7 @@ def scoped_request(row, slot, limit, *, locations=None, continuations=(), modern
     materials = view['materials']
     bindings = {}
     protected = set(view.get('synthesis_task', {}).get('anchors', ()))
+    protected.update(view.get('context_only', ()))
     for key, item in materials.items():
         linked = item['required_assets']
         if not linked:
