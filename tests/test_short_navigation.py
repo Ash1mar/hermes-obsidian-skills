@@ -4,6 +4,8 @@ import sys
 from pathlib import Path
 from urllib.parse import unquote
 
+import pytest
+
 from test_p3_knowledge_build import publish_sources, vault
 from hermes_source_units import FileVaultFinalizeService
 from hermes_source_units import short_build
@@ -17,7 +19,8 @@ import short_formal_build
 from short_navigation import CONTRACT, INDEX, refresh
 
 
-def test_optional_index_links_and_manual_edits_do_not_block_release(vault, tmp_path, monkeypatch):
+@pytest.mark.parametrize('mode', ['optional', 'required_missing', 'required_ready'])
+def test_optional_and_required_reading_targets(vault, tmp_path, monkeypatch, mode):
     ref, = publish_sources(vault, ['# Evidence\n\nAn approved revision is required.\n'])
     service = FileVaultFinalizeService(vault)
     directory = tmp_path / 'program'
@@ -41,15 +44,22 @@ def test_optional_index_links_and_manual_edits_do_not_block_release(vault, tmp_p
 
     paths = {topic: '50_Projects/专题/交付专题.md', entry: '30_Cards/设计交付/版本核对.md',
              project: '50_Projects/项目/工程交付.md'}
+    if mode == 'required_ready':
+        paths[project] = '50_Projects/专题/工程交付.md'
     bodies = {pid: b'# Evidence\n\nRequired. [S1-B1]\n' for pid in paths}
     bodies[project] += ('\n[[' + paths[entry].removesuffix('.md') + ']]\n').encode('utf-8')
+    entries = [project, entry] if mode == 'required_ready' else [entry, held]
+    reading = {'entries': [{'short_id': key} for key in entries]}
+    if mode != 'optional':
+        reading.update(purpose='organization', required_entries=True)
     scope = {
         'actor': 'agent', 'origin': {'workflow_id': 'fixture'}, 'operation_sha256': _sha(op.read_bytes()),
         'coverage_complete': False, 'authorization': grant, 'navigation_contract': CONTRACT, 'material_coverage': {},
         'pages': [
             candidate(topic, 'topic', '交付专题', paths[topic], bodies[topic],
-                      synthesis_basis={'entries': [{'short_id': entry}, {'short_id': held}]}),
+                      synthesis_basis=reading),
             candidate(entry, 'card', '版本核对', paths[entry], bodies[entry]),
+            candidate(project, 'topic', '工程交付', paths[project], bodies[project]) if mode == 'required_ready' else
             candidate(project, 'project', '工程交付', paths[project], bodies[project],
                       project_basis={'name': '北岸工程', 'refs': ['S1-B1']}),
         ],
@@ -64,6 +74,20 @@ def test_optional_index_links_and_manual_edits_do_not_block_release(vault, tmp_p
                for p in run['page_revisions']]
     service.build.finalize({'run_id': run['run_id'], 'actor': 'agent', 'expected_revision': 1, 'reviews': reviews})
     result = short_formal_build.delivery(vault, run['run_id'], grant)
+    if mode == 'required_missing':
+        reading = next(row for row in result['candidates'] if row['short_id'] == topic)
+        assert not result['blockers'] and not reading['published']
+        assert reading['exclusion']['reason'] == 'required_target_unavailable'
+        assert reading['required_target_issues'] == [{'short_id': held}]
+        assert {row['short_id'] for row in result['candidates'] if row['published']} == {entry, project}
+        assert '交付专题' not in (vault / INDEX).read_text(encoding='utf-8')
+        return
+    if mode == 'required_ready':
+        assert all(row['published'] for row in result['candidates'])
+        assert not result['knowledge_navigation']['gaps']
+        text = unquote((vault / INDEX).read_text(encoding='utf-8')).split('## 专题与独立条目')[1]
+        assert text.index(paths[project]) < text.index(paths[entry])
+        return
     assert not result['blockers'] and all(p['published'] for p in result['candidates'])
     assert result['knowledge_navigation']['state'] == 'ready'
     assert {g['reason'] for g in result['knowledge_navigation']['gaps']} == {'optional_entry_not_in_qualified_release'}
@@ -94,3 +118,24 @@ def test_optional_index_links_and_manual_edits_do_not_block_release(vault, tmp_p
     replay = short_formal_build.delivery(vault, run['run_id'], grant, replay=True)
     assert replay['release_id'] == result['release_id'] and not replay['blockers']
     assert replay['knowledge_navigation']['state'] == 'deferred'
+
+
+def test_reading_target_partition_resolves_stable_id_and_rejects_cycles():
+    from hermes_source_units.scoped_release import reading_partition
+
+    def row(pid, path, content=''):
+        return {'page_id': pid, 'path': path, 'content': content,
+                'identity': {'identity_key': 'short-evidence:' + pid, 'canonical_name': pid}}
+
+    pages = [row('reading', '50_Projects/reading.md'),
+             row('a', '50_Projects/renamed.md'), row('b', '30_Cards/b.md')]
+    qualified = {page['page_id']: {'eligible': True} for page in pages}
+    requirements = {'reading': ['b', 'a']}
+    ready = reading_partition(pages, {}, qualified, requirements)
+    assert ready['included'] == ['a', 'b', 'reading']
+    assert ready['dependencies'] == {'reading': ['a', 'b']}
+    pages[1]['content'] = '[[reading]]'
+    held = reading_partition(pages, {}, qualified, requirements)
+    assert held['included'] == ['b']
+    assert held['excluded']['reading']['reason'] == 'required_target_unavailable'
+    assert held['excluded']['reading']['depends_on'] == ['a']

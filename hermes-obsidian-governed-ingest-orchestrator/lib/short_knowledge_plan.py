@@ -41,26 +41,56 @@ def synthesis_id(reduced, page, namespace):
     return fingerprint([CONTRACT, 'topic', namespace, members])
 
 
+def target_issues(topics, owners, anchors, allowed, entry_id):
+    issues = []
+    for anchor in anchors:
+        tid, ref = anchor['topic'], anchor['ref']
+        owner = owners.get(tid)
+        target = dict(anchor)
+        if owner and all(owner.get(field, '').strip() for field in ('name', 'scope', 'reader_question')):
+            target.update(short_id=entry_id(owner), page_type=owner['page_type'])
+            if 'synthesis_basis' in owner or 'derived_from' in owner:
+                reason = 'target_is_derived_topic'
+            elif owner['page_type'] not in allowed:
+                reason = 'target_type_not_allowed'
+            elif tid not in topics or ref not in anchor_options(topics[tid]):
+                reason = 'anchor_not_owned_or_mapped'
+            else:
+                continue
+        else:
+            reason = 'target_owner_missing'
+        issues.append({**target, 'reason': reason})
+    return issues
+
+
 def syntheses(reduced, proposed, entries, *, namespace=None, entry_id):
     """Keep failed proposals local and leave the primary coverage partition intact."""
     topics = reduced['topics']
     owners = {key: page for page in entries for key in page['topics']}
-    specs, gaps, seen = [], [], set()
+    specs, gaps, seen, organized = [], [], set(), set()
+    layout = reduced.get('card_layout') or {}
+    versioned = layout.get('organization_targets')
     for row in proposed:
         anchors = row['anchors']
         pairs = {(a['topic'], a['ref']) for a in anchors}
         members = sorted({a['topic'] for a in anchors})
+        organization = row.get('purpose') == 'organization'
+        required_targets = organization and versioned
+        errors = []
         if (not all(row[field].strip() for field in ('name', 'scope', 'reader_question', 'theme_directory'))
                 or not 2 <= len(anchors) <= MAX_ANCHORS or len(pairs) != len(anchors)
                 or len({a['ref'] for a in anchors}) < 2):
             reason = 'synthesis_requires_distinct_bounded_anchors_and_scope'
-        elif any(key not in owners or owners[key]['page_type'] not in ENTRY_TYPES
+        elif versioned and (errors := target_issues(topics, owners, anchors,
+                                  ENTRY_TYPES | {'topic'} if organization else ENTRY_TYPES, entry_id)):
+            reason = errors[0]['reason']
+        elif not versioned and any(key not in owners or owners[key]['page_type'] not in ENTRY_TYPES
                  or ref not in anchor_options(topics[key]) for key, ref in pairs):
             reason = 'synthesis_anchor_lacks_independent_owner_or_mapped_evidence'
         else:
             related = {entry_id(owners[key]): owners[key] for key in members}
             order = sorted(related)
-            if row.get('purpose') == 'organization':
+            if organization:
                 order = list(dict.fromkeys(entry_id(owners[a['topic']]) for a in anchors))
             spec = {**{key: row[key] for key in ('name', 'scope', 'reader_question', 'theme_directory')},
                     'page_type': 'topic', 'topics': members, 'sections': [],
@@ -71,21 +101,35 @@ def syntheses(reduced, proposed, entries, *, namespace=None, entry_id):
                                                     for key in order]}}
             if 'purpose' in row:
                 spec['synthesis_basis']['purpose'] = row['purpose']
-            if row.get('purpose') == 'organization' and (reduced.get('card_layout') or {}).get('organization_fragments'):
+            if required_targets:
+                spec['synthesis_basis'].update(anchors=anchors, required_entries=True)
+                for entry in spec['synthesis_basis']['entries']:
+                    entry['anchors'] = [anchor for anchor in anchors
+                                        if entry_id(owners[anchor['topic']]) == entry['short_id']]
+            if organization and layout.get('organization_fragments'):
                 units = {key: [] for key in order}
                 for anchor in anchors:
                     units[entry_id(owners[anchor['topic']])].append(anchor)
                 spec['organization_units'] = units
             key = synthesis_id(reduced, spec, namespace)
+            targets = frozenset(related)
             if len(related) < 2:
-                reason = 'synthesis_requires_two_independent_pages'
-            elif key in seen:
+                reason = 'insufficient_distinct_targets' if versioned else 'synthesis_requires_two_independent_pages'
+                if versioned:
+                    errors = [{**anchor, 'short_id': entry_id(owners[anchor['topic']]), 'reason': reason}
+                              for anchor in anchors]
+            elif key in targets:
+                reason = 'target_is_derived_topic'
+            elif key in seen or required_targets and targets in organized:
                 reason = 'duplicate_synthesis_membership'
             else:
                 seen.add(key)
+                if required_targets:
+                    organized.add(targets)
                 specs.append(spec)
                 continue
-        gaps.append({'name': row['name'], 'topics': members, 'anchors': anchors, 'reason': reason})
+        gaps.append({'name': row['name'], 'topics': members, 'anchors': anchors, 'reason': reason,
+                     **({'target_issues': errors} if errors else {})})
     return specs, gaps
 
 

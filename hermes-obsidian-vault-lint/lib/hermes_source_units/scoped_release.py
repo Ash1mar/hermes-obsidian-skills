@@ -49,6 +49,63 @@ def retained_exclusions(service, exclusions, base_id, previous, current):
                 del result[pid]
     return result
 
+
+def reading_requirements(service, runs):
+    required = {}
+    for run in runs:
+        if not run.get('short_evidence'):
+            continue
+        scope = short_evidence(service.build, run)['scope']
+        for row, page in zip(scope['pages'], run['page_revisions'], strict=True):
+            basis = row.get('synthesis_basis', {})
+            if basis.get('purpose') == 'organization' and basis.get('required_entries') is True:
+                required[page['page_id']] = [entry['short_id'] for entry in basis['entries']]
+    return required
+
+
+def reading_partition(candidates, exclusions, eligible, requirements):
+    """Resolve required reading targets from the same eligible release."""
+    partition = dependency_partition(candidates, exclusions)
+    if not requirements:
+        return partition
+    prefix = 'short-evidence:'
+    by_identity = {row['identity']['identity_key'][len(prefix):]: row['page_id'] for row in candidates
+                   if row['identity'].get('identity_key', '').startswith(prefix)}
+    resolved = {pid: [by_identity.get(key) for key in keys] for pid, keys in requirements.items()}
+    edges = {pid: set(deps) for pid, deps in partition['dependencies'].items()}
+    for pid, targets in resolved.items():
+        edges.setdefault(pid, set()).update(target for target in targets if target is not None)
+
+    def reaches(start, finish):
+        pending, seen = [start], set()
+        while pending:
+            node = pending.pop()
+            if node == finish:
+                return True
+            if node not in seen:
+                seen.add(node)
+                pending.extend(edges.get(node, ()))
+        return False
+
+    while True:
+        included = set(partition['included'])
+        holds = {}
+        for pid in included & requirements.keys():
+            targets = resolved[pid]
+            missing = [target for target in targets if target not in included or target in requirements
+                       or not eligible.get(target, {}).get('eligible') or reaches(target, pid)]
+            if len(targets) < 2 or len(set(targets)) != len(targets) or missing:
+                holds[pid] = {'category': 'dependency_unresolved', 'reason': 'required_target_unavailable',
+                              'depends_on': sorted({target for target in missing if target}),
+                              'reopen_condition': 'verify every required reading target in the same release'}
+        if not holds:
+            break
+        partition = dependency_partition(candidates, {**partition['excluded'], **holds})
+    for pid in set(partition['included']) & requirements.keys():
+        partition['dependencies'][pid] = sorted(edges[pid])
+    return partition
+
+
 def build_plan(service,request,state,runs,scopes):
     current=service._current_sets();changes=service._source_changes(request.get('source_changes',[]),current)
     change_map={r['resource_id']:r for r in changes};registry=service._registry()
@@ -128,7 +185,7 @@ def build_plan(service,request,state,runs,scopes):
             if p['page_id'] in known:continue
             known.add(p['page_id']);candidates.append({'page_id':p['page_id'],'path':view['path'],
                 'identity':view['identity'],'content':view['content']})
-    partition=dependency_partition(candidates,exclusions)
+    partition=reading_partition(candidates,exclusions,eligible,reading_requirements(service,runs))
     included=set(partition['included'])&set(rows)
     subjects=[s for s in active if s['page_id'] in included]
     with span('release_scope_summary',vault=service.vault, unique_body_reads=len(contents),

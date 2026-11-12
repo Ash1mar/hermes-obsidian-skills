@@ -317,6 +317,8 @@ def delivery(vault, run_id, authorization, *, replay=False):
             service.validate(release_id)
     released = {r['page_id'] for r in release['subjects']} if release else set()
     exclusions = {r['page_id']: r for r in plan['delivery']['excluded']}
+    qualified_targets = {row['id'] for row in plan['index_eligibility']
+                         if row['kind'] == 'knowledge_page' and row['eligible']}
     candidates = []
     for row, page in zip(proof['scope']['pages'], run['page_revisions'], strict=True):
         require(identity(service.build, row['short_id'], row['name'])[1] == page['page_id'], 'formal result page changed')
@@ -328,6 +330,12 @@ def delivery(vault, run_id, authorization, *, replay=False):
                                                    if q['page_id'] == page['page_id']), None),
                            'coverage_proofs': row['same_page_coverage'], 'published': page['page_id'] in released,
                            'exclusion': exclusions.get(page['page_id'])})
+        exclusion = exclusions.get(page['page_id'], {})
+        if exclusion.get('reason') == 'required_target_unavailable':
+            entries = row['synthesis_basis']['entries']
+            unavailable = [entry for entry in entries if identity(service.build, entry['short_id'], entry.get('name', ''))[1]
+                           not in qualified_targets]
+            candidates[-1]['required_target_issues'] = unavailable or entries
     result = {'run_id': run_id, 'build_revision': run['revision'], 'build_evidence': run['short_evidence'],
             'qa_advisory': advisory_pointer,
             'candidates': candidates, 'isolated_pages': proof['scope']['excluded'],

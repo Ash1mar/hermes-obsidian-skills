@@ -384,6 +384,8 @@ def coordination_request(sources, reduced, issue=None, *, members=None):
             view['local_coordination_failures'] = True
         if (layout or {}).get('candidate_destinations'):
             view['candidate_destinations'] = True
+        if (layout or {}).get('organization_targets'):
+            view['organization_targets'] = True
     return request('short-coordinate', view, schema,
                    720 + (215 if typed else 190 if layout else 166) * len(topics), PASS_LIMIT, images.values())
 

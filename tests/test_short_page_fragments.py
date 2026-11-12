@@ -188,6 +188,39 @@ def test_shared_synthesis_reuses_evidence_without_owning_the_entries(tmp_path):
     assert '[S1-B3]' in topic['content'] and '[S1-B4]' not in topic['content']
 
 
+def test_organization_admits_ordered_primary_topics_and_reports_exact_target_defects():
+    from short_knowledge_plan import syntheses
+    from short_page_fragments import spec_identity
+
+    reduced = {**mapped({}, {'T1': [link('S1-B1', 'evidence')],
+                             'T2': [link('S1-B2', 'evidence')],
+                             'T3': [link('S1-B3', 'evidence')]}),
+               'card_layout': {'organization_targets': True, 'organization_fragments': True}}
+    entries = [{**page([key]), 'page_type': 'topic' if key == 'T1' else 'card'} for key in ('T1', 'T2')]
+    anchors = [{'topic': 'T2', 'ref': 'S1-B2'}, {'topic': 'T1', 'ref': 'S1-B1'}]
+    proposal = {'name': 'Read in order', 'scope': 'Two tasks', 'reader_question': 'Where to start?',
+                'theme_directory': 'Design', 'purpose': 'organization', 'anchors': anchors}
+    plan = lambda proposal, entries: syntheses(
+        reduced, [proposal], entries, entry_id=lambda row: spec_identity(reduced, row, None))
+    specs, gaps = plan(proposal, entries)
+    assert not gaps
+    basis = specs[0]['synthesis_basis']
+    assert basis['required_entries'] and basis['anchors'] == anchors
+    assert [row['short_id'] for row in basis['entries']] == [spec_identity(reduced, row, None)
+                                                            for row in reversed(entries)]
+    assert [row['anchors'][0] for row in basis['entries']] == anchors
+    for proposal_change, targets, reason in (
+        ({'purpose': 'explanation'}, entries, 'target_type_not_allowed'),
+        ({'anchors': [anchors[0], {'topic': 'T3', 'ref': 'S1-B3'}]}, entries, 'target_owner_missing'),
+        ({'anchors': [anchors[0], {'topic': 'T1', 'ref': 'S1-B3'}]}, entries, 'anchor_not_owned_or_mapped'),
+        ({}, [{**entries[0], 'derived_from': {'page_id': 'parent'}}, entries[1]], 'target_is_derived_topic'),
+        ({}, [{**page(['T1', 'T2']), 'page_type': 'topic'}], 'insufficient_distinct_targets'),
+    ):
+        specs, gaps = plan({**proposal, **proposal_change}, targets)
+        assert not specs and gaps[0]['reason'] == reason
+        assert gaps[0]['target_issues'][0]['ref']
+
+
 def test_oversized_coordination_keeps_exact_primary_topic_partition(tmp_path):
     from hermes_source_units.short_build import TYPED_LAYOUT
     from prepare_short_evidence_test import advance_fragments

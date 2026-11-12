@@ -519,6 +519,13 @@ def system_prompt(phase,view,correction=None):
                    'project_text_refs from this page’s assigned topics that establish the actual project; '
                    'use null for every other type. Choose only types justified by the material.'
                    if phase == 'short-coordinate' and view.get('typed_pages') else '')
+                + (' Classify by the reader task. A directly usable requirement, checklist, sequence or '
+                   'decision rule for one task normally belongs in a Card, even across multiple stages '
+                   'or sections. A Topic primarily organizes other knowledge or explains relationships '
+                   'among knowledge objects. Candidate topics are units of mapped material. Page length, '
+                   'stage count, section count and the topics field do not determine page_type. '
+                   'Briefly justify the selected type and grouping in grouping_reason.'
+                   if phase == 'short-coordinate' and view.get('organization_targets') else '')
                 + (' Let independently usable definitions, requirements and entities own their evidence topics '
                    'as separate pages when each can retain its own necessary conditions and exceptions. Combine '
                    'topics when they answer one reader question and separating them would lose context. '
@@ -550,11 +557,17 @@ def system_prompt(phase,view,correction=None):
                    'Use purpose organization when scope and reading sequence give readers more guidance than '
                    'the index. An organization Topic need not invent a new conclusion. Use purpose explanation '
                    'when original evidence supports a distinct relationship. Choose two to eight exact '
-                   'topic/ref anchors from synthesis_anchor_refs, spanning at least two independent Card, Concept '
-                   'or Entity pages. For organization, list the anchors in intended reading order. Keep original '
+                   'topic/ref anchors from synthesis_anchor_refs, spanning at least two '
+                   + ('different primary pages. ' if view.get('organization_targets')
+                      else 'independent Card, Concept or Entity pages. ')
+                   + 'For organization, list the anchors in intended reading order. Keep original '
                    'conditions and exceptions. If neither purpose adds value, leave syntheses empty and briefly '
                    'explain why in no_synthesis_reason. A Topic never takes ownership of an entry topic.'
                    if phase == 'short-coordinate' and view.get('scope_contract') and view.get('allow_syntheses') else '')
+                + (' Organization may link to a primary Card, Concept, Entity or evidence-owning ordinary Topic. '
+                   'Every listed reading target is required. Explanation can use primary Card, Concept or Entity '
+                   'only. A synthesis cannot serve as another synthesis’s target.'
+                   if phase == 'short-coordinate' and view.get('organization_targets') and view.get('allow_syntheses') else '')
                 + (' Express each required definition in its owning slot. For a required whole table, retain '
                    'the applicable headers, values, conditions, exceptions and footnotes that support the answer. '
                    'Cite the exact asset. If an essential part cannot be read, identify its exact material and '

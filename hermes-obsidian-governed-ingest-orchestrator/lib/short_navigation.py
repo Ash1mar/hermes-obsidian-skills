@@ -103,12 +103,16 @@ def project(service, release):
                       'entries': [entry['short_id'] for entry in
                                   metadata.get('synthesis_basis', {}).get('entries', ())],
                       'ordered_entries': metadata.get('synthesis_basis', {}).get('purpose') == 'organization',
+                      'required_entries': metadata.get('synthesis_basis', {}).get('required_entries') is True,
                       'resources': {ref['unit_ref']['resource_id'] for ref in row['active_support_refs']}}
     relations = {}
     for pid, page in pages.items():
         members = {short_ids[key] for key in page['entries'] if key in short_ids and short_ids[key] != pid}
         if len(members) < len(set(page['entries'])):
-            gaps.append({'page_id': pid, 'reason': 'optional_entry_not_in_qualified_release'})
+            reason = 'required_target_unavailable' if page['required_entries'] else 'optional_entry_not_in_qualified_release'
+            gaps.append({'page_id': pid, 'reason': reason})
+            if page['required_entries']:
+                continue
         if members:
             if page['ordered_entries']:
                 relations[pid] = list(dict.fromkeys(short_ids[key] for key in page['entries']
