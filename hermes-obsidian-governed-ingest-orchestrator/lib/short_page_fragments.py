@@ -187,7 +187,7 @@ def organization_fragments(sources, reduced, page, limit):
         anchors = [anchor for entry in steps for anchor in units[entry['short_id']]]
         topics = organization_topics(reduced, anchors)
         name = page['name'] if len(steps) == len(entries) else ' → '.join(entry['name'] for entry in steps)
-        local = {**page, 'synthesis_basis': {**basis, 'anchors': anchors, 'entries': steps}}
+        local = {**page, 'topics': list(topics), 'synthesis_basis': {**basis, 'anchors': anchors, 'entries': steps}}
         return make_fragment(sources, {**reduced, 'topics': topics}, local,
                              {'section': index, 'name': name, 'part': 0}, topics, primary_items(topics))
 
