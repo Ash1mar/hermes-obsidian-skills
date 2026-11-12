@@ -11,6 +11,11 @@ For the isolated offline topic and evidence mapping experiment, read
 `references/short-evidence-test.md` and use `python3 "<skill-dir>/scripts/prepare_short_evidence_test.py"`
 with exact source pins and a report path outside the Vault.
 
+New native short-path plans classify complete pages as Card, Concept, Entity,
+Topic, or Project. Use the directory and project evidence rules in
+`references/short-evidence-test.md`. Keep existing paths and identities when
+reading or replaying historical operations.
+
 Within one reconciliation, reuse pure completion proofs only against current
 slice/batch/reduction/recovery bytes and membership; changed dependencies force
 fresh proof. Terminal native projections survive refresh only when their full

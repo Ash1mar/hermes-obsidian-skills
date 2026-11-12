@@ -22,16 +22,32 @@ Vault/
 ## Folder Roles
 
 - `10_Raw/`: raw source files and converted Markdown. Read-only after creation.
-- `20_Notes/`: human-oriented notes that are not reusable cards.
+- `20_Notes/`: source summaries and other source-oriented notes.
 - `30_Cards/`: concise reusable knowledge cards.
-- `40_Concepts/`: stable concept pages only.
-- `50_Projects/`: project packages and implementation plans.
+- `40_Concepts/`: stable definitions and identifiable objects; typed short pages use `概念/` and `实体/`.
+- `50_Projects/`: topical syntheses (`专题/`) and applications to actual projects (`项目/`). A topical synthesis does not claim project-specific applicability.
 - `90_Dataview/`: Dataview dashboards and view notes.
 - `_system/metadata/`: registries and governance metadata.
 - `_system/prompts/`: reusable prompts.
 - `_system/reports/`: ingest logs, source maps, reviews, batch plans.
 - `_system/reports/query-writeback-candidates/`: optional query-derived writeback queue. These files are triage records, not knowledge artifacts.
 - `_system/templates/`: Vault content templates, not runtime Skill files or executable scripts.
+
+## Typed Short-Path Pages
+
+| `page_type` | Responsibility | New page route |
+| --- | --- | --- |
+| `card` | Independently useful requirement, method, procedure, or decision | `30_Cards/<主题>/<标题>.md` |
+| `concept` | Definition, applicability, and boundary of a stable abstraction | `40_Concepts/概念/<标题>.md` |
+| `entity` | Identity, version, and scope of a specific standard, organization, system, or tool | `40_Concepts/实体/<标题>.md` |
+| `topic` | Organize and explain related knowledge for a reader question | `50_Projects/专题/<标题>.md` |
+| `project` | Decisions, deliverables, or use of knowledge in an identified actual project | `50_Projects/项目/<标题>.md` |
+
+The page type is separate from the stable registered identity. A topic does not
+require project evidence. A project requires a named project supported by the
+page's own cited source evidence. A writing fragment is not a page category.
+There is no required progression through these types. Existing registered paths
+and source summaries keep their current contracts; routing does not move them.
 
 ## Knowledge Card Template
 

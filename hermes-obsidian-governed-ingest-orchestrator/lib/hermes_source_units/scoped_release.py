@@ -16,7 +16,8 @@ def short_scope(service, runs):
             continue
         for row in short_evidence(service.build, run)['scope']['excluded']:
             identity, page_id = short_identity(service.build, row['short_id'], row['name'])
-            excluded[page_id] = {**row['disposition'], 'identity': identity, 'path': output_path(row['short_id']),
+            path = output_path(row['short_id'], row.get('card_path'), page_type=row.get('page_type'))
+            excluded[page_id] = {**row['disposition'], 'identity': identity, 'path': path,
                                  'original_scope': run['short_evidence']}
     if selected.intersection(excluded):
         fail('short Build selected an excluded page')

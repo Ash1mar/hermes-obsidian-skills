@@ -509,12 +509,29 @@ def system_prompt(phase,view,correction=None):
                    'topics separate when a missing condition, exception or table would otherwise hold unrelated work. '
                    'Choose a readable Chinese name. Supply a directory name only, not a path.'
                    if 'existing_theme_directories' in view else '')
+                + (' Classify each complete planned page by purpose: card answers a reusable question or rule; '
+                   'concept defines a stable abstraction with a clear boundary, even from one authoritative '
+                   'source; entity explains an identifiable standard, organization, system or tool in its scope '
+                   'and version; topic organizes and explains related knowledge; project describes application '
+                   'to a concrete actual project. A section title, word or writing fragment alone is not a page. '
+                   'Generic implementation guidance or an illustrative example is not an actual project. '
+                   'For project_basis supply the exact project name found in the source and one to three '
+                   'project_text_refs from this page’s assigned topics that establish the actual project; '
+                   'use null for every other type. Choose only types justified by the material.'
+                   if phase == 'short-coordinate' and view.get('typed_pages') else '')
                 + (' Express each required definition in its owning slot. For a required whole table, retain '
                    'the applicable headers, values, conditions, exceptions and footnotes that support the answer. '
                    'Cite the exact asset. If an essential part cannot be read, identify its exact material and '
                    'effect. A reference to an external document can be expressed within the supplied source scope.'
                    if view.get('card_content') and not any('locked_draft_sha256' in slot for slot in
                        view.get('structural_retry', {}).get('slots', {}).values()) else '')
+                + (' Use the assigned page_type to guide the local prose. For concept explain the definition '
+                   'and its boundary, for entity keep its version and identity clear, for topic explain '
+                   'relationships within the assigned scope, and for project distinguish project-specific '
+                   'facts from general rules. Express and cite any assigned project_basis_refs. Do not expand '
+                   'beyond this slot or make claims unsupported by its evidence.'
+                   if phase == 'short-write' and any('page_type' in slot for slot in view.get('pages', {}).values())
+                   else '')
                 + (' This is a single replacement slot. Its fragment_task question and deliverable_scope '
                    'define the entire assignment. Do not answer sibling sections or infer a larger page task. '
                    'Preserve each condition and exception in preserve_limitations with its full trigger and scope. '

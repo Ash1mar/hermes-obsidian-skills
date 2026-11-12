@@ -69,6 +69,19 @@ python3 "<skill-dir>/scripts/run_short_evidence_test.py" stop \
 范围未细分的上下文可重复。原子依赖超限时记录具体材料，其他片段仍可独立生成。
 组装要求全部预期片段验证成功。
 
+新原生操作固定 `short-page-layout/v2`。现有协调请求为每个完整计划页返回
+`page_type`：`card`、`concept`、`entity`、`topic` 或 `project`。沿用现有
+主题归属和写作分片；不从片段标题推断页面类型。已确认可单独交付的补充章节仍为 Card。
+路径由程序按类型生成，见受控摄取的 [Vault 目录约定](../../hermes-obsidian-controlled-ingest/references/vault-structure.md#typed-short-path-pages)。
+
+Project 的 `project_basis` 包含原文中的项目名称和该页所属主题内一至三个文本编号。
+程序检查名称出现在绑定原文，且证据随片段进入正文并被引用；未通过时只隔离该页和
+实际依赖项。Topic 不要求项目依据。项目语义和引用支持仍需从真实产物判断。
+类型进入 Build 版本、现有身份注册表和 Markdown 属性。旧 `kind: concept`
+是短路径身份命名的一部分，不表示页面都是 Concept。既有操作继续使用原来的路径、
+提示词与回执；新布局不迁移旧页，遇到已注册身份也不覆盖正文或自动改路径。
+发布仍使用现有的逐页资格、授权、证据和覆盖检查；Provider 读取发布清单中的实际路径。
+
 片段回执分别记录正文小节内的证据、上下文、未解决项和资产查验。经程序确认的纯导航
 包装块可以由其完整表格承担引用。引用诊断包含具体编号，原始响应保持可复核。
 来源 QA 原样留存，另按信息性、影响待定位和已定位材料故障记录写作与发布影响。

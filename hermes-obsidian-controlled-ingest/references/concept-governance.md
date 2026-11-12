@@ -20,9 +20,13 @@ All are true:
 1. Existing registry entries do not cover it.
 2. It is not a product, tool, model, field, step, module, or section title.
 3. It is not merely a case or implementation of an existing concept.
-4. It has clear cross-file reuse value.
+4. It has independent reuse value. In the typed short path, one authoritative source can suffice if it establishes the definition and scope; the legacy construction contract retains its cross-file criterion.
 5. Current evidence is sufficient.
 6. Its boundary with existing concepts is clear.
+
+In the typed short path, a stable specific standard, organization, tool, or
+system can justify an Entity. A reusable rule or method usually belongs in a
+Card; a section heading or writing fragment does not by itself justify a page.
 
 ## Candidate Decisions
 

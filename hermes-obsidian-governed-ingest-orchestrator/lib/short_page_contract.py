@@ -3,6 +3,7 @@ import re
 
 from hermes_source_units import ContractError
 from hermes_source_units.semantic_submission import closed
+from hermes_source_units.short_build import PAGE_TYPES, TYPED_LAYOUT
 from hermes_source_units.validation import _check_shape, fingerprint
 from short_evidence_pass import NAME, NOTE, PASS_LIMIT, REF, array, evidence, request, require, source_revision
 from short_evidence_reduce import SECTION, ISSUE, check_coordination as check_partition
@@ -19,6 +20,11 @@ PAGE = closed({
 COORDINATION = closed({'pages': array(PAGE), 'unresolved': array(ISSUE)})
 CARD_COORDINATION = closed({**COORDINATION['properties'], 'pages': array(closed({
     **PAGE['properties'], 'theme_directory': NAME,
+}))})
+TYPED_COORDINATION = closed({**COORDINATION['properties'], 'pages': array(closed({
+    **PAGE['properties'], 'theme_directory': NAME, 'page_type': {'enum': list(PAGE_TYPES)},
+    'project_basis': {'anyOf': [closed({'name': NAME, 'refs': {**array(REF), 'minItems': 1}}),
+                                {'type': 'null'}]},
 }))})
 SECTION_BODY = closed({
     'heading': NAME, 'content': {'type': 'string', 'minLength': 1}, 'expressed': array(REF),
@@ -252,7 +258,9 @@ def topic_items(topics):
 
 def coordination_request(sources, reduced, issue=None):
     topics = reduced['topics'] if issue is None else {key: reduced['topics'][key] for key in issue['topics']}
-    if issue is None and len(topics) < 2:
+    layout = reduced.get('card_layout')
+    typed = bool(layout and layout['contract'] == TYPED_LAYOUT)
+    if issue is None and (not topics or (len(topics) < 2 and not typed)):
         return None
     flagged, images, catalogue = {}, {}, {}
     for key, topic in topics.items():
@@ -275,6 +283,11 @@ def coordination_request(sources, reduced, issue=None):
             'material_characters': sum(len(item['text'] or '') for item in items.values()),
             'asset_bytes': sum(p['bytes'] for p in pictures),
         }
+        if typed:
+            catalogue[key]['project_text_refs'] = sorted({
+                link['item'] for link in topic['relations'] if link['role'] in ('evidence', 'definition')
+                and items[link['item']]['kind'] == 'block' and items[link['item']]['text']
+            })
     view = {'page_contract': CONTRACT, 'map_sha256': fingerprint(reduced),
             'revisions': {key: source_revision(src) for key, src in sources.items()},
             'topics': catalogue, 'flagged_evidence': flagged}
@@ -282,11 +295,13 @@ def coordination_request(sources, reduced, issue=None):
         view['issue'] = issue
     else:
         view['unresolved_materials'] = reduced['unresolved']
-    layout = reduced.get('card_layout')
     if layout:
         view['existing_theme_directories'] = layout['themes']
-    return request('short-coordinate', view, CARD_COORDINATION if layout else COORDINATION,
-                   720 + (190 if layout else 166) * len(topics), PASS_LIMIT, images.values())
+    if typed:
+        view['typed_pages'] = True
+    schema = TYPED_COORDINATION if typed else CARD_COORDINATION if layout else COORDINATION
+    return request('short-coordinate', view, schema,
+                   720 + (215 if typed else 190 if layout else 166) * len(topics), PASS_LIMIT, images.values())
 
 
 def check_coordination(view, answer):
@@ -298,6 +313,9 @@ def check_coordination(view, answer):
                 'grouping basis must match the page membership')
         if 'existing_theme_directories' in view:
             require(page['theme_directory'].strip(), 'a shared theme directory is required')
+        if view.get('typed_pages'):
+            require(page['page_type'] == 'project' or page['project_basis'] is None,
+                    'only a Project can declare project basis')
 
 
 def coordination_issues(answer, topics):

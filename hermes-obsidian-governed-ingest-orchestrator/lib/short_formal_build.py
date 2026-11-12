@@ -14,6 +14,7 @@ from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from short_evidence_pass import mapping_groups, require, seed_requests
 from short_fragment_disposition import delivery_partition
 from short_page_contract import auditable_qa, check_fragment, restore_locked_draft, retry_slots
+from short_page_fragments import page_metadata
 
 
 def native_fragment(root, receipt, attempts, conn, runner):
@@ -152,7 +153,10 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
         for page_id in chosen:
             page = plan['assembled_sections'][page_id]
             content = page['content']
-            cited = sorted(set(re.findall(r'\[(S[0-9]+-[AB][0-9]+)\]', content)))
+            citation_text = ([section['content'] for key in page['fragment_receipts']
+                              for section in by_hash[key]['answer']['sections']]
+                             if 'page_type' in page else [content])
+            cited = sorted({ref for text in citation_text for ref in re.findall(r'\[(S[0-9]+-[AB][0-9]+)\]', text)})
             support = [refs[ref] for ref in cited]
             proof, qa, checks = [], {}, []
             card_path = page.get('card_path')
@@ -195,6 +199,7 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
                 and governance.get(r['unit_ref']['resource_id'], {}).get('eligible') for r in support)
             bodies[page_id] = content.encode('utf-8')
             candidates.append({'short_id': page_id, 'name': page['name'], 'authored_sha256': _sha(bodies[page_id]),
+                               **page_metadata(page),
                                'support_refs': support, 'citation_bindings': {key: refs[key] for key in cited},
                                'native_fragments': proof,
                                'same_page_coverage': [coverage[key] for key in page.get('coverage_receipts', [])],
@@ -207,10 +212,14 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
             if page.get('derived_from'):
                 candidates[-1]['independent_section'] = page['derived_from']
     exclusions = {**partition['excluded'], **proof_holds}
-    excluded = [{'short_id': key, 'name': plan['expected_pages'][key]['name'],
-                 'disposition': exclusions.get(key, {'category': 'delivery_conditions',
-                     'reason': 'outside-exact-short-build-selection', 'reopen_condition': 'authorize the exact page'})}
-                for key in sorted(plan['expected_pages'].keys() - bodies.keys())]
+    excluded = []
+    for key in sorted(plan['expected_pages'].keys() - bodies.keys()):
+        spec = plan['expected_pages'][key]
+        excluded.append({'short_id': key, 'name': spec['name'],
+                         'disposition': exclusions.get(key, {'category': 'delivery_conditions',
+                             'reason': 'outside-exact-short-build-selection', 'reopen_condition': 'authorize the exact page'})})
+        if 'page_type' in spec and 'card_path' in spec:
+            excluded[-1].update(page_type=spec['page_type'], card_path=spec['card_path'])
     return service, {
         'origin': operation['origin'], 'actor': authorization['actor'], 'authorization': authorization,
         'operation_sha256': runner.sha(root / 'operation.json'), 'coverage_complete': False,
@@ -302,6 +311,7 @@ def delivery(vault, run_id, authorization, *, replay=False):
     for row, page in zip(proof['scope']['pages'], run['page_revisions'], strict=True):
         require(identity(service.build, row['short_id'], row['name'])[1] == page['page_id'], 'formal result page changed')
         candidates.append({'name': row['name'], 'short_id': row['short_id'], 'page_id': page['page_id'],
+                           **page_metadata(row),
                            'path': page['path'], 'revision_id': page['revision_id'], 'qa_status': page['qa_status'],
                            'qa_issues': row['qa_issues'], 'build_acceptance': page['review']['acceptance'],
                            'qa_disposition': next((q for q in (advisory or {}).get('pages', [])
@@ -316,7 +326,8 @@ def delivery(vault, run_id, authorization, *, replay=False):
     if release and 'material_coverage' in proof['scope']:
         from short_cards import write_navigation
         directories = {str(PurePosixPath(row['path']).parent) for row in candidates if row['published']}
-        result['card_navigation'] = write_navigation(service, release, directories)
+        result['card_navigation'] = write_navigation(service, release, directories,
+                                                     typed=any('page_type' in row for row in candidates))
     return result
 
 

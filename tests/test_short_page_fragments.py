@@ -92,6 +92,42 @@ def test_card_path_is_readable_safe_and_stable_and_renders_toc():
     assert '#### 额外说明' in text and '# literal' in text and '[S1-B1]' in text
 
 
+def test_typed_plan_holds_only_the_project_without_source_basis():
+    from hermes_source_units.short_build import TYPED_LAYOUT
+    from short_page_contract import coordination_request
+
+    items = {'S1-B1': item('block', '北岸工程须提交设计文件。', 'Project'),
+             'S1-B2': item('block', '设计输出应保留版本信息。', 'Topic')}
+    sources = {'S1': source(items)}
+    reduced = {**mapped(items, {'T1': [link('S1-B1', 'evidence')], 'T2': [link('S1-B2', 'evidence')]}),
+               'unresolved': [], 'writing_contract': WRITE_CONTRACT,
+               'card_layout': {'contract': TYPED_LAYOUT, 'themes': [], 'directories': [],
+                               'occupied': [], 'existing': {}}}
+    coordinate = coordination_request(sources, reduced)
+    assert coordinate['view']['topics']['T1']['project_text_refs'] == ['S1-B1']
+    topic = {**page(['T2']), 'name': '设计输出', 'theme_directory': '设计', 'page_type': 'topic',
+             'project_basis': None}
+    project = {**page(['T1']), 'name': '北岸工程交付', 'theme_directory': '设计', 'page_type': 'project',
+               'project_basis': {'name': '北岸工程', 'refs': ['S1-B2']}}
+    check_coordination(coordinate['view'], {'pages': [topic, project], 'unresolved': []})
+    requests, held, expected = pack(sources, reduced, [topic, project], 40_000)
+    row, = requests
+    assert len(held) == 1 and held[0]['reason'] == 'project_basis_not_bound_to_mapped_source'
+    answer = {'sections': [{'heading': '版本要求', 'content': '应保留版本信息 [S1-B2]'}],
+              'context': [], 'unresolved': [], 'inspected_assets': []}
+    delivered, = build(expected, [check_fragment(row, 'p1', answer)]).values()
+    assert delivered['card_path'] == '50_Projects/专题/设计输出.md'
+    assert delivered['page_type'] == 'topic' and 'project_basis' not in delivered
+
+    project['project_basis']['refs'] = ['S1-B1']
+    requests, held, expected = pack(sources, reduced, [topic, project], 40_000)
+    assert not held
+    view = next(view for row in requests for view in row['view']['pages'].values()
+                if view['page_type'] == 'project')
+    assert view['project_basis_refs'] == ['S1-B1']
+    assert view['obligations']['S1-B1']['express']
+
+
 def test_primary_context_asset_keeps_whole_inspection_and_expression():
     items = {'S1-A1': item('asset', '| controlled form |', 'Records')}
     sources = {'S1': source(items)}

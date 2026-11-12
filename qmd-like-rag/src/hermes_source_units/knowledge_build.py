@@ -2559,6 +2559,10 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                        "status": "active", "current_path": page["path"],
                        "current_revision_id": page["revision_id"],
                        "created_by_run": subject["created_by_run"] if subject else run_id}
+            if "page_type" in page:
+                desired["page_type"] = page["page_type"]
+            if subject and subject.get("page_type") != desired.get("page_type"):
+                _fail("REVISION_CONFLICT", "changing a registered page type requires an explicit typed revision")
             partial = subject is not None and subject == desired
             if page["parent_revision_id"] is None:
                 if review.get("parent_authored_sha256") is not None:

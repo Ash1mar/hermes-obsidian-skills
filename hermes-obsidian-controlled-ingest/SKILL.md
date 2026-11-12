@@ -114,6 +114,9 @@ Before writing:
 6. Preserve the source path in every derived artifact.
 
 See `references/vault-structure.md` for the validated vault layout and artifact templates.
+It also defines the typed short-path routes. In that contract, the Concept and
+Entity shelves share `40_Concepts/`, and topical syntheses and real project
+applications use distinct subdirectories under `50_Projects/`.
 
 ## Document Governance Manager
 

@@ -467,8 +467,8 @@ This vault stores source materials and generated Markdown artifacts for governed
 10_Raw/        Read-only source materials
 20_Notes/      Human or AI structured notes
 30_Cards/      Reusable knowledge cards
-40_Concepts/   Stable concept pages
-50_Projects/   Project-oriented outputs
+40_Concepts/   Stable concepts and identifiable entities
+50_Projects/   Topical syntheses and applications to actual projects
 90_Dataview/   Dataview dashboards and indexes
 _system/       Rules, prompts, metadata, templates, reports, skills
 ```
@@ -564,8 +564,8 @@ Vault 路径：
 2. 只有我明确要求写入知识库或生成具体 vault 产物时，才允许写入。
 3. 原始材料必须保留来源路径。
 4. 知识卡片写入 30_Cards。
-5. 稳定概念页写入 40_Concepts。
-6. 项目材料写入 50_Projects。
+5. 短路径的稳定概念和实体分别写入 40_Concepts/概念/、40_Concepts/实体/。
+6. 短路径的专题和真实项目应用分别写入 50_Projects/专题/、50_Projects/项目/；真实项目必须有可引用的项目依据。
 7. 每次写入后，在 _system/reports 写 ingest log。
 8. 知识构建由当前 controlled-ingest Skill 执行：识别候选、核对身份、映射证据，再决定产物；不需要预填业务系统清单。
 9. 知识正文与处理日志分离；未知对象或冲突可暂缓，不按文件名猜测事实，不按接收先后判定业务版本。
