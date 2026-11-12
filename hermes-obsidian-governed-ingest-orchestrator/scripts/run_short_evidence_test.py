@@ -728,6 +728,8 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
                 'zero-call writing replay requires the settled original writing checkpoint')
         holds = {rid: hold for rid, hold in original['execution_holds'].items()
                  if not previous.get(rid) or _load_json(root / previous[rid][0]['job'])['request']['phase'] != 'short-write'}
+    if node == 'coordination' and operation.get('card_layout', {}).get('content_outcome_recovery'):
+        content_recovery = True
     if inherited:
         predecessor = root / 'reentries' / inherited['entry']
         prior_result = _load_json(predecessor / 'result.json')

@@ -198,7 +198,7 @@ def main():
     parser.add_argument('--provider-state', type=Path, required=True)
     parser.add_argument('--resume-delivery', action='store_true')
     parser.add_argument('--content-isolation', type=Path)
-    parser.add_argument('--from-node', choices=('mapping', 'writing', 'formal-build'))
+    parser.add_argument('--from-node', choices=('mapping', 'coordination', 'writing', 'formal-build'))
     parser.add_argument('--reentry-id')
     parser.add_argument('--prior-entry')
     parser.add_argument('--fragment-repair', type=Path)
@@ -271,9 +271,13 @@ def main():
         elif args.from_node:
             entry_pattern = r'[a-z0-9][a-z0-9-]{0,31}'
             writing = args.from_node == 'writing'
+            coordination = args.from_node == 'coordination'
+            recovery_args = (args.fragment_repair, args.split_atomic_fragment, args.replay_writing,
+                             args.recover_held_content, args.mapping_recovery, args.source_registry_revision)
             require(args.reentry_id and re.fullmatch(entry_pattern, args.reentry_id)
                     and not args.resume_delivery and not args.content_isolation
-                    and (bool(args.fragment_repair or args.split_atomic_fragment or args.replay_writing or args.recover_held_content) and not args.mapping_recovery if writing else
+                    and (not any(recovery_args) if coordination else
+                         bool(args.fragment_repair or args.split_atomic_fragment or args.replay_writing or args.recover_held_content) and not args.mapping_recovery if writing else
                          bool(args.mapping_recovery) and not args.fragment_repair and not args.split_atomic_fragment)
                     and (not args.prior_entry or (writing and re.fullmatch(entry_pattern, args.prior_entry))),
                     'supplement requires a stable reentry and its node-specific manifest')
@@ -285,10 +289,15 @@ def main():
             prior_output = short / 'reentries' / args.prior_entry if args.prior_entry else root
             service = FileVaultFinalizeService(vault)
             original = None
-            if args.replay_writing:
+            if args.replay_writing or coordination:
                 require(not (root / 'final-acceptance.json').exists()
                         and not service.status()['current_release_id'] and 'test' in request['security_domain'].split('-'),
-                        'writing replay must preserve the unpublished isolated Vault')
+                        'initial recovery requires the unpublished isolated Vault')
+                if coordination:
+                    interrupted = _load_json(short / 'result.json')
+                    require(interrupted['last_stage'] == 'coordination_held'
+                            and not interrupted['native_active_or_ready'],
+                            'coordination recovery requires a stopped initial coordination hold')
                 base_release = None
             else:
                 original = _load_json(prior_output / 'final-acceptance.json')
@@ -419,7 +428,7 @@ def main():
         final.update(source_handoff=handoff, short_result=result, delivery=delivery, wall_seconds=time.time() - start,
                      source_qualification=qualification,
                      whole_run_continuous_automation=not (args.resume_delivery or args.replay_writing)
-                     and args.from_node != 'formal-build')
+                     and args.from_node not in ('coordination', 'formal-build'))
         if args.from_node == 'formal-build':
             final.update(replayed_from='formal-build', supplement_continuous_automation=True)
         runner.save(output / 'final-acceptance.json', final)

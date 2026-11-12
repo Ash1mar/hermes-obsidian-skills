@@ -188,6 +188,26 @@ def test_shared_synthesis_reuses_evidence_without_owning_the_entries(tmp_path):
     assert '[S1-B3]' in topic['content'] and '[S1-B4]' not in topic['content']
 
 
+def test_oversized_coordination_keeps_exact_primary_topic_partition(tmp_path):
+    from hermes_source_units.short_build import TYPED_LAYOUT
+    from prepare_short_evidence_test import advance_fragments
+    from short_knowledge_plan import CONTRACT
+    from short_page_contract import coordination_request
+
+    items = {f'S1-B{i}': item('block', f'Evidence {i}.', 'Section') for i in range(1, 37)}
+    sources = {'S1': source(items)}
+    reduced = {**mapped(items, {f'T{i}': [link(ref, 'evidence')]
+                               for i, ref in enumerate(items, 1)}), 'unresolved': [],
+               'card_layout': {'contract': TYPED_LAYOUT, 'knowledge_plan': CONTRACT, 'themes': []}}
+    assert not coordination_request(sources, reduced)['budget']['fits']
+    plan = advance_fragments(sources, reduced, tmp_path, 40_000, {}, [])
+    assert plan['stage'] == 'coordination'
+    rows = plan['requests']
+    assert len(rows) > 1 and all(row['budget']['fits'] for row in rows)
+    members = [key for row in rows for key in row['view']['topics']]
+    assert len(members) == len(set(members)) and set(members) == set(reduced['topics'])
+
+
 def test_knowledge_plan_records_existing_match_without_using_title_as_identity():
     from hermes_source_units.short_build import TYPED_LAYOUT
     from short_knowledge_plan import CONTRACT

@@ -263,8 +263,9 @@ def topic_items(topics):
     return result
 
 
-def coordination_request(sources, reduced, issue=None):
-    topics = reduced['topics'] if issue is None else {key: reduced['topics'][key] for key in issue['topics']}
+def coordination_request(sources, reduced, issue=None, *, members=None):
+    keys = issue['topics'] if issue is not None else members
+    topics = reduced['topics'] if keys is None else {key: reduced['topics'][key] for key in keys}
     layout = reduced.get('card_layout')
     typed = bool(layout and layout['contract'] == TYPED_LAYOUT)
     planning = typed and knowledge_plan(layout)
@@ -310,6 +311,8 @@ def coordination_request(sources, reduced, issue=None):
         view['issue'] = issue
     else:
         view['unresolved_materials'] = reduced['unresolved']
+    if members is not None:
+        view['coordination_batch'] = True
     if layout:
         view['existing_theme_directories'] = layout['themes']
     if typed:
@@ -322,6 +325,25 @@ def coordination_request(sources, reduced, issue=None):
         schema = SYNTHESIS_COORDINATION
     return request('short-coordinate', view, schema,
                    720 + (215 if typed else 190 if layout else 166) * len(topics), PASS_LIMIT, images.values())
+
+
+def coordination_batches(sources, reduced, full):
+    """Split an unsent, oversized plan into complete bounded topic scopes."""
+    if full['budget']['fits'] or not knowledge_plan(reduced.get('card_layout')):
+        return [full]
+    by_source = {}
+    for key, topic in reduced['topics'].items():
+        by_source.setdefault(topic['source'], []).append(key)
+
+    def split(keys, row):
+        if row['budget']['fits'] or len(keys) == 1:
+            return [row]
+        middle = len(keys) // 2
+        return [part for group in (keys[:middle], keys[middle:])
+                for part in split(group, coordination_request(sources, reduced, members=group))]
+
+    return [part for keys in by_source.values()
+            for part in split(keys, coordination_request(sources, reduced, members=keys))]
 
 
 def check_coordination(view, answer):

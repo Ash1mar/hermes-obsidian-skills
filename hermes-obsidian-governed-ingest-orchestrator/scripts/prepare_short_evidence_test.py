@@ -230,13 +230,23 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                   'grouping_basis': 'single_topic'} for tid, topic in topics.items()]
     else:
         rid = coordination['id']
-        if not coordination['budget']['fits'] or rid in native_holds:
+        batches = pages_v2.coordination_batches(sources, reduced, coordination)
+        if batches == [coordination] and (not coordination['budget']['fits'] or rid in native_holds):
             return {**common, 'stage': 'coordination_held', 'held': [coordination]}
-        verified, waiting = collect([coordination], saved)
+        eligible = [row for row in batches if row['budget']['fits'] and row['id'] not in native_holds]
+        verified, waiting = collect(eligible, saved)
         if waiting:
             return {**common, 'stage': 'coordination', 'requests': waiting}
-        answer = checked_answer(coordination, verified[rid])
-        syntheses = answer.get('syntheses', [])
+        answer = {'pages': [], 'unresolved': []}
+        for row in batches:
+            if row['id'] in verified:
+                part = checked_answer(row, verified[row['id']])
+                answer['pages'].extend(part['pages'])
+                answer['unresolved'].extend(part['unresolved'])
+                syntheses.extend(part.get('syntheses', []))
+            else:
+                issues.append({'topics': list(row['view']['topics']), 'request': row['id'], 'budget': row['budget'],
+                               'reason': 'bounded coordination unavailable'})
         review = pages_v2.coordination_issues(answer, topics)
         reviewed = {tid for issue in review for tid in issue['topics']}
         specs = [page for page in answer['pages'] if not reviewed.intersection(page['topics'])]
@@ -252,6 +262,9 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 issues.extend(outcome['unresolved'])
             else:
                 issues.append({**issue, 'request': row['id'], 'budget': row['budget']})
+        if batches != [coordination]:
+            reduced = {**reduced, 'bounded_coordination': True}
+            common['reduced'] = reduced
     if syntheses:
         from short_knowledge_plan import syntheses as plan_syntheses
         shared, gaps = plan_syntheses(reduced, syntheses, specs, namespace=page_namespace,

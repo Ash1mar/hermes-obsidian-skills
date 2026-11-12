@@ -55,7 +55,8 @@ def connected_groups(source, relations, *, join_adjacent=True):
 def make_fragment(sources, reduced, page, position, topics, primary):
     # An anchored exception or condition from a sibling topic follows its target.
     topics = {key: {**topic, 'relations': list(topic['relations'])} for key, topic in topics.items()}
-    for tid in page['topics']:
+    related = reduced['topics'] if reduced.get('bounded_coordination') else page['topics']
+    for tid in related:
         original = reduced['topics'][tid]
         for link in original['relations']:
             if link['role'] not in SHARED or not primary.intersection(link['applies_to']):

@@ -85,7 +85,7 @@ def final_plan(root, operation, authorization, runner):
     result_path = directory / 'result.json'
     control, result = _load_json(control_path), _load_json(result_path)
     require((initial or (control['operation_sha256'] == runner.sha(root / 'operation.json')
-            and (control['from_node'] == 'writing' or control.get('mapping_recovery'))))
+            and (control['from_node'] in ('coordination', 'writing') or control.get('mapping_recovery'))))
             and control['page_contract'] == runner.FRAGMENT_CONTRACT
             and result['last_stage'] == 'offline_build' and not result['native_active_or_ready']
             and result['origin'] == operation['origin'], 'a settled writing checkpoint is required')
