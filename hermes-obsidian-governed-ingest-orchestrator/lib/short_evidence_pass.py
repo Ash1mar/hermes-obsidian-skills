@@ -459,4 +459,8 @@ def checked_answer(row, saved):
                 'stale or changed versioned mapping receipt')
         return saved['normalized']
     require(receipt(row, saved['answer']) == saved, 'stale or changed experimental receipt')
-    return saved['answer']['results']['r']
+    response = saved['answer']['results']['r']
+    if row['phase'] == 'short-coordinate' and row['view'].get('scope_contract'):
+        from short_page_contract import scoped_coordination_result
+        return scoped_coordination_result(row['view'], response)
+    return response

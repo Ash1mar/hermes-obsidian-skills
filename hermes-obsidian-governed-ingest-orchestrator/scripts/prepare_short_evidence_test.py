@@ -225,6 +225,7 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
     issues = []
     syntheses = []
     navigation = []
+    layout_diagnostics = []
     if coordination is None:
         specs = [{'name': topic['name'], 'scope': topic['scope'], 'topics': [tid], 'sections': [],
                   'reader_question': topic['scope'], 'grouping_reason': 'One mapped topic.',
@@ -246,6 +247,8 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 answer['unresolved'].extend(part['unresolved'])
                 syntheses.extend(part.get('syntheses', []))
                 navigation.extend(part.get('navigation_only', []))
+                issues.extend(part.get('navigation_holds', []))
+                layout_diagnostics.extend(part.get('discarded_section_layouts', []))
             else:
                 issues.append({'topics': list(row['view']['topics']), 'request': row['id'], 'budget': row['budget'],
                                'reason': 'bounded coordination unavailable'})
@@ -263,6 +266,8 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 specs.extend(outcome['pages'])
                 issues.extend(outcome['unresolved'])
                 navigation.extend(outcome.get('navigation_only', []))
+                issues.extend(outcome.get('navigation_holds', []))
+                layout_diagnostics.extend(outcome.get('discarded_section_layouts', []))
             else:
                 issues.append({**issue, 'request': row['id'], 'budget': row['budget']})
         if batches != [coordination]:
@@ -270,6 +275,8 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
             common['reduced'] = reduced
         if navigation:
             common['navigation_only'] = navigation
+        if layout_diagnostics:
+            common['discarded_section_layouts'] = layout_diagnostics
     if syntheses:
         from short_knowledge_plan import syntheses as plan_syntheses
         shared, gaps = plan_syntheses(reduced, syntheses, specs, namespace=page_namespace,

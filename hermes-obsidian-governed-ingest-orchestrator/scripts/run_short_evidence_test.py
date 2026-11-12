@@ -301,6 +301,8 @@ def replay_node_output(root, row, saved, own, *, mapping_overlay=None):
     kb, kc, _ = runtime()
     sources = []
     remaining = row.get('missing_slots', ['r'])
+    if row['phase'] == 'short-coordinate' and row['view'].get('scope_contract'):
+        saved = reversed(saved)
     for ref in saved:
         own_grant = own()
         old_job = _vault_path(root, ref['job'])

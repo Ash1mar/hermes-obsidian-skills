@@ -208,6 +208,22 @@ def test_oversized_coordination_keeps_exact_primary_topic_partition(tmp_path):
     assert len(members) == len(set(members)) and set(members) == set(reduced['topics'])
 
 
+def test_coordination_keeps_primary_page_when_optional_dispositions_fail():
+    from short_knowledge_plan import SCOPE_CONTRACT
+    from short_page_contract import scoped_coordination_result
+
+    ownership = {'only_navigation': False, 'primary_refs': ['S1-B1'], 'navigation_refs': {}}
+    view = {'scope_contract': SCOPE_CONTRACT, 'topics': {key: {'evidence_ownership': ownership}
+                                                       for key in ('T1', 'T2')}}
+    draft = page(['T1'], [{'name': 'First', 'topics': ['T1']}, {'name': 'Second', 'topics': ['T1']}])
+    response = {'pages': [draft], 'unresolved': [], 'navigation_only': [{'topics': ['T2'], 'reason': 'Only index'}]}
+    result = scoped_coordination_result(view, response)
+    assert result['pages'] == [{**draft, 'sections': []}]
+    assert not result['navigation_only'] and result['navigation_holds'][0]['topics'] == ['T2']
+    assert result['discarded_section_layouts'][0]['topics'] == ['T1']
+    assert len(response['pages'][0]['sections']) == 2
+
+
 def test_page_scope_survives_context_wrapper_and_keeps_anchored_exception():
     from hermes_source_units.short_build import TYPED_LAYOUT
     from short_knowledge_plan import CONTRACT, SCOPE_CONTRACT

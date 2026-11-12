@@ -6,7 +6,7 @@ from hermes_source_units.semantic_submission import closed
 from hermes_source_units.short_build import PAGE_TYPES, TYPED_LAYOUT
 from hermes_source_units.validation import _check_shape, fingerprint
 from short_evidence_pass import NAME, NOTE, PASS_LIMIT, REF, array, evidence, request, require, source_revision
-from short_evidence_reduce import SECTION, ISSUE, check_coordination as check_partition
+from short_evidence_reduce import SECTION, ISSUE, check_coordination as check_partition, check_sections
 from short_knowledge_plan import SCOPE_CONTRACT, anchor_options, enabled as knowledge_plan, matching_pages
 
 CONTRACT = 'short-evidence-pages/v2'
@@ -378,20 +378,44 @@ def coordination_batches(sources, reduced, full):
             for part in split(keys, coordination_request(sources, reduced, members=keys))]
 
 
-def check_coordination(view, answer):
+def scoped_coordination_result(view, answer):
+    """Defer unsupported omissions and discard invalid optional section layouts."""
+    if view.get('scope_contract') != SCOPE_CONTRACT:
+        return answer
     navigation = answer.get('navigation_only', [])
-    check_partition(view, {**answer, 'unresolved': [*answer['unresolved'], *navigation]})
-    if view.get('scope_contract') == SCOPE_CONTRACT:
-        ownership = {key: row['evidence_ownership'] for key, row in view['topics'].items()}
-        covered = {ref for page in answer['pages'] for key in page['topics']
-                   for ref in (*ownership[key]['primary_refs'],
-                               *(asset for refs in ownership[key]['navigation_refs'].values() for asset in refs))}
-        for row in navigation:
-            require(all(ownership[key]['only_navigation'] and all(
+    pages, discarded = [], []
+    for page in answer['pages']:
+        if page['sections']:
+            try:
+                check_sections(page['topics'], page['sections'])
+            except ValueError:
+                discarded.append({'topics': page['topics'], 'reason': 'invalid optional section partition'})
+                page = {**page, 'sections': []}
+        pages.append(page)
+    check_partition(view, {'pages': pages, 'unresolved': [*answer['unresolved'], *navigation]})
+    ownership = {key: row['evidence_ownership'] for key, row in view['topics'].items()}
+    covered = {ref for page in pages for key in page['topics']
+               for ref in (*ownership[key]['primary_refs'],
+                           *(asset for refs in ownership[key]['navigation_refs'].values() for asset in refs))}
+    eligible, held = [], []
+    for row in navigation:
+        if all(ownership[key]['only_navigation'] and all(
                 set(refs) <= covered for refs in ownership[key]['navigation_refs'].values())
-                        for key in row['topics']), 'navigation-only topics require owned underlying material')
-        if view.get('allow_syntheses') and not answer['syntheses']:
-            require(answer['no_synthesis_reason'].strip(), 'record a brief reason for omitting a topic')
+               for key in row['topics']):
+            eligible.append(row)
+        else:
+            held.append({**row, 'reason': 'navigation-only disposition lacks owned underlying material',
+                         'model_reason': row['reason']})
+    return {**answer, 'pages': pages, 'navigation_only': eligible, 'navigation_holds': held,
+            'discarded_section_layouts': discarded}
+
+
+def check_coordination(view, answer):
+    answer = scoped_coordination_result(view, answer)
+    check_partition(view, {**answer, 'unresolved': [*answer['unresolved'], *answer.get('navigation_only', []),
+                                                    *answer.get('navigation_holds', [])]})
+    if view.get('scope_contract') == SCOPE_CONTRACT and view.get('allow_syntheses') and not answer['syntheses']:
+        require(answer['no_synthesis_reason'].strip(), 'record a brief reason for omitting a topic')
     for page in answer['pages']:
         require(page['reader_question'].strip() and page['grouping_reason'].strip(),
                 'reader question and grouping reason are required')
