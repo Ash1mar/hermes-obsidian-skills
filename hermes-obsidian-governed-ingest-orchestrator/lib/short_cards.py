@@ -184,8 +184,9 @@ def write_navigation(service, release, directories, *, typed=False, guarded=Fals
     with _exclusive_lock(lock):
         require(service.status()['current_release_id'] == release['release_id'], 'release changed before navigation')
         root = service.vault / '30_Cards' if guarded else _vault_path(service.vault, '30_Cards')
+        card_indexes = () if guarded and root.is_symlink() else root.glob(f'*/{INDEX}')
         directories = set(directories) | {p.parent.relative_to(service.vault).as_posix()
-                                         for p in root.glob(f'*/{INDEX}') if is_index(p)}
+                                         for p in card_indexes if is_index(p)}
         if typed:
             for prefix in PAGE_DIRECTORIES.values():
                 if len(prefix) == 2:

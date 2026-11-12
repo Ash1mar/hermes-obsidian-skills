@@ -36,7 +36,8 @@ def test_optional_index_links_and_manual_edits_do_not_block_release(vault, tmp_p
         return {'short_id': key, 'name': name, 'page_type': kind, 'card_path': path,
                 'navigation_theme': '设计交付', 'authored_sha256': _sha(body), 'support_refs': [ref],
                 'citation_bindings': {'S1-B1': ref}, 'native_fragments': [{'receipt_sha256': fingerprint(key)}],
-                'qa_issues': [], 'qa_status': 'usable', 'publication_authorized': True, **extra}
+                'same_page_coverage': [], 'qa_issues': [], 'qa_status': 'usable', 'publication_authorized': True,
+                **extra}
 
     paths = {topic: '50_Projects/专题/交付专题.md', entry: '30_Cards/设计交付/版本核对.md',
              project: '50_Projects/项目/工程交付.md'}
