@@ -304,7 +304,7 @@ def main():
                 base_release = original['delivery']['release_id']
                 require(service.status()['current_release_id'] == base_release and service.validate(base_release)['ok'],
                         'prior release must remain the exact supplement base')
-            recovery = _load_json(args.mapping_recovery) if not writing else None
+            recovery = _load_json(args.mapping_recovery) if args.mapping_recovery else None
             if recovery:
                 require(recovery['prior_build'] == original['delivery']['run_id'], 'supplement prior Build changed')
             print(f"Recovering the affected {args.from_node} work", flush=True)
