@@ -4,6 +4,13 @@ const labels = {
   partial: "部分完成", interrupted: "执行已中断",
 };
 const pages = { workflow: "工作流", vaults: "Vault", devtools: "DevTools" };
+const gatewayLabels = {
+  checking: ["检查中", "pending"], starting: ["正在启动", "running"], ready: ["已就绪", "completed"],
+  degraded: ["已就绪（部分平台异常）", "partial"], stopped: ["已停止", "failed"],
+  failed: ["启动或运行失败", "failed"], draining: ["正在排空", "partial"],
+  dispatch_disabled: ["派发已关闭", "partial"], unverified: ["状态待确认", "partial"],
+  disabled: ["历史查看模式", "pending"],
+};
 const stageNames = ["创建 Vault", "来源准备", "精确计划与交接", "主题提取", "证据映射",
   "页面协调", "分段写作", "正式构建", "发布与索引", "最终验收"];
 let runs = [];
@@ -11,6 +18,7 @@ let current;
 let selected = localStorage.getItem("hermes-console-run");
 let attempt;
 let writable = false;
+let gateway = { state: "checking", ready: false };
 let posting = false;
 let refreshing = false;
 const rendered = new Map();
@@ -73,7 +81,7 @@ function route() {
     if (link.dataset.page === view) link.setAttribute("aria-current", "page");
     else link.removeAttribute("aria-current");
   }
-  if (view === "devtools") refreshLog().catch(error => message(error.message, true));
+  if (view === "devtools") refreshLogs().catch(error => message(error.message, true));
 }
 
 function selectRun(id) {
@@ -97,10 +105,12 @@ function rowButton(text, callback, style = "secondary") {
 function render() {
   const busy = runs.some(run => run.state === "running");
   get("connection").textContent = writable ? "已连接本机" : "历史查看模式";
-  get("start").disabled = !writable || busy || posting;
+  get("start").disabled = !writable || !gateway.ready || busy || posting;
   get("form-hint").textContent = !writable ? "在 Hermes 所在的 WSL 中启动控制台后即可提交。"
     : busy ? "已有控制台任务正在执行。"
+    : !gateway.ready ? "等待 Hermes Gateway 派发就绪，可在 DevTools 查看启动状态。"
     : "新建独立测试 Vault，合格页面将发布并同步索引。查询保持关闭。";
+  renderWhenChanged("gateway", gateway, renderGateway);
   get("runs-count").textContent = runs.length;
   renderWhenChanged("runs", [runs, selected], () => {
     get("runs").replaceChildren(...(runs.length ? runs.map(run => {
@@ -115,7 +125,7 @@ function render() {
   });
   get("selected-label").textContent = current ? current.vault_name : "选择一次运行查看节点状态";
   get("run-status").replaceChildren(...(current ? [badge(current.state)] : []));
-  renderWhenChanged("timeline", [selected, current?.nodes, current?.historical, busy, posting], renderTimeline);
+  renderWhenChanged("timeline", [selected, current?.nodes, current?.historical, busy, posting, gateway.ready], renderTimeline);
   const summary = current ? [
     ["来源", `${current.source_count} 份 PDF`], ["源工作流暂停", current.pause],
     ["源工作流修订", current.source_revision], ["当前发布", current.release_id || "尚无"],
@@ -132,6 +142,21 @@ function render() {
   ] : [["运行", "未选择"]]);
   get("dev-hint").textContent = current?.historical ? "从已保存的运行证据读取。"
     : "与日志同一轮次的数据来自工作流账本及短路径回执。";
+}
+
+function renderGateway() {
+  const [label, tone] = gatewayLabels[gateway.state] || gatewayLabels.unverified;
+  const header = get("gateway-top");
+  header.textContent = `Gateway · ${label}`;
+  header.className = `environment gateway-indicator badge ${tone}`;
+  const status = get("gateway-badge");
+  status.textContent = label;
+  status.className = `badge ${tone}`;
+  facts(get("gateway-facts"), [
+    ["进程 PID", gateway.pid],
+    ["启动方式", { started: "本次控制台启动", reused: "复用已有进程" }[gateway.ownership]],
+    ["状态", gateway.detail],
+  ]);
 }
 
 function renderTimeline() {
@@ -168,7 +193,8 @@ function renderTimeline() {
           row.append(input);
         }
         const button = rowButton(action.label, () => reenter(action, input?.value), "secondary");
-        button.disabled = !writable || posting || runs.some(run => run.state === "running");
+        button.disabled = !writable || posting || runs.some(run => run.state === "running")
+          || (action.gateway_required !== false && !gateway.ready);
         row.append(button);
         detail.append(row);
       }
@@ -234,12 +260,26 @@ async function refreshLog() {
   const entry = attempt;
   const data = await api(`/api/runs/${id}/log?attempt=${encodeURIComponent(entry)}`);
   if (id !== selected || entry !== attempt) return;
-  const log = get("log");
-  const text = data.text || "执行器尚未写入输出。";
+  showLog(get("log"), data.text || "执行器尚未写入输出。");
+}
+
+function showLog(log, text) {
   if (log.textContent === text) return;
   const nearBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 25;
   log.textContent = text;
   if (nearBottom) log.scrollTop = log.scrollHeight;
+}
+
+async function refreshLogs() {
+  if (page() !== "devtools") return;
+  const gatewayLog = api("/api/gateway/log").then(data => {
+    if (page() !== "devtools") return;
+    const fallback = gateway.ownership === "reused" ? "本次控制台复用了已有 Gateway。"
+      : gateway.state === "disabled" ? "历史查看模式未启动 Gateway。"
+      : gateway.detail || "等待 Gateway 启动日志。";
+    showLog(get("gateway-log"), data.text || fallback);
+  });
+  await Promise.all([refreshLog(), gatewayLog]);
 }
 
 async function refresh() {
@@ -249,6 +289,7 @@ async function refresh() {
     const data = await api("/api/runs");
     runs = data.runs;
     writable = data.writable;
+    gateway = data.gateway;
     if (!runs.some(run => run.id === selected)) {
       selected = runs[0]?.id;
       attempt = undefined;
@@ -262,7 +303,7 @@ async function refresh() {
       }
     } else current = undefined;
     render();
-    await refreshLog();
+    await refreshLogs();
   } catch (error) {
     get("connection").textContent = "连接异常";
     message(error.message, true);

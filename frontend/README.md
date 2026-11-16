@@ -1,6 +1,12 @@
 # Hermes 本地控制台
 
-在 Hermes 所在的 WSL 发行版里，以现有 Hermes 运行账户执行以下命令。前端使用原生 HTML、CSS 和 JavaScript，后端只依赖 Python 3.11+ 标准库。
+在 Windows PowerShell 中用这一条命令启动控制台和 Hermes Gateway。
+
+```powershell
+wsl.exe --distribution Ubuntu-24.04 --user root --exec /usr/local/lib/hermes-agent/venv/bin/python3 -B /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills/frontend/server.py
+```
+
+也可以在 Hermes 所在的 WSL 发行版里，以现有 Hermes 运行账户执行：
 
 ```bash
 cd /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills
@@ -9,7 +15,9 @@ cd /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills
 
 在 Windows 浏览器打开控制台打印的本机地址。默认端口为 `18465`，可用 `--port` 调整。服务只绑定 `127.0.0.1`，面向同一台机器上的单人操作。若 WSL 的 localhost 转发被禁用，请用 WSL 内的浏览器或恢复该转发。
 
-开始之前，请用现有运行配置启动 Hermes Gateway，并确认启用了原生 Kanban 派发。控制台会检查派发是否可用。首次打开控制台不会运行任何工作流。每个运行由单独的本机执行器持有，刷新浏览器或重启 HTTP 服务后仍可查看同一运行。
+控制台启动时先检查当前 Hermes profile 的 Gateway，复用已有进程，或运行 `hermes gateway run`。页面顶部显示检查、启动、就绪等状态，点击可进入 DevTools 查看进程 PID、启动来源和本次启动日志。Gateway 就绪后即可提交新流程。打开控制台只启动 Gateway，工作流由提交操作触发。Windows 的历史查看模式不启动 Gateway。
+
+关闭控制台时 Gateway 继续在后台运行，以便处理已提交的工作流。后续启动控制台会复用该进程。每个运行由单独的本机执行器持有，刷新浏览器或重启 HTTP 服务后仍可查看同一运行。
 
 默认使用 `$HERMES_HOME/skills/domain` 下已安装的 Skills、Finalize Skill 自带的 Provider 配置以及 `~/.local/state/qmd-like-rag`。可通过 `--skills-root`、`--provider-config` 和 `--provider-state` 匹配现有部署。控制台保存的请求、执行记录和输出默认在 `$HERMES_HOME/operator-console`。Hermes 未设置 `HERMES_HOME` 时使用 `~/.hermes`。同一控制台状态目录一次接收一轮执行。
 

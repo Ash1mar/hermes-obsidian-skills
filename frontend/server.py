@@ -15,6 +15,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
+from gateway_monitor import GatewayMonitor
 from workflow import (FINALIZE, UserError, attempts_for, local_path, log_tail,
                       new_request, progress, read, run_attempt, save)
 
@@ -29,6 +30,7 @@ class Console:
     def __init__(self, config, histories):
         self.config = config
         self.state = Path(config["state"])
+        self.gateway = GatewayMonitor(self.state, config["writable"])
         self.history = {}
         for directory in histories:
             request = read(directory / "request.json")
@@ -96,6 +98,8 @@ class Console:
                                and item.get("prior_entry") == prior_entry), None)
                 if option is None:
                     raise UserError("当前回执不支持此操作。请刷新并检查节点详情。")
+                if option.get("gateway_required", True):
+                    self.require_gateway()
                 if option.get("manifest"):
                     manifest_path = local_path(body.get("manifest"), self.config["distro"]).resolve()
                     if not manifest_path.is_file() or manifest_path.stat().st_size > 262144:
@@ -108,6 +112,7 @@ class Console:
                             or type(manifest["requests"]) is not list or not manifest["requests"]):
                         raise UserError("清单需要包含 requests 和 prior_build。")
             else:
+                self.require_gateway()
                 request = new_request(body, self.config)
                 run_id = request["operation_id"]
                 directory = self.state / run_id
@@ -136,6 +141,10 @@ class Console:
                 save(path, {**record, "returncode": 1, "ended_at": time.time()})
                 raise UserError("无法启动本机执行器，请查看 DevTools。") from error
         return {"id": run_id, "attempt": attempt_id}
+
+    def require_gateway(self):
+        if not self.gateway.status["ready"]:
+            raise UserError("Hermes Gateway 的派发尚未就绪，请查看 DevTools 中的启动状态。")
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -186,7 +195,10 @@ class Handler(BaseHTTPRequestHandler):
                 name, media = ASSETS[url.path]
                 self.send(200, (HERE / "web" / name).read_bytes(), media)
             elif not write and url.path == "/api/runs":
-                self.json({"runs": app.list_runs(), "writable": app.config["writable"]})
+                self.json({"runs": app.list_runs(), "writable": app.config["writable"],
+                           "gateway": app.gateway.status})
+            elif not write and url.path == "/api/gateway/log":
+                self.json({"text": app.gateway.log()})
             elif write and url.path == "/api/runs":
                 self.json(app.launch(self.payload()), HTTPStatus.ACCEPTED)
             elif parts[:2] == ["api", "runs"] and len(parts) in {3, 4}:
@@ -258,11 +270,14 @@ def main():
               "writable": platform.system() == "Linux" and not args.read_only}
     with ThreadingHTTPServer(("127.0.0.1", args.port), Handler) as server:
         server.console = Console(config, [p.resolve() for p in args.history])
+        server.console.gateway.start()
         print(f"Hermes Console · http://127.0.0.1:{server.server_port}/", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
             pass
+        finally:
+            server.console.gateway.close()
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@
     <main>
       <header class="topbar">
         <span id="breadcrumb">工作流</span>
-        <span class="environment">本机运行</span>
+        <a class="environment gateway-indicator" href="#devtools" id="gateway-top" aria-live="polite">Gateway · 检查中</a>
       </header>
       <div class="content">
         <p id="notice" class="notice" role="status" hidden></p>
@@ -83,6 +83,11 @@
 
         <section id="devtools" class="page" hidden>
           <header class="page-header"><div><h1>DevTools</h1><p>查看执行器日志和当前运行的 Hermes 原生状态。</p></div></header>
+          <section class="panel terminal-panel gateway-panel" aria-labelledby="gateway-title">
+            <div class="panel-heading"><h2 id="gateway-title">Hermes Gateway</h2><span class="badge" id="gateway-badge">检查中</span></div>
+            <dl id="gateway-facts" class="facts"></dl>
+            <pre id="gateway-log" tabindex="0" aria-label="Gateway 启动日志">等待 Gateway 启动日志。</pre>
+          </section>
           <div class="dev-grid">
             <section class="panel terminal-panel" aria-labelledby="log-title">
               <div class="panel-heading"><h2 id="log-title">流水线日志</h2><label class="sr-only" for="attempts">执行记录</label><select id="attempts"></select></div>

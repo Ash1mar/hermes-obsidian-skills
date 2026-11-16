@@ -185,7 +185,8 @@ def available_actions(root, request, attempts, live, historical):
         stage = "release" if formal.get("release_id") else "formal-build"
         if (("delivery", None) not in used
                 and (stage == "release" or not (native / "reentries/formal-build-recovery/control.json").exists())):
-            offer(stage, "delivery", "恢复交付" if stage == "release" else "恢复正式构建")
+            offer(stage, "delivery", "恢复交付" if stage == "release" else "恢复正式构建",
+                  gateway_required=stage != "release")
     if base:
         entry, item = base
         if entry == "initial":
@@ -373,7 +374,7 @@ def run_attempt(directory, attempt_id, config, lease_fd):
             # program entry points, without starting another native worker.
             formal = read(directory / "short/native/reentries/formal-fifth-release/result.json")
             if not (action == "delivery" and formal.get("release_id")) and not KanbanCLI().dispatcher_available():
-                raise UserError("Hermes 原生派发不可用。请在 WSL 中启动已配置的 Gateway，然后重试。")
+                raise UserError("Hermes 原生派发不可用。请在 DevTools 查看 Gateway 状态，然后重试。")
             if action == "start":
                 request.setdefault("recovery_policy", DEFAULT)
                 save(request_path, request)

@@ -35,6 +35,8 @@ nav a[aria-current] span { color: #a4ecdc; }
 .connection i { width: 7px; height: 7px; border-radius: 50%; background: #84d6bb; }
 .topbar { min-height: 64px; background: #fff; border-bottom: 1px solid var(--line); padding: 12px 32px; display: flex; justify-content: space-between; align-items: center; font-weight: 650; }
 .environment { color: #395968; background: #edf4f5; padding: 5px 9px; border-radius: 5px; font-size: 11px; }
+.gateway-indicator { text-decoration: none; }
+.gateway-indicator:hover { text-decoration: underline; }
 .content { padding: 30px 32px 48px; max-width: 1480px; margin-inline: auto; }
 .page-header { display: flex; justify-content: space-between; align-items: center; gap: 14px; margin-bottom: 22px; }
 h1, h2, p { margin: 0; }
@@ -97,6 +99,8 @@ details p { margin: 6px 0; }
 .vault-card-body a, .vault-card-body button { display: inline-block; margin-right: 8px; font-size: 12px; }
 .dev-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(210px, 1fr); gap: 20px; align-items: start; }
 .terminal-panel { overflow: hidden; }
+.gateway-panel { margin-bottom: 20px; }
+.gateway-panel pre { min-height: 93px; max-height: 260px; }
 .terminal-panel select { width: min(50%, 220px); padding: 5px; font-size: 12px; }
 pre { margin: 0; min-height: 350px; max-height: 65vh; overflow: auto; background: #102533; color: #d7efea; padding: 17px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 "IBM Plex Mono", Consolas, monospace; }
 #dev-hint { padding: 0 19px 16px; }
