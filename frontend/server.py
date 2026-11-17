@@ -254,7 +254,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, (HERE / "web" / name).read_bytes(), media)
             elif not write and url.path == "/api/runs":
                 self.json({"runs": app.list_runs(), "writable": app.config["writable"],
-                           "gateway": app.gateway.status})
+                           "gateway": app.gateway.status, "wsl_distro": app.config.get("distro")})
             elif not write and url.path == "/api/gateway/log":
                 self.json({"text": app.gateway.log()})
             elif write and url.path == "/api/runs":

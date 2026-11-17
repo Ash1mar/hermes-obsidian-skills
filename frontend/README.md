@@ -26,7 +26,11 @@ cd /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills
 1. 在新建表单中逐行输入 PDF 或文件夹地址。支持 WSL 绝对路径、Windows 盘符路径和当前发行版的 WSL 共享路径。文件夹递归收集 PDF。由于现有启动器以文件名导入原件，重复文件名需要先消除歧义。
 2. 填写新的 Vault 完整路径与名称，再点击「开始处理」。目标可以是尚未创建的目录或空目录。执行器调用已安装的 `start_post_mineru_short_test.py`。源工作流停在其 `exact_plan` 检查点，短路径验证交接后继续。测试 Vault 合格发布页会同步 Provider，Query 保持关闭。
 3. 在新建表单预设暂停点，或在运行时从尚未开始的节点点「在此节点前暂停」。执行器完成前置工作并验证边界后显示「已暂停」，此时可在该节点点击「继续并复用已有成果」。接管或继续前也可选好下一暂停点，执行器会在开始本轮时接收该目标。如果计划跳过无工作量的节点，执行器在下一个可用边界停下。
-4. 在 DevTools 中切换原运行与恢复日志，查看业务工作流、原生看板、源暂停点和短路径回执数。Vault 页提供 Obsidian URI。请先在 Obsidian 注册对应的 Vault 名称。
+4. 在 DevTools 中切换原运行与恢复日志，查看业务工作流、原生看板、源暂停点和短路径回执数。
+
+## 在 Obsidian 中添加 Vault
+
+在 Vault 页复制「Obsidian 目录」，点击「打开 Obsidian 管理器」，选择「打开文件夹作为 Vault」，并粘贴目录。Windows 浏览器会显示本机可用的路径，例如 `C:\资料\TestVault` 或 `\\wsl.localhost\Ubuntu-24.04\opt\data\hermes\TestVault`。首次添加后，「打开已添加的 Vault」按实际路径打开这个目录中的 `README.md`。Hermes 显示名称可以与目录名不同。
 
 | 节点 | 界面可提供的恢复 |
 | --- | --- |

@@ -24,6 +24,7 @@ let current;
 let selected = localStorage.getItem("hermes-console-run");
 let attempt;
 let writable = false;
+let wslDistro = "Ubuntu-24.04";
 let gateway = { state: "checking", ready: false };
 let posting = false;
 let refreshing = false;
@@ -145,7 +146,7 @@ function render() {
     ["查询", current.query_enabled ? "已开启" : "已关闭"],
   ] : [["运行", "未选择"]];
   facts(get("snapshot"), summary);
-  renderWhenChanged("vaults", [runs, selected, current?.release_id, current?.indexed], renderVaults);
+  renderWhenChanged("vaults", [runs, selected, current?.release_id, current?.indexed, wslDistro], renderVaults);
   renderWhenChanged("attempts", [selected, current?.attempts, attempt], renderAttempts);
   facts(get("native"), current ? [
     ["工作流", current.workflow_id], ["来源看板", current.source_board],
@@ -256,7 +257,32 @@ function renderTimeline() {
   }));
 }
 
+function obsidianVaultPath(path, distro, windows) {
+  if (!windows || !path.startsWith("/")) return path;
+  const drive = /^\/mnt\/([a-z])(?:\/(.*))?$/i.exec(path);
+  if (drive) return drive[1].toUpperCase() + ":\\" + (drive[2] || "").replaceAll("/", "\\");
+  return "\\\\wsl.localhost\\" + distro + path.replaceAll("/", "\\");
+}
+
+function obsidianNoteLink(directory, windows) {
+  const separator = windows ? "\\" : "/";
+  const note = directory.replace(/[\\/]+$/, "") + separator + "README.md";
+  return "obsidian://open?path=" + encodeURIComponent(note);
+}
+
+async function copyVaultDirectory(field) {
+  try {
+    await navigator.clipboard.writeText(field.value);
+    message("已复制目录。可在 Obsidian 的「打开文件夹作为 Vault」中粘贴。");
+  } catch {
+    field.focus();
+    field.select();
+    message("已选中目录，请手动复制。");
+  }
+}
+
 function renderVaults() {
+  const windows = /^win/i.test(navigator.userAgentData?.platform || navigator.platform);
   const unique = new Map();
   for (const run of runs) if (!unique.has(run.vault_path)) unique.set(run.vault_path, run);
   get("vault-list").replaceChildren(...(unique.size ? [...unique.values()].map(run => {
@@ -264,17 +290,28 @@ function renderVaults() {
     const heading = make("div", undefined, "panel-heading");
     heading.append(make("h2", run.vault_name), badge(run.state));
     const body = make("div", undefined, "vault-card-body");
-    body.append(make("p", run.vault_path));
+    const directory = make("input");
+    directory.type = "text";
+    directory.readOnly = true;
+    directory.id = "obsidian-directory-" + run.id;
+    directory.value = obsidianVaultPath(run.vault_path, wslDistro, windows);
+    const directoryLabel = make("label", "Obsidian 目录");
+    directoryLabel.htmlFor = directory.id;
+    body.append(directoryLabel, directory);
     if (current?.id === run.id && current.release_id) {
       body.append(make("p", `发布 ${current.release_id} · ${current.indexed ? "索引已就绪" : "等待索引"}`, "hint"));
     }
-    const open = make("a", "在 Obsidian 中打开", "button");
-    open.href = `obsidian://open?vault=${encodeURIComponent(run.vault_name)}`;
-    body.append(open, rowButton("查看运行", () => {
+    const manager = make("a", "打开 Obsidian 管理器", "button");
+    manager.href = "obsidian://choose-vault";
+    const open = make("a", "打开已添加的 Vault", "button secondary");
+    open.href = obsidianNoteLink(directory.value, windows);
+    const actions = make("div", undefined, "vault-actions");
+    actions.append(manager, rowButton("复制目录", () => copyVaultDirectory(directory)), open, rowButton("查看运行", () => {
       selectRun(run.id);
       showForm(false);
       location.hash = "workflow";
-    }), make("p", "请先在 Obsidian 中按此名称注册该 Vault。", "hint"));
+    }));
+    body.append(actions, make("p", "首次添加时，在管理器中选「打开文件夹作为 Vault」，并选择上面的目录。", "hint"));
     card.append(heading, body);
     return card;
   }) : [make("p", "提交首次运行后，这里会显示对应 Vault。", "empty")]));
@@ -336,6 +373,7 @@ async function refresh() {
     runs = data.runs;
     writable = data.writable;
     gateway = data.gateway;
+    wslDistro = data.wsl_distro || wslDistro;
     if (!runs.some(run => run.id === selected)) {
       selected = runs[0]?.id;
       attempt = undefined;

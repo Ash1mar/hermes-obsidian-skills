@@ -99,9 +99,10 @@ details p { margin: 6px 0; }
 .facts { display: grid; grid-template-columns: auto minmax(0, 1fr); row-gap: 11px; column-gap: 10px; margin: 0; padding: 14px 19px 17px; font-size: 12px; }
 .facts dt { color: var(--muted); }
 .facts dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
-.vault-card-body { padding: 2px 19px 16px; }
+.vault-card-body { padding: 15px 19px 8px; }
 .vault-card-body p { overflow-wrap: anywhere; margin: 12px 0; }
-.vault-card-body a, .vault-card-body button { display: inline-block; margin-right: 8px; font-size: 12px; }
+.vault-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 13px; }
+.vault-actions a, .vault-actions button { font-size: 12px; }
 .dev-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(210px, 1fr); gap: 20px; align-items: start; }
 .terminal-panel { overflow: hidden; }
 .gateway-panel { margin-bottom: 20px; }
