@@ -105,6 +105,11 @@ class Console:
                     option = None
                 if option is None:
                     raise UserError("当前回执不支持此操作。请刷新并检查节点详情。")
+                pause_before = body.get("pause_before")
+                if pause_before is not None:
+                    if not isinstance(pause_before, str) or pause_before not in option.get("pause_targets", []):
+                        raise UserError("请选择当前操作允许的下一暂停节点。")
+                    option = {**option, "pause_before": pause_before}
                 if action in {"start", "attach-source", "continue-operation"}:
                     self.require_operator_launcher()
                 if option.get("gateway_required", True):

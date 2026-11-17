@@ -162,7 +162,9 @@ def available_actions(root, request, attempts, live, historical, source, attachm
                     for key in STAGE_ORDER if STAGE_ORDER[key] > current_index}
         return {}
     if operator.get("state") == "paused":
-        return {operator["node"]: [{"id": "continue-operation", "label": "继续并复用已有成果"}]}
+        node = operator["node"]
+        return {node: [{"id": "continue-operation", "label": "继续并复用已有成果",
+                        "pause_targets": list(STAGE_ORDER)[STAGE_ORDER[node] + 1:]}]}
     native = root / "native"
     original = read(root / "final-acceptance.json")
     short = read(native / "result.json")
@@ -197,7 +199,18 @@ def available_actions(root, request, attempts, live, historical, source, attachm
             and not (native / "stop.json").exists()
             and source.get("workflow_id") == f"ingest-{request['operation_id']}"
             and source.get("state") not in SOURCE_TERMINAL and not source.get("cancel_requested")):
-        offer(attachment_node, "attach-source", "重新接管同一工作流")
+        prior = read(root / "operator-state.json")
+        mailbox = read(root / "operator-pause.json")
+        target = None
+        if prior.get("contract") == "short-operator-state/v1" and prior.get("operation_id") == request["operation_id"]:
+            attempt_id = prior.get("attempt_id")
+            target = (mailbox.get("node") if attempt_id and mailbox.get("attempt_id") == attempt_id
+                      else prior.get("pending_pause"))
+        targets = list(STAGE_ORDER)[STAGE_ORDER["exact"]:]
+        if target:
+            targets = [node for node in targets if node == target]
+        offer(attachment_node, "attach-source", "重新接管同一工作流",
+              pause_targets=targets, pending_pause=target)
     if stopped and not original and not release and not short.get("native_active_or_ready"):
         if short.get("last_stage") == "coordination_held":
             offer("coordination", "coordination", "恢复协调")
@@ -513,7 +526,7 @@ def run_attempt(directory, attempt_id, config, lease_fd):
                     command += ["--attach-source"]
                 elif action == "continue-operation":
                     command += ["--continue-operation"]
-                elif attempt.get("pause_before"):
+                if attempt.get("pause_before"):
                     command += ["--pause-before", attempt["pause_before"]]
             elif action == "delivery":
                 command += ["--resume-delivery"]

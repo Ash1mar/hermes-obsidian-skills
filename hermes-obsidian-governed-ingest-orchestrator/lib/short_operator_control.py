@@ -17,6 +17,7 @@ DETACHED = 75
 class OperatorControl:
     def __init__(self, root, operation_id, attempt_id, pause_before, continuing, attaching):
         require(re.fullmatch(r'[a-z0-9][a-z0-9-]{0,47}', attempt_id), 'invalid operator attempt ID')
+        require(pause_before is None or pause_before in NODES, 'unknown operator pause boundary')
         self.root = root
         self.path = root / 'operator-state.json'
         self.operation_id = operation_id
@@ -30,15 +31,22 @@ class OperatorControl:
                     'operator attempt identity changed or already used')
             if continuing:
                 require(prior.get('state') == 'paused', 'continue requires an explicitly paused checkpoint')
+                require(pause_before is None or NODES.index(pause_before) > NODES.index(prior['node']),
+                        'next pause must follow the current checkpoint')
                 self.resume = prior
             elif attaching:
                 require(prior.get('state') not in ('paused', 'completed')
                         and prior.get('node') in (None, 'bootstrap', 'prepare', 'exact'),
                         'source attach cannot release a pause or resume downstream execution')
+                require(pause_before is None or NODES.index(pause_before) >= NODES.index('exact'),
+                        'source attach can pause at exact handoff or a later checkpoint')
                 mailbox = root / 'operator-pause.json'
                 pending = _load_json(mailbox) if mailbox.is_file() else {}
-                self.pause_before = (pending.get('node') if pending.get('attempt_id') == prior.get('attempt_id')
-                                     else prior.get('pending_pause')) or pause_before
+                saved_target = (pending.get('node') if prior and pending.get('attempt_id') == prior['attempt_id']
+                                else prior.get('pending_pause'))
+                require(saved_target is None or pause_before in (None, saved_target),
+                        'source attach cannot replace a pending pause')
+                self.pause_before = saved_target or pause_before
             else:
                 require(not prior, 'operator state already exists')
 

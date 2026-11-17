@@ -53,6 +53,12 @@ class ConsoleWorkflowTests(unittest.TestCase):
         self.assertIn("7 份就绪 · 1 份失败 · 0 份未结算", after_nodes["prepare"]["detail"])
         self.assertEqual(after_nodes["exact"]["state"], "pending")
         self.assertEqual([option["id"] for option in after_nodes["exact"]["actions"]], ["attach-source"])
+        self.assertEqual(after_nodes["exact"]["actions"][0]["pause_targets"][0], "exact")
+        save(self.root / "operator-pause.json", {"attempt_id": "a-first", "node": "topics"})
+        self.operator("prepare", "detached")
+        _, nodes = self.status()
+        attach, = nodes["exact"]["actions"]
+        self.assertEqual((attach["pause_targets"], attach["pending_pause"]), (["topics"], "topics"))
         self.assertFalse(any(node["actions"] for node in self.status(historical=True)[1].values()))
 
     def test_pause_target_and_continuation_stay_bound_to_attempt_and_node(self):
@@ -75,6 +81,7 @@ class ConsoleWorkflowTests(unittest.TestCase):
         self.assertEqual(snapshot["state"], "paused")
         self.assertFalse(snapshot["launcher_active"])
         self.assertEqual(nodes["writing"]["actions"][0]["id"], "continue-operation")
+        self.assertEqual(nodes["writing"]["actions"][0]["pause_targets"], ["formal-build", "release", "acceptance"])
         self.assertFalse(nodes["release"]["actions"])
         # A launcher preflight failure on continue must not discard the pause.
         later = self.attempt.with_name("a-next")

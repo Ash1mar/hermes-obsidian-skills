@@ -180,6 +180,8 @@ function renderTimeline() {
   const open = new Set(sameRun ? [...timeline.querySelectorAll("details[open]")].map(item => item.dataset.node) : []);
   const manifests = new Map(sameRun ? [...timeline.querySelectorAll("[data-manifest]")].map(item =>
     [item.dataset.manifest, item.value]) : []);
+  const pauses = new Map(sameRun ? [...timeline.querySelectorAll("[data-next-pause]")].map(item =>
+    [item.dataset.nextPause, item.value]) : []);
   timeline.dataset.run = selected || "";
   const nodes = current?.nodes || Object.values(stageNames).map(name => ({ name, state: "pending" }));
   timeline.replaceChildren(...nodes.map((node, index) => {
@@ -219,7 +221,22 @@ function renderTimeline() {
           input.value = manifests.get(action.id) || "";
           row.append(input);
         }
-        const button = rowButton(action.label, () => reenter(action, input?.value), "secondary");
+        let nextPause;
+        if (action.pending_pause) {
+          row.append(make("span", `保留暂停：${stageNames[action.pending_pause]}`, "hint"));
+        } else if (action.pause_targets?.length) {
+          nextPause = make("select");
+          nextPause.setAttribute("aria-label", "下一暂停节点");
+          nextPause.dataset.nextPause = `${action.attempt}:${action.id}`;
+          for (const key of ["", ...action.pause_targets]) {
+            const choice = make("option", key ? `暂停在${stageNames[key]}前` : "选择下一暂停点（可选）");
+            choice.value = key;
+            nextPause.append(choice);
+          }
+          nextPause.value = pauses.get(nextPause.dataset.nextPause) || "";
+          row.append(nextPause);
+        }
+        const button = rowButton(action.label, () => reenter(action, input?.value, nextPause?.value), "secondary");
         button.disabled = !writable || posting || (action.id !== "pause" && runs.some(run => run.launcher_active))
           || (action.gateway_required !== false && !gateway.ready);
         row.append(button);
@@ -361,7 +378,7 @@ async function submit(path, body) {
   }
 }
 
-function reenter(action, manifest) {
+function reenter(action, manifest, pauseBefore) {
   if (action.manifest && !manifest?.trim()) {
     message("请填写映射恢复 JSON 清单路径。", true);
     return;
@@ -370,9 +387,12 @@ function reenter(action, manifest) {
     submit(`/api/runs/${current.id}/pause`, {node: action.node, attempt: action.attempt});
     return;
   }
-  if (!window.confirm(`确认对「${current.vault_name}」执行“${action.label}”？满足发布条件时，本轮可以继续到索引和验收。`)) return;
+  const target = pauseBefore || action.pending_pause;
+  const scope = target ? `执行器将在${stageNames[target]}前暂停。` : "满足发布条件时，本轮可以继续到索引和验收。";
+  if (!window.confirm(`确认对「${current.vault_name}」执行“${action.label}”？${scope}`)) return;
   submit(`/api/runs/${current.id}/reenter`, {
     action: action.id, node: action.node, attempt: action.attempt, manifest, prior_entry: action.prior_entry,
+    pause_before: pauseBefore || undefined,
   });
 }
 

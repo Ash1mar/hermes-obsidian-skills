@@ -86,7 +86,7 @@ summary { color: var(--teal); font-size: 12px; cursor: pointer; width: fit-conte
 details p { margin: 6px 0; }
 .action-line { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 9px; }
 .action-line button { padding: 5px 9px; font-size: 12px; }
-.action-line input { flex: 1 1 160px; font-size: 12px; }
+.action-line input, .action-line select { flex: 1 1 160px; font-size: 12px; }
 .source-list { padding-left: 18px; font-size: 12px; overflow-wrap: anywhere; }
 .source-list li + li { margin-top: 6px; }
 .source-list small { display: block; color: var(--muted); }
