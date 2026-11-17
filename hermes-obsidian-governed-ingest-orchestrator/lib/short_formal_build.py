@@ -13,7 +13,10 @@ from hermes_source_units.validation import fingerprint
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from short_evidence_pass import mapping_groups, require, seed_requests
 from short_fragment_disposition import delivery_partition
+from short_knowledge_plan import enabled as knowledge_plan
+from short_navigation import CONTRACT as NAVIGATION_CONTRACT, OPTIONAL_ERRORS, refresh
 from short_page_contract import auditable_qa, check_fragment, restore_locked_draft, retry_slots
+from short_page_fragments import page_metadata
 
 
 def native_fragment(root, receipt, attempts, conn, runner):
@@ -76,13 +79,15 @@ def native_fragment(root, receipt, attempts, conn, runner):
 
 
 def final_plan(root, operation, authorization, runner):
+    if authorization['writing_entry'] == 'organization-replay':
+        return organization_replay(root, operation, authorization, runner)
     initial = authorization['writing_entry'] == 'initial'
     directory = root if initial else root / 'reentries' / authorization['writing_entry']
     control_path = directory / ('operation.json' if initial else 'control.json')
     result_path = directory / 'result.json'
     control, result = _load_json(control_path), _load_json(result_path)
     require((initial or (control['operation_sha256'] == runner.sha(root / 'operation.json')
-            and (control['from_node'] == 'writing' or control.get('mapping_recovery'))))
+            and (control['from_node'] in ('coordination', 'writing') or control.get('mapping_recovery'))))
             and control['page_contract'] == runner.FRAGMENT_CONTRACT
             and result['last_stage'] == 'offline_build' and not result['native_active_or_ready']
             and result['origin'] == operation['origin'], 'a settled writing checkpoint is required')
@@ -133,6 +138,66 @@ def final_plan(root, operation, authorization, runner):
     return rebuilt, sources
 
 
+def organization_replay(root, operation, authorization, runner):
+    """Rebuild one omitted organization page from settled coordination and native writing."""
+    from short_knowledge_plan import syntheses
+    from short_page_contract import coordination_batches, coordination_request
+    from short_page_fragments import build as assemble, pack, spec_identity
+    from short_evidence_pass import checked_answer
+
+    checkpoint = authorization['checkpoint']
+    require(set(checkpoint) == {'control_sha256', 'prior_root', 'prior_authorization_sha256',
+                                'coordination_request', 'writing_receipts'},
+            'organization replay requires exact prior coordination and writing pins')
+    require(checkpoint['control_sha256'] == runner.sha(root / 'operation.json')
+            and operation['card_layout'].get('organization_targets')
+            and len(authorization['pages']) == 1 and authorization['base_release'],
+            'organization replay requires one authorized page and a published base')
+    prior = Path(checkpoint['prior_root']).resolve(strict=True)
+    previous = _load_json(prior / 'operation.json')
+    require(prior != root and previous['board'] != operation['board']
+            and all(previous.get(key) == operation.get(key) for key in ('vault', 'origin', 'pins', 'page_namespace')),
+            'organization replay must use the same pinned source and a separate native writing board')
+    prior_grant = prior.parent / 'formal-authorization.json'
+    require(runner.sha(prior_grant) == checkpoint['prior_authorization_sha256'], 'prior authorization changed')
+    grant = _load_json(prior_grant)
+    require(grant['writing_entry'] == 'initial' and grant['actor'] == authorization['actor'],
+            'organization replay requires the owning settled initial coordination')
+    prior_plan, sources = final_plan(prior, previous, grant, runner)
+    reduced = {k: v for k, v in prior_plan['reduced'].items() if k != 'bounded_coordination'}
+    full = coordination_request(sources, reduced)
+    request_id = checkpoint['coordination_request']
+    require(full is not None, 'prior coordination request is absent')
+    request = next((row for row in coordination_batches(sources, reduced, full) if row['id'] == request_id), None)
+    require(request is not None, 'organization replay requires an exact prior coordination request')
+    answer = checked_answer(request, _load_json(prior / 'receipts' / f'{request_id}.json'))
+    reduced = {**prior_plan['reduced'], 'card_layout': operation['card_layout']}
+    namespace = operation.get('page_namespace')
+    page_id, = authorization['pages']
+    require(page_id not in prior_plan['expected_pages'], 'organization replay cannot replace a prior planned page')
+    specs, _ = syntheses(reduced, answer['syntheses'], answer['pages'], namespace=namespace,
+                         entry_id=lambda spec: spec_identity(reduced, spec, namespace))
+    selected = [spec for spec in specs if spec['synthesis_basis'].get('required_entries') is True
+                and spec_identity(reduced, spec, namespace) == page_id]
+    require(len(selected) == 1, 'organization replay did not reproduce the authorized page')
+    rows, held, expected = pack(sources, reduced, selected, operation['body_limit'], page_namespace=namespace)
+    require(not held, 'organization replay requires a complete bounded writing plan')
+    checks, seen = [], {}
+    for row in rows:
+        for slot in row['view']['pages']:
+            name = f"{row['id']}-{slot}.json"
+            path = root / 'receipts' / name
+            seen[name] = runner.sha(path)
+            record = _load_json(path)
+            require(check_fragment(row, slot, record['answer']) == record, 'organization writing receipt changed')
+            checks.append(record)
+    require(seen and seen == checkpoint['writing_receipts'], 'organization writing receipt pins differ')
+    assembled = assemble(expected, checks)
+    require(set(assembled) == {page_id}, 'organization replay lacks a complete writing result')
+    return {'expected_pages': expected, 'checks': checks, 'assembled_sections': assembled,
+            'reduced': reduced, 'held': [], 'held_repairs': [], 'coordination_issues': []}, sources
+
+
 def collect(root, operation, authorization, runner, *, dependencies=None):
     plan, sources = final_plan(root, operation, authorization, runner)
     partition = delivery_partition(plan)
@@ -152,7 +217,10 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
         for page_id in chosen:
             page = plan['assembled_sections'][page_id]
             content = page['content']
-            cited = sorted(set(re.findall(r'\[(S[0-9]+-[AB][0-9]+)\]', content)))
+            citation_text = ([section['content'] for key in page['fragment_receipts']
+                              for section in by_hash[key]['answer']['sections']]
+                             if 'page_type' in page else [content])
+            cited = sorted({ref for text in citation_text for ref in re.findall(r'\[(S[0-9]+-[AB][0-9]+)\]', text)})
             support = [refs[ref] for ref in cited]
             proof, qa, checks = [], {}, []
             card_path = page.get('card_path')
@@ -195,6 +263,7 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
                 and governance.get(r['unit_ref']['resource_id'], {}).get('eligible') for r in support)
             bodies[page_id] = content.encode('utf-8')
             candidates.append({'short_id': page_id, 'name': page['name'], 'authored_sha256': _sha(bodies[page_id]),
+                               **page_metadata(page),
                                'support_refs': support, 'citation_bindings': {key: refs[key] for key in cited},
                                'native_fragments': proof,
                                'same_page_coverage': [coverage[key] for key in page.get('coverage_receipts', [])],
@@ -204,19 +273,31 @@ def collect(root, operation, authorization, runner, *, dependencies=None):
             if card_path:
                 candidates[-1]['card_path'] = card_path
                 candidates[-1]['coverage'] = checks
+            if knowledge_plan(operation.get('card_layout')):
+                candidates[-1].update(reader_scope=page['scope'], reader_question=page['reader_question'])
             if page.get('derived_from'):
                 candidates[-1]['independent_section'] = page['derived_from']
     exclusions = {**partition['excluded'], **proof_holds}
-    excluded = [{'short_id': key, 'name': plan['expected_pages'][key]['name'],
-                 'disposition': exclusions.get(key, {'category': 'delivery_conditions',
-                     'reason': 'outside-exact-short-build-selection', 'reopen_condition': 'authorize the exact page'})}
-                for key in sorted(plan['expected_pages'].keys() - bodies.keys())]
+    excluded = []
+    for key in sorted(plan['expected_pages'].keys() - bodies.keys()):
+        spec = plan['expected_pages'][key]
+        excluded.append({'short_id': key, 'name': spec['name'],
+                         'disposition': exclusions.get(key, {'category': 'delivery_conditions',
+                             'reason': 'outside-exact-short-build-selection', 'reopen_condition': 'authorize the exact page'})})
+        if 'page_type' in spec and 'card_path' in spec:
+            excluded[-1].update(page_type=spec['page_type'], card_path=spec['card_path'])
+        if 'existing_page_hints' in spec:
+            excluded[-1]['existing_page_hints'] = spec['existing_page_hints']
     return service, {
         'origin': operation['origin'], 'actor': authorization['actor'], 'authorization': authorization,
         'operation_sha256': runner.sha(root / 'operation.json'), 'coverage_complete': False,
         'pages': candidates, 'excluded': excluded, 'fragment_exclusions': plan.get('fragment_exclusions', []),
         'mapping_gaps': plan['reduced']['unresolved'], 'coordination_gaps': plan['coordination_issues'],
         'mapping_holds': plan['held_repairs'],
+        **({'candidate_destinations': plan['candidate_destinations']} if 'candidate_destinations' in plan else {}),
+        **({'navigation_only': plan['navigation_only']} if plan.get('navigation_only') else {}),
+        **({'navigation_contract': NAVIGATION_CONTRACT}
+           if (operation.get('card_layout') or {}).get('navigation_contract') == NAVIGATION_CONTRACT else {}),
         **({'material_coverage': {
             'inventory': {ref: {'source_sha256': source['source_sha256'], 'locator': item['locator'],
                                 'sha256': item['sha256'], 'source_ref': item['source_ref']}
@@ -298,29 +379,58 @@ def delivery(vault, run_id, authorization, *, replay=False):
             service.validate(release_id)
     released = {r['page_id'] for r in release['subjects']} if release else set()
     exclusions = {r['page_id']: r for r in plan['delivery']['excluded']}
+    qualified_targets = {row['id'] for row in plan['index_eligibility']
+                         if row['kind'] == 'knowledge_page' and row['eligible']}
     candidates = []
     for row, page in zip(proof['scope']['pages'], run['page_revisions'], strict=True):
         require(identity(service.build, row['short_id'], row['name'])[1] == page['page_id'], 'formal result page changed')
         candidates.append({'name': row['name'], 'short_id': row['short_id'], 'page_id': page['page_id'],
+                           **page_metadata(row),
                            'path': page['path'], 'revision_id': page['revision_id'], 'qa_status': page['qa_status'],
                            'qa_issues': row['qa_issues'], 'build_acceptance': page['review']['acceptance'],
                            'qa_disposition': next((q for q in (advisory or {}).get('pages', [])
                                                    if q['page_id'] == page['page_id']), None),
                            'coverage_proofs': row['same_page_coverage'], 'published': page['page_id'] in released,
                            'exclusion': exclusions.get(page['page_id'])})
+        exclusion = exclusions.get(page['page_id'], {})
+        if exclusion.get('reason') == 'required_target_unavailable':
+            entries = row['synthesis_basis']['entries']
+            unavailable = [entry for entry in entries if identity(service.build, entry['short_id'], entry.get('name', ''))[1]
+                           not in qualified_targets]
+            candidates[-1]['required_target_issues'] = unavailable or entries
     result = {'run_id': run_id, 'build_revision': run['revision'], 'build_evidence': run['short_evidence'],
             'qa_advisory': advisory_pointer,
             'candidates': candidates, 'isolated_pages': proof['scope']['excluded'],
             'release_id': release['release_id'] if release else None, 'base_release': authorization['base_release'],
             'blockers': plan['blockers'], 'model_calls': 0}
+    if 'candidate_destinations' in proof['scope']:
+        qualified = {row['short_id'] for row in candidates if row['published']}
+        result['candidate_destinations'] = []
+        for disposition in proof['scope']['candidate_destinations']:
+            missing = [ref for ref, pages in disposition['bindings'].items() if not qualified.intersection(pages)]
+            state = 'published' if disposition['state'] == 'covered' and not missing else 'gap'
+            result['candidate_destinations'].append({**disposition, 'state': state, 'missing_refs': missing})
     if release and 'material_coverage' in proof['scope']:
         from short_cards import write_navigation
         directories = {str(PurePosixPath(row['path']).parent) for row in candidates if row['published']}
-        result['card_navigation'] = write_navigation(service, release, directories)
+        if proof['scope'].get('navigation_contract') == NAVIGATION_CONTRACT:
+            # Reader navigation is derived after the release. Its failure does not undo delivery.
+            try:
+                result['card_navigation'] = write_navigation(service, release, directories, typed=True, guarded=True)
+            except OPTIONAL_ERRORS as error:
+                result['card_navigation'] = [{'state': 'deferred', 'reason': str(error)}]
+            try:
+                result['knowledge_navigation'] = refresh(service, release, apply=True)
+            except OPTIONAL_ERRORS as error:
+                result['knowledge_navigation'] = {'state': 'deferred', 'reason': str(error)}
+        else:
+            result['card_navigation'] = write_navigation(service, release, directories,
+                                                         typed=any('page_type' in row for row in candidates))
     return result
 
 
-def execute(root, entry, authorization, dry_run, runner, *, existing_build=None, replay_build=None):
+def execute(root, entry, authorization, dry_run, runner, *, existing_build=None, replay_build=None,
+            before_delivery=None):
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
             'trusted operator must authorize formal short Build')
     require(re.fullmatch(r'formal-[a-z0-9][a-z0-9-]{0,39}', entry)
@@ -381,6 +491,14 @@ def execute(root, entry, authorization, dry_run, runner, *, existing_build=None,
         require(finished['request_id'] == row['id'] and finished['state'] == 'settled',
                 'formal native Build held before verified completion')
         require(not replay_build or finished.get('formal_run_id') == replay_build, 'native replay returned another Build')
+        if before_delivery and 'formal_run_id' in finished:
+            run_id = finished['formal_run_id']
+            service.build.validate_run(run_id)
+            boundary = {'build_run_id': run_id, 'build_sha256': runner.sha(service.build._run_path(run_id)),
+                        'native_result_sha256': runner.sha(job.with_suffix('.result.json')),
+                        'authorization_sha256': fingerprint(authorization)}
+            if before_delivery('release', boundary):
+                return None
         result = (delivery(operation['vault'], finished['formal_run_id'], authorization, replay=bool(replay_build))
                   if 'formal_run_id' in finished else {
                       'candidates': [], 'isolated_pages': finished['formal_holds'], 'release_id': None,

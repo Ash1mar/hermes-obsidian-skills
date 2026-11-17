@@ -15,43 +15,175 @@ import run_short_evidence_test as runner
 from post_mineru_test import BOOTSTRAP_SHORT, CONTRACT as IMPORT_TEST, bootstrap_source_boundary
 from hermes_source_units.page_governance import POLICY, validate_retrieval_snapshot
 from hermes_source_units.short_build import record_content_isolation
-from hermes_source_units.source_units import _load_json, _vault_path
+from hermes_source_units.source_units import _json_bytes, _load_json, _vault_path, _write_atomic
+from hermes_source_units.validation import fingerprint
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from short_evidence_pass import require
 from short_formal_build import delivery as publish, execute, final_plan, release_identity
 from short_fragment_disposition import delivery_partition
+from short_operator_control import DETACHED, NODES, PAUSED, OperatorControl
 
 
-def prepare(vault, request, root, provisioner, bootstrap):
+class SourceWaitDetached(RuntimeError):
+    """Observation stopped without changing native workflow state."""
+
+
+def source_binding(vault, request, receipt, workflow):
+    """Authenticate the durable start before observing or consuming its output."""
+    wid = 'ingest-' + request['operation_id']
+    ref = f"_system/reports/vault-startup/{request['operation_id']}.json"
+    identity = receipt['identity']
+    require(receipt['contract'] == 'vault-startup/v1' and receipt['operation_id'] == request['operation_id']
+            and receipt['vault'] == str(vault) and identity['request'] == request
+            and receipt['input_digest'] == fingerprint(identity)
+            and receipt['phase'] in ('import', 'sources_staged', 'workflow_created')
+            and receipt.get('workflow_id', wid) == wid and receipt.get('bootstrap_ref', ref) == ref,
+            'saved provisioning receipt does not match this request')
+    report = _load_json(_vault_path(vault, ref))
+    actual = _load_json(_vault_path(vault, '_system/vault.json'))['vault']
+    hashes = {f'10_Raw/{Path(path).name}': digest for path, digest in identity['source_hashes'].items()}
+    scope = workflow['scope']
+    start = {'workflow_id': wid, 'actor': request['actor'], 'profile': 'compact-5', 'scope': scope,
+             'expected_revision': 0}
+    require(report['contract'] == 'vault-startup-report/v1' and report['workflow_id'] == wid
+            and report['input_digest'] == receipt['input_digest'] and report['vault_id'] == request['vault_id']
+            and report['source_hashes'] == identity['source_hashes'] and actual['id'] == request['vault_id']
+            and actual['name'] == request['vault_name'] and actual['security_domain'] == request['security_domain']
+            and workflow['workflow_id'] == wid and workflow['actor'] == request['actor']
+            and workflow['profile'] == start['profile'] and workflow['start_digest'] == 'sha256:' + fingerprint(start)
+            and scope['bootstrap_ref'] == ref and scope['pause_after'] == ['exact_plan']
+            and set(hashes) == set(scope['source_paths']), 'native workflow does not match the saved provisioning identity')
+    return hashes
+
+
+def wait_for_source(vault, request, ledger, receipt, update, previous_files, *, idle_seconds=1200):
+    workflow = _load_json(ledger)
+    hashes = source_binding(vault, request, receipt, workflow)
+    wid = workflow['workflow_id']
+    kb, kc, _ = runner.runtime()
+    since = time.monotonic()
+    signature = None
+    node_for = {path: 'source-prepare:' + fingerprint({'path': path, 'content_sha256': digest})[:16]
+                for path, digest in hashes.items()}
+    observed = {row['path']: row for row in previous_files}
+    while True:
+        workflow = _load_json(ledger)
+        kanban = workflow['kanban']
+        board = kanban['board_id']
+        tasks = {}
+        if board:
+            with closing(kc.connect(board=board)) as conn:
+                tasks = {task.id: task for task in kb.list_tasks(conn)}
+        processes = runner.workflow_processes(wid, board)
+        workers = {row['task_id'] for row in processes if row['kind'] == 'native_worker' and row['task_id'] in tasks}
+        by_node = {row['node']: row['task_id'] for row in kanban['task_map']}
+        outcomes = {row['path']: row for row in workflow['source_outcomes']}
+        files = []
+        for path in workflow['scope']['source_paths']:
+            task_id = by_node.get(node_for[path])
+            task = tasks.get(task_id)
+            prior = observed.get(path, {})
+            row = {'path': path, 'task_id': task_id, 'native_status': task.status if task else None}
+            if path in outcomes:
+                row['status'] = outcomes[path]['status']
+            elif task_id in workers:
+                row['status'] = 'running'
+            elif task and task.status in ('ready', 'todo', 'triage', 'running'):
+                row['status'] = 'queued' if task.status in ('ready', 'todo', 'triage') else 'awaiting_reconciliation'
+            else:
+                row['status'] = 'waiting'
+            run_id = task.current_run_id if task else None
+            row['run_id'] = run_id
+            if run_id is not None and prior.get('run_id') == run_id and 'observed_running_at' in prior:
+                row['observed_running_at'] = prior['observed_running_at']
+            elif row['status'] == 'running':
+                row['observed_running_at'] = time.time()
+            files.append(row)
+            observed[path] = row
+        stage = 'exact' if workflow['current_stage'] in ('planning', 'analyzing') else 'prepare'
+        native = tuple(sorted((task.id, task.status, task.current_run_id) for task in tasks.values()))
+        current = (workflow['revision'], native, frozenset(workers))
+        busy = any(task.status == 'running' or task.claim_lock for task in tasks.values())
+        if current != signature:
+            since = time.monotonic()
+            signature = current
+            update(stage=stage, state='waiting', revision=workflow['revision'], board=board, files=files,
+                   active_tasks=len(workers), native_state=workflow['state'], last_progress_at=time.time())
+        require(not workflow['cancel_requested'] and workflow['state'] not in ('failed', 'cancelled', 'partial', 'completed'),
+                'native workflow ended before the exact-plan source handoff: ' + workflow['state'])
+        if workflow.get('pause_control', {}).get('boundary') == 'exact_plan' and not busy and not processes:
+            return workflow
+        # Worker/supervisor deadlines own queue and conversion time. The observer
+        # only expires an idle wait, and can be reattached to the same workflow.
+        no_consumer = not processes and not any(task.status in ('ready', 'todo', 'triage', 'running')
+                                               or task.claim_lock for task in tasks.values())
+        elapsed = time.monotonic() - since
+        if not workers and (elapsed >= idle_seconds or (no_consumer and elapsed >= min(30, idle_seconds))):
+            raise SourceWaitDetached('source handoff is pending without observed native progress; reconnect to the same workflow')
+        time.sleep(2)
+
+
+def prepare(vault, request, root, provisioner, bootstrap, *, attach=False, checkpoint=None):
     wid = 'ingest-' + request['operation_id']
     fresh = request['test_mode'] == BOOTSTRAP_SHORT
     require(request['test_mode'] in (BOOTSTRAP_SHORT, IMPORT_TEST) and request['pause_after'] == ['exact_plan']
             and request['retrieval_policy']['sync_enabled'] and not request['retrieval_policy']['query_enabled'],
             'independent short test requires an isolated exact-plan source boundary and scoped Provider')
     path = root / 'provisioning-request.json'
-    runner.save(path, request)
     receipt = root / 'provisioning-receipt.json'
-    start = time.time()
-    entry = 'start_vault_workflow.py' if fresh else 'start_post_mineru_test.py'
-    cmd = [sys.executable, '-B', str(provisioner / 'scripts' / entry),
-           '--request', str(path), '--record', str(receipt), '--bootstrap-skill', str(bootstrap)]
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', timeout=180)
-    require(result.returncode == 0, 'native source provisioning entry failed: ' + result.stderr[-2500:])
     ledger = _vault_path(vault, f'_system/ledgers/ingest-workflows/{wid}.json')
-    deadline = time.monotonic() + 1200
-    kb, kc, _ = runner.runtime()
-    while True:
-        workflow = _load_json(ledger)
-        require(workflow['state'] not in ('failed', 'cancelled', 'partial', 'completed'),
-                'provisioning ended before the exact-plan source handoff')
-        board = workflow['kanban']['board_id']
-        if workflow.get('pause_control', {}).get('boundary') == 'exact_plan':
-            with closing(kc.connect(board=board)) as conn:
-                active = any(t.status == 'running' or t.claim_lock for t in kb.list_tasks(conn))
-            if not active and not runner.workflow_processes(wid, board):
-                break
-        require(time.monotonic() < deadline, 'native source handoff timed out')
-        time.sleep(2)
+    status_path = root / 'source-wait.json'
+    previous = _load_json(status_path) if status_path.is_file() else {}
+    start = time.time()
+    status = {'workflow_id': wid, 'stage': 'bootstrap', 'state': 'waiting',
+              'started_at': start, 'last_progress_at': start}
+
+    def update(**fields):
+        status.update(updated_at=time.time(), **fields)
+        _write_atomic(status_path, _json_bytes(status))
+
+    def provision(command):
+        result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', timeout=180)
+        require(result.returncode == 0, 'native source provisioning entry failed: ' + result.stderr[-2500:])
+
+    try:
+        if attach:
+            require(path.is_file() and receipt.is_file() and ledger.is_file() and _load_json(path) == request,
+                    'attachment requires the original provisioning request, receipt and native workflow')
+        else:
+            require(not ledger.exists(), 'native workflow already exists; attach to its existing ledger')
+            runner.save(path, request)
+            update()
+            entry = 'start_vault_workflow.py' if fresh else 'start_post_mineru_test.py'
+            cmd = [sys.executable, '-B', str(provisioner / 'scripts' / entry),
+                   '--request', str(path), '--record', str(receipt), '--bootstrap-skill', str(bootstrap)]
+            if fresh and checkpoint:
+                if not receipt.is_file() or _load_json(receipt).get('phase') != 'sources_staged':
+                    provision([*cmd, '--prepare-only'])
+                staged = _load_json(receipt)
+                report = _vault_path(vault, staged['bootstrap_ref'])
+                update(stage='prepare')
+                if checkpoint('prepare', {'startup_sha256': runner.sha(receipt), 'report_sha256': runner.sha(report)}):
+                    return None
+            else:
+                update(stage='prepare')
+            provision(cmd)
+        workflow = wait_for_source(vault, request, ledger, _load_json(receipt), update, previous.get('files', []))
+        update(stage='exact')
+        handoff = source_handoff(vault, wid, workflow, root, fresh, start)
+    except SourceWaitDetached as exc:
+        update(state='detached', error=str(exc))
+        raise
+    except Exception as exc:
+        update(state='failed', error=str(exc))
+        raise
+    update(state='handoff', last_progress_at=time.time())
+    if checkpoint and checkpoint('exact', {'handoff_sha256': runner.sha(root / 'source-handoff.json')}):
+        return None
+    return handoff
+
+
+def source_handoff(vault, wid, workflow, root, fresh, start):
     if fresh:
         pins = bootstrap_source_boundary(vault, wid, workflow)
         require(pins, 'native bootstrap source handoff is missing')
@@ -73,7 +205,13 @@ def prepare(vault, request, root, provisioner, bootstrap):
     runner.source_boundary(vault, wid, pins)
     handoff = {'workflow_id': wid, 'revision': workflow['revision'], 'pause': workflow['pause_control'],
                'pins': pins, 'seconds': time.time() - start, **metadata}
-    runner.save(root / 'source-handoff.json', handoff)
+    path = root / 'source-handoff.json'
+    if path.is_file():
+        saved = _load_json(path)
+        require({k: v for k, v in saved.items() if k != 'seconds'} ==
+                {k: v for k, v in handoff.items() if k != 'seconds'}, 'saved source handoff changed')
+        return saved
+    runner.save(path, handoff)
     return handoff
 
 
@@ -188,6 +326,110 @@ def accept(vault, operation, delivery, provider, host_state):
             'coverage_complete': False, 'final_acceptance': True}
 
 
+def run_controlled(args, request, root, vault):
+    """Operate one console run using its original inputs and checkpoint evidence."""
+    require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
+            'console controls require a trusted operator')
+    short = root / 'native'
+    marker = root / 'pipeline-start.json'
+    operation_id = request['operation_id']
+    request_sha = runner.sha(args.request)
+    require(request['test_mode'] == BOOTSTRAP_SHORT and 'test' in request['security_domain'].split('-'),
+            'console controls require an independent bootstrap short test')
+    require(not (root / 'final-acceptance.json').exists() and not (short / 'stop.json').exists(),
+            'a completed or explicitly stopped operation cannot be attached or continued')
+    control = OperatorControl(root, operation_id, args.operator_attempt, args.pause_before,
+                              args.continue_operation, args.attach_source)
+    checkpoint = control.checkpoint
+    try:
+        launch = _load_json(marker) if marker.is_file() else None
+        config = args.provider_config.resolve(strict=True)
+        settings = {'provider_config': str(config), 'provider_sha256': runner.sha(config),
+                    'provider_state': str(args.provider_state.resolve())}
+        if launch:
+            require((args.attach_source or args.continue_operation) and launch['operation_id'] == operation_id
+                    and launch['request_sha256'] == request_sha and launch['path'] == 'bootstrap-short'
+                    and launch.get('operator_settings', settings) == settings and not launch.get('reused_handoff'),
+                    'attach or continue requires the exact original console request and Provider configuration')
+        else:
+            require(not (args.attach_source or args.continue_operation), 'original launcher identity is missing')
+            launch = {'started_at': time.time(), 'operation_id': operation_id, 'path': 'bootstrap-short',
+                      'request_sha256': request_sha, 'operator_settings': settings}
+            runner.save(marker, launch)
+        ledger = _vault_path(vault, f'_system/ledgers/ingest-workflows/ingest-{operation_id}.json')
+        if not args.attach_source and checkpoint('bootstrap', {'request_sha256': request_sha}):
+            return PAUSED
+        if args.attach_source:
+            require(ledger.is_file(), 'attachment requires the existing native source ledger')
+        elif not ledger.is_file():
+            from ingest_kanban import KanbanCLI
+
+            require(KanbanCLI().dispatcher_available(),
+                    'native dispatcher required before starting source preparation')
+        handoff = prepare(vault, request, root, args.provisioner_skill.resolve(), args.bootstrap_skill.resolve(),
+                          attach=args.attach_source or (args.continue_operation and ledger.is_file()),
+                          checkpoint=checkpoint)
+        if handoff is None:
+            return PAUSED
+        qualification = qualify_sources(vault, root, handoff, request)
+        require(qualification['ok'] and qualification['resolved'] == len(handoff['pins']),
+                'exact source qualification must match the verified handoff')
+        prior_node = control.resume['node'] if control.resume else None
+        native_checkpoint = control.resume['evidence'].get('checkpoint_id') if control.resume else None
+        if prior_node not in ('formal-build', 'release', 'acceptance'):
+            result = runner.start(short, vault, handoff['workflow_id'], handoff['pins'], operation_id,
+                                  checkpoint=checkpoint, continue_checkpoint=native_checkpoint)
+            if result['state'] == 'paused':
+                return PAUSED
+        result = _load_json(short / 'result.json')
+        sealed = runner.settled_checkpoint(short)
+        plan = sorted(short.glob('stage-*-offline_build.json'))[-1]
+        partition = delivery_partition(_load_json(plan))
+        require(partition['included'], 'no pages with verified complete fragment coverage')
+        authorization = {'contract': 'short-formal-authorization/v1', 'writing_entry': 'initial',
+                         'checkpoint': sealed, 'actor': request['actor'], 'pages': partition['included'],
+                         'base_release': None, 'publish': True, 'policy': POLICY}
+        auth_path = root / 'formal-authorization.json'
+        if auth_path.is_file():
+            require(_load_json(auth_path) == authorization, 'formal authorization changed')
+        else:
+            runner.save(auth_path, authorization)
+        operation = _load_json(short / 'operation.json')
+        if prior_node in ('formal-build', 'release', 'acceptance'):
+            final_plan(short, operation, authorization, runner)
+        if checkpoint('formal-build', {**sealed, 'authorization_sha256': runner.sha(auth_path)}):
+            return PAUSED
+        delivery = execute(short, 'formal-fifth-release', authorization, False, runner, before_delivery=checkpoint)
+        if delivery is None:
+            return PAUSED
+        require(delivery['release_id'], 'formal eligibility produced no releasable pages')
+        provider_path = root / 'provider-result.json'
+        if prior_node == 'acceptance':
+            saved = _load_json(provider_path)
+            provider = saved['index']
+            require(saved['returncode'] == 0 and provider['status'] == 'ready'
+                    and provider['release_id'] == delivery['release_id'], 'Provider checkpoint changed')
+        else:
+            provider = synchronize(vault, root, delivery['release_id'], config)
+        if checkpoint('acceptance', {'release_id': delivery['release_id'], 'provider_sha256': runner.sha(provider_path),
+                                     'authorization_sha256': runner.sha(auth_path)}):
+            return PAUSED
+        final = accept(vault, operation, delivery, provider, args.provider_state.resolve())
+        final.update(source_handoff=handoff, source_qualification=qualification, short_result=result, delivery=delivery,
+                     wall_seconds=time.time() - launch['started_at'],
+                     whole_run_continuous_automation=not (args.attach_source or args.continue_operation))
+        runner.save(root / 'final-acceptance.json', final)
+        control.finish('completed')
+        print(json.dumps(final['release'], ensure_ascii=False), flush=True)
+    except SourceWaitDetached as error:
+        control.finish('detached', error=str(error))
+        print(str(error), flush=True)
+        return DETACHED
+    except Exception as error:
+        control.finish('failed', error=str(error))
+        raise
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--request', type=Path, required=True)
@@ -198,7 +440,7 @@ def main():
     parser.add_argument('--provider-state', type=Path, required=True)
     parser.add_argument('--resume-delivery', action='store_true')
     parser.add_argument('--content-isolation', type=Path)
-    parser.add_argument('--from-node', choices=('mapping', 'writing', 'formal-build'))
+    parser.add_argument('--from-node', choices=('mapping', 'coordination', 'writing', 'formal-build'))
     parser.add_argument('--reentry-id')
     parser.add_argument('--prior-entry')
     parser.add_argument('--fragment-repair', type=Path)
@@ -214,6 +456,11 @@ def main():
     parser.add_argument('--mapping-from', type=Path, help='Start a matched mapping comparison using a settled short pipeline')
     parser.add_argument('--mapping-fence-from', type=Path, action='append', default=[])
     parser.add_argument('--transport-profile', choices=('concentrated', 'paced'))
+    control_group = parser.add_mutually_exclusive_group()
+    control_group.add_argument('--attach-source', action='store_true')
+    control_group.add_argument('--continue-operation', action='store_true')
+    parser.add_argument('--operator-attempt')
+    parser.add_argument('--pause-before', choices=NODES)
     args = parser.parse_args()
     request = _load_json(args.request.resolve(strict=True))
     root = args.output.resolve()
@@ -236,6 +483,18 @@ def main():
     root.mkdir(parents=True, exist_ok=True)
     with (runner.exclusive_lock(vault.parent / ('.' + vault.name + '-short-pipeline.lock'), timeout=0, marker=False),
           runner.exclusive_lock(root / 'pipeline.lock', timeout=0, marker=False)):
+        if args.operator_attempt:
+            require(not any((args.from_node, args.resume_delivery, args.repeat_from, args.content_isolation,
+                             args.reentry_id, args.prior_entry, args.fragment_repair, args.recover_held_content,
+                             args.replay_writing, args.split_atomic_fragment, args.mapping_recovery,
+                             args.source_registry_revision is not None)) and
+                    not (args.pause_before and (args.attach_source or args.continue_operation)),
+                    'console controls cannot be combined with an existing recovery or comparison entry')
+            return run_controlled(args, request, root, vault)
+        require(not (args.attach_source or args.continue_operation or args.pause_before), 'missing operator attempt ID')
+        operator_path = root / 'operator-state.json'
+        require(not operator_path.is_file() or _load_json(operator_path)['state'] != 'paused',
+                'an explicit operator pause must be continued through its checkpoint')
         short = root / 'native'
         marker = root / 'pipeline-start.json'
         provider = None
@@ -271,9 +530,13 @@ def main():
         elif args.from_node:
             entry_pattern = r'[a-z0-9][a-z0-9-]{0,31}'
             writing = args.from_node == 'writing'
+            coordination = args.from_node == 'coordination'
+            recovery_args = (args.fragment_repair, args.split_atomic_fragment, args.replay_writing,
+                             args.recover_held_content, args.mapping_recovery, args.source_registry_revision)
             require(args.reentry_id and re.fullmatch(entry_pattern, args.reentry_id)
                     and not args.resume_delivery and not args.content_isolation
-                    and (bool(args.fragment_repair or args.split_atomic_fragment or args.replay_writing or args.recover_held_content) and not args.mapping_recovery if writing else
+                    and (not any(recovery_args) if coordination else
+                         bool(args.fragment_repair or args.split_atomic_fragment or args.replay_writing or args.recover_held_content) and not args.mapping_recovery if writing else
                          bool(args.mapping_recovery) and not args.fragment_repair and not args.split_atomic_fragment)
                     and (not args.prior_entry or (writing and re.fullmatch(entry_pattern, args.prior_entry))),
                     'supplement requires a stable reentry and its node-specific manifest')
@@ -285,17 +548,22 @@ def main():
             prior_output = short / 'reentries' / args.prior_entry if args.prior_entry else root
             service = FileVaultFinalizeService(vault)
             original = None
-            if args.replay_writing:
+            if args.replay_writing or coordination:
                 require(not (root / 'final-acceptance.json').exists()
                         and not service.status()['current_release_id'] and 'test' in request['security_domain'].split('-'),
-                        'writing replay must preserve the unpublished isolated Vault')
+                        'initial recovery requires the unpublished isolated Vault')
+                if coordination:
+                    interrupted = _load_json(short / 'result.json')
+                    require(interrupted['last_stage'] == 'coordination_held'
+                            and not interrupted['native_active_or_ready'],
+                            'coordination recovery requires a stopped initial coordination hold')
                 base_release = None
             else:
                 original = _load_json(prior_output / 'final-acceptance.json')
                 base_release = original['delivery']['release_id']
                 require(service.status()['current_release_id'] == base_release and service.validate(base_release)['ok'],
                         'prior release must remain the exact supplement base')
-            recovery = _load_json(args.mapping_recovery) if not writing else None
+            recovery = _load_json(args.mapping_recovery) if args.mapping_recovery else None
             if recovery:
                 require(recovery['prior_build'] == original['delivery']['run_id'], 'supplement prior Build changed')
             print(f"Recovering the affected {args.from_node} work", flush=True)
@@ -419,7 +687,7 @@ def main():
         final.update(source_handoff=handoff, short_result=result, delivery=delivery, wall_seconds=time.time() - start,
                      source_qualification=qualification,
                      whole_run_continuous_automation=not (args.resume_delivery or args.replay_writing)
-                     and args.from_node != 'formal-build')
+                     and args.from_node not in ('coordination', 'formal-build'))
         if args.from_node == 'formal-build':
             final.update(replayed_from='formal-build', supplement_continuous_automation=True)
         runner.save(output / 'final-acceptance.json', final)
@@ -427,4 +695,8 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    try:
+        sys.exit(main())
+    except SourceWaitDetached as error:
+        print(str(error), flush=True)
+        sys.exit(DETACHED)

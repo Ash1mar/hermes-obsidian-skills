@@ -509,12 +509,106 @@ def system_prompt(phase,view,correction=None):
                    'topics separate when a missing condition, exception or table would otherwise hold unrelated work. '
                    'Choose a readable Chinese name. Supply a directory name only, not a path.'
                    if 'existing_theme_directories' in view else '')
+                + (' Classify each complete planned page by purpose: card answers a reusable question or rule; '
+                   'concept defines a stable abstraction with a clear boundary, even from one authoritative '
+                   'source; entity explains an identifiable standard, organization, system or tool in its scope '
+                   'and version; topic organizes and explains related knowledge; project describes application '
+                   'to a concrete actual project. A section title, word or writing fragment alone is not a page. '
+                   'Generic implementation guidance or an illustrative example is not an actual project. '
+                   'For project_basis supply the exact project name found in the source and one to three '
+                   'project_text_refs from this page’s assigned topics that establish the actual project; '
+                   'use null for every other type. Choose only types justified by the material.'
+                   if phase == 'short-coordinate' and view.get('typed_pages') else '')
+                + (' Classify by the reader task. A directly usable requirement, checklist, sequence or '
+                   'decision rule for one task normally belongs in a Card, even across multiple stages '
+                   'or sections. A Topic primarily organizes other knowledge or explains relationships '
+                   'among knowledge objects. Candidate topics are units of mapped material. Page length, '
+                   'stage count, section count and the topics field do not determine page_type. '
+                   'Briefly justify the selected type and grouping in grouping_reason.'
+                   if phase == 'short-coordinate' and view.get('organization_targets') else '')
+                + (' Let independently usable definitions, requirements and entities own their evidence topics '
+                   'as separate pages when each can retain its own necessary conditions and exceptions. Combine '
+                   'topics when they answer one reader question and separating them would lose context. '
+                   'Existing page hints are registry observations only; similar names may have different scope or '
+                   'version. Never infer reuse or overwrite a page from a name match.'
+                   if phase == 'short-coordinate' and 'existing_page_hints' in view else '')
+                + (' Return zero or more short syntheses in syntheses alongside the primary pages. Each synthesis '
+                   'answers a distinct question about a relationship among at least two independent Card, Concept '
+                   'or Entity pages. Select two to eight exact topic/ref anchors from their synthesis_anchor_refs. '
+                   'Select only the original evidence needed for that relationship. The primary pages or '
+                   'unresolved list still account for every topic exactly once. A synthesis shares evidence; '
+                   'it does not own a topic or replace an independent entry. Omit a synthesis if it only repeats '
+                   'a page or if the evidence cannot support a distinct conclusion.'
+                   if phase == 'short-coordinate' and view.get('allow_syntheses') and not view.get('scope_contract') else '')
+                + (' Compare neighboring candidates for duplication, containment and complementary scope. Use '
+                   'evidence_ownership to distinguish actual evidence from navigation wrappers and detect shared '
+                   'references. Shared evidence alone does not justify merging. Merge overlapping purposes, '
+                   'narrow the reader question and scope, or let one Topic organize distinct entries. Explain '
+                   'in grouping_reason what distinguishes adjacent pages. Fold a wrapper-only candidate into '
+                   'its evidence-owning page or record it in navigation_only when its underlying material is '
+                   'owned by primary pages. Count each topic once among pages, unresolved and navigation_only.'
+                   if phase == 'short-coordinate' and view.get('scope_contract') else '')
+                + (' Use navigation_only exclusively for pure pointers to original material demonstrably '
+                   'carried by another primary page. Source-specific version, identity or approval records '
+                   'still need a real destination. Keep them in a properly scoped primary page when '
+                   'supported, or record an unresolved source-summary destination when none is available.'
+                   if phase == 'short-coordinate' and view.get('candidate_destinations') else '')
+                + (' Consider Topics that organize reading as well as Topics that explain relationships. '
+                   'Use purpose organization when scope and reading sequence give readers more guidance than '
+                   'the index. An organization Topic need not invent a new conclusion. Use purpose explanation '
+                   'when original evidence supports a distinct relationship. Choose two to eight exact '
+                   'topic/ref anchors from synthesis_anchor_refs, spanning at least two '
+                   + ('different primary pages. ' if view.get('organization_targets')
+                      else 'independent Card, Concept or Entity pages. ')
+                   + 'For organization, list the anchors in intended reading order. Keep original '
+                   'conditions and exceptions. If neither purpose adds value, leave syntheses empty and briefly '
+                   'explain why in no_synthesis_reason. A Topic never takes ownership of an entry topic.'
+                   if phase == 'short-coordinate' and view.get('scope_contract') and view.get('allow_syntheses') else '')
+                + (' Organization may link to a primary Card, Concept, Entity or evidence-owning ordinary Topic. '
+                   'Every listed reading target is required. Explanation can use primary Card, Concept or Entity '
+                   'only. A synthesis cannot serve as another synthesis’s target.'
+                   if phase == 'short-coordinate' and view.get('organization_targets') and view.get('allow_syntheses') else '')
                 + (' Express each required definition in its owning slot. For a required whole table, retain '
                    'the applicable headers, values, conditions, exceptions and footnotes that support the answer. '
                    'Cite the exact asset. If an essential part cannot be read, identify its exact material and '
                    'effect. A reference to an external document can be expressed within the supplied source scope.'
                    if view.get('card_content') and not any('locked_draft_sha256' in slot for slot in
                        view.get('structural_retry', {}).get('slots', {}).values()) else '')
+                + (' Use the assigned page_type to guide the local prose. For concept explain the definition '
+                   'and its boundary, for entity keep its version and identity clear, for topic explain '
+                   'relationships within the assigned scope, and for project distinguish project-specific '
+                   'facts from general rules. Express and cite any assigned project_basis_refs. Do not expand '
+                   'beyond this slot or make claims unsupported by its evidence.'
+                   if phase == 'short-write' and any('page_type' in slot for slot in view.get('pages', {}).values())
+                   else '')
+                + (' Begin the local content with what the reader can use and where it applies. Keep conditions '
+                   'and exceptions next to the rule they limit. A slot completes only its own assigned work; '
+                   'keep the prose understandable without assuming the reader saw the previous fragment.'
+                   if phase == 'short-write' and any('knowledge_plan' in slot
+                                                    for slot in view.get('pages', {}).values()) else '')
+                + (' A synthesis_task asks for a specific relationship, not a second copy of the entry pages. '
+                   'The entry names and scopes orient the reader; cite the supplied original anchor evidence '
+                   'and applicable conditions and exceptions for the new explanation. The synthesis must stand '
+                   'on that evidence even if an entry is not delivered. Do not generate links to planned entries '
+                   'or treat their names and scopes as evidence.'
+                   if phase == 'short-write' and any('synthesis_task' in slot and not slot.get('scope_contract')
+                                                    for slot in view.get('pages', {}).values()) else '')
+                + (' The coordinated reader_question and scope define the page boundary. Answer only the '
+                   'fragment_task using its assigned material and necessary conditions. Shared context can help '
+                   'interpret the evidence but does not add duties or widen the page. Do not infer that all '
+                   'tables referenced by a shared wrapper are required. For a synthesis_task with purpose '
+                   'organization, explain scope, how to choose entries and why the reading sequence helps. '
+                   'Do not reproduce entry bodies. For explanation, support new conclusions directly from '
+                   'the anchors. Cite the original anchors and retain applicable conditions and exceptions. '
+                   'The navigation projection adds links to entries that qualify for release.'
+                   if phase == 'short-write' and any(slot.get('scope_contract')
+                                                    for slot in view.get('pages', {}).values()) else '')
+                + (' A reading_steps assignment covers only the listed entries in the supplied order. '
+                   'Explain when to consult them and how to choose among them within this fragment. '
+                   'Keep each entry’s applicable limits with its guidance. Leave other steps and '
+                   'link generation to assembly.'
+                   if phase == 'short-write' and any('reading_steps' in slot.get('synthesis_task', {})
+                                                    for slot in view.get('pages', {}).values()) else '')
                 + (' This is a single replacement slot. Its fragment_task question and deliverable_scope '
                    'define the entire assignment. Do not answer sibling sections or infer a larger page task. '
                    'Preserve each condition and exception in preserve_limitations with its full trigger and scope. '

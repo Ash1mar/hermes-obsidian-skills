@@ -38,6 +38,7 @@ STAGE_NODE = {
     'local_coordination': 'coordination', 'local_page_detail': 'coordination',
     'writing': 'writing', 'offline_build': 'writing',
 }
+OPERATOR_STAGE_NODE = {**STAGE_NODE, 'topic-seed': 'topics'}
 
 
 def sha(path):
@@ -301,6 +302,8 @@ def replay_node_output(root, row, saved, own, *, mapping_overlay=None):
     kb, kc, _ = runtime()
     sources = []
     remaining = row.get('missing_slots', ['r'])
+    if row['phase'] == 'short-coordinate' and row['view'].get('scope_contract'):
+        saved = reversed(saved)
     for ref in saved:
         own_grant = own()
         old_job = _vault_path(root, ref['job'])
@@ -728,6 +731,8 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
                 'zero-call writing replay requires the settled original writing checkpoint')
         holds = {rid: hold for rid, hold in original['execution_holds'].items()
                  if not previous.get(rid) or _load_json(root / previous[rid][0]['job'])['request']['phase'] != 'short-write'}
+    if node == 'coordination' and operation.get('card_layout', {}).get('content_outcome_recovery'):
+        content_recovery = True
     if inherited:
         predecessor = root / 'reentries' / inherited['entry']
         prior_result = _load_json(predecessor / 'result.json')
@@ -815,10 +820,81 @@ def reenter(root, operation, sources, seeds, groups, node, entry, *, dry_run, pa
                       content_recovery=content_recovery)
 
 
+def verify_drained(root, operation, receipts=None):
+    kb, kc, _ = runtime()
+    board = operation['board']
+    require(not workflow_processes(operation['origin']['workflow_id'], board), 'native workers have not drained')
+    with closing(kc.connect(board=board)) as conn:
+        require(all(task.status not in ('ready', 'running', 'todo', 'triage') and not task.claim_lock
+                    for task in kb.list_tasks(conn, include_archived=True)), 'native board has runnable tasks or claims')
+        if receipts:
+            verify_checkpoint_receipts(root, kb, conn, receipts)
+    require(_load_json(root / 'operation.json') == operation, 'short operation changed')
+
+
+def verify_checkpoint_receipts(root, kb, conn, receipts):
+    comparison = root / 'mapping-comparison.json'
+    inherited = _load_json(comparison)['topic_receipts'] if comparison.is_file() else {}
+    groups = {}
+    for name, digest in receipts.items():
+        request_id = Path(name).stem.split('-', 1)[0]
+        if name == request_id + '.json' and request_id in inherited:
+            require(digest == inherited[request_id]['receipt_sha256'], 'inherited topic receipt changed')
+        else:
+            groups.setdefault(request_id, set()).add(name)
+    for request_id, expected in groups.items():
+        job = root / 'jobs' / f'{request_id}.json'
+        result_path = job.with_suffix('.result.json')
+        require(result_path.is_file(), 'receipt lacks its native completion')
+        result = _load_json(result_path)
+        task = kb.get_task(conn, result['task_id'])
+        require(task and task.status in ('done', 'archived') and task.created_by == CONTRACT
+                and task.body == task_body(root, job)
+                and result['request_id'] == request_id
+                and any(run.id == result['run_id'] and run.outcome == 'completed'
+                        for run in kb.list_runs(conn, task.id, include_active=False)),
+                'receipt lacks its acknowledged native run')
+        writing = _load_json(job)['request']['phase'] == 'short-write'
+        sealed = {f'{request_id}-{slot}.json' if writing else f'{request_id}.json'
+                  for attempt in result['attempts'] for slot in attempt.get('capture', {}).get('sealed', ())}
+        require(expected <= sealed, 'receipt does not match the acknowledged request output')
+
+
+def operator_checkpoint(root, operation, plan_path, plan, holds, metrics):
+    recovery = root / 'content-recovery.json'
+    return {
+        'node': OPERATOR_STAGE_NODE[plan['stage']], 'stage': plan['stage'], 'board': operation['board'],
+        'operation_sha256': sha(root / 'operation.json'), 'plan_sha256': sha(plan_path),
+        'receipts': {p.name: sha(p) for p in sorted((root / 'receipts').glob('*.json'))},
+        'metrics': {p.name: sha(p) for p in sorted(root.glob('metrics-*.json'))},
+        'metric_count': len(metrics), 'execution_holds': holds,
+        'content_recovery_sha256': sha(recovery) if recovery.is_file() else None,
+    }
+
+
+def settled_checkpoint(root):
+    """Get the original writing checkpoint pins for the formal authorization."""
+    operation = _load_json(root / 'operation.json')
+    result = _load_json(root / 'result.json')
+    require(result['last_stage'] == 'offline_build' and not result['native_active_or_ready']
+            and result['board'] == operation['board'] and result['origin'] == operation['origin'],
+            'a settled writing checkpoint is required')
+    live(root, operation)
+    verify_drained(root, operation)
+    plan = sorted(root.glob('stage-*-offline_build.json'))[-1]
+    pins = {'control_sha256': sha(root / 'operation.json'), 'result_sha256': sha(root / 'result.json'),
+            'plan_sha256': sha(plan)}
+    recovery = root / 'content-recovery.json'
+    if recovery.is_file():
+        pins['content_recovery_sha256'] = sha(recovery)
+    return pins
+
+
 def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=False,
                entry=None, directory=None, previous=None, page_contract=None, fragment_repair=None,
                fragment_exclusions=None, mapping_overlay=None, preserved_pages=(), registry_revision=None,
-               initial_holds=None, split_output=None, replay_only=False, content_recovery=False):
+               initial_holds=None, split_output=None, replay_only=False, content_recovery=False,
+               checkpoint=None, continued=None):
     kb, kc, _ = runtime()
     output = directory or root
     board = operation['board']
@@ -840,13 +916,8 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
                        page_namespace=operation.get('page_namespace'), card_layout=operation.get('card_layout'))
         planning_seconds = time.monotonic() - planning_started
         rows = plan.get('requests', [])
-        if not rows and plan['stage'] == 'offline_build' and recovery_enabled and not recovery_path.exists():
-            require(fragment_repair is None, 'automatic content recovery cannot replace an existing repair contract')
-            from short_content_recovery import plan_recovery
-            fragment_repair = plan_recovery(root, plan, sources, sys.modules[__name__])
-            save(recovery_path, fragment_repair)
-            # Historical exhausted/unknown requests remain fenced; the new calls have distinct bound identities.
-            continue
+        recovery_pending = (not rows and plan['stage'] == 'offline_build' and recovery_enabled
+                            and not recovery_path.exists())
         if replay_only:
             require(all(row['phase'] == 'short-write' and previous.get(row['id']) for row in rows),
                     'writing replay cannot dispatch a new model request')
@@ -855,7 +926,38 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
             holds.update({rid: {'request_id': rid, 'reason': 'prior reserved completion remains unknown'}
                           for rid in consumed_unknown})
             continue
-        save(output / f"stage-{len(metrics) + 1:02}-{plan['stage']}.json", plan)
+        plan_path = output / f"stage-{len(metrics) + 1:02}-{plan['stage']}.json"
+        if (checkpoint or continued) and plan['stage'] in OPERATOR_STAGE_NODE and (rows or recovery_pending):
+            # The first offline plan can be changed by deterministic content recovery.
+            # Keep it separate from the deliverable offline Build plan.
+            sealed_plan = (output / 'operator-checkpoints' / 'recovery-preview.json'
+                           if recovery_pending else plan_path)
+            save(sealed_plan, plan)
+            snapshot = operator_checkpoint(root, operation, sealed_plan, plan, holds, metrics)
+            checkpoint_id = fingerprint(snapshot)
+            verifying_continuation = continued is not None
+            if verifying_continuation:
+                require(continued == snapshot, 'paused short-stage evidence or requested inputs changed')
+                verify_drained(root, operation, snapshot['receipts'])
+                continued = None
+            evidence = {k: snapshot[k] for k in ('node', 'stage', 'board', 'plan_sha256')}
+            evidence['checkpoint_id'] = checkpoint_id
+            if checkpoint:
+                if not verifying_continuation:
+                    verify_drained(root, operation)
+                save(output / 'operator-checkpoints' / f'{checkpoint_id}.json', snapshot)
+                if checkpoint(snapshot['node'], evidence):
+                    return {'state': 'paused', 'node': snapshot['node'], 'last_stage': plan['stage'],
+                            'checkpoint_id': checkpoint_id}
+        require(not continued, 'paused short-stage boundary is gone')
+        if recovery_pending:
+            require(fragment_repair is None, 'automatic content recovery cannot replace an existing repair contract')
+            from short_content_recovery import plan_recovery
+            fragment_repair = plan_recovery(root, plan, sources, sys.modules[__name__])
+            save(recovery_path, fragment_repair)
+            # Historical exhausted/unknown requests remain fenced; the new calls have distinct bound identities.
+            continue
+        save(plan_path, plan)
         if not rows:
             final = 'partial' if (plan.get('stage') != 'offline_build' or plan.get('held')
                 or plan.get('coordination_issues') or plan.get('reduced', {}).get('unresolved')
@@ -894,7 +996,8 @@ def run_stages(root, operation, sources, seeds, groups, metrics, *, resumed=Fals
 def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=None, entry=None, dry_run=False,
           page_contract=None, fragment_repair=None, fragment_exclusions=None, mapping_recovery=None,
           registry_revision=None, split_output=None, separate_page_identities=False, mapping_from=None,
-          transport_profile='shared', mapping_fences=(), replay_only=False, content_recovery=False):
+          transport_profile='shared', mapping_fences=(), replay_only=False, content_recovery=False,
+          checkpoint=None, continue_checkpoint=None):
     from short_evidence_pass import MAP_CONTRACT
 
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
@@ -903,6 +1006,8 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
     require(split_output is None or (node == 'writing' and re.fullmatch(r'[a-f0-9]{64}', split_output)),
             'an explicit output split requires the exact writing fragment hash')
     require(not root.is_relative_to(vault), 'write experiment evidence outside the source Vault')
+    require(not (checkpoint or continue_checkpoint) or not (resumed or node or dry_run),
+            'operator checkpoints apply to the original short pipeline')
     root.mkdir(parents=True, exist_ok=True)
     with exclusive_lock(root / 'controller.lock', timeout=0, marker=False):
         require(registry_revision is None or mapping_recovery is not None,
@@ -929,7 +1034,8 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
                      'pass_capacity': cfg['pass_worker_concurrency'], 'page_capacity': cfg['reduce_page_concurrency']}
         seeds = seed_requests(sources)
         holds = None
-        if resumed or node:
+        continued = None
+        if resumed or node or continue_checkpoint:
             operation = _load_json(root / 'operation.json')
             groups = mapping_groups(sources, operation.get('mapping_contract'))
             require(operation['board'] == board and operation['origin'] == origin and operation['pins'] == pins
@@ -946,7 +1052,19 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
                                mapping_recovery=mapping_recovery, registry_revision=registry_revision, inherited=inherited,
                                split_output=split_output or active.get('split_output') or operation.get('split_output'),
                                replay_only=replay_only, content_recovery=content_recovery)
-            metrics = resume_mapping(root, operation, sources, seeds, groups)
+            if continue_checkpoint:
+                require(re.fullmatch(r'[a-f0-9]{64}', continue_checkpoint)
+                        and not (root / 'result.json').exists(), 'valid pending short checkpoint required')
+                continued = _load_json(root / 'operator-checkpoints' / f'{continue_checkpoint}.json')
+                require(fingerprint(continued) == continue_checkpoint
+                        and continued['operation_sha256'] == sha(root / 'operation.json'),
+                        'short checkpoint identity changed')
+                page_contract = operation.get('page_contract')
+                holds = continued['execution_holds']
+                metric_paths = sorted(root.glob('metrics-*.json'), key=lambda p: int(p.name.split('-')[1]))
+                metrics = [_load_json(path) for path in metric_paths]
+            else:
+                metrics = resume_mapping(root, operation, sources, seeds, groups)
         else:
             require(not (root / 'operation.json').exists(), 'operation already exists; inspect its durable evidence')
             require(not any(meta['slug'] == board for meta in kb.list_boards()), 'native test board already exists')
@@ -972,7 +1090,7 @@ def start(root, vault, workflow_id, pins, operation_id, *, resumed=False, node=N
             save(root / 'operation.json', operation)
             metrics = []
         return run_stages(root, operation, sources, seeds, groups, metrics, resumed=resumed,
-                          page_contract=page_contract, initial_holds=holds)
+                          page_contract=page_contract, initial_holds=holds, checkpoint=checkpoint, continued=continued)
 
 
 def main():

@@ -210,12 +210,15 @@ def source_revision(source):
     )})
 
 
-def evidence(source, selected):
+def evidence(source, selected, *, context_only=()):
     """Expand transitive explicit asset dependencies without losing primary IDs."""
     items = source['items']
     ordered = dict.fromkeys(selected)
     queue = list(ordered)
+    context_only = set(context_only)
     for item_id in queue:
+        if item_id in context_only:
+            continue
         for dep in items[item_id]['required_assets']:
             if dep not in ordered:
                 ordered[dep] = None
@@ -224,6 +227,8 @@ def evidence(source, selected):
     for item_id in ordered:
         item = items[item_id]
         row = {k: item[k] for k in ('kind', 'text', 'heading', 'required_assets')}
+        if item_id in context_only:
+            row['required_assets'] = [ref for ref in item['required_assets'] if ref in ordered]
         if item['kind'] == 'asset':
             row['label'] = item['locator']['path']
         if 'image' in item:
@@ -454,4 +459,8 @@ def checked_answer(row, saved):
                 'stale or changed versioned mapping receipt')
         return saved['normalized']
     require(receipt(row, saved['answer']) == saved, 'stale or changed experimental receipt')
-    return saved['answer']['results']['r']
+    response = saved['answer']['results']['r']
+    if row['phase'] == 'short-coordinate' and row['view'].get('scope_contract'):
+        from short_page_contract import scoped_coordination_result
+        return scoped_coordination_result(row['view'], response)
+    return response

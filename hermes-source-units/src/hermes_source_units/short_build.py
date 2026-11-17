@@ -13,6 +13,16 @@ POLICY = 'native-short-build/v1'
 QA_POLICY = 'short-build-advisory-qa/v1'
 CONTENT_ISOLATION = 'short-build-content-isolation/v1'
 ROOT = '_system/knowledge-builds'
+TYPED_LAYOUT = 'short-page-layout/v2'
+PAGE_DIRECTORIES = {
+    'card': ('30_Cards',),
+    'concept': ('40_Concepts', '概念'),
+    'entity': ('40_Concepts', '实体'),
+    'topic': ('50_Projects', '专题'),
+    'project': ('50_Projects', '项目'),
+}
+PAGE_TYPES = {'card': 'knowledge-card', 'concept': 'concept', 'entity': 'entity',
+              'topic': 'topic', 'project': 'project-note'}
 
 
 def require(test, message):
@@ -21,6 +31,7 @@ def require(test, message):
 
 
 def identity(service, short_id, name):
+    # This is the stable short-path identity namespace, not the product page type.
     vault_id = service.source.vault_id
     key = f'short-evidence:{short_id}'
     subject = fingerprint({'vault_id': vault_id, 'kind': 'concept', 'identity_key': key})
@@ -28,27 +39,56 @@ def identity(service, short_id, name):
         fingerprint({'vault_id': vault_id, 'subject_id': subject}))
 
 
-def output_path(short_id, card_path=None):
+def output_path(short_id, card_path=None, *, page_type=None):
     if card_path is None:
+        require(page_type is None, 'typed short page requires a routed destination')
         return f'20_Notes/ShortEvidence/{short_id}.md'
+    require(page_type is None or isinstance(page_type, str), 'invalid short page type')
+    prefix = ('30_Cards',) if page_type is None else PAGE_DIRECTORIES.get(page_type)
+    require(prefix is not None and isinstance(card_path, str), 'invalid short page type or destination')
     parts = PurePosixPath(card_path).parts
-    require(len(parts) == 3 and parts[0] == '30_Cards' and '/'.join(parts) == card_path
-            and parts[2].endswith('.md') and parts[2].casefold() != '00_目录.md'
+    depth = 3 if prefix == ('30_Cards',) else len(prefix) + 1
+    require(len(parts) == depth and parts[:len(prefix)] == prefix and '/'.join(parts) == card_path
+            and parts[-1].endswith('.md') and parts[-1].casefold() != '00_目录.md'
             and all(part not in ('.', '..') and part == part.strip(' .')
                     and not re.search(r'[<>:"/\\|?*\[\]#^\x00-\x1f]', part)
                     and not re.fullmatch(r'(?i:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\..*)?', part)
-                    and len(part.encode('utf-8')) <= 180 for part in (parts[1], parts[2], parts[2][:-3])),
-            'short card path must be a portable topic directory and readable Markdown name')
+                    and len(part.encode('utf-8')) <= 180 for part in (*parts[len(prefix):], parts[-1][:-3])),
+            'short page path must match its type and use a portable Markdown name')
+    require(page_type is None or bool(parts[-1][:-3]), 'typed short page requires a filename stem')
     return card_path
+
+
+def project_refs(basis):
+    """Validate the bounded project descriptor; the caller verifies source bindings."""
+    require(isinstance(basis, dict) and set(basis) == {'name', 'refs'}
+            and isinstance(basis['name'], str) and 0 < len(basis['name']) <= 120
+            and bool(basis['name'].strip())
+            and not re.search(r'[\x00-\x1f\[\]]', basis['name'])
+            and isinstance(basis['refs'], list) and 1 <= len(basis['refs']) <= 3
+            and all(isinstance(ref, str) and re.fullmatch(r'S[0-9]+-B[0-9]+', ref) for ref in basis['refs'])
+            and len(set(basis['refs'])) == len(basis['refs']), 'project requires a named project and exact text references')
+    return set(basis['refs'])
 
 
 def projection(service, row):
     subject, page_id = identity(service, row['short_id'], row['name'])
+    page_type = row.get('page_type')
+    if page_type == 'project':
+        refs = project_refs(row.get('project_basis'))
+        bindings = row.get('citation_bindings', {})
+        require(refs <= bindings.keys() and all(bindings[ref] in row['support_refs'] for ref in refs),
+                'project basis must be cited and bound to the page source support')
+    else:
+        require('project_basis' not in row, 'project basis is only valid for a Project')
     page = {'contract': 'hermes-knowledge-page-revision/v1', 'page_id': page_id,
             'subject_id': subject['subject_id'], 'parent_revision_id': None, 'action': 'create',
-            'path': output_path(row['short_id'], row.get('card_path')), 'authored_sha256': row['authored_sha256'],
+            'path': output_path(row['short_id'], row.get('card_path'), page_type=page_type),
+            'authored_sha256': row['authored_sha256'],
             'support_refs': row['support_refs'], 'qa_status': row['qa_status'],
             'business_status': 'unassessed', 'visibility': 'draft'}
+    if page_type is not None:
+        page['page_type'] = page_type
     page['revision_id'] = fingerprint({k: v for k, v in page.items() if k != 'contract'})
     decision = {k: page[k] for k in ('subject_id', 'page_id', 'action', 'path', 'support_refs', 'revision_id')}
     return {**page, 'state': 'draft', 'review': None}, {**decision, 'candidate_refs': [], 'identity': subject}
@@ -262,13 +302,19 @@ def admit(service, scope, bodies, root, job):
             and scope['actor'] == scope['authorization']['actor']
             and scope['authorization']['policy'] == RELEASE_POLICY,
             'short Build admission differs from the operator selection')
+    typed = (operation.get('card_layout') or {}).get('contract') == TYPED_LAYOUT
     for row in scope['pages']:
-        require(row['native_fragments'] and row['support_refs'] and
+        require(('page_type' in row) == typed and (not typed or row['page_type'] in PAGE_TYPES)
+                and row['native_fragments'] and row['support_refs'] and
                 row['authored_sha256'] == _sha(bodies[row['short_id']]) and
                 row['qa_status'] == ('qa_required' if row['qa_issues'] else 'usable') and
                 (not row['publication_authorized'] or (row['qa_status'] == 'usable'
                  and scope['authorization']['publish'] is True)),
                 'short Build candidate lacks native, source, or QA evidence')
+        if row.get('page_type') == 'project':
+            citations = set(re.findall(rb'\[(S[0-9]+-B[0-9]+)\]', bodies[row['short_id']]))
+            require({ref.encode('ascii') for ref in project_refs(row.get('project_basis'))} <= citations,
+                    'project basis must appear in the reviewed Markdown citations')
     run_id = 'short-build-' + fingerprint(scope)
     path = service._run_path(run_id)
     proof_path = path.with_name('short-evidence.json')
@@ -291,6 +337,15 @@ def admit(service, scope, bodies, root, job):
                     and (not target.parent.exists() or (target.parent.is_dir() and all(
                         sibling.name.casefold() != target.name.casefold() for sibling in target.parent.iterdir()))),
                     'short card path collides with an existing Vault entry')
+            if typed:
+                # Check the full directory chain for aliases, files and portable case collisions.
+                cursor = service.vault
+                for part in PurePosixPath(card_path).parts[:-1]:
+                    if cursor.is_dir():
+                        require(all(p.name == part and p.is_dir() and not p.is_symlink()
+                                    for p in cursor.iterdir() if p.name.casefold() == part.casefold()),
+                                'short page directory collides with an existing Vault entry')
+                    cursor /= part
         proof = {'contract': POLICY, 'vault_id': service.source.vault_id, 'scope': scope, 'admission': admission}
         if proof_path.exists():
             old = _load_json(proof_path)

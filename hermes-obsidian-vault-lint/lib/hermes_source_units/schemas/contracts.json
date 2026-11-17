@@ -1693,6 +1693,9 @@
       "required": ["contract", "pass_id", "task_id", "task_revision", "pass_kind", "sequence", "reading_window_id", "reading_package_id", "inspections", "candidates", "empty_reason", "actor"],
       "additionalProperties": false
     },
+    "short_page_type": {
+      "enum": ["card", "concept", "entity", "topic", "project"]
+    },
     "knowledge_subject": {
       "type": "object",
       "properties": {
@@ -1705,6 +1708,7 @@
         "status": {"enum": ["active", "retired"]},
         "current_path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
         "current_revision_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "page_type": {"$ref": "#/$defs/short_page_type"},
         "created_by_run": {"type": "string", "minLength": 1, "maxLength": 160, "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]*$"}
       },
       "required": ["subject_id", "page_id", "kind", "identity_key", "canonical_name", "aliases", "status", "current_path", "current_revision_id", "created_by_run"],
@@ -1751,6 +1755,7 @@
         "parent_revision_id": {"anyOf": [{"type": "string", "pattern": "^[0-9a-f]{64}$"}, {"type": "null"}]},
         "action": {"enum": ["create", "update", "reuse", "relate"]},
         "path": {"type": "string", "minLength": 1, "format": "vault-relative-path"},
+        "page_type": {"$ref": "#/$defs/short_page_type"},
         "authored_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
         "support_refs": {"type": "array", "items": {"$ref": "#/$defs/source_ref"}, "minItems": 1},
         "qa_status": {"enum": ["usable", "qa_required"]},

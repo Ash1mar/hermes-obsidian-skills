@@ -3,7 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 import math
+import os
 
+from .local_models import cached_model_path
 from .model_http import post_json
 
 
@@ -16,6 +18,8 @@ class BgeReranker:
         revision: str | None = None,
         local_files_only: bool = False,
     ) -> None:
+        if local_files_only:
+            model_name = cached_model_path(model_name, revision, cache_dir=os.getenv("TRANSFORMERS_CACHE"))
         from sentence_transformers import CrossEncoder
 
         self.model = CrossEncoder(

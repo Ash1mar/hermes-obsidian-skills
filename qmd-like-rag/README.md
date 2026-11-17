@@ -78,6 +78,11 @@ or mismatched asset fails sync; there is no `cl100k_base`, character-count or al
 fallback. When reranking is enabled, configure its publisher tokenizer asset, identity, revision,
 maximum input and preferably checksum separately; sync and recall verify its fingerprint as well.
 
+For local embedding and reranking with `local_files_only: true`, the Provider opens the
+configured model directory or resolves the configured repository and revision to a cached
+Hugging Face snapshot before initializing the model. Provision the required revision in the
+Provider's cache ahead of time. Missing snapshots fail locally with the model and revision.
+
 ## Commands
 
 ```bash

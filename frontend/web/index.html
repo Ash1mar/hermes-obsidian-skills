@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Hermes 本地文档处理和短路径工作流控制台">
+  <title>Hermes · 工作流控制台</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <a class="brand" href="#workflow" aria-label="Hermes 工作流控制台">
+        <span class="brand-mark" aria-hidden="true">H</span>
+        <span>Hermes<small>工作流控制台</small></span>
+      </a>
+      <nav aria-label="主导航">
+        <a href="#workflow" data-page="workflow" aria-current="page"><span aria-hidden="true">↳</span>工作流</a>
+        <a href="#vaults" data-page="vaults"><span aria-hidden="true">▤</span>Vault</a>
+        <a href="#devtools" data-page="devtools"><span aria-hidden="true">⌘</span>DevTools</a>
+      </nav>
+      <div class="connection"><i></i><span id="connection">正在连接本机</span></div>
+    </aside>
+    <main>
+      <header class="topbar">
+        <span id="breadcrumb">工作流</span>
+        <a class="environment gateway-indicator" href="#devtools" id="gateway-top" aria-live="polite">Gateway · 检查中</a>
+      </header>
+      <div class="content">
+        <p id="notice" class="notice" role="status" hidden></p>
+
+        <section id="workflow" class="page">
+          <header class="page-header">
+            <div><h1>文档处理</h1><p>从原始 PDF 到 Vault 发布、索引和最终验收。</p></div>
+            <button type="button" class="secondary" id="toggle-form" aria-expanded="true" aria-controls="new-panel">收起新建</button>
+          </header>
+          <section class="panel new-panel" id="new-panel" aria-labelledby="form-title">
+            <div class="panel-heading"><h2 id="form-title">新建测试 Vault</h2><span class="tag">Bootstrap 短路径</span></div>
+            <form id="create">
+              <label for="sources">文档或文件夹地址</label>
+              <textarea id="sources" rows="3" required placeholder="C:\资料\工程规程"></textarea>
+              <p class="hint">每行一条路径。文件夹会递归收集 PDF。</p>
+              <div class="fields">
+                <div>
+                  <label for="vault-path">Vault 目标地址</label>
+                  <input id="vault-path" required placeholder="/opt/data/hermes/MyTest/vault" spellcheck="false">
+                </div>
+                <div>
+                  <label for="vault-name">Vault 名称</label>
+                  <input id="vault-name" required maxlength="120" placeholder="我的测试知识库">
+                </div>
+              </div>
+              <label for="pause-before">处理到此节点前暂停</label>
+              <select id="pause-before">
+                <option value="">自动处理到最终验收</option>
+              </select>
+              <div class="form-foot">
+                <small id="form-hint">新建独立测试 Vault，合格页面将发布并同步索引。查询保持关闭。</small>
+                <button type="submit" id="start" disabled>开始处理 <span aria-hidden="true">→</span></button>
+              </div>
+            </form>
+          </section>
+
+          <div class="work-grid">
+            <section class="panel stages-panel" aria-labelledby="stages-title">
+              <div class="panel-heading"><div><h2 id="stages-title">流程节点</h2><p id="selected-label" class="hint">选择一次运行查看节点状态</p></div><span id="run-status"></span></div>
+              <ol id="timeline" class="timeline"></ol>
+            </section>
+            <aside class="stack">
+              <section class="panel" aria-labelledby="history-title">
+                <div class="panel-heading"><h2 id="history-title">运行记录</h2><span id="runs-count" class="tag">0</span></div>
+                <div id="runs" class="run-list"></div>
+              </section>
+              <section class="panel" aria-labelledby="snapshot-title">
+                <div class="panel-heading"><h2 id="snapshot-title">运行摘要</h2></div>
+                <dl id="snapshot" class="facts"></dl>
+              </section>
+            </aside>
+          </div>
+        </section>
+
+        <section id="vaults" class="page" hidden>
+          <header class="page-header"><div><h1>Vault</h1><p>查看本机运行的 Vault 和发布状态，或在 Obsidian 中打开。</p></div></header>
+          <div id="vault-list" class="vault-list"></div>
+        </section>
+
+        <section id="devtools" class="page" hidden>
+          <header class="page-header"><div><h1>DevTools</h1><p>查看执行器日志和当前运行的 Hermes 原生状态。</p></div></header>
+          <section class="panel terminal-panel gateway-panel" aria-labelledby="gateway-title">
+            <div class="panel-heading"><h2 id="gateway-title">Hermes Gateway</h2><span class="badge" id="gateway-badge">检查中</span></div>
+            <dl id="gateway-facts" class="facts"></dl>
+            <pre id="gateway-log" tabindex="0" aria-label="Gateway 启动日志">等待 Gateway 启动日志。</pre>
+          </section>
+          <div class="dev-grid">
+            <section class="panel terminal-panel" aria-labelledby="log-title">
+              <div class="panel-heading"><h2 id="log-title">流水线日志</h2><label class="sr-only" for="attempts">执行记录</label><select id="attempts"></select></div>
+              <pre id="log" tabindex="0">选择一条运行查看日志。</pre>
+            </section>
+            <section class="panel" aria-labelledby="native-title">
+              <div class="panel-heading"><h2 id="native-title">Hermes 原生状态</h2></div>
+              <dl id="native" class="facts"></dl>
+              <p id="dev-hint" class="hint"></p>
+            </section>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+</body>
+</html>

@@ -1,9 +1,14 @@
 """Form physical writing fragments without altering semantic page identity."""
 import copy
 import re
+import unicodedata
 
+from hermes_source_units import ContractError
+from hermes_source_units.short_build import project_refs
 from hermes_source_units.validation import fingerprint
 from short_evidence_pass import USABLE_OUTPUT, evidence, require, source_revision
+from short_knowledge_plan import CONTRACT as KNOWLEDGE_PLAN, SCOPE_CONTRACT
+from short_knowledge_plan import enabled as knowledge_plan, matching_pages, organization_topics, synthesis_id, synthesis_topics
 from short_page_contract import CONTRACT, WRITE_CONTRACT, body_request, local_task, obligations, qa_impacts, topic_items, writing_view
 
 SHARED = {'condition', 'exception', 'conflict', 'contrary', 'definition', 'context'}
@@ -49,29 +54,51 @@ def connected_groups(source, relations, *, join_adjacent=True):
 
 def make_fragment(sources, reduced, page, position, topics, primary):
     # An anchored exception or condition from a sibling topic follows its target.
+    scoped = (reduced.get('card_layout') or {}).get('scope_contract') == SCOPE_CONTRACT
+    owning_scopes = list(dict.fromkeys(topic['scope'] for topic in topics.values()))
     topics = {key: {**topic, 'relations': list(topic['relations'])} for key, topic in topics.items()}
-    for tid in page['topics']:
+    related = reduced['topics'] if reduced.get('bounded_coordination') else page['topics']
+    for tid in related:
         original = reduced['topics'][tid]
         for link in original['relations']:
             if link['role'] not in SHARED or not primary.intersection(link['applies_to']):
                 continue
+            if scoped and link['role'] == 'context':
+                link = {**link, 'applies_to': [ref for ref in link['applies_to'] if ref in primary]}
             part = topics.setdefault(tid, {**original, 'relations': []})
             if link not in part['relations']:
                 part['relations'].append(link)
     selection = topic_items(topics)
+    relations = [link for topic in topics.values() for link in topic['relations']]
+    context_only = ({link['item'] for link in relations if link['role'] == 'context'}
+                    - {link['item'] for link in relations if link['role'] != 'context'}
+                    - {ref for link in relations if link['role'] != 'context' for ref in link['applies_to']}) if scoped else set()
+    required_support = {link['item'] for link in relations
+                        if link['role'] in {'condition', 'exception', 'definition', 'conflict', 'contrary'}
+                        and primary.intersection(link['applies_to'])} if scoped else set()
     material, images, raw_qa, revisions = {}, [], {}, {}
     for key, ids in selection.items():
         source = sources[key]
-        supplied, pictures = evidence(source, ids)
+        supplied, pictures = evidence(source, ids, context_only=context_only)
         material.update(supplied)
         images.extend(pictures)
         raw_qa[key] = source['qa']
         revisions[key] = source_revision(source)
     modern = reduced.get('writing_contract') == WRITE_CONTRACT
     card = reduced.get('card_layout')
-    duties = obligations(sources, material, topics, primary, modern=modern, card=bool(card))
+    duties = obligations(sources, material, topics, primary | required_support, modern=modern, card=bool(card))
+    for key in context_only:
+        duties[key].update(role='context', express=False, inspect=False, covers_by=[], assignment='shared')
+    basis_refs = set((page.get('project_basis') or {}).get('refs', ())) & primary
+    synthesis = page.get('synthesis_basis')
+    synthesis_refs = {row['ref'] for row in synthesis['anchors']} if synthesis else set()
+    for key in basis_refs | synthesis_refs:
+        duties[key].update(role='substantive', express=True, covers_by=[])
     impacts = qa_impacts(sources, selection, material, duties)
-    anchors = {ref for topic in topics.values() for relation in topic['relations'] for ref in relation['applies_to']}
+    for impact in impacts:
+        if impact['items'] and set(impact['items']) <= context_only:
+            impact.update(writing='allow', publication='allow')
+    anchors = {ref for link in relations if not scoped or link['role'] != 'context' for ref in link['applies_to']}
     hold = {item for item, duty in duties.items()
             if (duty['express'] or duty['inspect'] or item in anchors)
             and reduced['dispositions'][item]['status'] != 'linked'}
@@ -85,6 +112,22 @@ def make_fragment(sources, reduced, page, position, topics, primary):
     }
     if modern:
         writing_view(view)
+    if scoped:
+        view.update(scope_contract=SCOPE_CONTRACT, assigned_topic_scopes=owning_scopes,
+                    context_only=sorted(context_only))
+    if 'page_type' in page:
+        view['page_type'] = page['page_type']
+        if basis_refs:
+            view['project_basis_refs'] = sorted(basis_refs)
+    if 'knowledge_plan' in page:
+        view['knowledge_plan'] = page['knowledge_plan']
+    if synthesis:
+        view['synthesis_task'] = {'question': page['reader_question'], 'scope': page['scope'],
+                                  'anchors': sorted(synthesis_refs), 'entries': synthesis['entries']}
+        if 'purpose' in synthesis:
+            view['synthesis_task']['purpose'] = synthesis['purpose']
+        if 'organization_units' in page:
+            view['synthesis_task']['reading_steps'] = [entry['short_id'] for entry in synthesis['entries']]
     if card:
         view['card_contract'] = card['contract']
         if card.get('local_fragment_scope'):
@@ -134,8 +177,42 @@ def split_topic(sources, reduced, page, position, tid, topic, limit, *, isolate_
     return result
 
 
+def organization_fragments(sources, reduced, page, limit):
+    """Keep all anchors for a reading step together, and assemble steps under one page ID."""
+    basis = page['synthesis_basis']
+    entries = basis['entries']
+    units = page['organization_units']
+
+    def part(steps, index):
+        anchors = [anchor for entry in steps for anchor in units[entry['short_id']]]
+        topics = organization_topics(reduced, anchors)
+        name = page['name'] if len(steps) == len(entries) else ' → '.join(entry['name'] for entry in steps)
+        local = {**page, 'topics': list(topics), 'synthesis_basis': {**basis, 'anchors': anchors, 'entries': steps}}
+        return make_fragment(sources, {**reduced, 'topics': topics}, local,
+                             {'section': index, 'name': name, 'part': 0}, topics, primary_items(topics))
+
+    result, pending = [], []
+    for entry in entries:
+        if pending:
+            trial = part([*pending, entry], len(result) + 1)
+            if trial['hold'] or not fits(trial, limit):
+                result.append(part(pending, len(result) + 1))
+                pending = []
+        pending.append(entry)
+    if pending:
+        result.append(part(pending, len(result) + 1))
+    return result
+
+
 def page_fragments(sources, reduced, page, limit):
     """Fit each confirmed section independently; finer cuts keep original evidence dependencies."""
+    if 'organization_units' in page:
+        return organization_fragments(sources, reduced, page, limit)
+    if 'synthesis_basis' in page:
+        # A bounded relationship requires its complete evidence packet in one slot.
+        topics = synthesis_topics(reduced, page)
+        position = {'section': 1, 'name': page['name'], 'part': 0}
+        return [make_fragment(sources, {**reduced, 'topics': topics}, page, position, topics, primary_items(topics))]
     result = []
     sections = page['sections'] or [{'name': page['name'], 'topics': page['topics']}]
     for number, section in enumerate(sections, 1):
@@ -159,6 +236,8 @@ def page_fragments(sources, reduced, page, limit):
 def split_atomic_output(fragment, limit):
     """Split output ownership while duplicating the entire input dependency closure."""
     original = fragment['view']
+    if 'synthesis_task' in original:
+        return []
     budget = body_request([fragment], limit)['budget']
     if (fragment['hold'] or budget['fits'] or budget['input_size'] > budget['input_cap']
             or budget['estimated_output_tokens'] <= budget['usable_output_tokens']):
@@ -182,6 +261,8 @@ def split_atomic_output(fragment, limit):
         for key, duty in view['obligations'].items():
             if key not in scope:
                 duty.update(assignment='shared', express=False)
+        if 'project_basis_refs' in view:
+            view['project_basis_refs'] = [ref for ref in view['project_basis_refs'] if ref in scope]
         view['fragment_id'] = fingerprint([CONTRACT, {k: v for k, v in view.items() if k != 'fragment_id'}])
         part = {**fragment, 'view': view}
         if not fits(part, limit):
@@ -195,22 +276,66 @@ def page_identity(identities, namespace):
     return fingerprint([namespace, ordered] if namespace else ordered)
 
 
+def spec_identity(reduced, page, namespace):
+    if 'synthesis_basis' in page:
+        return synthesis_id(reduced, page, namespace)
+    return page_identity((reduced['topics'][tid]['identity'] for tid in page['topics']), namespace)
+
+
+def page_metadata(page):
+    return {key: page[key] for key in ('page_type', 'project_basis', 'knowledge_plan', 'synthesis_basis',
+                                      'existing_page_hints', 'navigation_theme')
+            if page.get(key) is not None}
+
+
+def project_supported(sources, reduced, page):
+    """A project name must occur in its own mapped text, not just a plan title."""
+    basis = page.get('project_basis')
+    try:
+        refs = project_refs(basis)
+    except ContractError:
+        return False
+    offered = {link['item'] for tid in page['topics'] for link in reduced['topics'][tid]['relations']
+               if link['role'] in ('evidence', 'definition')}
+    if not refs <= offered:
+        return False
+    items = [sources[ref.split('-', 1)[0]]['items'][ref] for ref in refs]
+
+    def normalized(text):
+        return ' '.join(unicodedata.normalize('NFC', text).casefold().split())
+
+    return (all(item['kind'] == 'block' and item['text'] for item in items)
+            and any(normalized(basis['name']) in normalized(item['text']) for item in items))
+
+
 def pack(sources, reduced, specs, limit, *, split_output=False, oversized=None, page_namespace=None):
     pending, planned, held, expected = [], [], [], {}
-    pages = [{**spec, 'id': page_identity((reduced['topics'][tid]['identity'] for tid in spec['topics']), page_namespace)}
-             for spec in specs]
-    if layout := reduced.get('card_layout'):
-        from short_cards import place
+    pages = [{**spec, 'id': spec_identity(reduced, spec, page_namespace)} for spec in specs]
+    layout = reduced.get('card_layout')
+    if layout:
+        from short_cards import label, place
+        from short_navigation import CONTRACT as NAVIGATION_CONTRACT
         pages = place(layout, pages)
     for page in pages:
         page_id = page['id']
+        if knowledge_plan(layout):
+            page['knowledge_plan'] = KNOWLEDGE_PLAN
+        if layout and layout.get('navigation_contract') == NAVIGATION_CONTRACT:
+            page['navigation_theme'] = label(page.get('theme_directory') or page['name'])
         expected[page_id] = {'name': page['name'], 'reader_question': page['reader_question'],
-                             'scope': page['scope'], 'fragments': []}
+                             'scope': page['scope'], 'fragments': [], **page_metadata(page)}
+        if knowledge_plan(layout):
+            matches = matching_pages(layout, [page['name']], short_id=page_id)
+            if matches:
+                expected[page_id]['existing_page_hints'] = matches
         if 'registered_path' in page:
             held.append({'page': page_id, 'reason': 'registered_page_requires_revision', 'path': page['registered_path']})
             continue
         if 'card_path' in page:
             expected[page_id]['card_path'] = page['card_path']
+        if page.get('page_type') == 'project' and not project_supported(sources, reduced, page):
+            held.append({'page': page_id, 'reason': 'project_basis_not_bound_to_mapped_source'})
+            continue
         fragments = page_fragments(sources, reduced, page, limit)
         if split_output:
             fragments = [part for fragment in fragments for part in (split_atomic_output(fragment, limit) or [fragment])]
@@ -221,10 +346,12 @@ def pack(sources, reduced, specs, limit, *, split_output=False, oversized=None, 
             single = body_request([fragment], limit)
             view = fragment['view']
             if fragment['hold'] or not single['budget']['fits']:
-                if oversized is not None and not fragment['hold']:
+                synthesis = 'synthesis_task' in view
+                if oversized is not None and not fragment['hold'] and not synthesis:
                     oversized[view['fragment_id']] = fragment
                 held.append({'page': page_id, 'fragment_id': view['fragment_id'], 'position': view['fragment_position'],
-                             'reason': 'required_material_unresolved' if fragment['hold'] else 'atomic_evidence_over_budget',
+                             'reason': ('required_material_unresolved' if fragment['hold'] else
+                                        'synthesis_evidence_over_budget' if synthesis else 'atomic_evidence_over_budget'),
                              'unresolved': fragment['hold'], 'material_ids': list(view['materials']),
                              'assets': [key for key, duty in view['obligations'].items() if duty['inspect']],
                              'budget': single['budget']})
@@ -281,8 +408,14 @@ def build(expected, checks, covered=(), *, excluded_receipts=()):
         for row in rows:
             pos = row['fragment_position']
             sections.setdefault((pos['section'], pos['name']), []).extend(row['answer']['sections'])
+        if page.get('page_type') == 'project':
+            cited = {ref for fragments in sections.values() for fragment in fragments
+                     for ref in re.findall(r'\[(S[0-9]+-B[0-9]+)\]', fragment['content'])}
+            if not project_refs(page.get('project_basis')) <= cited:
+                continue
         complete[page_id] = {
             'contract': CONTRACT, 'name': page['name'], 'reader_question': page['reader_question'], 'scope': page['scope'],
+            **page_metadata(page),
             'content': '\n\n'.join(f'## {name}\n\n' + '\n\n'.join(
                 f"### {body['heading']}\n\n{body['content']}" for body in bodies)
                 for (_, name), bodies in sections.items()),
@@ -313,11 +446,13 @@ def independent_sections(expected, checks, covered, specs, reduced, planned, hel
     positions.update({fid: view['fragment_position'] for fid, view in views.items()})
     proposals = []
     for spec in specs:
-        pid = page_identity((reduced['topics'][tid]['identity'] for tid in spec['topics']), reduced.get('page_namespace'))
+        if 'synthesis_basis' in spec:
+            continue
+        pid = spec_identity(reduced, spec, reduced.get('page_namespace'))
         if pid not in expected or pid in complete or spec['grouping_basis'] in ('inseparable_conditions', 'comparison'):
             continue
         parent = expected[pid]
-        if not parent.get('card_path'):
+        if not parent.get('card_path') or parent.get('page_type') == 'project':
             continue
         # Missing/over-budget pieces are not present in views, so their section can never be complete.
         for number, section in enumerate(spec['sections'], 1):
@@ -340,6 +475,9 @@ def independent_sections(expected, checks, covered, specs, reduced, planned, hel
             proposals.append({'id': identity, 'name': section['name'], 'scope': '；'.join(scopes),
                               'reader_question': f"关于「{section['name']}」，原文有哪些规定和依据？",
                               'theme_directory': spec['theme_directory'], 'fragments': members,
+                              **({'page_type': 'card'} if 'page_type' in parent else {}),
+                              **({'knowledge_plan': KNOWLEDGE_PLAN} if 'knowledge_plan' in parent else {}),
+                              **({'navigation_theme': parent['navigation_theme']} if 'navigation_theme' in parent else {}),
                               'derived_from': {'contract': 'short-independent-section/v1', 'page_id': pid,
                                                'section': number, 'topics': section['topics'],
                                                'receipt_sha256': [row['receipt_sha256'] for row in rows],
@@ -347,6 +485,11 @@ def independent_sections(expected, checks, covered, specs, reduced, planned, hel
     layout = copy.deepcopy(reduced['card_layout'])
     layout['occupied'] = sorted(set(layout['occupied']) | {p['card_path'] for p in expected.values() if p.get('card_path')})
     for page in place(layout, proposals):
+        if 'registered_path' in page and 'page_type' in page:
+            expected[page['id']] = {'name': page['name'], 'page_type': page['page_type'], 'fragments': []}
+            held.append({'page': page['id'], 'reason': 'registered_page_requires_revision',
+                         'path': page['registered_path']})
+            continue
         require('registered_path' not in page, 'independent section identity already registered')
         expected[page['id']] = {k: v for k, v in page.items() if k not in ('id', 'theme_directory')}
     return expected

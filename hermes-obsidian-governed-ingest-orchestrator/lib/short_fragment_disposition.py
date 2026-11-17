@@ -135,9 +135,16 @@ def delivery_partition(plan):
     candidates, reasons = [], {}
     for page_id, spec in plan['expected_pages'].items():
         body = pages.get(page_id)
-        candidates.append({'page_id': page_id, 'path': spec.get('card_path', f'20_Notes/ShortEvidence/{page_id}.md'),
+        existing = next((row for row in holds.get(page_id, [])
+                         if 'page_type' in spec and row['reason'] == 'registered_page_requires_revision'), None)
+        path = existing['path'] if existing else spec.get('card_path', f'20_Notes/ShortEvidence/{page_id}.md')
+        candidates.append({'page_id': page_id, 'path': path,
                            'identity': {'canonical_name': spec['name']}, 'content': body['content'] if body else ''})
-        if not body:
+        if existing:
+            # A create-only selection must not retract an unchanged prior release revision.
+            reasons[page_id] = {'category': 'delivery_conditions', 'reason': 'outside-exact-short-build-selection',
+                                'evidence': [existing], 'reopen_condition': 'authorize an exact existing-page revision'}
+        elif not body:
             reasons[page_id] = {'category': 'unresolved', 'reason': 'missing accepted fragment coverage',
                                 'evidence': holds.get(page_id, []),
                                 'reopen_condition': 'verify the affected fragment under its bound contract'}

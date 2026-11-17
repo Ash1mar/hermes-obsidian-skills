@@ -14,33 +14,48 @@ from hermes_source_units.validation import fingerprint
 
 
 @pytest.mark.parametrize('advisory', [False, True])
-@pytest.mark.parametrize('cards', [False, True])
-def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_path, monkeypatch, advisory, cards):
+@pytest.mark.parametrize('layout', ['notes', 'cards', 'typed'])
+def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_path, monkeypatch, advisory, layout):
     ref, = publish_sources(vault, ['# One\n\nSource evidence.\n'])
     service = FileVaultFinalizeService(vault)
     root = tmp_path / 'experiment'
     root.mkdir()
     operation = {'vault': str(vault), 'origin': {'workflow_id': 'origin'}}
+    if layout == 'typed':
+        operation['card_layout'] = {'contract': short_build.TYPED_LAYOUT}
     (root / 'operation.json').write_bytes(_json_bytes(operation))
     job = root / 'job.json'
     ids = [fingerprint(n) for n in ('one', 'two', 'isolated')]
     grant = {'actor': 'agent', 'pages': ids[:2], 'publish': True, 'policy': POLICY}
     job.write_bytes(_json_bytes({'request': {'phase': 'short-formal-build', 'view': {'authorization': grant}}}))
     monkeypatch.setattr(short_build, 'native_authority', lambda *_: {'task_id': 'fixture', 'run_id': 1})
-    bodies = {key: f'# Page {i}\n\nEvidence.\n'.encode() for i, key in enumerate(ids[:2])}
+    bodies = {key: f'# Page {i}\n\nEvidence [S1-B1].\n'.encode() for i, key in enumerate(ids[:2])}
     issue = {'id': 'notice', 'items': [], 'status': 'unlocated', 'writing': 'allow', 'publication': 'review'}
     candidates = [{'short_id': key, 'name': f'Page {i}', 'authored_sha256': _sha(bodies[key]), 'support_refs': [ref],
                    'native_fragments': [{'receipt_sha256': fingerprint(key)}], 'qa_issues': [issue] if i else [],
                    'qa_status': 'qa_required' if i else 'usable', 'publication_authorized': not i,
                    'source_eligible_at_admission': True}
                   for i, key in enumerate(ids[:2])]
-    if cards:
+    if layout == 'cards':
         for i, candidate in enumerate(candidates):
             candidate['card_path'] = f'30_Cards/工程设计/设计卡片 {i}.md'
+    if layout == 'typed':
+        candidates[0].update(page_type='topic', card_path='50_Projects/专题/设计输出.md')
+        candidates[1].update(page_type='project', card_path='50_Projects/项目/北岸工程.md',
+                             project_basis={'name': '北岸工程', 'refs': ['S1-B1']},
+                             citation_bindings={'S1-B1': ref})
     scope = {'actor': 'agent', 'authorization': grant, 'origin': operation['origin'], 'coverage_complete': False,
              'operation_sha256': _sha((root / 'operation.json').read_bytes()), 'pages': candidates,
              'excluded': [{'short_id': ids[2], 'name': 'Isolated', 'disposition': {
                  'category': 'unresolved', 'reason': 'invalid native fragment', 'reopen_condition': 'new proof'}}]}
+    if layout == 'typed':
+        scope['excluded'][0].update(page_type='entity', card_path='40_Concepts/实体/未完成标准.md')
+        for change, message in [({'card_path': '50_Projects/专题/北岸工程.md'}, 'match its type'),
+                                ({'project_basis': None}, 'named project'),
+                                ({'citation_bindings': {}}, 'bound to the page source support')]:
+            invalid = {**scope, 'pages': [candidates[0], {**candidates[1], **change}]}
+            with pytest.raises(ContractError, match=message):
+                short_build.admit(service.build, invalid, bodies, root, job)
     run = short_build.admit(service.build, scope, bodies, root, job)
     reviews = [{'page_id': p['page_id'], 'authored_sha256': p['authored_sha256'], 'parent_authored_sha256': None,
                 'actor': 'agent', 'note': 'Program acceptance.', 'acceptance': record(assess(service.build, run, p))}
@@ -52,6 +67,11 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
     committed = service.build.finalize(final)['run']
     assert short_build.admit(service.build, scope, bodies, root, job) == committed
     page, held = committed['page_revisions']
+    if layout == 'typed':
+        registered = {s['page_id']: s for s in service.build._registry()['subjects']}
+        for revision, kind in [(page, 'topic'), (held, 'project')]:
+            assert registered[revision['page_id']]['page_type'] == revision['page_type'] == kind
+        assert short_build.identity(service.build, ids[0], 'Page 0')[1] == page['page_id']
     pins = [run['short_evidence']]
     if advisory:
         job.write_bytes(_json_bytes({'request': {'phase': 'short-formal-qa',
@@ -66,13 +86,15 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
     if not advisory:
         excluded.add(held['page_id'])
     assert {r['page_id'] for r in plan['delivery']['excluded']} == excluded
+    if layout == 'typed':
+        assert '40_Concepts/实体/未完成标准.md' in {r['path'] for r in plan['delivery']['excluded']}
     assert plan['delivery']['inherited_coverage_gaps'] == pins
     release = apply(service, plan)['release']
     assert {p['page_id'] for p in release['subjects']} == selected
     assert service.validate(release['release_id'])['subject_count'] == len(selected)
     # An additive Build may describe an unchanged earlier page as outside its own selection.
     # That scope boundary must not retract the previously published revision.
-    if cards and advisory:
+    if layout == 'cards' and advisory:
         new_id = fingerprint('additive')
         grant2 = {**grant, 'pages': [new_id], 'base_release': release['release_id']}
         body2 = {new_id: b'# Additive\n\nSource evidence.\n'}
@@ -102,7 +124,7 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
             negative = service._build_plan(request('release-material-test', [added['run_id']], state=service.status()['revision']))
             assert page['page_id'] not in {p['page_id'] for p in negative['subjects']}
             assert page['page_id'] in {p['page_id'] for p in negative['delivery']['excluded']}
-    if cards:
+    if layout == 'cards':
         from short_cards import write_navigation
 
         expected = [{'path': '30_Cards/工程设计/00_目录.md', 'state': 'ready', 'pages': len(selected)}]
@@ -116,7 +138,7 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
         assert write_navigation(service, release, {'30_Cards/工程设计'}) == [
             {'path': expected[0]['path'], 'state': 'occupied'}]
         assert nav.read_text(encoding='utf-8') == 'Manual index'
-    if cards and advisory:
+    if layout == 'cards' and advisory:
         additional_release = apply(service, proposal)['release']
         assert selected <= {p['page_id'] for p in additional_release['subjects']}
         assert service.validate(additional_release['release_id'])['subject_count'] == len(selected) + 1

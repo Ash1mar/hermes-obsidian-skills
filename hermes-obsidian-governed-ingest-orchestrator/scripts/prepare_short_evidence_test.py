@@ -223,18 +223,40 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
     topics = reduced['topics']
     coordination = pages_v2.coordination_request(sources, reduced)
     issues = []
+    syntheses = []
+    navigation = []
+    navigation_dispositions = []
+    layout_diagnostics = []
+    coordination_diagnostics = []
     if coordination is None:
         specs = [{'name': topic['name'], 'scope': topic['scope'], 'topics': [tid], 'sections': [],
                   'reader_question': topic['scope'], 'grouping_reason': 'One mapped topic.',
                   'grouping_basis': 'single_topic'} for tid, topic in topics.items()]
     else:
         rid = coordination['id']
-        if not coordination['budget']['fits'] or rid in native_holds:
+        batches = pages_v2.coordination_batches(sources, reduced, coordination)
+        if batches == [coordination] and (not coordination['budget']['fits'] or rid in native_holds):
             return {**common, 'stage': 'coordination_held', 'held': [coordination]}
-        verified, waiting = collect([coordination], saved)
+        eligible = [row for row in batches if row['budget']['fits'] and row['id'] not in native_holds]
+        verified, waiting = collect(eligible, saved)
         if waiting:
             return {**common, 'stage': 'coordination', 'requests': waiting}
-        answer = checked_answer(coordination, verified[rid])
+        answer = {'pages': [], 'unresolved': []}
+        for row in batches:
+            if row['id'] in verified:
+                part = checked_answer(row, verified[row['id']])
+                answer['pages'].extend(part['pages'])
+                answer['unresolved'].extend(part['unresolved'])
+                syntheses.extend(part.get('syntheses', []))
+                navigation.extend(part.get('navigation_only', []))
+                navigation_dispositions.extend([*part.get('navigation_only', []), *part.get('navigation_holds', [])])
+                issues.extend(part.get('navigation_holds', []))
+                issues.extend(part.get('primary_assignment_holds', []))
+                coordination_diagnostics.extend(part.get('coordination_diagnostics', []))
+                layout_diagnostics.extend(part.get('discarded_section_layouts', []))
+            else:
+                issues.append({'topics': list(row['view']['topics']), 'request': row['id'], 'budget': row['budget'],
+                               'reason': 'bounded coordination unavailable'})
         review = pages_v2.coordination_issues(answer, topics)
         reviewed = {tid for issue in review for tid in issue['topics']}
         specs = [page for page in answer['pages'] if not reviewed.intersection(page['topics'])]
@@ -248,8 +270,29 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
                 outcome = checked_answer(row, verified[row['id']])
                 specs.extend(outcome['pages'])
                 issues.extend(outcome['unresolved'])
+                navigation.extend(outcome.get('navigation_only', []))
+                navigation_dispositions.extend([*outcome.get('navigation_only', []), *outcome.get('navigation_holds', [])])
+                issues.extend(outcome.get('navigation_holds', []))
+                issues.extend(outcome.get('primary_assignment_holds', []))
+                coordination_diagnostics.extend(outcome.get('coordination_diagnostics', []))
+                layout_diagnostics.extend(outcome.get('discarded_section_layouts', []))
             else:
                 issues.append({**issue, 'request': row['id'], 'budget': row['budget']})
+        if batches != [coordination]:
+            reduced = {**reduced, 'bounded_coordination': True}
+            common['reduced'] = reduced
+        if navigation:
+            common['navigation_only'] = navigation
+        if layout_diagnostics:
+            common['discarded_section_layouts'] = layout_diagnostics
+        if coordination_diagnostics:
+            common['coordination_diagnostics'] = coordination_diagnostics
+    if syntheses:
+        from short_knowledge_plan import syntheses as plan_syntheses
+        shared, gaps = plan_syntheses(reduced, syntheses, specs, namespace=page_namespace,
+                                     entry_id=lambda spec: fragments_v2.spec_identity(reduced, spec, page_namespace))
+        specs.extend(shared)
+        issues.extend(gaps)
     selected_split = split_output if isinstance(split_output, str) else None
     oversized = {} if selected_split else None
     planned, held, expected = fragments_v2.pack(sources, reduced, specs, limit, split_output=split_output is True,
@@ -304,10 +347,26 @@ def advance_fragments(sources, reduced, saved, limit, native_holds, held_repairs
         require(bool(reduced.get('card_layout')), 'section delivery requires readable short cards')
         expected = fragments_v2.independent_sections(expected, checks, covered, specs,
             {**reduced, 'page_namespace': page_namespace}, planned, held)
+    assembled = fragments_v2.build(expected, checks, covered,
+                                   excluded_receipts={row['receipt_sha256'] for row in excluded.values()})
+    if (reduced.get('card_layout') or {}).get('candidate_destinations') and not requests:
+        destinations = pages_v2.candidate_destinations(
+            sources, reduced, specs, navigation_dispositions, checks, assembled,
+            lambda spec: fragments_v2.spec_identity(reduced, spec, page_namespace))
+        common['candidate_destinations'] = destinations
+        resolved = {record['topic'] for record in destinations
+                    if record['destination'] == 'navigation' and record['state'] == 'covered'}
+        common.pop('navigation_only', None)
+        if resolved:
+            common['navigation_only'] = [{'topics': [key], 'reason': row.get('model_reason', row['reason'])}
+                                         for row in navigation_dispositions for key in row['topics'] if key in resolved]
+        issues = [issue for issue in issues if not issue.get('model_reason') or not set(issue['topics']) <= resolved]
+        issues.extend({'topics': [record['topic']], 'reason': 'destination lacks verified expression',
+                       'missing_refs': record['missing_refs'], 'destination': record['destination']}
+                      for record in destinations if record['state'] == 'gap')
     return {
         **common, 'stage': 'writing' if requests else 'offline_build', 'requests': requests, 'checks': checks,
-        'expected_pages': expected, 'assembled_sections': fragments_v2.build(
-            expected, checks, covered, excluded_receipts={row['receipt_sha256'] for row in excluded.values()}),
+        'expected_pages': expected, 'assembled_sections': assembled,
         'held': held, 'coordination_issues': issues,
     }
 
