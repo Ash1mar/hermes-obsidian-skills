@@ -2,7 +2,11 @@ const get = id => document.getElementById(id);
 const labels = {
   pending: "等待", running: "进行中", completed: "已完成", failed: "失败",
   partial: "部分完成", interrupted: "执行已中断",
+  paused: "已暂停", pausing: "等待暂停", detached: "启动器已退出", cancelled: "已取消",
 };
+const waitLabels = { waiting: "等待交接", detached: "等待已结束", handoff: "交接就绪", failed: "来源交接失败" };
+const fileLabels = { ready: "就绪", failed: "转换失败", pending: "未结算", running: "处理中", queued: "排队中",
+  waiting: "待派发", awaiting_reconciliation: "等待执行回执" };
 const pages = { workflow: "工作流", vaults: "Vault", devtools: "DevTools" };
 const gatewayLabels = {
   checking: ["检查中", "pending"], starting: ["正在启动", "running"], ready: ["已就绪", "completed"],
@@ -11,8 +15,10 @@ const gatewayLabels = {
   dispatch_disabled: ["派发已关闭", "partial"], unverified: ["状态待确认", "partial"],
   disabled: ["历史查看模式", "pending"],
 };
-const stageNames = ["创建 Vault", "来源准备", "精确计划与交接", "主题提取", "证据映射",
-  "页面协调", "分段写作", "正式构建", "发布与索引", "最终验收"];
+const stageNames = {
+  bootstrap: "创建 Vault", prepare: "来源准备", exact: "精确计划与交接", topics: "主题提取", mapping: "证据映射",
+  coordination: "页面协调", writing: "分段写作", "formal-build": "正式构建", release: "发布与索引", acceptance: "最终验收",
+};
 let runs = [];
 let current;
 let selected = localStorage.getItem("hermes-console-run");
@@ -62,6 +68,10 @@ function facts(element, entries) {
     [make("dt", name), make("dd", value ?? "—")]));
 }
 
+function formatTime(value) {
+  return Number.isFinite(value) ? new Date(value * 1000).toLocaleString("zh-CN", {hour12: false}) : undefined;
+}
+
 function showForm(open) {
   get("new-panel").hidden = !open;
   get("toggle-form").textContent = open ? "收起新建" : "＋ 新建运行";
@@ -103,7 +113,7 @@ function rowButton(text, callback, style = "secondary") {
 }
 
 function render() {
-  const busy = runs.some(run => run.state === "running");
+  const busy = runs.some(run => run.launcher_active);
   get("connection").textContent = writable ? "已连接本机" : "历史查看模式";
   get("start").disabled = !writable || !gateway.ready || busy || posting;
   get("form-hint").textContent = !writable ? "在 Hermes 所在的 WSL 中启动控制台后即可提交。"
@@ -125,9 +135,11 @@ function render() {
   });
   get("selected-label").textContent = current ? current.vault_name : "选择一次运行查看节点状态";
   get("run-status").replaceChildren(...(current ? [badge(current.state)] : []));
-  renderWhenChanged("timeline", [selected, current?.nodes, current?.historical, busy, posting, gateway.ready], renderTimeline);
+  renderWhenChanged("timeline", [selected, current?.nodes, current?.historical, busy, posting, gateway.ready, writable], renderTimeline);
   const summary = current ? [
     ["来源", `${current.source_count} 份 PDF`], ["源工作流暂停", current.pause],
+    ["本机启动器", labels[current.launcher_state]],
+    ["暂停目标", stageNames[current.pause_request?.node]],
     ["源工作流修订", current.source_revision], ["当前发布", current.release_id || "尚无"],
     ["Provider 索引", current.indexed ? "已就绪" : "尚未就绪"],
     ["查询", current.query_enabled ? "已开启" : "已关闭"],
@@ -138,6 +150,9 @@ function render() {
   facts(get("native"), current ? [
     ["工作流", current.workflow_id], ["来源看板", current.source_board],
     ["来源阶段", current.source_stage], ["暂停点", current.pause],
+    ["交接观察", waitLabels[current.source_wait?.state]],
+    ["最近进展", formatTime(current.source_wait?.last_progress_at)],
+    ["观察记录", current.source_wait?.error],
     ["短路径看板", current.short_board], ["短路径回执", current.receipts],
   ] : [["运行", "未选择"]]);
   get("dev-hint").textContent = current?.historical ? "从已保存的运行证据读取。"
@@ -166,7 +181,7 @@ function renderTimeline() {
   const manifests = new Map(sameRun ? [...timeline.querySelectorAll("[data-manifest]")].map(item =>
     [item.dataset.manifest, item.value]) : []);
   timeline.dataset.run = selected || "";
-  const nodes = current?.nodes || stageNames.map(name => ({ name, state: "pending" }));
+  const nodes = current?.nodes || Object.values(stageNames).map(name => ({ name, state: "pending" }));
   timeline.replaceChildren(...nodes.map((node, index) => {
     const item = make("li");
     const pin = make("span", node.state === "completed" ? "✓" : String(index + 1), `step-pin ${node.state}`);
@@ -178,8 +193,20 @@ function renderTimeline() {
     if (node.key) {
       const detail = make("details");
       detail.dataset.node = node.key;
-      detail.open = open.has(node.key) || node.state === "failed";
+      detail.open = open.has(node.key) || ["failed", "paused", "pausing"].includes(node.state)
+        || node.actions?.some(action => action.id === "attach-source");
       detail.append(make("summary", "节点详情"), make("p", node.description, "hint"));
+      if (node.error) detail.append(make("p", node.error, "hint"));
+      if (node.sources?.length) {
+        const files = make("ul", undefined, "source-list");
+        files.append(...node.sources.map(file => {
+          const line = make("li", `${file.name} · ${fileLabels[file.status] || file.status}`);
+          const started = formatTime(file.observed_running_at);
+          if (started || file.error) line.append(make("small", [started && `观察到执行 ${started}`, file.error].filter(Boolean).join(" · ")));
+          return line;
+        }));
+        detail.append(files);
+      }
       const actions = node.actions || [];
       for (const action of actions) {
         const row = make("div", undefined, "action-line");
@@ -193,14 +220,15 @@ function renderTimeline() {
           row.append(input);
         }
         const button = rowButton(action.label, () => reenter(action, input?.value), "secondary");
-        button.disabled = !writable || posting || runs.some(run => run.state === "running")
+        button.disabled = !writable || posting || (action.id !== "pause" && runs.some(run => run.launcher_active))
           || (action.gateway_required !== false && !gateway.ready);
         row.append(button);
         detail.append(row);
       }
       if (!actions.length) {
         const reason = current.historical ? "历史记录仅供查看。"
-          : current.state === "running" ? "执行结束后会按当前回执显示恢复选项。"
+          : current.pause_request?.node ? `已请求在${stageNames[current.pause_request.node]}前暂停。`
+          : current.launcher_active ? "到达安全检查点后会更新可用操作。"
           : node.key === "exact" ? "短路径保留源工作流的 exact_plan 暂停。"
           : "当前回执没有可从此处执行的恢复操作。";
         detail.append(make("p", reason, "hint"));
@@ -247,7 +275,8 @@ function renderAttempts() {
   if (!entries.some(entry => entry.id === attempt)) attempt = entries.at(-1).id;
   select.disabled = false;
   select.replaceChildren(...entries.map((entry, index) => {
-    const option = make("option", `${index + 1}. ${entry.label || (entry.action === "start" ? "原始运行" : "恢复交付")}`);
+    const outcome = entry.returncode === 75 ? " · 观察退出" : entry.returncode ? ` · 退出码 ${entry.returncode}` : "";
+    const option = make("option", `${index + 1}. ${entry.label || (entry.action === "start" ? "原始运行" : "恢复交付")}${outcome}`);
     option.value = entry.id;
     return option;
   }));
@@ -318,7 +347,7 @@ async function submit(path, body) {
   render();
   try {
     const data = await api(path, body);
-    message("执行请求已提交。");
+    message(path.endsWith("/pause") ? "暂停已请求，执行器会在指定节点前停下。" : "执行请求已提交。");
     showForm(false);
     selectRun(data.id);
     return true;
@@ -337,10 +366,20 @@ function reenter(action, manifest) {
     message("请填写映射恢复 JSON 清单路径。", true);
     return;
   }
-  if (!window.confirm(`确认对「${current.vault_name}」执行“${action.label}”？适用时，本轮将继续到发布和索引验收。`)) return;
+  if (action.id === "pause") {
+    submit(`/api/runs/${current.id}/pause`, {node: action.node, attempt: action.attempt});
+    return;
+  }
+  if (!window.confirm(`确认对「${current.vault_name}」执行“${action.label}”？满足发布条件时，本轮可以继续到索引和验收。`)) return;
   submit(`/api/runs/${current.id}/reenter`, {
-    action: action.id, manifest, prior_entry: action.prior_entry,
+    action: action.id, node: action.node, attempt: action.attempt, manifest, prior_entry: action.prior_entry,
   });
+}
+
+for (const [key, name] of Object.entries(stageNames)) {
+  const option = make("option", name);
+  option.value = key;
+  get("pause-before").append(option);
 }
 
 get("create").addEventListener("submit", async event => {
@@ -348,6 +387,7 @@ get("create").addEventListener("submit", async event => {
   const body = {
     sources: get("sources").value.split(/\r?\n/).map(path => path.trim()).filter(Boolean),
     vault_path: get("vault-path").value, vault_name: get("vault-name").value,
+    pause_before: get("pause-before").value || undefined,
   };
   if (await submit("/api/runs", body)) event.target.reset();
 });

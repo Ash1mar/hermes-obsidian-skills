@@ -16,7 +16,7 @@ from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from gateway_monitor import GatewayMonitor
-from workflow import (FINALIZE, UserError, attempts_for, local_path, log_tail,
+from workflow import (FINALIZE, ORCHESTRATOR, STAGE_ORDER, UserError, attempts_for, local_path, log_tail,
                       new_request, progress, read, run_attempt, save)
 
 
@@ -91,13 +91,22 @@ class Console:
             if run_id:
                 directory, historical = self.find(run_id)
                 action = body.get("action")
+                if not isinstance(action, str):
+                    raise UserError("请选择可用的节点操作。")
                 prior_entry = body.get("prior_entry")
                 snapshot = progress(directory, historical=historical)
-                actions = [item for node in snapshot["nodes"] for item in node["actions"]]
+                actions = [item for node in snapshot["nodes"] for item in node["actions"]
+                           if item["id"] != "pause"]
                 option = next((item for item in actions if item["id"] == action
+                               and item["node"] == body.get("node", item["node"])
+                               and item["attempt"] == body.get("attempt", item["attempt"])
                                and item.get("prior_entry") == prior_entry), None)
+                if action in {"attach-source", "continue-operation"} and (not body.get("node") or not body.get("attempt")):
+                    option = None
                 if option is None:
                     raise UserError("当前回执不支持此操作。请刷新并检查节点详情。")
+                if action in {"start", "attach-source", "continue-operation"}:
+                    self.require_operator_launcher()
                 if option.get("gateway_required", True):
                     self.require_gateway()
                 if option.get("manifest"):
@@ -112,6 +121,10 @@ class Console:
                             or type(manifest["requests"]) is not list or not manifest["requests"]):
                         raise UserError("清单需要包含 requests 和 prior_build。")
             else:
+                pause_before = body.get("pause_before")
+                if pause_before is not None and (not isinstance(pause_before, str) or pause_before not in STAGE_ORDER):
+                    raise UserError("请选择有效的暂停节点。")
+                self.require_operator_launcher()
                 self.require_gateway()
                 request = new_request(body, self.config)
                 run_id = request["operation_id"]
@@ -119,15 +132,20 @@ class Console:
                 directory.mkdir(mode=0o700)
                 save(directory / "request.json", request)
                 action, prior_entry = "start", None
-                option = {"label": "处理新 Vault"}
+                option = {"label": "处理新 Vault", "pause_before": pause_before}
             attempt_id = f"a-{time.time_ns():020d}-{uuid4().hex[:4]}"
             attempt = directory / "attempts" / attempt_id
             attempt.mkdir(mode=0o700, parents=True)
             if manifest is not None:
                 save(attempt / "mapping-recovery.json", manifest)
-            record = {"id": attempt_id, "action": action, "label": option["label"], "started_at": time.time()}
+            record = {"id": attempt_id, "action": action, "label": option["label"], "started_at": time.time(),
+                      "operator": action in {"start", "attach-source", "continue-operation"},
+                      "node": option.get("node", "bootstrap")}
             if prior_entry:
                 record["prior_entry"] = prior_entry
+            if option.get("pause_before"):
+                record["pause_before"] = option["pause_before"]
+            (directory / "short").mkdir(mode=0o700, exist_ok=True)
             path = attempt / "attempt.json"
             save(path, record)
             save(self.state / "active.json", {"run": run_id, "attempt": attempt_id})
@@ -141,6 +159,41 @@ class Console:
                 save(path, {**record, "returncode": 1, "ended_at": time.time()})
                 raise UserError("无法启动本机执行器，请查看 DevTools。") from error
         return {"id": run_id, "attempt": attempt_id}
+
+    def pause(self, run_id, body):
+        import fcntl
+
+        directory, historical = self.find(run_id)
+        if historical or not self.config["writable"]:
+            raise UserError("当前运行仅供查看。")
+        root = directory / "short"
+        if not root.is_dir():
+            raise UserError("执行器尚未启动，请刷新后重试。")
+        with (root / "operator.lock").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            if not self.is_active(directory, historical):
+                raise UserError("该执行器已退出，请刷新并检查节点状态。")
+            snapshot = progress(directory, active=True)
+            node, attempt = body.get("node"), body.get("attempt")
+            pause = {"attempt_id": attempt, "node": node}
+            if snapshot["pause_request"] == pause:
+                return {"id": run_id, "attempt": attempt}
+            if not any(action["id"] == "pause" and action["node"] == node and action["attempt"] == attempt
+                       for item in snapshot["nodes"] for action in item["actions"]):
+                raise UserError("此暂停点已不可用，请刷新后选择尚未开始的节点。")
+            save(root / "operator-pause.json", pause)
+        return {"id": run_id, "attempt": attempt}
+
+    def require_operator_launcher(self):
+        orchestrator = Path(self.config["skills_root"]) / ORCHESTRATOR
+        script = orchestrator / "scripts/start_post_mineru_short_test.py"
+        try:
+            launcher = script.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            launcher = ""
+        controls = ("--operator-attempt", "--pause-before", "--attach-source", "--continue-operation")
+        if not all(flag in launcher for flag in controls) or not (orchestrator / "lib/short_operator_control.py").is_file():
+            raise UserError("已安装的短路径入口尚不支持本版控制台的暂停和接管，请更新对应的 Skill。")
 
     def require_gateway(self):
         if not self.gateway.status["ready"]:
@@ -208,6 +261,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.json(progress(directory, historical=historical, active=app.is_active(directory, historical)))
                 elif write and parts[3:] == ["reenter"]:
                     self.json(app.launch(self.payload(), run_id), HTTPStatus.ACCEPTED)
+                elif write and parts[3:] == ["pause"]:
+                    self.json(app.pause(run_id, self.payload()), HTTPStatus.ACCEPTED)
                 elif not write and parts[3:] == ["log"]:
                     entries = attempts_for(directory, historical)
                     default = entries[-1]["id"] if entries else None

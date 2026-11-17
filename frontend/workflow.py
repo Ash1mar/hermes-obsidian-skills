@@ -26,11 +26,16 @@ STAGES = (
     ("release", "发布与索引", "Release · 应用发布并同步 Provider"),
     ("acceptance", "最终验收", "Acceptance · 核对发布、索引与原生任务"),
 )
+STAGE_ORDER = {key: index for index, (key, _, _) in enumerate(STAGES)}
 STAGE_FILE = re.compile(r"stage-(\d+)-(.+)\.json")
 STAGE_KEYS = {"topic-seed": "topics", "map": "mapping", "local-map": "mapping",
               "coordination": "coordination", "coordination_held": "coordination",
               "local_coordination": "coordination", "local_page_detail": "coordination",
               "writing": "writing", "offline_build": "formal-build"}
+ACTION_NODES = {"start": "bootstrap", "attach-source": "prepare", "mapping": "mapping",
+                "coordination": "coordination", "writing-held": "writing",
+                "writing-replay": "writing", "formal-replay": "formal-build", "delivery": "formal-build"}
+SOURCE_TERMINAL = {"failed", "cancelled", "completed", "partial"}
 
 
 class UserError(ValueError):
@@ -144,10 +149,20 @@ def attempts_for(directory, historical=False):
     return sorted(entries, key=lambda row: row["ended_at"] or 0)
 
 
-def available_actions(root, request, attempts, live, historical):
-    if historical or live or not attempts:
+def available_actions(root, request, attempts, live, historical, source, attachment_node, operator, pause_request):
+    if historical or not attempts:
         return {}
     last = attempts[-1]
+    if live:
+        if (last.get("operator") and operator.get("state") in (None, "running")
+                and not pause_request):
+            fallback = {"attach-source": "prepare", "continue-operation": last.get("node")}.get(last.get("action"))
+            current_index = STAGE_ORDER.get(operator.get("node", fallback), -1)
+            return {key: [{"id": "pause", "label": "在此节点前暂停", "gateway_required": False}]
+                    for key in STAGE_ORDER if STAGE_ORDER[key] > current_index}
+        return {}
+    if operator.get("state") == "paused":
+        return {operator["node"]: [{"id": "continue-operation", "label": "继续并复用已有成果"}]}
     native = root / "native"
     original = read(root / "final-acceptance.json")
     short = read(native / "result.json")
@@ -173,7 +188,16 @@ def available_actions(root, request, attempts, live, historical):
     used = {(a.get("action"), a.get("prior_entry")) for a in attempts if a.get("invoked")}
     if (stopped and not (root / "pipeline-start.json").exists()
             and (not vault.exists() or vault.is_dir() and not any(vault.iterdir()))):
-        offer("bootstrap", "start", "重试启动")
+        offer("bootstrap", "start", "重试启动", pause_before=last.get("pause_before"))
+    if (stopped and not original and not (native / "operation.json").exists()
+            and (root / "pipeline-start.json").is_file()
+            and (root / "provisioning-request.json").is_file()
+            and (root / "provisioning-receipt.json").is_file()
+            and operator.get("node") in {None, "bootstrap", "prepare", "exact"}
+            and not (native / "stop.json").exists()
+            and source.get("workflow_id") == f"ingest-{request['operation_id']}"
+            and source.get("state") not in SOURCE_TERMINAL and not source.get("cancel_requested")):
+        offer(attachment_node, "attach-source", "重新接管同一工作流")
     if stopped and not original and not release and not short.get("native_active_or_ready"):
         if short.get("last_stage") == "coordination_held":
             offer("coordination", "coordination", "恢复协调")
@@ -199,9 +223,51 @@ def available_actions(root, request, attempts, live, historical):
             offer("writing", "writing-held", "恢复受阻写作", prior_entry=entry)
     # A stable CLI entry can consume only the bounded attempts its checkpoint permits.
     return {stage: [action for action in items
-                    if action["id"] in {"start", "delivery", "mapping"}
+                    if action["id"] in {"start", "attach-source", "delivery", "mapping"}
                     or (action["id"], action.get("prior_entry")) not in used]
             for stage, items in actions.items()}
+
+
+def source_observation(root, source, latest, directory, historical):
+    wait = read(root / "source-wait.json")
+    if wait.get("workflow_id") not in (None, source.get("workflow_id"), f"ingest-{directory.name}"):
+        wait = {}
+    if (latest.get("returncode") == 1 and latest.get("action") in {"start", "attach-source"}
+            and not wait and not (root / "source-handoff.json").exists()):
+        # Old launchers only reported the observer timeout in their attempt log.
+        log_path = directory / latest["log"] if historical else directory / "attempts" / latest["id"] / "pipeline.log"
+        if "ValueError: native source handoff timed out" in log_tail(log_path):
+            wait = {"state": "detached", "stage": "prepare", "updated_at": latest.get("ended_at"),
+                    "error": "旧启动器等待整批交接超过 20 分钟后退出。"}
+    return wait
+
+
+def launcher_state(latest, active, source_wait):
+    if active:
+        return "running"
+    if not latest:
+        return "pending"
+    code = latest.get("returncode")
+    if code is None:
+        return "interrupted"
+    if code == 0:
+        return "completed"
+    if (code == 75 or (latest.get("action") in {"start", "attach-source", "continue-operation"}
+                      and source_wait.get("state") == "detached"
+                      and (source_wait.get("updated_at") or 0) >= (latest.get("started_at") or 0))):
+        return "detached"
+    return "failed"
+
+
+def operator_state(root, request, latest, active=False):
+    status = read(root / "operator-state.json")
+    if (status.get("contract") == "short-operator-state/v1"
+            and status.get("operation_id") == request["operation_id"]
+            and (status.get("attempt_id") == latest.get("id") or
+                 (not active and latest.get("action") == "continue-operation" and status.get("state") == "paused"))
+            and status.get("node") in STAGE_ORDER):
+        return status
+    return {}
 
 
 def progress(directory, *, historical=False, active=False, details=True):
@@ -219,24 +285,42 @@ def progress(directory, *, historical=False, active=False, details=True):
     if node_action == "formal-replay":
         output = native / "reentries" / ("formal-replay-" + latest["id"])
     final = read(output / "final-acceptance.json")
-    state = ("running" if active else final.get("state", "completed") if final.get("final_acceptance")
-             else "interrupted" if latest and latest.get("returncode") is None
-             else "failed" if latest and latest.get("returncode") != 0 else "pending")
+    source = read(ledger_path(request))
+    source_wait = source_observation(root, source, latest, directory, historical)
+    launcher = launcher_state(latest, active, source_wait)
+    operator = operator_state(root, request, latest, active)
+    pause_request = read(root / "operator-pause.json") if active and latest.get("operator") else {}
+    if pause_request.get("attempt_id") != latest.get("id"):
+        pause_request = {}
+    pending_pause = operator.get("pending_pause") or latest.get("pause_before")
+    if active and not pause_request and pending_pause in STAGE_ORDER:
+        pause_request = {"attempt_id": latest["id"], "node": pending_pause}
+    if not active and operator.get("state") == "paused" and operator.get("attempt_id") == latest.get("id"):
+        launcher = "paused"
+    state = ("pausing" if active and pause_request else "running" if active
+             else final.get("state", "completed") if final.get("final_acceptance")
+             else source["state"] if source.get("state") in {"cancelled", "failed"}
+             else "paused" if operator.get("state") == "paused"
+             else launcher if launcher != "completed" else "pending")
     data = {"id": request["operation_id"], "vault_name": request["vault_name"],
             "vault_path": request["vault_path"], "state": state,
-            "historical": historical, "source_count": len(request["sources"]),
+            "historical": historical, "launcher_state": launcher, "launcher_active": active,
+            "source_count": len(request["sources"]),
             "started_at": attempts[0].get("started_at") if attempts else None}
     if not details:
         return data
     provider = read(output / "provider-result.json")
     provision = read(root / "provisioning-receipt.json")
-    source = read(ledger_path(request))
     handoff = read(root / "source-handoff.json")
     qualification = read(root / "source-qualification.json")
     operation = read(native / "operation.json")
     paused = (source.get("pause_control") or {}).get("boundary") or (handoff.get("pause") or {}).get("boundary")
     outcomes = source.get("source_outcomes") or handoff.get("source_outcomes", [])
-    ready_count = sum(i.get("status") == "ready" for i in outcomes)
+    counts = Counter(i.get("status") for i in outcomes)
+    ready_count, failed_count = counts["ready"], counts["failed"]
+    total = len(request["sources"])
+    remaining = max(total - ready_count - failed_count, 0)
+    source_stage = source.get("current_stage")
     nodes = [{"key": key, "name": name, "description": description, "state": "pending"}
              for key, name, description in STAGES]
     by_key = {n["key"]: n for n in nodes}
@@ -251,12 +335,28 @@ def progress(directory, *, historical=False, active=False, details=True):
             if node["state"] == "pending":
                 node["state"] = "completed"
 
-    if source or handoff or provision.get("phase") in {"import", "workflow_created"}:
+    if source or handoff or provision.get("phase") in {"sources_staged", "workflow_created"}:
         mark("bootstrap")
     if source or handoff:
-        total = len(request["sources"])
-        mark("prepare", "completed" if ready_count == total else "partial" if handoff else "pending",
-             detail=f"{ready_count} / {total} 份来源就绪")
+        prepare_state = "pending"
+        if not remaining:
+            prepare_state = "partial" if failed_count and ready_count else "failed" if failed_count else "completed"
+        elif active and source_stage in {"created", "source_preparing"} and source_wait.get("active_tasks"):
+            prepare_state = "running"
+        paths = {item.get("path"): item for item in source_wait.get("files", [])}
+        for item in outcomes:
+            path = item["path"]
+            paths[path] = {**paths.get(path, {}), **item}
+        files = []
+        for path in request["sources"]:
+            name = Path(path).name
+            item = paths.get(f"10_Raw/{name}", {})
+            files.append({"name": name, "status": item.get("status", "pending"),
+                          "error": item.get("reason") or item.get("error_code"),
+                          "observed_running_at": item.get("observed_running_at")})
+        mark("prepare", prepare_state,
+             detail=f"{ready_count} 份就绪 · {failed_count} 份失败 · {remaining} 份未结算",
+             sources=files)
     if qualification.get("ok"):
         mark("exact", detail="源工作流停在 exact_plan；已验证短路径交接")
     elif paused:
@@ -312,17 +412,37 @@ def progress(directory, *, historical=False, active=False, details=True):
         pending_key = None
 
     if not pending_key and not final.get("final_acceptance"):
-        if source.get("current_stage") in {"planning", "analyzing"} or handoff:
+        if source_stage in {"planning", "analyzing"} or handoff:
             pending_key = "exact"
         elif source or by_key["bootstrap"]["state"] == "completed":
             pending_key = "prepare"
         else:
             pending_key = "bootstrap"
-    if pending_key and (active or latest and latest.get("returncode") != 0):
-        mark(pending_key, "running" if active else "failed")
-    actions = available_actions(root, request, attempts, active, historical)
+    for stage in operator.get("completed", []):
+        if stage in by_key and by_key[stage]["state"] == "pending":
+            mark(stage)
+    operator_node = operator.get("node")
+    if operator_node and operator.get("state") in {"running", "paused", "detached", "failed"}:
+        if not (operator_node == "prepare" and not remaining and ready_count + failed_count):
+            pending_key = operator_node
+    failure_at = operator_node if operator.get("state") == "failed" else latest.get("failure_node")
+    if (launcher == "failed" and failure_at in by_key and by_key[failure_at]["state"] == "pending"):
+        mark(failure_at, "failed", error=operator.get("error"))
+    if state == "paused" and operator_node:
+        mark(operator_node, "paused", detail="继续时会核对并复用已有成果。"
+             if not by_key[operator_node].get("detail") else by_key[operator_node]["detail"])
+    observing_source = bool(source and not handoff and source_wait.get("state") == "waiting")
+    if (pending_key and active and by_key[pending_key]["state"] == "pending"
+            and (not observing_source or source_wait.get("active_tasks"))):
+        mark(pending_key, "running")
+    if (pause_node := pause_request.get("node")) in by_key and by_key[pause_node]["state"] == "pending":
+        mark(pause_node, "pausing", detail="到达此节点前暂停")
+    actions = available_actions(root, request, attempts, active, historical, source,
+                                "exact" if handoff or source_stage in {"planning", "analyzing"} else "prepare",
+                                operator, pause_request)
     for node in nodes:
-        node["actions"] = actions.get(node["key"], [])
+        node["actions"] = [{**action, "node": node["key"], "attempt": latest.get("id")}
+                           for action in actions.get(node["key"], [])]
     vault = Path(request["vault_path"])
     current_release = read(vault / "_system/metadata/knowledge-release-state.json").get("current_release_id")
     current_index = read(vault / "_system/reports/retrieval-index-manifest.json")
@@ -330,8 +450,9 @@ def progress(directory, *, historical=False, active=False, details=True):
     synchronized = (current_index.get("status") == "ready" and current_index.get("release_id") == published
                     if current_index else published == release and (indexed or bool(final.get("final_acceptance"))))
     data.update(nodes=nodes, attempts=attempts, sources=request["sources"], active_node=pending_key,
-                workflow_id=f"ingest-{request['operation_id']}", source_stage=source.get("current_stage"),
+                workflow_id=f"ingest-{request['operation_id']}", source_stage=source_stage,
                 source_revision=source.get("revision", handoff.get("revision")), pause=paused,
+                source_wait=source_wait, operator=operator, pause_request=pause_request,
                 source_board=(source.get("kanban") or {}).get("board_id"), short_board=operation.get("board"),
                 receipts=sum(1 for _ in (native / "receipts").glob("*.json")),
                 release_id=published, indexed=synchronized, query_enabled=False)
@@ -351,6 +472,7 @@ def run_attempt(directory, attempt_id, config, lease_fd):
     path = directory / "attempts" / attempt_id / "attempt.json"
     attempt = read(path)
     code = 1
+    failure_node = None
     with path.with_name("pipeline.log").open("a", encoding="utf-8") as log:
         try:
             orch = Path(config["skills_root"]) / ORCHESTRATOR
@@ -378,14 +500,22 @@ def run_attempt(directory, attempt_id, config, lease_fd):
             if action == "start":
                 request.setdefault("recovery_policy", DEFAULT)
                 save(request_path, request)
-            else:
+            elif action not in {"attach-source", "continue-operation"}:
                 verify_drained(request, directory / "short/native")
 
             command = [sys.executable, "-B", str(script), "--request", str(request_path),
                        "--output", str(directory / "short"), "--provisioner-skill", str(orch),
                        "--bootstrap-skill", str(bootstrap), "--provider-config", config["provider_config"],
                        "--provider-state", config["provider_state"]]
-            if action == "delivery":
+            if attempt.get("operator"):
+                command += ["--operator-attempt", attempt_id]
+                if action == "attach-source":
+                    command += ["--attach-source"]
+                elif action == "continue-operation":
+                    command += ["--continue-operation"]
+                elif attempt.get("pause_before"):
+                    command += ["--pause-before", attempt["pause_before"]]
+            elif action == "delivery":
                 command += ["--resume-delivery"]
             elif action != "start":
                 node = {"writing-replay": "writing", "writing-held": "writing",
@@ -404,10 +534,19 @@ def run_attempt(directory, attempt_id, config, lease_fd):
             save(path, attempt)
             code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=False,
                                   pass_fds=(lease_fd,)).returncode
+            if attempt.get("operator"):
+                status = operator_state(directory / "short", request, attempt, active=True)
+                if status.get("state") == "failed":
+                    failure_node = status["node"]
+            else:
+                failure_node = attempt.get("node")
         except Exception as error:
             print(f"{type(error).__name__}: {error}", file=log, flush=True)
         finally:
-            save(path, {**attempt, "returncode": code, "ended_at": time.time()})
+            record = {**attempt, "returncode": code, "ended_at": time.time()}
+            if code not in (0, 75) and failure_node:
+                record["failure_node"] = failure_node
+            save(path, record)
 
 
 def verify_drained(request, native):

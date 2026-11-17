@@ -21,7 +21,7 @@ from hermes_source_units.runtime_telemetry import measured, event
 
 @measured('vault_startup',lambda request,record,bootstrap_skill,**kwargs:{'vault':request.get('vault_path'),
     'workflow_id':'ingest-'+str(request.get('operation_id','unknown')),'operation_id':request.get('operation_id')})
-def start(request, record, bootstrap_skill, *, before_workflow=None):
+def start(request, record, bootstrap_skill, *, before_workflow=None, prepare_only=False):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise ValueError('startup requires a trusted operator')
     required={'operation_id','actor','vault_path','vault_id','vault_name','security_domain','sources'}
@@ -37,6 +37,8 @@ def start(request, record, bootstrap_skill, *, before_workflow=None):
     cfg=configuration()
     from post_mineru_test import BOOTSTRAP_SHORT
     bootstrap_short = request.get('test_mode') == BOOTSTRAP_SHORT
+    if prepare_only and not bootstrap_short:
+        raise ValueError('preparing without dispatch requires a fresh short test')
     if bootstrap_short and (before_workflow is not None or 'reuse_conversion' in request
             or 'test' not in request['security_domain'].split('-') or request.get('pause_after') != ['exact_plan']
             or request.get('retrieval_policy', {}).get('sync_enabled') is not True
@@ -122,6 +124,10 @@ def start(request, record, bootstrap_skill, *, before_workflow=None):
         service=FileIngestWorkflowService(vault)
         # Once a workflow exists, retries observe it; resume is a distinct operation.
         existing=service._path(workflow['workflow_id'])
+        if prepare_only:
+            if existing.exists(): raise ValueError('source workflow already exists; attach to its existing ledger')
+            state.update(phase='sources_staged',bootstrap_ref=ref); save()
+            return {'startup':state,'workflow':None}
         handoff=False
         if existing.exists():
             value=service.status(workflow['workflow_id'])
@@ -156,9 +162,11 @@ def main():
     parser.add_argument('--request',required=True,type=Path)
     parser.add_argument('--record',required=True,type=Path)
     parser.add_argument('--bootstrap-skill',required=True,type=Path)
+    parser.add_argument('--prepare-only',action='store_true',help='Stage a fresh short Vault and originals without dispatch')
     args=parser.parse_args()
     try:
-        print(json.dumps(start(json.loads(args.request.read_text(encoding='utf-8-sig')),args.record,args.bootstrap_skill),ensure_ascii=False,indent=2))
+        print(json.dumps(start(json.loads(args.request.read_text(encoding='utf-8-sig')),args.record,
+            args.bootstrap_skill,prepare_only=args.prepare_only),ensure_ascii=False,indent=2))
     except Exception as exc:
         print(json.dumps({'ok':False,'error':str(exc)},ensure_ascii=False),file=sys.stderr); return 2
     return 0

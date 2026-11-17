@@ -429,7 +429,8 @@ def delivery(vault, run_id, authorization, *, replay=False):
     return result
 
 
-def execute(root, entry, authorization, dry_run, runner, *, existing_build=None, replay_build=None):
+def execute(root, entry, authorization, dry_run, runner, *, existing_build=None, replay_build=None,
+            before_delivery=None):
     require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),
             'trusted operator must authorize formal short Build')
     require(re.fullmatch(r'formal-[a-z0-9][a-z0-9-]{0,39}', entry)
@@ -490,6 +491,14 @@ def execute(root, entry, authorization, dry_run, runner, *, existing_build=None,
         require(finished['request_id'] == row['id'] and finished['state'] == 'settled',
                 'formal native Build held before verified completion')
         require(not replay_build or finished.get('formal_run_id') == replay_build, 'native replay returned another Build')
+        if before_delivery and 'formal_run_id' in finished:
+            run_id = finished['formal_run_id']
+            service.build.validate_run(run_id)
+            boundary = {'build_run_id': run_id, 'build_sha256': runner.sha(service.build._run_path(run_id)),
+                        'native_result_sha256': runner.sha(job.with_suffix('.result.json')),
+                        'authorization_sha256': fingerprint(authorization)}
+            if before_delivery('release', boundary):
+                return None
         result = (delivery(operation['vault'], finished['formal_run_id'], authorization, replay=bool(replay_build))
                   if 'formal_run_id' in finished else {
                       'candidates': [], 'isolated_pages': finished['formal_holds'], 'release_id': None,

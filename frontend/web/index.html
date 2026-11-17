@@ -51,6 +51,10 @@
                   <input id="vault-name" required maxlength="120" placeholder="我的测试知识库">
                 </div>
               </div>
+              <label for="pause-before">处理到此节点前暂停</label>
+              <select id="pause-before">
+                <option value="">自动处理到最终验收</option>
+              </select>
               <div class="form-foot">
                 <small id="form-hint">新建独立测试 Vault，合格页面将发布并同步索引。查询保持关闭。</small>
                 <button type="submit" id="start" disabled>开始处理 <span aria-hidden="true">→</span></button>
