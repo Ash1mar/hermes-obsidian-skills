@@ -286,6 +286,29 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         return {"max_codepoints": maximum, "serialization": READING_SERIALIZATION,
                 "context_selection": READING_CONTEXT_SELECTION}
 
+    def _task_reader_config(self, task: Mapping[str, Any],
+                            max_codepoints: int | None = None) -> dict[str, Any]:
+        planned = task.get("reading_measurement")
+        if planned is not None and max_codepoints is None:
+            max_codepoints = planned["limit"]
+        reader = self._reader_config(max_codepoints)
+        if planned is not None and (reader["max_codepoints"] != planned["limit"]
+                                    or fingerprint(reader) != task.get("reader_config_hash")):
+            _fail("STALE_PLAN", "reader configuration changed after exact batch planning")
+        return reader
+
+    def _plan_task_reader(self, task: Mapping[str, Any], reader: Mapping[str, Any],
+                          exact: bool) -> Mapping[str, Any]:
+        if "max_codepoints" not in task:
+            return reader
+        maximum = task["max_codepoints"]
+        planner = self._exact_planner
+        if (not exact or planner is None or reader != planner.reader
+                or type(maximum) is not int or not 1 <= maximum <= reader["max_codepoints"]
+                or planner.selected_limits.get(fingerprint(list(task["target_refs"]))) != maximum):
+            _fail("INVALID_BUDGET", "task-specific reading limit requires the selecting exact planner", "$.tasks")
+        return self._reader_config(maximum)
+
     def _unitset_revisions(self, refs: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
         revisions: dict[tuple[str, str], dict[str, Any]] = {}
         for source_ref in refs:
@@ -403,10 +426,14 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         if self._exact_planner is not None:
             planner, self._exact_planner = self._exact_planner, None
             try:
-                if (registry_revision != planner.registry or actor != planner.actor
-                        or dict(reader_config) != planner.reader):
+                maximum = reader_config["max_codepoints"]
+                default_reader = reader_config == planner.reader
+                if (registry_revision != planner.registry or actor != planner.actor or not default_reader and (
+                        type(maximum) is not int or reader_config != self._reader_config(maximum)
+                        or not 1 <= maximum <= planner.reader["max_codepoints"]
+                        or planner.selected_limits.get(fingerprint(refs)) != maximum)):
                     _fail('STALE_PLAN', 'measurement differs from pinned exact planner')
-                return planner.measure(refs)
+                return planner.measure(refs) if default_reader else planner.measure(refs, max_codepoints=maximum)
             finally:
                 self._exact_planner = planner
         observed = self._unitset_revisions(refs)
@@ -432,7 +459,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             if not refs:
                 _fail("INVALID_SCHEMA", "measured task target_refs cannot be empty", "$.tasks")
             measurement = self.measure_reading_window(
-                refs, registry_revision, self._unitset_revisions(refs), reader_config, actor=actor)
+                refs, registry_revision, self._unitset_revisions(refs),
+                self._plan_task_reader(raw, reader_config, bool(request.get("exact_reading_budget"))), actor=actor)
             results.append({"task_id": str(raw["task_id"]), "measurement": measurement})
         return {"ok": all(item["measurement"]["fits"] for item in results),
                 "reader_config": reader_config,
@@ -532,6 +560,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         task_ids = [str(item["task_id"]) for item in task_requests]
         if len(set(task_ids)) != len(task_ids):
             _fail("DUPLICATE", "batch contains duplicate task ids", "$.tasks")
+        task_readers = [self._plan_task_reader(task, reader_config, exact_reading_budget) for task in task_requests]
         all_refs: list[Mapping[str, Any]] = []
         ref_owners: dict[bytes, str] = {}
         for item in task_requests:
@@ -557,12 +586,11 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                     _fail("DUPLICATE", "batch_id already identifies a different task set", "$.batch_id")
                 if exact_reading_budget:
                     existing_tasks = [self._task(task_id) for task_id in task_ids]
-                    if any(task.get("reader_config_hash") != fingerprint(reader_config)
-                           or "reading_measurement" not in task for task in existing_tasks):
-                        _fail("STALE_PLAN", "existing batch was not planned with this exact reader configuration")
-                    for task in existing_tasks:
+                    for task, task_reader in zip(existing_tasks, task_readers, strict=True):
+                        if "reading_measurement" not in task:
+                            _fail("STALE_PLAN", "existing batch was not planned with an exact reader")
                         self._verify_planned_measurement(
-                            task, actor, registry_revision, request.get("max_codepoints"))
+                            task, actor, registry_revision, task_reader["max_codepoints"])
                 return {"ok": True, "created": False, "batch": existing_batch,
                         "created_tasks": 0, "existing_tasks": len(task_ids)}
             units = self._live_units(all_refs, actor, registry_revision)
@@ -580,7 +608,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             if completed_conflicts:
                 _fail("DUPLICATE", "batch overlaps completed tasks: " + ", ".join(completed_conflicts), "$.tasks")
             prepared: list[tuple[Path, dict[str, Any], bool]] = []
-            for raw in task_requests:
+            for raw, task_reader in zip(task_requests, task_readers, strict=True):
                 task_id, refs = str(raw["task_id"]), list(raw["target_refs"])
                 if int(raw.get("expected_revision", 0)) != 0:
                     _fail("REVISION_CONFLICT", "new batch task requires expected_revision 0", "$.tasks")
@@ -593,7 +621,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 if exact_reading_budget:
                     measurement = self.measure_reading_window(
                         refs, registry_revision, self._unitset_revisions(refs),
-                        reader_config, actor=actor)
+                        task_reader, actor=actor)
                     if not measurement["fits"]:
                         _fail(str(measurement["blocking_code"]),
                               f"task {task_id} serialized reading window uses "
@@ -689,7 +717,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             return {"codepoints": len(canonical_json(projection).decode("utf-8")),
                     "fingerprint": "sha256:" + fingerprint({"package_id": package["package_id"]}),
                     "blocking_code": None}
-        reader_config = self._reader_config()
+        reader_config = self._task_reader_config(task)
         observed = self.measure_reading_window(
             task["target_refs"], int(batch["document_registry_revision"]),
             self._unitset_revisions(task["target_refs"]), reader_config,
@@ -1409,6 +1437,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             if (package["task_id"] == task["task_id"] and package["actor"] == actor
                     and package["document_registry_revision"] == registry_revision
                     and package["window"]["core_refs"] == task["target_refs"]):
+                planned = task.get("reading_measurement")
+                if planned is not None and package["window"]["max_codepoints"] != planned["limit"]:
+                    _fail("STALE_PLAN", "saved reading package differs from the exact reading limit")
                 return package
         return None
 
@@ -1418,9 +1449,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         planned = task.get("reading_measurement")
         if planned is None:
             return None
-        reader_config = self._reader_config(max_codepoints)
-        if fingerprint(reader_config) != task.get("reader_config_hash"):
-            _fail("STALE_PLAN", "reader configuration changed after exact batch planning")
+        reader_config = self._task_reader_config(task, max_codepoints)
         observed = self.measure_reading_window(
             task["target_refs"], registry_revision, planned["unitset_revisions"],
             reader_config, actor=actor)
@@ -1602,7 +1631,7 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
         task = self._task(task_id)
         if task["status"] != "running" or task["actor"] != actor:
             _fail("ACCESS_DENIED", "task must be claimed by the reading actor")
-        reader_config = self._reader_config(max_codepoints)
+        reader_config = self._task_reader_config(task, max_codepoints)
         assembled = self._assemble_reading(
             list(task["target_refs"]), actor, registry_revision, reader_config)
         window, materials = assembled["window"], assembled["materials"]

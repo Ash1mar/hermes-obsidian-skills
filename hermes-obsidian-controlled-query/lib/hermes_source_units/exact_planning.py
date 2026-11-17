@@ -21,6 +21,7 @@ class ExactPlanner:
         self.read_only = read_only
         self.budget_identity = getattr(model_measure, 'identity', None)
         self.budgets = {}
+        self.selected_limits = {}
         self.snapshots = {}
         self.reused = self.measured = 0
         self.tasks = []
@@ -66,21 +67,29 @@ class ExactPlanner:
             self.source.get({'source_ref':ref, 'access':{'actor':self.actor,
                 'purpose':'construction', 'registry_revision':self.registry}})
 
-    def measure(self, refs):
+    def measure(self, refs, *, max_codepoints=None):
+        return self._measure(refs, max_codepoints=max_codepoints)[0]
+
+    def _measure(self, refs, *, max_codepoints=None):
         self._live(refs)
+        reader = self.reader if max_codepoints is None else self.service._reader_config(max_codepoints)
         revisions = self.service._unitset_revisions(refs)
-        reader_hash = fingerprint(self.reader)
+        reader_hash = fingerprint(reader)
         expected = 'sha256:' + fingerprint({'unit_refs':refs,
             'registry_revision':self.registry, 'unitset_revisions':revisions,
             'reader_config_hash':reader_hash})
-        key = fingerprint({'session':self.session, 'refs':refs})
+        identity = {'session':self.session, 'refs':refs}
+        if reader != self.reader:
+            identity['reader_config_hash'] = reader_hash
+        key = fingerprint(identity)
         path = self.root / 'measurements' / (key + '.json')
         # One assembly supplies canonical size and the actual runtime projection.
         # Fresh projection checks also detect changed QA/required assets before
         # a checkpoint can be reused. No model call or domain output is produced.
-        assembled = self.service._assemble_reading(refs, self.actor, self.registry, self.reader)
+        assembled = self.service._assemble_reading(refs, self.actor, self.registry, reader)
         value = assembled['measurement']
         budget = self.model_measure(refs, assembled) if self.model_measure and value['fits'] else None
+        result = value, budget, assembled['window']
         self.budgets[key] = budget
         if not self.read_only and path.is_file():
             try:
@@ -94,14 +103,14 @@ class ExactPlanner:
                         and saved_value['reader_config_hash'] == reader_hash
                         and saved_value['unitset_revisions'] == revisions):
                     self.reused += 1
-                    return value
+                    return result
             except (ContractError, KeyError, ValueError, TypeError):
                 pass  # incomplete/corrupt checkpoints are recomputed, never trusted
         self._live(refs)
         self._store(path, {'session':self.session, 'refs':refs,
             'measurement':value, 'measurement_hash':fingerprint(value), 'model_budget':budget})
         self.measured += 1
-        return value
+        return result
 
     def _store(self, path, value):
         from .workflow_guard import workflow_write_guard
@@ -121,16 +130,48 @@ class ExactPlanner:
         self._store(self.root / 'progress.json', value)
 
     def fits(self, refs):
-        measurement = self.measure(refs)
-        budget = self.budgets[fingerprint({'session':self.session, 'refs':refs})]
+        measurement, budget, _ = self._measure(refs)
         return measurement['fits'] and (budget is None or budget['fits']), measurement, budget
+
+    def _compact_singleton(self, refs, measurement, budget, window):
+        """Try smaller reading windows while retaining the whole core UnitRef."""
+        if len(refs) != 1 or not measurement['fits'] or not budget or budget['fits']:
+            return None
+        original_context = {fingerprint(ref) for ref in window['context_refs']}
+        if not original_context:
+            return None
+        limit = min(measurement['limit'], measurement['serialized_codepoints']) - 1
+        for _ in range(8):  # The ordinary reader loads at most eight context Units.
+            if limit < 1:
+                break
+            smaller, smaller_budget, selected = self._measure(refs, max_codepoints=limit)
+            if not smaller['fits']:
+                break
+            selected_context = {fingerprint(ref) for ref in selected['context_refs']}
+            if (selected['core_refs'] == refs and selected_context < original_context
+                    and smaller_budget and smaller_budget['fits']):
+                self._store(self.root / 'context-fallbacks' / (fingerprint(refs) + '.json'), {
+                    'source_ref': refs[0], 'original_measurement': measurement, 'original_model_budget': budget,
+                    'selected_measurement': smaller, 'selected_model_budget': smaller_budget,
+                    'omitted_context_refs': [ref for ref in window['context_refs']
+                                             if fingerprint(ref) not in selected_context],
+                })
+                return limit
+            if not selected_context:
+                break
+            limit = min(limit, smaller['serialized_codepoints']) - 1
+        return None
 
     def prepare(self):
         """Accumulate whole Units in source order; close before the next exceeds budget."""
         self._progress('measuring')
-        def accept(refs):
+        def accept(refs, max_codepoints=None):
             task_id = 'exact-' + fingerprint({'batch':self.request['batch_id'], 'refs':refs})[:32]
-            self.tasks.append({'task_id':task_id, 'target_refs':refs, 'expected_revision':0})
+            task = {'task_id':task_id, 'target_refs':refs, 'expected_revision':0}
+            if max_codepoints is not None:
+                task['max_codepoints'] = max_codepoints
+                self.selected_limits[fingerprint(refs)] = max_codepoints
+            self.tasks.append(task)
             self._progress('measuring')
         # Never mix documents in a candidate window; preserve each source's order.
         for key, (_,units,_) in self.snapshots.items():
@@ -138,13 +179,19 @@ class ExactPlanner:
             current = []
             for ref in refs:
                 trial = [*current, ref]
-                fits, measurement, budget = self.fits(trial)
-                if not fits and current:
+                measurement, budget, window = self._measure(trial)
+                blocked = not measurement['fits'] or (budget and not budget['fits'])
+                if blocked and current:
                     accept(current)
                     current = []
                     trial = [ref]
-                    fits, measurement, budget = self.fits(trial)
-                if not fits:
+                    measurement, budget, window = self._measure(trial)
+                    blocked = not measurement['fits'] or (budget and not budget['fits'])
+                if blocked:
+                    smaller = self._compact_singleton(trial, measurement, budget, window)
+                    if smaller is not None:
+                        accept(trial, smaller)
+                        continue
                     code = measurement['blocking_code'] or budget['blocking_code']
                     self._progress('blocked', blocking_code=code, measurement=measurement,
                                    model_budget=budget, source_ref=ref)

@@ -6,6 +6,7 @@ import pytest
 from test_p3_knowledge_build import vault, publish_sources
 from hermes_source_units import ContractError, FileKnowledgeBuildService
 from hermes_source_units.exact_planning import ExactPlanner
+from hermes_source_units.validation import fingerprint
 
 
 def request_for(vault):
@@ -57,6 +58,39 @@ def test_exact_budget_split_resume_and_commit_without_remeasure(vault, monkeypat
     assert result['created_tasks'] == len(plan['tasks'])
     assert resumed.measured == before
     assert sum(validated_counts) == len(resumed.refs)
+
+
+def test_selected_task_reader_is_pinned_through_preview_prepare_and_replay(vault):
+    publish_sources(vault, ['# Evidence\nComplete evidence remains available.\n'])
+    service = FileKnowledgeBuildService(vault)
+    current = service.source._current('resource-1')
+    planner = ExactPlanner(service, {'actor':'agent', 'registry_revision':1, 'batch_id':'pinned-reader',
+        'max_codepoints':12000, 'sources':[{'resource_id':'resource-1', 'unit_set_id':current['unit_set_id']}]})
+    plan = planner.prepare()
+    raw, = plan['tasks']
+    raw['max_codepoints'] = 6000
+    with pytest.raises(ContractError, match='INVALID_BUDGET'):
+        service.plan_batch(plan)
+    service._exact_planner = planner
+    with pytest.raises(ContractError, match='INVALID_BUDGET'):
+        service.plan_batch(plan)
+    planner.selected_limits[fingerprint(raw['target_refs'])] = 6000
+
+    measurement = service.measure_batch(plan)['results'][0]['measurement']
+    batch = service.plan_batch(plan)['batch']
+    assert service.plan_batch(plan)['created'] is False
+    task_id = raw['task_id']
+    fresh = FileKnowledgeBuildService(vault)
+    task = fresh._task(task_id)
+    assert task['reading_measurement'] == measurement
+    assert measurement['fits'] and measurement['limit'] == 6000
+    projected = fresh.preview_model_input(task_id, batch)
+    refused = fresh.prepare_batch(batch['batch_id'], 'agent', 1, max_codepoints=12000)
+    assert refused['failures'][0]['code'] == 'STALE_PLAN'
+    assert fresh._task(task_id)['status'] == 'pending'
+    prepared = fresh.prepare_batch(batch['batch_id'], 'agent', 1)
+    assert prepared['ok'] and prepared['results'][0]['measurement'] == measurement
+    assert fresh.preview_model_input(task_id, batch) == projected
 
 
 def test_measure_checkpoint_detects_corruption_and_changed_artifact(vault):
@@ -163,3 +197,34 @@ def test_many_context_candidates_do_not_make_tiny_core_unreadable(vault):
     planner = ExactPlanner(service,request)
     plan = planner.prepare()
     assert sum(len(task['target_refs']) for task in plan['tasks']) == len(refs)
+
+
+def test_indivisible_unit_reuses_whole_ref_with_smaller_context(vault):
+    request = request_for(vault)
+    service = FileKnowledgeBuildService(vault)
+    units = service.source.list('resource-1', request['sources'][0]['unit_set_id'])
+    ref = {'unit_ref': units[0]['ref'], 'span': None}
+    default = service._assemble_reading([ref], 'agent', 1, service._reader_config())
+    original_context = default['window']['context_refs']
+    assert original_context
+
+    def budget(refs, assembled):
+        fits = ref not in refs or (refs == [ref]
+                                   and len(assembled['window']['context_refs']) < len(original_context))
+        return {'fits': fits, 'blocking_code': None if fits else 'SEMANTIC_OUTPUT_OVERSIZE'}
+
+    planner = ExactPlanner(service, request, model_measure=budget)
+    plan = planner.prepare()
+    task, = [row for row in plan['tasks'] if ref in row['target_refs']]
+    assert task['target_refs'] == [ref]
+    assert task['max_codepoints'] < plan['max_codepoints']
+    assert [r for row in plan['tasks'] for r in row['target_refs']] == planner.refs
+    report, = (planner.root / 'context-fallbacks').glob('*.json')
+    recorded = json.loads(report.read_bytes())
+    assert recorded['source_ref'] == ref and recorded['omitted_context_refs']
+    assert not recorded['original_model_budget']['fits'] and recorded['selected_model_budget']['fits']
+    assert recorded['selected_measurement']['limit'] == task['max_codepoints']
+
+    restarted = ExactPlanner(FileKnowledgeBuildService(vault), request, model_measure=budget)
+    assert restarted.prepare() == plan
+    assert restarted.reused and not restarted.measured
