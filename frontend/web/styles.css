@@ -148,3 +148,10 @@ pre { margin: 0; min-height: 350px; max-height: 65vh; overflow: auto; background
 #source-draft-list strong, #source-draft-list small { display: block; overflow-wrap: anywhere; }
 #source-draft-list strong { font-size: 12px; }
 #source-draft-list button { flex-shrink: 0; font-size: 12px; padding: 5px 8px; }
+.source-pipeline-card { padding: 10px 0 14px; border-bottom: 1px solid var(--line); }
+.source-pipeline-card:last-child { border-bottom: 0; }
+.source-error { color: #9a3427; margin: 3px 0 7px; }
+.incremental-pipeline { list-style: none; display: grid; grid-template-columns: repeat(auto-fit, minmax(142px, 1fr)); gap: 8px; margin: 11px 0; padding: 0; }
+.incremental-pipeline > li { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; background: #f6f9fa; border: 1px solid #e2eaed; border-radius: 7px; padding: 9px; }
+.incremental-pipeline strong { font-size: 12px; margin-right: auto; }
+.incremental-pipeline small { width: 100%; overflow-wrap: anywhere; }

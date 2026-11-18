@@ -90,16 +90,13 @@ def progress(directory, request, attempts, active, historical, details):
     if not details:
         return data
     source = read(Path(request['vault_path']) / '_system/ledgers/ingest-workflows' / f"ingest-{request['operation_id']}.json")
-    rounds = []
-    for rid in run.get('round_ids', []):
-        input_ = read(root / 'rounds' / rid / 'input.json')
-        delivery = read(root / 'rounds' / rid / 'delivery.json')
-        settlement = read(root / 'rounds' / rid / 'settlement.json')
-        changes = read(root / 'rounds' / rid / 'page-changes.json')
-        rounds.append({'round_id': rid, 'active': rid == run.get('active_round_id'),
-                       'mapping_count': len(input_.get('map_result_ids', [])),
-                       'page_count': len(changes) if isinstance(changes, list) else 0,
-                       'delivery_state': delivery.get('state') or settlement.get('state'), 'release_id': delivery.get('release_id')})
+    from incremental_projection import native_tasks, overall_stages, round_projection, source_pipeline
+    native_cache = {}
+    def native_reader(board):
+        if board not in native_cache:
+            native_cache[board] = native_tasks(board)
+        return native_cache[board]
+    rounds = [round_projection(root, rid, run, control, native_reader=native_reader) for rid in run.get('round_ids', [])]
     manual = control.get('manual_source_admission', {})
     sources = [{'name': Path(path).name, 'path': path, **row,
                 'admission': manual.get(path), 'actions': []} for path, row in run.get('sources', {}).items()]
@@ -117,8 +114,9 @@ def progress(directory, request, attempts, active, historical, details):
                       run_revision=run.get('revision'))
     source_nodes = []
     for item in sources:
+        source_pipeline(item, root, run, control, source, rounds, native_reader=native_reader)
         admission = item['admission']
-        node = 'incremental-source-' + fingerprint({'path': item['path'], 'sha256': admission.get('sha256') if admission else None})[:24]
+        node = 'incremental-source-' + fingerprint({'path': item['path'], 'sha256': item.get('source_sha256')})[:24]
         if (admission and admission.get('state') == 'held' and not historical and not active
                 and run.get('state') == 'active' and control.get('state') in ('active', 'paused', 'pausing')):
             item['actions'].append({'id': 'incremental-release-source', 'node': node,
@@ -126,7 +124,13 @@ def progress(directory, request, attempts, active, historical, details):
                 'attempt': latest.get('id'), 'control_revision': control.get('revision'),
                 'run_revision': run.get('revision'), 'source_path': item['path'],
                 'source_sha256': admission['sha256']})
-        if admission:
+        if item['retry']['allowed'] and not historical and not active:
+            retry_action = {'id': 'incremental-retry-source', 'node': node, 'label': '重试此文件',
+                'attempt': latest.get('id'), 'control_revision': control.get('revision'), 'run_revision': run.get('revision'),
+                'source_path': item['path'], 'source_sha256': item['source_sha256'], 'retry_kind': item['retry']['retry_kind']}
+            item['actions'].append(retry_action)
+            item['retry']['action'] = retry_action
+        if admission or item['actions']:
             source_nodes.append({'key': node, 'name': item['name'], 'state': item['state'],
                                  'description': '逐文件手动准入；允许处理不会释放暂停边界。',
                                  'actions': item['actions']})
@@ -137,6 +141,7 @@ def progress(directory, request, attempts, active, historical, details):
     data.update(nodes=[{'key': 'incremental-control', 'name': '增量运行控制', 'state': state,
                        'description': '暂停作用于整个增量运行。继续只释放当前已核验的边界。', 'actions': actions}, *source_nodes],
                 incremental={'sources': sources, 'source_counts': counts, 'rounds': rounds,
+                             'overall_stages': overall_stages(sources, rounds, run, control),
                              'active_round_id': run.get('active_round_id'), 'control': control,
                              'budget': run.get('budget'), 'controller': controller,
                              'controller_active': controller_active, 'delivery_window': delivery_window},
@@ -167,6 +172,19 @@ def command(directory, attempt, config, save):
     if attempt['action'] == 'incremental-reconcile':
         operation['expected_revision'] = run['revision']
         mode = 'reconcile'
+    elif attempt['action'] == 'incremental-retry-source':
+        from incremental_projection import retry_capability
+        path, digest = attempt.get('source_path'), attempt.get('source_sha256')
+        manifest = next((row for row in run.get('source_manifest', []) if row['path'] == path), None)
+        item = run.get('sources', {}).get(path)
+        expected_node = 'incremental-source-' + fingerprint({'path': path, 'sha256': digest})[:24]
+        capability = retry_capability(item, root, run, control) if item else {}
+        if (not manifest or manifest['sha256'] != digest or attempt.get('node') != expected_node
+                or not capability.get('allowed') or capability.get('retry_kind') != attempt.get('retry_kind')):
+            raise ValueError('此来源没有可用的受控重试入口，请刷新并检查失败原因。')
+        operation.update(control_revision=control['revision'], run_revision=run['revision'], source_path=path,
+                         source_sha256=digest, retry_kind=capability['retry_kind'])
+        mode = 'retry-source'
     else:
         operation.update(expected_revision=control['revision'], action=attempt['action'].removeprefix('incremental-'))
         if operation['action'] == 'continue':
