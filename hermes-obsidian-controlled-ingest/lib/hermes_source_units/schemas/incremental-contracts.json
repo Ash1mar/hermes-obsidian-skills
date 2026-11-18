@@ -582,6 +582,29 @@
         },
         "active_scopes": {
           "type": "object"
+        },
+        "manual_source_admission": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "sha256",
+              "state"
+            ],
+            "properties": {
+              "sha256": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "state": {
+                "enum": [
+                  "held",
+                  "released"
+                ]
+              }
+            },
+            "additionalProperties": false
+          }
         }
       },
       "additionalProperties": false

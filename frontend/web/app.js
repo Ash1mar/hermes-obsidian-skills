@@ -5,6 +5,7 @@ const labels = {
   paused: "已暂停", pausing: "等待暂停", detached: "启动器已退出", cancelled: "已取消",
   active: "处理中", preparing: "来源准备中", prepared: "来源就绪", mapping: "映射中", mapped: "映射已完成",
   frozen: "输入已固定", settled: "已结算", held: "受阻", committed: "已提交",
+  "manual-held": "待手动开始", released: "已允许处理",
 };
 const waitLabels = { waiting: "等待交接", detached: "等待已结束", handoff: "交接就绪", failed: "来源交接失败" };
 const fileLabels = { ready: "就绪", failed: "转换失败", pending: "未结算", running: "处理中", queued: "排队中",
@@ -280,6 +281,12 @@ function renderIncremental(timeline) {
   for (const source of value.sources) {
     const row = make("div", undefined, "scope-row");
     row.append(make("span", source.name), badge(source.state));
+    if (source.admission) row.append(badge(source.admission.state === "held" ? "manual-held" : "released"));
+    for (const action of source.actions || []) {
+      const button = rowButton(action.label, () => reenter(action));
+      button.disabled = !writable || posting || (action.gateway_required !== false && !gateway.ready);
+      row.append(button);
+    }
     if (source.reason || source.error) row.append(make("small", source.reason || source.error));
     sources.append(row);
   }
@@ -455,7 +462,8 @@ async function submit(path, body) {
 function reenter(action, manifest, pauseBefore) {
   if (action.id.startsWith("incremental-")) {
     submit(`/api/runs/${current.id}/reenter`, {action: action.id, node: action.node, attempt: action.attempt,
-      control_revision: action.control_revision, run_revision: action.run_revision});
+      control_revision: action.control_revision, run_revision: action.run_revision,
+      source_path: action.source_path, source_sha256: action.source_sha256});
     return;
   }
   if (action.manifest && !manifest?.trim()) {
@@ -496,6 +504,7 @@ get("create").addEventListener("submit", async event => {
         coordination: Number(get("inc-coordination").value), writing: Number(get("inc-writing").value)}};
     body.incremental_policy = {max_maps_per_round: Number(get("inc-round").value)};
     body.incremental_pause_after = [...get("inc-pauses").selectedOptions].map(option => option.value);
+    if (get("inc-manual-sources").checked) body.incremental_manual_sources = true;
   }
   if (await submit("/api/runs", body)) {
     event.target.reset();
@@ -507,7 +516,7 @@ get("workflow-mode").addEventListener("change", () => {
   get("incremental-options").hidden = !incremental;
   get("pause-before").hidden = incremental;
   get("legacy-pause-label").hidden = incremental;
-  for (const input of get("incremental-options").querySelectorAll("input")) input.required = incremental;
+  for (const input of get("incremental-options").querySelectorAll('input[type="number"]')) input.required = incremental;
 });
 get("toggle-form").addEventListener("click", () => showForm(get("new-panel").hidden));
 get("attempts").addEventListener("change", event => {

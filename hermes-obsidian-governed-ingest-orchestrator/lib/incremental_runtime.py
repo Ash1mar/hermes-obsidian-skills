@@ -244,13 +244,16 @@ def start(request, record, bootstrap_skill):
         return service(vault, run_id).status(run_id)
     source_request = {**request, 'incremental_run_id': run_id}
     provision(source_request, record, bootstrap_skill, prepare_only=True, incremental_bootstrap=True)
-    control = IncrementalControl(vault, run_id)
-    control.initialize(request['actor'], request.get('incremental_pause_after', []))
-    domain = service(vault, run_id)
+    require(type(request.get('incremental_manual_sources', False)) is bool,
+            'manual source admission must be an explicit boolean')
     manifest = [{'path': request.get('incremental_reuse_originals', {}).get(str(Path(p).resolve()),
                        f"10_Raw/Incremental/{request['operation_id']}/" + Path(p).name),
                  'sha256': _sha(Path(p).resolve(strict=True).read_bytes())}
                 for p in request['sources']]
+    control = IncrementalControl(vault, run_id)
+    control.initialize(request['actor'], request.get('incremental_pause_after', []),
+                       manual_sources=manifest if request.get('incremental_manual_sources') else None)
+    domain = service(vault, run_id)
     initial = domain.start({'workflow_mode': 'incremental_v1', 'run_id': run_id,
         'operation_id': request['operation_id'], 'actor': request['actor'], 'sources': manifest,
         'source_workflow_id': 'ingest-' + request['operation_id'], 'contracts': CONTRACTS,

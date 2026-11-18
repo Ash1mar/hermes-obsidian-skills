@@ -27,6 +27,9 @@ def settings(body, config, error):
     budget = body.get('incremental_budget')
     policy = body.get('incremental_policy')
     pause_after = body.get('incremental_pause_after', [])
+    manual_sources = body.get('incremental_manual_sources', False)
+    if type(manual_sources) is not bool:
+        raise error('逐文件手动开始必须为明确的开关。')
     if (not isinstance(budget, dict) or set(budget) != {'max_calls', 'max_input_tokens', 'max_output_tokens', 'phase_limits'}
             or any(type(budget.get(k)) is not int or budget[k] < 1 for k in ('max_calls', 'max_input_tokens', 'max_output_tokens'))
             or not isinstance(budget.get('phase_limits'), dict)
@@ -37,8 +40,11 @@ def settings(body, config, error):
         raise error('请填写每轮最多接收的来源映射数。')
     if not isinstance(pause_after, list) or len(pause_after) != len(set(pause_after)) or any(p not in PAUSES for p in pause_after):
         raise error('请选择有效的增量暂停边界。')
-    return {'workflow_mode': MODE, 'incremental_budget': budget, 'incremental_policy': policy,
-            'incremental_pause_after': pause_after, 'incremental_provider_config': config['provider_config']}
+    result = {'workflow_mode': MODE, 'incremental_budget': budget, 'incremental_policy': policy,
+              'incremental_pause_after': pause_after, 'incremental_provider_config': config['provider_config']}
+    if manual_sources:
+        result['incremental_manual_sources'] = True
+    return result
 
 
 def root_for(request):
@@ -90,7 +96,9 @@ def progress(directory, request, attempts, active, historical, details):
                        'mapping_count': len(input_.get('map_result_ids', [])),
                        'page_count': len(changes) if isinstance(changes, list) else 0,
                        'delivery_state': delivery.get('state') or settlement.get('state'), 'release_id': delivery.get('release_id')})
-    sources = [{'name': Path(path).name, 'path': path, **row} for path, row in run.get('sources', {}).items()]
+    manual = control.get('manual_source_admission', {})
+    sources = [{'name': Path(path).name, 'path': path, **row,
+                'admission': manual.get(path), 'actions': []} for path, row in run.get('sources', {}).items()]
     counts = dict(Counter(row['state'] for row in sources))
     actions = []
     if not historical and run and run['state'] == 'active' and not active:
@@ -103,12 +111,27 @@ def progress(directory, request, attempts, active, historical, details):
     for action in actions:
         action.update(node='incremental-control', attempt=latest.get('id'), control_revision=control.get('revision'),
                       run_revision=run.get('revision'))
+    source_nodes = []
+    for item in sources:
+        admission = item['admission']
+        node = 'incremental-source-' + fingerprint({'path': item['path'], 'sha256': admission.get('sha256') if admission else None})[:24]
+        if (admission and admission.get('state') == 'held' and not historical and not active
+                and run.get('state') == 'active' and control.get('state') in ('active', 'paused', 'pausing')):
+            item['actions'].append({'id': 'incremental-release-source', 'node': node,
+                'label': '开始处理此文件' if control['state'] == 'active' else '允许处理（继续后开始）',
+                'attempt': latest.get('id'), 'control_revision': control.get('revision'),
+                'run_revision': run.get('revision'), 'source_path': item['path'],
+                'source_sha256': admission['sha256']})
+        if admission:
+            source_nodes.append({'key': node, 'name': item['name'], 'state': item['state'],
+                                 'description': '逐文件手动准入；允许处理不会释放暂停边界。',
+                                 'actions': item['actions']})
     released = read(Path(request['vault_path']) / '_system/metadata/knowledge-release-state.json').get('current_release_id')
     index = read(Path(request['vault_path']) / '_system/reports/retrieval-index-manifest.json')
     delivery_window = read(Path(request['vault_path']) / '_system/metadata/incremental-delivery-state.json')
     delivering = bool(delivery_window and delivery_window.get('state') not in ('committed', 'aborted'))
     data.update(nodes=[{'key': 'incremental-control', 'name': '增量运行控制', 'state': state,
-                       'description': '暂停作用于整个增量运行。继续只释放当前已核验的边界。', 'actions': actions}],
+                       'description': '暂停作用于整个增量运行。继续只释放当前已核验的边界。', 'actions': actions}, *source_nodes],
                 incremental={'sources': sources, 'source_counts': counts, 'rounds': rounds,
                              'active_round_id': run.get('active_round_id'), 'control': control,
                              'budget': run.get('budget'), 'controller': controller,
@@ -144,6 +167,14 @@ def command(directory, attempt, config, save):
         operation.update(expected_revision=control['revision'], action=attempt['action'].removeprefix('incremental-'))
         if operation['action'] == 'continue':
             operation['boundary_fingerprint'] = fingerprint(control['boundary'])
+        elif operation['action'] == 'release-source':
+            source_path, source_sha = attempt.get('source_path'), attempt.get('source_sha256')
+            admission = control.get('manual_source_admission', {}).get(source_path)
+            expected_node = 'incremental-source-' + fingerprint({'path': source_path, 'sha256': source_sha})[:24]
+            if (not admission or admission.get('state') != 'held' or admission.get('sha256') != source_sha
+                    or attempt.get('node') != expected_node):
+                raise ValueError('来源身份或手动处理许可已经变化，请刷新后重试。')
+            operation.update(source_path=source_path, source_sha256=source_sha)
         mode = 'control'
     path = directory / 'attempts' / attempt['id'] / 'incremental-request.json'
     save(path, operation)
