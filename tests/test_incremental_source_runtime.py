@@ -120,10 +120,10 @@ def test_runtime_mutation_replay_preserves_original_revision_and_checks_inputs(t
     assert [request['expected_revision'] for request in calls] == [1, 1]
     saved = json.loads((tmp_path / 'runtime-requests/seal-a.json').read_text())
     assert saved['request']['expected_revision'] == 1
-    with pytest.raises(ContractError, match='different inputs'):
+    with pytest.raises(ValueError, match='different inputs'):
         incremental_native.mutate(domain, 'run', 'seal_source_snapshot', 'seal-a',
                                   **{**fields, 'source_path': '10_Raw/b.pdf'})
-    with pytest.raises(ContractError, match='different inputs'):
+    with pytest.raises(ValueError, match='different inputs'):
         incremental_native.mutate(domain, 'run', 'record_source_failure', 'seal-a', **fields)
     assert len(calls) == 2
 
