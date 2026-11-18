@@ -41,8 +41,15 @@
               <label for="workflow-mode">处理模式</label>
               <select id="workflow-mode"><option value="">整批短路径</option><option value="incremental_v1">文件就绪后增量交付</option></select>
               <label for="sources">文档或文件夹地址</label>
-              <textarea id="sources" rows="3" required placeholder="C:\资料\工程规程"></textarea>
-              <p class="hint">每行一条路径。文件夹会递归收集 PDF。</p>
+              <div class="source-entry">
+                <input id="sources" placeholder="C:\资料\工程规程.pdf" spellcheck="false" aria-describedby="source-hint">
+                <button type="button" class="secondary" id="add-source">加入列表</button>
+              </div>
+              <p class="hint" id="source-hint">每次填写一个文件或文件夹。文件只加入这一份；文件夹会在开始处理时收集其中的 PDF。</p>
+              <section class="source-draft" aria-labelledby="source-draft-title">
+                <div class="source-draft-heading"><strong id="source-draft-title">待处理列表</strong><span id="source-draft-count" class="tag">0 个地址</span></div>
+                <ul id="source-draft-list" aria-live="polite"></ul>
+              </section>
               <div class="fields">
                 <div>
                   <label for="vault-path">Vault 目标地址</label>
@@ -57,15 +64,6 @@
                 <p class="hint">来源清单在提交时固定。每轮消费已就绪映射，合格知识页按版本发布。</p>
                 <label class="checkbox-label" for="inc-manual-sources"><input id="inc-manual-sources" type="checkbox">逐文件手动开始</label>
                 <p class="hint">勾选后逐个点击来源的开始按钮。程序不设置文件之间的等待时间。</p>
-                <div class="fields">
-                  <div><label for="inc-calls">累计调用上限</label><input id="inc-calls" type="number" min="1" step="1"></div>
-                  <div><label for="inc-input">累计输入 token 上限</label><input id="inc-input" type="number" min="1" step="1"></div>
-                  <div><label for="inc-output">累计输出 token 上限</label><input id="inc-output" type="number" min="1" step="1"></div>
-                  <div><label for="inc-mapping">映射调用上限</label><input id="inc-mapping" type="number" min="1" step="1"></div>
-                  <div><label for="inc-coordination">协调调用上限</label><input id="inc-coordination" type="number" min="1" step="1"></div>
-                  <div><label for="inc-writing">写作调用上限</label><input id="inc-writing" type="number" min="1" step="1"></div>
-                  <div><label for="inc-round">每轮最多来源映射数</label><input id="inc-round" type="number" min="1" step="1"></div>
-                </div>
                 <label for="inc-pauses">增量暂停边界（可多选）</label>
                 <select id="inc-pauses" multiple aria-label="增量暂停边界">
                   <option value="prepare">来源准备前</option><option value="mapping">来源映射后</option>

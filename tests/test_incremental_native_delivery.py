@@ -48,6 +48,7 @@ def test_semantic_receipt_must_equal_the_audited_native_response(tmp_path, monke
     kb = SimpleNamespace(get_task=lambda *_: task, list_runs=lambda *_a, **_k: [SimpleNamespace(id=1, outcome='completed')])
     kc = SimpleNamespace(connect=lambda **_: SimpleNamespace(close=lambda: None))
     monkeypatch.setattr(runner, 'runtime', lambda: (kb, kc, None))
+    monkeypatch.setattr(incremental_native, 'completion_connection', lambda _: kc.connect())
     monkeypatch.setattr(runner, 'checked_projection', lambda _: {'wire': {'user': 'original'}})
     monkeypatch.setattr(fixed_semantic_recovery, 'transcript_reply', lambda *_: audit['raw'])
     monkeypatch.setattr(fixed_semantic, 'decode_semantic_response', lambda *_: (answer, None))

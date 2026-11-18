@@ -31,6 +31,7 @@ let obsidianAvailable = false;
 let gateway = { state: "checking", ready: false };
 let posting = false;
 let refreshing = false;
+const draftSources = [];
 const rendered = new Map();
 
 function make(tag, text, className) {
@@ -276,19 +277,38 @@ function renderIncremental(timeline) {
     button.disabled = !writable || posting || (action.gateway_required !== false && !gateway.ready);
     controls.append(button);
   }
+  const stages = make("li", undefined, "incremental-scope");
+  stages.append(make("strong", "整体流程"), make("p", "各来源并行推进；页面构建、发布与验收按共享轮次执行。", "hint"));
+  const overall = make("ol", undefined, "incremental-pipeline");
+  for (const phase of value.overall_stages || []) overall.append(renderIncrementalPhase(phase));
+  stages.append(overall);
   const sources = make("li", undefined, "incremental-scope");
-  sources.append(make("strong", "来源范围"));
+  sources.append(make("strong", "逐文件流程"));
   for (const source of value.sources) {
+    const card = make("section", undefined, "source-pipeline-card");
     const row = make("div", undefined, "scope-row");
-    row.append(make("span", source.name), badge(source.state));
+    row.append(make("strong", source.name), badge(source.display_state || source.state));
     if (source.admission) row.append(badge(source.admission.state === "held" ? "manual-held" : "released"));
     for (const action of source.actions || []) {
+      if (action.id === 'incremental-retry-source') continue;
       const button = rowButton(action.label, () => reenter(action));
       button.disabled = !writable || posting || (action.gateway_required !== false && !gateway.ready);
       row.append(button);
     }
-    if (source.reason || source.error) row.append(make("small", source.reason || source.error));
-    sources.append(row);
+    const retry = source.retry || {allowed: false, reason: "当前没有可用的受控重试入口。"};
+    const retryButton = rowButton("重试此文件", () => reenter(retry.action));
+    retryButton.disabled = !retry.allowed || !retry.action || !writable || posting || !gateway.ready;
+    retryButton.title = retry.reason || "";
+    row.append(retryButton);
+    card.append(row);
+    if (source.failure_reason || source.reason || source.error) card.append(make("p", source.failure_reason || source.reason || source.error, "source-error hint"));
+    if (!retry.allowed && source.display_state === "failed") card.append(make("p", `重试不可用：${retry.reason}`, "hint"));
+    const pipeline = make("ol", undefined, "incremental-pipeline");
+    for (const phase of source.pipeline || []) pipeline.append(renderIncrementalPhase(phase));
+    card.append(pipeline);
+    if (source.related_rounds?.length) card.append(make("p", source.related_rounds.map(round =>
+      `参与共享轮次 ${round.round_id}（${round.role === "input" ? "本轮新输入" : "已有上下文"}）· ${round.dependent_page_ids.length} 项依赖页面`).join("；"), "hint"));
+    sources.append(card);
   }
   if (!value.sources.length) sources.append(make("p", "等待来源范围登记", "hint"));
   const rounds = make("li", undefined, "incremental-scope");
@@ -298,9 +318,22 @@ function renderIncremental(timeline) {
     row.append(make("span", round.round_id), badge(round.delivery_state || (round.active ? "running" : "settled")));
     row.append(make("small", `${round.mapping_count} 份映射 · ${round.page_count} 项页面处置${round.release_id ? ` · ${round.release_id}` : ""}`));
     rounds.append(row);
+    const pipeline = make("ol", undefined, "incremental-pipeline");
+    for (const phase of round.stages || []) pipeline.append(renderIncrementalPhase(phase));
+    rounds.append(pipeline);
   }
   if (!value.rounds.length) rounds.append(make("p", "首份来源映射就绪后可开始轮次", "hint"));
-  timeline.replaceChildren(controls, sources, rounds);
+  timeline.replaceChildren(controls, stages, sources, rounds);
+}
+
+function renderIncrementalPhase(phase) {
+  const row = make("li");
+  row.append(make("strong", phase.name), badge(phase.state));
+  if (phase.counts) row.append(make("small", Object.entries(phase.counts).map(([state, count]) => `${count} ${labels[state] || state}`).join(" · ")));
+  if (phase.round_ids?.length) row.append(make("small", `共享轮次 ${phase.round_ids.join("、")}`));
+  if (phase.detail) row.append(make("small", phase.detail));
+  if (phase.boundary) row.append(make("small", phase.result_state === "completed" ? "本步成果已完成，停在此边界" : "停在此边界"));
+  return row;
 }
 
 async function copyVaultDirectory(field) {
@@ -463,7 +496,7 @@ function reenter(action, manifest, pauseBefore) {
   if (action.id.startsWith("incremental-")) {
     submit(`/api/runs/${current.id}/reenter`, {action: action.id, node: action.node, attempt: action.attempt,
       control_revision: action.control_revision, run_revision: action.run_revision,
-      source_path: action.source_path, source_sha256: action.source_sha256});
+      source_path: action.source_path, source_sha256: action.source_sha256, retry_kind: action.retry_kind});
     return;
   }
   if (action.manifest && !manifest?.trim()) {
@@ -489,24 +522,57 @@ for (const [key, name] of Object.entries(stageNames)) {
   get("pause-before").append(option);
 }
 
+function renderSourceDraft() {
+  get("source-draft-count").textContent = `${draftSources.length} 个地址`;
+  get("source-draft-list").replaceChildren(...(draftSources.length ? draftSources.map((path, index) => {
+    const item = make("li");
+    const name = path.replace(/\\/g, "/").replace(/\/$/, "").split("/").at(-1) || path;
+    const text = make("div");
+    text.append(make("strong", name), make("small", path));
+    const remove = rowButton("移除", () => { draftSources.splice(index, 1); renderSourceDraft(); });
+    remove.setAttribute("aria-label", `移除 ${name}`);
+    item.append(text, remove);
+    return item;
+  }) : [make("li", "加入文件或文件夹后，会在这里逐条显示。", "hint")]));
+}
+
+function addDraftSource() {
+  const path = get("sources").value.trim();
+  if (!path) { get("sources").focus(); return false; }
+  if (draftSources.includes(path)) {
+    message("这个地址已经在待处理列表中。", true);
+    return false;
+  }
+  draftSources.push(path);
+  get("sources").value = "";
+  renderSourceDraft();
+  return true;
+}
+
+get("add-source").addEventListener("click", addDraftSource);
+get("sources").addEventListener("keydown", event => {
+  if (event.key === "Enter") { event.preventDefault(); addDraftSource(); }
+});
+renderSourceDraft();
+
 get("create").addEventListener("submit", async event => {
   event.preventDefault();
+  if (get("sources").value.trim()) addDraftSource();
+  if (!draftSources.length) { message("请先把文档或文件夹加入待处理列表。", true); return; }
   const body = {
-    sources: get("sources").value.split(/\r?\n/).map(path => path.trim()).filter(Boolean),
+    sources: [...draftSources],
     vault_path: get("vault-path").value, vault_name: get("vault-name").value,
     pause_before: get("pause-before").value || undefined,
   };
   if (get("workflow-mode").value === "incremental_v1") {
     delete body.pause_before;
     body.workflow_mode = "incremental_v1";
-    body.incremental_budget = {max_calls: Number(get("inc-calls").value), max_input_tokens: Number(get("inc-input").value),
-      max_output_tokens: Number(get("inc-output").value), phase_limits: {mapping: Number(get("inc-mapping").value),
-        coordination: Number(get("inc-coordination").value), writing: Number(get("inc-writing").value)}};
-    body.incremental_policy = {max_maps_per_round: Number(get("inc-round").value)};
     body.incremental_pause_after = [...get("inc-pauses").selectedOptions].map(option => option.value);
     if (get("inc-manual-sources").checked) body.incremental_manual_sources = true;
   }
   if (await submit("/api/runs", body)) {
+    draftSources.splice(0);
+    renderSourceDraft();
     event.target.reset();
     get("workflow-mode").dispatchEvent(new Event("change"));
   }
@@ -516,7 +582,6 @@ get("workflow-mode").addEventListener("change", () => {
   get("incremental-options").hidden = !incremental;
   get("pause-before").hidden = incremental;
   get("legacy-pause-label").hidden = incremental;
-  for (const input of get("incremental-options").querySelectorAll('input[type="number"]')) input.required = incremental;
 });
 get("toggle-form").addEventListener("click", () => showForm(get("new-panel").hidden));
 get("attempts").addEventListener("change", event => {

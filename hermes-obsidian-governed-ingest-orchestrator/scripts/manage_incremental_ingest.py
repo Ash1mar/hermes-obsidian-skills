@@ -21,11 +21,11 @@ def main():
     start.add_argument('--bootstrap-skill', type=Path, required=True)
     for action in ('status', 'watch'):
         sub.add_parser(action).add_argument('--run-id', required=True)
-    for action in ('reconcile', 'preview-reuse', 'control', 'recover-delivery'):
+    for action in ('reconcile', 'preview-reuse', 'control', 'recover-delivery', 'retry-source'):
         sub.add_parser(action).add_argument('--request', type=Path, required=True)
     args = parser.parse_args()
     try:
-        if args.action in ('start', 'reconcile', 'control', 'recover-delivery') and (os.environ.get('HERMES_KANBAN_TASK') or
+        if args.action in ('start', 'reconcile', 'control', 'recover-delivery', 'retry-source') and (os.environ.get('HERMES_KANBAN_TASK') or
                                                                 os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT')):
             raise ValueError('incremental operator actions require a trusted operator')
         if args.action == 'start':
@@ -46,6 +46,9 @@ def main():
             domain = service(args.vault, request['run_id'])
             if args.action == 'preview-reuse':
                 result = domain.preview_reuse(request)
+            elif args.action == 'retry-source':
+                from incremental_source_retry import retry
+                result = retry(domain.vault, request)
             elif args.action == 'control':
                 control = IncrementalControl(domain.vault, request['run_id'])
                 result = control.control(request)
