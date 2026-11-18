@@ -111,7 +111,7 @@ def new_request(body, config):
     if duplicates:
         raise UserError("原件将按文件名导入，以下文件名重复：" + "、".join(sorted(duplicates)))
     run = "console-" + uuid4().hex[:20]
-    return {
+    request = {
         "operation_id": run, "actor": "user-operator", "sources": sorted(map(str, files)),
         "vault_id": run, "vault_name": name.strip(), "vault_path": str(target),
         "security_domain": "internal-test", "test_mode": "bootstrap-short-test/v1",
@@ -119,6 +119,13 @@ def new_request(body, config):
         "retrieval_policy": {"contract": "vault-retrieval-policy/v1",
                              "sync_enabled": True, "query_enabled": False},
     }
+    from incremental import settings
+    request.update(settings(body, config, UserError))
+    if request.get('workflow_mode') == 'incremental_v1':
+        request.pop('test_mode')
+        request.pop('pause_after')
+        request.pop('canary_policy')
+    return request
 
 
 def ledger_path(request):
@@ -286,6 +293,9 @@ def operator_state(root, request, latest, active=False):
 def progress(directory, *, historical=False, active=False, details=True):
     request = read(directory / "request.json")
     attempts = attempts_for(directory, historical)
+    if request.get('workflow_mode') == 'incremental_v1':
+        from incremental import progress as incremental_progress
+        return incremental_progress(directory, request, attempts, active, historical, details)
     latest = attempts[-1] if attempts else {}
     root = directory / "short"
     native = root / "native"
@@ -492,6 +502,14 @@ def run_attempt(directory, attempt_id, config, lease_fd):
             bootstrap = orch.parent / BOOTSTRAP
             request_path = directory / "request.json"
             request = read(request_path)
+            if request.get('workflow_mode') == 'incremental_v1':
+                from incremental import command as incremental_command
+                command = incremental_command(directory, attempt, config, save)
+                attempt = {**attempt, 'invoked': True}
+                save(path, attempt)
+                code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=False,
+                                      pass_fds=(lease_fd,)).returncode
+                return
             script = orch / "scripts/start_post_mineru_short_test.py"
             for needed in (script, bootstrap / "scripts/init_obsidian_vault.py", Path(config["provider_config"])):
                 if not needed.is_file():

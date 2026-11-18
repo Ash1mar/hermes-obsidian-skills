@@ -5,6 +5,10 @@ description: Start, resume and inspect a persistent Vault-authoritative governed
 
 # Governed ingest orchestration
 
+For explicit file-ready incremental delivery, read `references/incremental-ingest.md`.
+Use `python3 "<skill-dir>/scripts/manage_incremental_ingest.py"` with the exact Vault and saved request.
+Never infer incremental mode, migrate historical workflows, release a pause or start Query implicitly.
+
 For a short request that creates a new Vault and runs it through Final Acceptance, read `references/vault-startup.md` and use `python3 "<skill-dir>/scripts/start_vault_workflow.py"`. This entry associates Bootstrap and workflow evidence and supports continuous execution, workflow-local capacity and small-batch Canary. Existing workflows keep their saved contracts and pauses.
 
 For the isolated offline topic and evidence mapping experiment, read

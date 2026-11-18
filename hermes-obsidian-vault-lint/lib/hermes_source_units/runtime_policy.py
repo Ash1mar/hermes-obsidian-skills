@@ -21,6 +21,9 @@ def canary_count(service, value):
 
 def vault_provider_config(config, vault, role):
     """Only opt-in/opt-out is portable. A host kill switch always wins."""
+    if role == 'query':
+        from .incremental_delivery import require_query_available
+        require_query_available(vault)
     path = Path(vault) / POLICY_REF
     if not path.exists():
         return config

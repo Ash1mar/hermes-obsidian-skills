@@ -221,6 +221,8 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
                 _fail("SOURCE_CHANGED", f"source bytes changed after outcome: {path}")
             digest = fingerprint(identity)
             sources.append(add(f"source-prepare:{digest[:16]}", "source-prepare", (), identity))
+        if workflow['scope'].get('workflow_mode') == 'incremental_v1':
+            return nodes
         add("exact-plan", "exact-plan", tuple(sources),
             {"scope": workflow["scope"], "source_outcomes": workflow.get("source_outcomes", [])})
         return nodes
@@ -1134,6 +1136,11 @@ class IngestKanbanAdapter:
             _fail("INVALID_SCHEMA", "missing worker request fields: " + ", ".join(missing))
 
     def _canary_allows(self, workflow: Mapping[str, Any], node: Node, *, completing: bool = False) -> bool:
+        if workflow['scope'].get('workflow_mode') == 'incremental_v1':
+            from hermes_source_units.incremental_control import IncrementalControl
+            control = IncrementalControl(self.workflow.vault, workflow['scope']['incremental_run_id']).status()
+            if control['state'] == 'cancelled' or (not completing and control['state'] != 'active'):
+                return False
         if self.workflow.revision_allows(workflow, node.name):
             return True
         if not completing and self.workflow.pending_pause(workflow):
@@ -2133,6 +2140,10 @@ class IngestKanbanAdapter:
         self.workflow.pinned_templates(workflow)
         if workflow["cancel_requested"] or workflow["batch_id"] is not None:
             _fail("WORKFLOW_STOPPED", "source and plan work require an active pre-batch workflow")
+        if workflow['scope'].get('workflow_mode') == 'incremental_v1':
+            from hermes_source_units.incremental_control import IncrementalControl
+            if IncrementalControl(self.workflow.vault, workflow['scope']['incremental_run_id']).status()['state'] == 'cancelled':
+                _fail('WORKFLOW_STOPPED', 'parent incremental run is cancelled')
         node_name = str(request["node"])
         node = next((item for item in desired_graph(self.workflow, workflow)
                      if item.name == node_name), None)

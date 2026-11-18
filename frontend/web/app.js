@@ -3,6 +3,8 @@ const labels = {
   pending: "等待", running: "进行中", completed: "已完成", failed: "失败",
   partial: "部分完成", interrupted: "执行已中断",
   paused: "已暂停", pausing: "等待暂停", detached: "启动器已退出", cancelled: "已取消",
+  active: "处理中", preparing: "来源准备中", prepared: "来源就绪", mapping: "映射中", mapped: "映射已完成",
+  frozen: "输入已固定", settled: "已结算", held: "受阻", committed: "已提交",
 };
 const waitLabels = { waiting: "等待交接", detached: "等待已结束", handoff: "交接就绪", failed: "来源交接失败" };
 const fileLabels = { ready: "就绪", failed: "转换失败", pending: "未结算", running: "处理中", queued: "排队中",
@@ -136,7 +138,7 @@ function render() {
   });
   get("selected-label").textContent = current ? current.vault_name : "选择一次运行查看节点状态";
   get("run-status").replaceChildren(...(current ? [badge(current.state)] : []));
-  renderWhenChanged("timeline", [selected, current?.nodes, current?.historical, busy, posting, gateway.ready, writable], renderTimeline);
+  renderWhenChanged("timeline", [selected, current?.nodes, current?.incremental, current?.historical, busy, posting, gateway.ready, writable], renderTimeline);
   const summary = current ? [
     ["来源", `${current.source_count} 份 PDF`], ["源工作流暂停", current.pause],
     ["本机启动器", labels[current.launcher_state]],
@@ -177,6 +179,10 @@ function renderGateway() {
 
 function renderTimeline() {
   const timeline = get("timeline");
+  if (current?.workflow_mode === "incremental_v1") {
+    renderIncremental(timeline);
+    return;
+  }
   const sameRun = timeline.dataset.run === (selected || "");
   const open = new Set(sameRun ? [...timeline.querySelectorAll("details[open]")].map(item => item.dataset.node) : []);
   const manifests = new Map(sameRun ? [...timeline.querySelectorAll("[data-manifest]")].map(item =>
@@ -255,6 +261,39 @@ function renderTimeline() {
     }
     return item;
   }));
+}
+
+function renderIncremental(timeline) {
+  const value = current.incremental;
+  timeline.dataset.run = selected || "";
+  const controls = make("li", undefined, "incremental-scope");
+  controls.append(make("strong", "增量运行"), badge(current.state));
+  const boundary = value.control.boundary;
+  if (boundary) controls.append(make("p", `${boundary.scope.scope_kind} · ${boundary.scope.scope_id} · ${boundary.stage}`, "hint"));
+  for (const action of current.nodes[0].actions) {
+    const button = rowButton(action.label, () => reenter(action));
+    button.disabled = !writable || posting || (action.gateway_required !== false && !gateway.ready);
+    controls.append(button);
+  }
+  const sources = make("li", undefined, "incremental-scope");
+  sources.append(make("strong", "来源范围"));
+  for (const source of value.sources) {
+    const row = make("div", undefined, "scope-row");
+    row.append(make("span", source.name), badge(source.state));
+    if (source.reason || source.error) row.append(make("small", source.reason || source.error));
+    sources.append(row);
+  }
+  if (!value.sources.length) sources.append(make("p", "等待来源范围登记", "hint"));
+  const rounds = make("li", undefined, "incremental-scope");
+  rounds.append(make("strong", "交付轮次"));
+  for (const round of value.rounds) {
+    const row = make("div", undefined, "scope-row");
+    row.append(make("span", round.round_id), badge(round.delivery_state || (round.active ? "running" : "settled")));
+    row.append(make("small", `${round.mapping_count} 份映射 · ${round.page_count} 项页面处置${round.release_id ? ` · ${round.release_id}` : ""}`));
+    rounds.append(row);
+  }
+  if (!value.rounds.length) rounds.append(make("p", "首份来源映射就绪后可开始轮次", "hint"));
+  timeline.replaceChildren(controls, sources, rounds);
 }
 
 async function copyVaultDirectory(field) {
@@ -414,6 +453,11 @@ async function submit(path, body) {
 }
 
 function reenter(action, manifest, pauseBefore) {
+  if (action.id.startsWith("incremental-")) {
+    submit(`/api/runs/${current.id}/reenter`, {action: action.id, node: action.node, attempt: action.attempt,
+      control_revision: action.control_revision, run_revision: action.run_revision});
+    return;
+  }
   if (action.manifest && !manifest?.trim()) {
     message("请填写映射恢复 JSON 清单路径。", true);
     return;
@@ -444,7 +488,26 @@ get("create").addEventListener("submit", async event => {
     vault_path: get("vault-path").value, vault_name: get("vault-name").value,
     pause_before: get("pause-before").value || undefined,
   };
-  if (await submit("/api/runs", body)) event.target.reset();
+  if (get("workflow-mode").value === "incremental_v1") {
+    delete body.pause_before;
+    body.workflow_mode = "incremental_v1";
+    body.incremental_budget = {max_calls: Number(get("inc-calls").value), max_input_tokens: Number(get("inc-input").value),
+      max_output_tokens: Number(get("inc-output").value), phase_limits: {mapping: Number(get("inc-mapping").value),
+        coordination: Number(get("inc-coordination").value), writing: Number(get("inc-writing").value)}};
+    body.incremental_policy = {max_maps_per_round: Number(get("inc-round").value)};
+    body.incremental_pause_after = [...get("inc-pauses").selectedOptions].map(option => option.value);
+  }
+  if (await submit("/api/runs", body)) {
+    event.target.reset();
+    get("workflow-mode").dispatchEvent(new Event("change"));
+  }
+});
+get("workflow-mode").addEventListener("change", () => {
+  const incremental = get("workflow-mode").value === "incremental_v1";
+  get("incremental-options").hidden = !incremental;
+  get("pause-before").hidden = incremental;
+  get("legacy-pause-label").hidden = incremental;
+  for (const input of get("incremental-options").querySelectorAll("input")) input.required = incremental;
 });
 get("toggle-form").addEventListener("click", () => showForm(get("new-panel").hidden));
 get("attempts").addEventListener("change", event => {

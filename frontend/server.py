@@ -106,6 +106,9 @@ class Console:
                     option = None
                 if option is None:
                     raise UserError("当前回执不支持此操作。请刷新并检查节点详情。")
+                if action.startswith('incremental-') and any(body.get(key) != option.get(key)
+                        for key in ('control_revision', 'run_revision')):
+                    raise UserError('增量运行或控制修订已经变化，请刷新后重试。')
                 pause_before = body.get("pause_before")
                 if pause_before is not None:
                     if not isinstance(pause_before, str) or pause_before not in option.get("pause_targets", []):
@@ -130,7 +133,12 @@ class Console:
                 pause_before = body.get("pause_before")
                 if pause_before is not None and (not isinstance(pause_before, str) or pause_before not in STAGE_ORDER):
                     raise UserError("请选择有效的暂停节点。")
-                self.require_operator_launcher()
+                if body.get('workflow_mode') == 'incremental_v1':
+                    script = Path(self.config['skills_root']) / ORCHESTRATOR / 'scripts/manage_incremental_ingest.py'
+                    if not script.is_file():
+                        raise UserError('请先部署支持增量模式的 Skill。')
+                else:
+                    self.require_operator_launcher()
                 self.require_gateway()
                 request = new_request(body, self.config)
                 run_id = request["operation_id"]
@@ -151,6 +159,8 @@ class Console:
                 record["prior_entry"] = prior_entry
             if option.get("pause_before"):
                 record["pause_before"] = option["pause_before"]
+            if action.startswith('incremental-'):
+                record.update(control_revision=option['control_revision'], run_revision=option['run_revision'])
             (directory / "short").mkdir(mode=0o700, exist_ok=True)
             path = attempt / "attempt.json"
             save(path, record)
@@ -288,7 +298,13 @@ class Handler(BaseHTTPRequestHandler):
                         log = directory / entry["log"]
                     else:
                         log = directory / "attempts" / selected / "pipeline.log"
-                    self.json({"text": log_tail(log)})
+                    text = log_tail(log)
+                    request = read(directory / 'request.json')
+                    if request.get('workflow_mode') == 'incremental_v1':
+                        from incremental import root_for
+                        controller_log = root_for(request) / 'controller.log'
+                        text += '\n' + log_tail(controller_log)
+                    self.json({"text": text})
                 else:
                     raise FileNotFoundError(url.path)
             else:

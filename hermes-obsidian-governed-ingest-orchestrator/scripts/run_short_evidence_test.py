@@ -100,8 +100,12 @@ def live(root, operation, *, resumed=False, entry=None):
                 and not (root / 'stop-resume.json').exists(), 'resumed experiment stopped or authority changed')
     else:
         require(not stop.exists(), 'experiment stopped')
-    require(sha(Path(operation['origin']['path'])) == operation['origin']['sha256'],
-            'pinned origin workflow changed')
+    if operation.get('workflow_mode') == 'incremental_v1':
+        from incremental_native import check_operation
+        check_operation(root, operation)
+    else:
+        require(sha(Path(operation['origin']['path'])) == operation['origin']['sha256'],
+                'pinned origin workflow changed')
 
 
 def task_body(root, job):
@@ -182,6 +186,9 @@ def checked_projection(row):
 def run_job(root, job, own):
     payload = _load_json(job)
     original = payload['request']
+    if original['phase'] == 'incremental-formal-build':
+        from incremental_native import build
+        return build(root, job, original, own, sys.modules[__name__])
     if original['phase'] in ('short-formal-build', 'short-formal-qa'):
         from short_formal_build import build
         return build(root, job, original, own, sys.modules[__name__])
@@ -224,6 +231,9 @@ def run_job(root, job, own):
         caller.images = row['image_inputs']
         # Persist the exact payload before entering the SDK.
         save(reservation, {'request': row, 'ordinal': ordinal, 'grant': grant, 'started_at': wall})
+        if _load_json(root / 'operation.json').get('workflow_mode') == 'incremental_v1':
+            from incremental_native import reserve_call
+            reserve_call(root, original, ordinal, grant)
         p['audit_context'] = {'short_evidence_root': str(root), 'binding': grant, 'phase': row['phase'],
                               'reservation': {'ref': reservation.relative_to(root).as_posix(), 'sha256': sha(reservation),
                                               'ordinal': ordinal, 'request_sha256': row['id']},
@@ -245,7 +255,11 @@ def run_job(root, job, own):
         try:
             response, _ = decode_semantic_response(raw)
             plan = {'requests': [{**original, 'missing_slots': slots}]}
-            captured = seal(plan, original['id'], response, root / 'receipts', call=row, drafts=drafts)
+            if original['phase'].startswith('incremental-page-'):
+                from incremental_native import seal_response
+                captured = seal_response(root, original, response)
+            else:
+                captured = seal(plan, original['id'], response, root / 'receipts', call=row, drafts=drafts)
         except (ValueError, TypeError, ContractError) as error:
             captured = {'sealed': [], 'held': {slot: str(error) for slot in slots}}
         attempts.append({**audit, 'capture': captured})

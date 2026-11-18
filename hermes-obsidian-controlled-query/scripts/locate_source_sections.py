@@ -17,6 +17,10 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import urlencode
 
+LIB = Path(__file__).resolve().parents[1] / 'lib'
+if str(LIB) not in sys.path:
+    sys.path.insert(0, str(LIB))
+
 
 DEFAULT_DEPLOYMENT_CONFIG = Path(__file__).resolve().parents[1] / "config" / "deployment.json"
 MIN_COMPLEMENT_SCORE_RATIO = 1 / 3
@@ -47,6 +51,8 @@ class GovernanceQueryPolicy:
 
     def __init__(self, vault_root: Path, include_historical: bool = False):
         self.vault_root = vault_root.resolve()
+        from hermes_source_units.incremental_delivery import require_query_available
+        require_query_available(self.vault_root)
         self.include_historical = include_historical
         self.mode = "legacy"
         self.registry_revision: int | None = None

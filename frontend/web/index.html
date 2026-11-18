@@ -36,8 +36,10 @@
             <button type="button" class="secondary" id="toggle-form" aria-expanded="true" aria-controls="new-panel">收起新建</button>
           </header>
           <section class="panel new-panel" id="new-panel" aria-labelledby="form-title">
-            <div class="panel-heading"><h2 id="form-title">新建测试 Vault</h2><span class="tag">Bootstrap 短路径</span></div>
+            <div class="panel-heading"><h2 id="form-title">新建 Vault 运行</h2></div>
             <form id="create">
+              <label for="workflow-mode">处理模式</label>
+              <select id="workflow-mode"><option value="">整批短路径</option><option value="incremental_v1">文件就绪后增量交付</option></select>
               <label for="sources">文档或文件夹地址</label>
               <textarea id="sources" rows="3" required placeholder="C:\资料\工程规程"></textarea>
               <p class="hint">每行一条路径。文件夹会递归收集 PDF。</p>
@@ -51,7 +53,26 @@
                   <input id="vault-name" required maxlength="120" placeholder="我的测试知识库">
                 </div>
               </div>
-              <label for="pause-before">处理到此节点前暂停</label>
+              <div id="incremental-options" hidden>
+                <p class="hint">来源清单在提交时固定。每轮消费已就绪映射，合格知识页按版本发布。</p>
+                <div class="fields">
+                  <div><label for="inc-calls">累计调用上限</label><input id="inc-calls" type="number" min="1" step="1"></div>
+                  <div><label for="inc-input">累计输入 token 上限</label><input id="inc-input" type="number" min="1" step="1"></div>
+                  <div><label for="inc-output">累计输出 token 上限</label><input id="inc-output" type="number" min="1" step="1"></div>
+                  <div><label for="inc-mapping">映射调用上限</label><input id="inc-mapping" type="number" min="1" step="1"></div>
+                  <div><label for="inc-coordination">协调调用上限</label><input id="inc-coordination" type="number" min="1" step="1"></div>
+                  <div><label for="inc-writing">写作调用上限</label><input id="inc-writing" type="number" min="1" step="1"></div>
+                  <div><label for="inc-round">每轮最多来源映射数</label><input id="inc-round" type="number" min="1" step="1"></div>
+                </div>
+                <label for="inc-pauses">增量暂停边界（可多选）</label>
+                <select id="inc-pauses" multiple aria-label="增量暂停边界">
+                  <option value="prepare">来源准备前</option><option value="mapping">来源映射后</option>
+                  <option value="coordination">轮次协调后</option><option value="writing">轮次写作后</option>
+                  <option value="formal-build">正式构建后</option><option value="release">发布后</option>
+                  <option value="acceptance">索引验收后</option><option value="closure">运行收尾前</option>
+                </select>
+              </div>
+              <label for="pause-before" id="legacy-pause-label">处理到此节点前暂停</label>
               <select id="pause-before">
                 <option value="">自动处理到最终验收</option>
               </select>

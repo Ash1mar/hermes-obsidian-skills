@@ -2523,6 +2523,8 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
             return {"ok": not failures, "batch": updated, "results": results, "failures": failures}
 
     def finalize(self, request: Mapping[str, Any]) -> dict[str, Any]:
+        from .incremental_delivery import require_build_writer
+        require_build_writer(self.vault, str(request['run_id']))
         lock = _vault_path(self.vault, f"{BUILD_ROOT}/.finalize.lock")
         with _exclusive_lock(lock, marker=False):
             return self._finalize_locked(request)
@@ -2608,7 +2610,9 @@ class FileKnowledgeBuildService(ModelProjectionMixin):
                 if subject["current_revision_id"] == page["parent_revision_id"]:
                     parent = _vault_path(self.vault, subject["current_path"])
                     if not parent.is_file() or _sha(parent.read_bytes()) != review["parent_authored_sha256"]:
-                        _fail("SOURCE_CHANGED", "parent page changed after Reduce", "$.reviews")
+                        from .incremental_delivery import recover_parent_prefix
+                        if not recover_parent_prefix(self.vault, run_id, page, review):
+                            _fail("SOURCE_CHANGED", "parent page changed after Reduce", "$.reviews")
                 else:
                     parent_record = _vault_path(
                         self.vault, f"{BUILD_ROOT}/page-revisions/{page['page_id']}/{page['parent_revision_id']}.json")

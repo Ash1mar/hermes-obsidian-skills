@@ -72,6 +72,9 @@ def project_refs(basis):
 
 
 def projection(service, row):
+    if 'incremental_change' in row:
+        from .incremental_pages import projection as incremental_projection
+        return incremental_projection(service, row)
     subject, page_id = identity(service, row['short_id'], row['name'])
     page_type = row.get('page_type')
     if page_type == 'project':
@@ -120,9 +123,14 @@ def evidence(service, run):
     require(pointer['ref'] == f"{ROOT}/{run['run_id']}/short-evidence.json", 'foreign short evidence pointer')
     record = pinned(service.vault, pointer)
     scope = record['scope']
-    require(record['contract'] == POLICY and run['run_id'] == 'short-build-' + fingerprint(scope)
+    from .incremental_pages import AUTHORIZATION, BUILD_EVIDENCE
+    incremental = record['contract'] == BUILD_EVIDENCE
+    require(record['contract'] in (POLICY, BUILD_EVIDENCE) and run['run_id'] == 'short-build-' + fingerprint(scope)
             and record['vault_id'] == service.source.vault_id and scope['actor'] == run['actor']
             and scope['coverage_complete'] is False, 'short evidence scope differs from the Build')
+    require(incremental == (scope['authorization'].get('contract') == AUTHORIZATION)
+            and all(('incremental_change' in row) == incremental for row in scope['pages']),
+            'Build evidence contract differs from page authorization')
     pages, decisions = zip(*(projection(service, row) for row in scope['pages']), strict=True)
     require(list(decisions) == run['decisions'] and list(pages) == [
         {**page, 'state': 'draft', 'review': None} for page in run['page_revisions']],
@@ -169,8 +177,16 @@ def content_isolation(service, run):
 
 def record_content_isolation(service, run, rows, authorization):
     """Append an operator exclusion before release without altering the committed Build."""
-    require(not os.environ.get('HERMES_KANBAN_TASK') and not os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT')
-            and run['state'] == 'completed' and evidence(service.build, run)['scope']['authorization'] == authorization,
+    from .incremental_pages import AUTHORIZATION
+    native = os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT')
+    if native and authorization.get('contract') == AUTHORIZATION:
+        from .incremental_delivery import require_delivery_owner
+        require_delivery_owner(service.vault, run['run_id'])
+        require({row['page_id'] for row in rows} <= set(authorization.get('isolation_pages', [])),
+                'incremental isolation exceeds the exact preauthorized page set')
+    else:
+        require(not native, 'content isolation requires an operator or exact incremental delivery owner')
+    require(run['state'] == 'completed' and evidence(service.build, run)['scope']['authorization'] == authorization,
             'content isolation requires the exact completed operator scope')
     value = {'contract': CONTENT_ISOLATION, 'run_id': run['run_id'],
              'build_evidence': run['short_evidence'], 'pages': rows}
@@ -233,7 +249,7 @@ def record_qa_advisory(service, run, dependencies, root, job):
     admission = native_authority(root, job, operation)
     request = _load_json(job)['request']
     proof = evidence(service, run)
-    require(run['state'] == 'completed' and request['phase'] in ('short-formal-build', 'short-formal-qa')
+    require(run['state'] == 'completed' and request['phase'] in ('short-formal-build', 'short-formal-qa', 'incremental-formal-build')
             and request['view']['authorization'] == proof['scope']['authorization']
             and proof['scope']['origin'] == operation['origin'] and Path(operation['vault']) == service.vault
             and request['view'].get('run_id', run['run_id']) == run['run_id'],
@@ -293,8 +309,10 @@ def admit(service, scope, bodies, root, job):
     require(Path(operation['vault']) == service.vault and scope['origin'] == operation['origin']
             and scope['operation_sha256'] == _sha((root / 'operation.json').read_bytes()),
             'short Build admission is outside the exact origin')
+    from .incremental_pages import AUTHORIZATION, BUILD_EVIDENCE, validate_parent
+    incremental = scope['authorization'].get('contract') == AUTHORIZATION
     payload = _load_json(job)['request']
-    require(payload['phase'] == 'short-formal-build'
+    require(payload['phase'] == ('incremental-formal-build' if incremental else 'short-formal-build')
             and scope['authorization'] == payload['view']['authorization']
             and scope['pages']
             and {r['short_id'] for r in scope['pages']} <= set(scope['authorization']['pages'])
@@ -302,7 +320,21 @@ def admit(service, scope, bodies, root, job):
             and scope['actor'] == scope['authorization']['actor']
             and scope['authorization']['policy'] == RELEASE_POLICY,
             'short Build admission differs from the operator selection')
-    typed = (operation.get('card_layout') or {}).get('contract') == TYPED_LAYOUT
+    require(all(('incremental_change' in row) == incremental for row in scope['pages']),
+            'incremental candidates require their own Build authorization')
+    if incremental:
+        authorization = scope['authorization']
+        boundary = operation.get('incremental', {})
+        changes = [row['incremental_change'] for row in scope['pages']]
+        require(operation.get('workflow_mode') == 'incremental_v1'
+                and authorization['run_id'] == boundary['run_id']
+                and authorization['round_id'] == boundary['scope_id']
+                and authorization['page_changes'] == changes
+                and authorization['pages'] == [change['change_id'] for change in changes]
+                and all(change['run_id'] == authorization['run_id']
+                        and change['round_id'] == authorization['round_id'] for change in changes),
+                'incremental Build differs from its exact round and page-change set')
+    typed = incremental or (operation.get('card_layout') or {}).get('contract') == TYPED_LAYOUT
     for row in scope['pages']:
         require(('page_type' in row) == typed and (not typed or row['page_type'] in PAGE_TYPES)
                 and row['native_fragments'] and row['support_refs'] and
@@ -311,7 +343,7 @@ def admit(service, scope, bodies, root, job):
                 (not row['publication_authorized'] or (row['qa_status'] == 'usable'
                  and scope['authorization']['publish'] is True)),
                 'short Build candidate lacks native, source, or QA evidence')
-        if row.get('page_type') == 'project':
+        if row.get('page_type') == 'project' and not incremental:
             citations = set(re.findall(rb'\[(S[0-9]+-B[0-9]+)\]', bodies[row['short_id']]))
             require({ref.encode('ascii') for ref in project_refs(row.get('project_basis'))} <= citations,
                     'project basis must appear in the reviewed Markdown citations')
@@ -326,12 +358,22 @@ def admit(service, scope, bodies, root, job):
         registry = service._registry()
         occupied = {s['subject_id'] for s in registry['subjects']}
         pages, decisions = zip(*(projection(service, row) for row in scope['pages']), strict=True)
-        require(not any(p['subject_id'] in occupied or _vault_path(service.vault, p['path']).exists()
-                        for p in pages), 'short Build cannot overwrite an existing page or identity')
+        if incremental:
+            for row in scope['pages']:
+                validate_parent(service, row['incremental_change'])
+        else:
+            require(not any(p['subject_id'] in occupied or _vault_path(service.vault, p['path']).exists()
+                            for p in pages), 'short Build cannot overwrite an existing page or identity')
         card_paths = [p['path'] for row, p in zip(scope['pages'], pages, strict=True) if row.get('card_path')]
         registered = {s['current_path'].casefold() for s in registry['subjects']}
         require(len({path.casefold() for path in card_paths}) == len(card_paths), 'duplicate short card path')
-        for card_path in card_paths:
+        for row, page in zip(scope['pages'], pages, strict=True):
+            card_path = row.get('card_path')
+            if card_path is None:
+                continue
+            if incremental and page['action'] == 'update':
+                require(card_path == row['incremental_change']['path'], 'incremental revision changed its registered path')
+                continue
             target = _vault_path(service.vault, card_path)
             require(target == service.vault / card_path and card_path.casefold() not in registered
                     and (not target.parent.exists() or (target.parent.is_dir() and all(
@@ -346,7 +388,8 @@ def admit(service, scope, bodies, root, job):
                                     for p in cursor.iterdir() if p.name.casefold() == part.casefold()),
                                 'short page directory collides with an existing Vault entry')
                     cursor /= part
-        proof = {'contract': POLICY, 'vault_id': service.source.vault_id, 'scope': scope, 'admission': admission}
+        proof = {'contract': BUILD_EVIDENCE if incremental else POLICY,
+                 'vault_id': service.source.vault_id, 'scope': scope, 'admission': admission}
         if proof_path.exists():
             old = _load_json(proof_path)
             require(all(old[k] == proof[k] for k in ('contract', 'vault_id', 'scope')),

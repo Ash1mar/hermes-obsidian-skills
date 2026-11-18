@@ -1,0 +1,13 @@
+# File-ready incremental ingest
+
+Select `workflow_mode=incremental_v1` explicitly. The fixed source list, actor, cumulative `incremental_budget` (calls/input/output tokens and mapping/coordination/writing phase call limits), `incremental_policy.max_maps_per_round`, provider configuration and `incremental_pause_after` must be supplied. The frontend prepares these fields; historical operations keep their original mode.
+
+Use `python3 "<skill-dir>/scripts/manage_incremental_ingest.py" --vault "<vault>" start --request "<request.json>" --record "<record.json>" --bootstrap-skill "<bootstrap-skill>"`. Inspect with `status --run-id "<run>"`. The Vault owns immutable snapshots, seals, maps, round inputs, native evidence, page changes, delivery receipts and closure evidence under `_system/ledgers/incremental-ingest` and `_system/reports/incremental-ingest`.
+
+`control --request` accepts an identity-bound pause/continue/cancel request with run_id, actor, operation_id and expected_revision (control revision). Continue also requires the exact boundary_fingerprint. Supported boundaries: prepare, mapping, coordination, writing, formal-build, release, acceptance, closure. Pause drains admitted tasks and denies new claims. Reconcile never releases a pause.
+
+`reconcile --request` uses the saved run_id, actor, operation_id and expected_revision (run revision) to attach a new controller to the same execution. Do not create a new run to hide unknown model consumption. `preview-reuse --request` is read-only and checks current snapshot identities/hashes/contracts. Existing raw refs may only be reused by explicit `incremental_reuse_originals` bindings.
+
+`recover-delivery --request` requires run_id, actor, expected_revision, round_id, operation_id, disposition (`continue`, `abort_uncommitted`, or `isolate_committed`) and optional stop_after (`build_committed` or `index_verified`). Recovery uses the original Build authorization and draft targets. Never regenerate semantic outputs to clear a delivery diagnostic. Canonical mutation requires a prepared delivery window; abort is allowed only before canonical writes, while isolation must have been preauthorized.
+
+Native workers perform source preparation, Map, coordination, page writing and formal Build. The controller binds exact snapshots and retains full old page evidence. Hold missing required evidence and direct dependents. Query is unavailable during delivery and remains separately authorized after index readiness. Do not reset failed sources, overwrite parent versions, fabricate native completion or cross durable pauses automatically.

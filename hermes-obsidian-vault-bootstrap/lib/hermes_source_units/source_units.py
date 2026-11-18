@@ -828,6 +828,8 @@ class FileSourceUnitService:
         if record.get("processing_status") != "completed":
             _fail("SOURCE_UNAVAILABLE", "source processing is not completed")
         if access is not None and access.get("purpose") == "query":
+            from .incremental_delivery import require_query_available
+            require_query_available(self.vault)
             if record.get("governance_status") != "active":
                 _fail("ACCESS_DENIED", "query reads require an active source version")
             organizations_path = str(governance.get("organizations_path", ""))

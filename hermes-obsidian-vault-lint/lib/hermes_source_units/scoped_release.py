@@ -15,8 +15,13 @@ def short_scope(service, runs):
         if not run.get('short_evidence'):
             continue
         for row in short_evidence(service.build, run)['scope']['excluded']:
-            identity, page_id = short_identity(service.build, row['short_id'], row['name'])
-            path = output_path(row['short_id'], row.get('card_path'), page_type=row.get('page_type'))
+            change = row.get('incremental_change')
+            if change:
+                identity = {**change['identity'], 'subject_id': change['subject_id']}
+                page_id, path = change['page_id'], change['path']
+            else:
+                identity, page_id = short_identity(service.build, row['short_id'], row['name'])
+                path = output_path(row['short_id'], row.get('card_path'), page_type=row.get('page_type'))
             excluded[page_id] = {**row['disposition'], 'identity': identity, 'path': path,
                                  'original_scope': run['short_evidence']}
     if selected.intersection(excluded):
