@@ -58,6 +58,11 @@ def open_obsidian(vault, action, state, configured_user=None):
         if settings.is_symlink():
             raise UserError("Obsidian 设置目录不能是符号链接。")
         settings.mkdir(exist_ok=True)
+        # Obsidian requires R_OK | W_OK on the Vault root before registration.
+        result = subprocess.run(["setfacl", "-m", f"u:{user.pw_uid}:rwx", str(vault)],
+                                capture_output=True, text=True, timeout=10)
+        if result.returncode:
+            raise UserError("无法授予图形用户访问 Vault 根目录的权限。")
         # The viewer can persist its workspace while domain files retain their owners.
         result = subprocess.run(["setfacl", "-R", "-m", f"u:{user.pw_uid}:rwX", str(settings)],
                                 capture_output=True, text=True, timeout=10)
