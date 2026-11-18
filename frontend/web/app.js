@@ -307,7 +307,7 @@ function renderVaults() {
       location.hash = "workflow";
     }));
     body.append(actions, make("p", obsidianAvailable
-      ? "首次添加时，在 Linux Obsidian 管理器中选「打开文件夹作为 Vault」，并选择上面的目录。"
+      ? "首次添加时，选「打开文件夹作为 Vault」，按 Ctrl+L 输入上面的目录，或逐级选择文件夹。"
       : "请在安装了 Linux Obsidian 的 WSL 中启动新版控制台。", "hint"));
     card.append(heading, body);
     return card;
