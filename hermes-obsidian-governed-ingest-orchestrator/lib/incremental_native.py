@@ -173,7 +173,7 @@ def verified_result(root, row):
 def build(root, job, request, own, runner):
     from hermes_source_units.build_acceptance import assess, record
     from hermes_source_units.incremental_delivery import IncrementalDeliveryService
-    from hermes_source_units.incremental_pages import build_scope, validate_page_revision
+    from hermes_source_units.incremental_pages import build_scope, validate_page_revision, validate_preparation
     from hermes_source_units.short_build import admit
     from hermes_source_units.vault_finalize import FileVaultFinalizeService
 
@@ -237,9 +237,16 @@ def build(root, job, request, own, runner):
         writer_root = _vault_path(service.vault, pointer['native_root'])
         result, _ = verified_result(writer_root, row)
         require(result['state'] == 'settled', 'incremental Build requires a settled native writing result')
+        prepared = preparation['prepared']
+        from short_evidence_pass import request as semantic_request
+        expected = semantic_request(prepared['phase'], prepared['view'], prepared['schema'],
+                                    row['budget']['estimated_output_tokens'], row['budget']['input_cap'],
+                                    row['image_inputs'], reserve=row['budget']['input_reserve'])
+        require(expected == row, 'page preparation differs from its exact native writing request')
+        validate_preparation(service.build, prepared, operation['actor'])
         receipt = _load_json(writer_root / 'receipts' / (row['id'] + '.json'))
-        content = validate_page_revision(preparation['prepared'], receipt['answer'])
-        change = preparation['prepared']['view']['change']
+        content = validate_page_revision(prepared, receipt['answer'])
+        change = prepared['view']['change']
         bodies[change['change_id']] = content['body']
         pages.append({'short_id': change['change_id'], 'name': change['name'], 'page_type': change['page_type'],
                       'card_path': change['path'], 'authored_sha256': content['authored_sha256'],

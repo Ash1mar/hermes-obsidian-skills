@@ -1,4 +1,5 @@
 """Incremental revisions preserve registered identity, parents and original evidence."""
+import copy
 from pathlib import Path
 
 import pytest
@@ -8,7 +9,7 @@ from hermes_source_units import ContractError, FileVaultFinalizeService
 from hermes_source_units import incremental_pages as pages, short_build
 from hermes_source_units.build_acceptance import assess, record
 from hermes_source_units.page_governance import POLICY
-from hermes_source_units.source_units import _json_bytes, _sha
+from hermes_source_units.source_units import _json_bytes, _load_json, _sha
 from hermes_source_units.validation import fingerprint
 
 
@@ -122,3 +123,28 @@ def test_legacy_untyped_short_page_keeps_its_id_path_and_absent_type(vault, tmp_
     p2, = finalize(service, update, p1['authored_sha256'])['page_revisions']
     assert 'page_type' not in p2
     assert p2['path'] == p1['path'] and p2['page_id'] == p1['page_id']
+
+
+def test_page_preparation_binds_aliases_but_allows_unrelated_registry_revision(vault):
+    refs = publish_sources(vault, ['# A\n\nFirst required condition.\n', '# B\n\nSecond required condition.\n'])
+    service = FileVaultFinalizeService(vault).build
+    raw = decision('create', 'combined/scope', '30_Cards/工程/综合.md')
+    raw['support_aliases'] = ['E1', 'E2']
+    change, = pages.normalize_page_changes(service, round_input(1), {'changes': [raw]},
+                                           {'E1': refs[0], 'E2': refs[1]})
+    prepared = pages.prepare_page_revision(service, change, 'agent')
+    response = {'content': '# Conditions\n\nFirst [m1]. Second [m2].',
+                'inspected': list(prepared['material_aliases']), 'unresolved': []}
+    pages.validate_page_revision(prepared, response)
+    registry_path = vault / '_system/metadata/document-registry.json'
+    registry = _load_json(registry_path)
+    registry['registry_revision'] += 1
+    registry_path.write_bytes(_json_bytes(registry))
+    pages.validate_preparation(service, prepared, 'agent')
+    tampered = copy.deepcopy(prepared)
+    keys = list(tampered['material_aliases'])
+    first, second = keys[:2]
+    tampered['material_aliases'][first], tampered['material_aliases'][second] = (
+        tampered['material_aliases'][second], tampered['material_aliases'][first])
+    with pytest.raises(ContractError, match='preparation fingerprint'):
+        pages.validate_page_revision(tampered, response)

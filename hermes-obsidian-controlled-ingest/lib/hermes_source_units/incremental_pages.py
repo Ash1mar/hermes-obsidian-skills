@@ -198,7 +198,7 @@ def prepare_page_revision(service, change, actor):
         parent = _vault_path(service.vault, change['path']).read_text(encoding='utf-8')
     properties = {'content': {'type': 'string'}, 'inspected': {'type': 'array', 'items': {'type': 'string'}},
                   'unresolved': {'type': 'array', 'items': {'type': 'string'}}}
-    return {'phase': 'incremental-page-write', 'view': {'change': change, 'parent_content': parent,
+    prepared = {'phase': 'incremental-page-write', 'view': {'change': change, 'parent_content': parent,
             'original_evidence': projection['view'],
             'instructions': 'Write the complete new Markdown revision. Preserve necessary existing conditions and '
                             'exceptions using original evidence. Inspect all core and required assets. Cite supplied '
@@ -207,6 +207,35 @@ def prepare_page_revision(service, change, actor):
                        'additionalProperties': False},
             'material_aliases': projection['mapping'], 'projection': projection,
             'support_refs': refs, 'reader_measurement': assembled['measurement']}
+    prepared['view']['preparation_fingerprint'] = preparation_fingerprint(prepared)
+    return prepared
+
+
+def preparation_fingerprint(prepared):
+    value = copy.deepcopy(prepared)
+    value['view'].pop('preparation_fingerprint', None)
+    return fingerprint(value)
+
+
+def validate_preparation(service, prepared, actor):
+    """Check saved aliases and live source content without rebasing a native input."""
+    require(prepared['view'].get('preparation_fingerprint') == preparation_fingerprint(prepared),
+            'saved page preparation fingerprint changed')
+    fresh = prepare_page_revision(service, prepared['view']['change'], actor)
+    # Registry revision participates in input_id, while unrelated new source
+    # registration must not invalidate unchanged original material and aliases.
+    def semantic_view(value):
+        view = copy.deepcopy(value['view'])
+        view.pop('preparation_fingerprint', None)
+        view['original_evidence'].pop('input_id', None)
+        return view
+    old_measurement = {k: v for k, v in prepared['reader_measurement'].items() if k != 'input_fingerprint'}
+    new_measurement = {k: v for k, v in fresh['reader_measurement'].items() if k != 'input_fingerprint'}
+    require(semantic_view(fresh) == semantic_view(prepared)
+            and fresh['phase'] == prepared['phase'] and fresh['schema'] == prepared['schema']
+            and fresh['material_aliases'] == prepared['material_aliases'] == prepared['projection']['mapping']
+            and fresh['support_refs'] == prepared['support_refs'] and old_measurement == new_measurement,
+            'live page evidence, reader policy or alias mapping changed after writing')
 
 
 def projection(service, row):
@@ -241,6 +270,9 @@ def projection(service, row):
 
 def validate_page_revision(prepared, response):
     """Check complete inspection and support boundaries before staging native writing."""
+    require(prepared['view'].get('preparation_fingerprint') == preparation_fingerprint(prepared)
+            and prepared['material_aliases'] == prepared['projection']['mapping'],
+            'saved page preparation fingerprint or alias mapping changed')
     require(isinstance(response, dict) and set(response) == {'content', 'inspected', 'unresolved'}
             and isinstance(response['content'], str) and response['content'].strip()
             and response['unresolved'] == [], 'page writing retained unresolved material')

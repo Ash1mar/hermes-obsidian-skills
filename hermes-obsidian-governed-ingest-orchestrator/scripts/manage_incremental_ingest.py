@@ -53,6 +53,14 @@ def main():
                     from incremental_ingest_controller import attach_sources, spawn
                     attach_sources(domain, request['run_id'])
                     spawn(domain.vault, request['run_id'])
+                elif result['state'] == 'cancelled':
+                    from native_ingest import control_workflow
+                    from hermes_source_units.validation import fingerprint
+                    run = domain.status(request['run_id'])
+                    source = domain.vault / '_system/ledgers/ingest-workflows' / (run['source_workflow_id'] + '.json')
+                    if source.is_file():
+                        control_workflow(domain.vault, run['source_workflow_id'], 'cancel',
+                                         'incremental-cancel-' + fingerprint([run['run_id'], request['operation_id']])[:64])
             elif args.action == 'recover-delivery':
                 from incremental_ingest_controller import recover_delivery
                 from hermes_source_units.incremental_sources import safe_id

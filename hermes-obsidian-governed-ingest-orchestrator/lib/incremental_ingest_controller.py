@@ -356,8 +356,13 @@ def watch(vault, run_id):
     with _exclusive_lock(domain.root(run_id) / '.controller.lock', timeout=0):
         control.reconcile_executors()
         running = {}
-        with ThreadPoolExecutor(max_workers=configuration()['source_prepare_concurrency']) as pool:
+        round_future = None
+        with ThreadPoolExecutor(max_workers=configuration()['source_prepare_concurrency']) as pool, \
+                ThreadPoolExecutor(max_workers=1) as rounds:
             while domain.status(run_id)['state'] == 'active':
+                if round_future is not None and round_future.done():
+                    round_future.result()
+                    round_future = None
                 if control.status()['state'] in ('paused', 'cancelled'):
                     return domain.status(run_id)
                 if control.status()['state'] == 'pausing':
@@ -380,8 +385,10 @@ def watch(vault, run_id):
                             break
                         running[source['snapshot_id']] = pool.submit(map_source, str(domain.vault), run_id, source['snapshot_id'])
                 run = domain.status(run_id)
-                if run['active_round_id']:
-                    round_work(domain, run_id, run['active_round_id'])
+                if round_future is not None:
+                    pass  # Keep sealing and mapping later-ready sources during this one fixed round.
+                elif run['active_round_id']:
+                    round_future = rounds.submit(round_work, domain, run_id, run['active_round_id'])
                 elif any(mid not in run['consumed_map_ids'] for mid in run['map_result_ids']):
                     round_id = 'round-' + str(len(run['round_ids']) + 1)
                     try:

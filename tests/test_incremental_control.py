@@ -72,3 +72,54 @@ def test_unknown_checkpoints_and_cross_run_admission_are_rejected(tmp_path):
     control.initialize('operator', [])
     with pytest.raises(ContractError, match='another run or actor'):
         control.check_admission({'run_id': 'other', 'scope_kind': 'run', 'scope_id': 'other'}, 'prepare', 'input-a')
+
+
+@pytest.mark.parametrize('state,native_status,body_changed,accepted', [
+    ('paused', 'running', False, False),
+    ('pausing', 'ready', False, False),
+    ('pausing', 'running', True, False),
+    ('pausing', 'running', False, True),
+])
+def test_source_begin_respects_pause_and_checks_exact_existing_claim(
+        tmp_path, monkeypatch, state, native_status, body_changed, accepted):
+    import hashlib
+    import json
+    from pathlib import Path
+    import sys
+    from types import SimpleNamespace
+
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'hermes-obsidian-controlled-ingest/lib'))
+    import ingest_kanban as kanban
+
+    source = tmp_path / '10_Raw/a.pdf'
+    source.parent.mkdir()
+    source.write_bytes(b'isolated fixture source')
+    node_name = 'source-prepare:' + module.fingerprint({
+        'path': '10_Raw/a.pdf', 'content_sha256': hashlib.sha256(source.read_bytes()).hexdigest()})[:16]
+    node = SimpleNamespace(name=node_name, kind='source-prepare', input_fingerprint='source-input')
+    workflow = {'workflow_id': 'ingest-fixture', 'cancel_requested': False, 'batch_id': None,
+                'scope': {'workflow_mode': 'incremental_v1', 'incremental_run_id': 'fixture',
+                          'source_paths': ['10_Raw/a.pdf']},
+                'kanban': {'board_id': 'fixture-board', 'task_map': [{
+                    'node': node_name, 'task_id': 'native-a',
+                    'idempotency_key': 'ingest:ingest-fixture:source-prepare:source-input'}]},
+                'template_pins': [{'kind': 'source-prepare', 'template_hash': 'pinned-template'}]}
+    body = {'workflow_id': workflow['workflow_id'], 'node': node_name,
+            'input_fingerprint': node.input_fingerprint, 'vault': str(tmp_path)}
+    if body_changed:
+        body['node'] = 'source-prepare:unrelated'
+    native = {'id': 'native-a', 'status': native_status, 'body': json.dumps(body)}
+    adapter = kanban.IngestKanbanAdapter.__new__(kanban.IngestKanbanAdapter)
+    adapter.enable_workers = True
+    adapter.workflow = SimpleNamespace(vault=tmp_path, status=lambda _: workflow,
+                                       pinned_templates=lambda _: None)
+    adapter.kanban = SimpleNamespace(task_snapshot_fresh=lambda *_: {'task': native})
+    monkeypatch.setattr(kanban, 'desired_graph', lambda *_: [node])
+    monkeypatch.setattr(adapter, '_execution_blocked', lambda *_: False)
+    monkeypatch.setattr(module, 'IncrementalControl', lambda *_: SimpleNamespace(status=lambda: {'state': state}))
+    request = {'workflow_id': workflow['workflow_id'], 'node': node_name, 'task_id': 'native-a'}
+    if accepted:
+        assert adapter._pre_worker(request, beginning=True)[2]['path'] == '10_Raw/a.pdf'
+    else:
+        with pytest.raises(ContractError, match='WORKFLOW_PAUSED'):
+            adapter._pre_worker(request, beginning=True)

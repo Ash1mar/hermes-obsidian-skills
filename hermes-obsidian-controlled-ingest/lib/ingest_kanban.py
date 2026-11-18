@@ -2140,10 +2140,14 @@ class IngestKanbanAdapter:
         self.workflow.pinned_templates(workflow)
         if workflow["cancel_requested"] or workflow["batch_id"] is not None:
             _fail("WORKFLOW_STOPPED", "source and plan work require an active pre-batch workflow")
+        incremental_state = None
         if workflow['scope'].get('workflow_mode') == 'incremental_v1':
             from hermes_source_units.incremental_control import IncrementalControl
-            if IncrementalControl(self.workflow.vault, workflow['scope']['incremental_run_id']).status()['state'] == 'cancelled':
+            incremental_state = IncrementalControl(self.workflow.vault, workflow['scope']['incremental_run_id']).status()['state']
+            if incremental_state == 'cancelled':
                 _fail('WORKFLOW_STOPPED', 'parent incremental run is cancelled')
+            if beginning and incremental_state == 'paused':
+                _fail('WORKFLOW_PAUSED', 'parent incremental run is paused')
         node_name = str(request["node"])
         node = next((item for item in desired_graph(self.workflow, workflow)
                      if item.name == node_name), None)
@@ -2156,6 +2160,17 @@ class IngestKanbanAdapter:
             _fail("STALE_INPUT", "Kanban node binding changed")
         if request.get('input_fingerprint', node.input_fingerprint) != node.input_fingerprint:
             _fail('STALE_INPUT', 'dispatcher input fingerprint changed')
+        if beginning and incremental_state == 'pausing':
+            if not hasattr(self.kanban, 'task_snapshot_fresh'):
+                _fail('RUNTIME_UNVERIFIED', 'pausing source admission requires a fresh native claim')
+            task = self.kanban.task_snapshot_fresh(workflow['kanban']['board_id'], request['task_id'])['task']
+            body = json.loads(task.get('body', '{}'))
+            if (task.get('id') != request['task_id']
+                    or not (task.get('status') == 'running' or task.get('claim_lock'))
+                    or body.get('workflow_id') != workflow['workflow_id'] or body.get('node') != node.name
+                    or body.get('input_fingerprint') != node.input_fingerprint
+                    or body.get('vault') != str(self.workflow.vault)):
+                _fail('WORKFLOW_PAUSED', 'pausing admits only the exact already claimed source task')
         if self._execution_blocked(workflow['workflow_id'], node):
             _fail("EXECUTION_BLOCKED", "current binding requires trusted repair before retry")
         pin = next(item for item in workflow["template_pins"] if item["kind"] == node.kind)
