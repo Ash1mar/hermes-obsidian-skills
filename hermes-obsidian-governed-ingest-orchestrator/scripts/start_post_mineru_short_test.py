@@ -487,8 +487,7 @@ def main():
             require(not any((args.from_node, args.resume_delivery, args.repeat_from, args.content_isolation,
                              args.reentry_id, args.prior_entry, args.fragment_repair, args.recover_held_content,
                              args.replay_writing, args.split_atomic_fragment, args.mapping_recovery,
-                             args.source_registry_revision is not None)) and
-                    not (args.pause_before and (args.attach_source or args.continue_operation)),
+                             args.source_registry_revision is not None)),
                     'console controls cannot be combined with an existing recovery or comparison entry')
             return run_controlled(args, request, root, vault)
         require(not (args.attach_source or args.continue_operation or args.pause_before), 'missing operator attempt ID')

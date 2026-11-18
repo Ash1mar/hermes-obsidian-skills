@@ -63,6 +63,12 @@ def _read_index_status(config: ProviderConfig) -> dict[str, Any]:
 
 
 def read_status(config: ProviderConfig) -> dict[str, Any]:
+    from hermes_source_units.incremental_delivery import readiness
+    delivery = readiness(config.vault_root)
+    if not delivery['available']:
+        return {'status': delivery['status'], 'delivery': delivery, 'query_ready': False,
+                'vault_id': config.vault_id, 'release_id': None, 'release_hash': None,
+                'index_generation': None, 'index_fingerprint': None}
     state = _read_index_status(config)
     progress = read_json(config.progress_path())
     if progress:
@@ -89,7 +95,7 @@ def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict
             vault_id=config.vault_id,
             index_fingerprint=state.get("index_fingerprint"),
             candidates=[],
-            warnings=["index-not-ready"],
+            warnings=[state.get('delivery', {}).get('reason') or "index-not-ready"],
             release_id=state.get("release_id"), release_hash=state.get("release_hash"),
             index_generation=state.get("index_generation"),
         )
@@ -150,6 +156,13 @@ def recall(config: ProviderConfig, query: str, top_k: int | None = None) -> dict
             raw = raw[:limit]
     else:
         raw = raw[:limit]
+    from hermes_source_units.incremental_delivery import require_query_available
+    require_query_available(config.vault_root)
+    if current_release_identity(config.vault_root) != (release_id, release_hash):
+        return recall_response(vault_id=config.vault_id, index_fingerprint=state.get('index_fingerprint'),
+                               candidates=[], warnings=['index-release-mismatch'],
+                               release_id=state.get('release_id'), release_hash=state.get('release_hash'),
+                               index_generation=state.get('index_generation'))
     candidates = [normalize_candidate(item, config.vault_root) for item in raw]
     result = recall_response(
         vault_id=config.vault_id,

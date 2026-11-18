@@ -73,16 +73,17 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def load_sources(vault, pins):
+def load_sources(vault, pins, *, aliases=None, actor='short-evidence-offline'):
     """Read exact approved UnitSets, normalized text and registered whole assets."""
     source = FileSourceUnitService(vault)
     registry = source.vault_manifest['governance']['repository']['registry_path']
     result = {}
     with source.reading_snapshot(verify_hashes=True):
         revision = _load_json(source.track_reading_file(registry))['registry_revision']
-        access = {'actor': 'short-evidence-offline', 'purpose': 'construction', 'registry_revision': revision}
+        access = {'actor': actor, 'purpose': 'construction', 'registry_revision': revision}
         for number, pin in enumerate(pins, 1):
-            key = f'S{number}'
+            key = aliases[pin['resource_id']] if aliases is not None else f'S{number}'
+            require(re.fullmatch(r'S[1-9][0-9]*', key) and key not in result, 'invalid source alias')
             original = source.track_reading_file(pin['original'])
             original_sha = digest(original.read_bytes())
             resource = pin['resource_id']
@@ -205,6 +206,9 @@ def seed_request(key, source, sections):
 
 
 def source_revision(source):
+    if source.get('incremental_snapshot_id'):
+        return fingerprint({k: source[k] for k in ('identity', 'unit_set_id', 'document_sha256',
+                            'source_sha256', 'bundle_sha256', 'incremental_snapshot_id')})
     return fingerprint({k: source[k] for k in (
         'identity', 'unit_set_id', 'document_sha256', 'source_sha256', 'registry_revision', 'bundle_sha256',
     )})

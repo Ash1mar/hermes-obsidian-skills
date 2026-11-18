@@ -111,7 +111,7 @@ def new_request(body, config):
     if duplicates:
         raise UserError("原件将按文件名导入，以下文件名重复：" + "、".join(sorted(duplicates)))
     run = "console-" + uuid4().hex[:20]
-    return {
+    request = {
         "operation_id": run, "actor": "user-operator", "sources": sorted(map(str, files)),
         "vault_id": run, "vault_name": name.strip(), "vault_path": str(target),
         "security_domain": "internal-test", "test_mode": "bootstrap-short-test/v1",
@@ -119,6 +119,13 @@ def new_request(body, config):
         "retrieval_policy": {"contract": "vault-retrieval-policy/v1",
                              "sync_enabled": True, "query_enabled": False},
     }
+    from incremental import settings
+    request.update(settings(body, config, UserError))
+    if request.get('workflow_mode') == 'incremental_v1':
+        request.pop('test_mode')
+        request.pop('pause_after')
+        request.pop('canary_policy')
+    return request
 
 
 def ledger_path(request):
@@ -162,7 +169,9 @@ def available_actions(root, request, attempts, live, historical, source, attachm
                     for key in STAGE_ORDER if STAGE_ORDER[key] > current_index}
         return {}
     if operator.get("state") == "paused":
-        return {operator["node"]: [{"id": "continue-operation", "label": "继续并复用已有成果"}]}
+        node = operator["node"]
+        return {node: [{"id": "continue-operation", "label": "继续并复用已有成果",
+                        "pause_targets": list(STAGE_ORDER)[STAGE_ORDER[node] + 1:]}]}
     native = root / "native"
     original = read(root / "final-acceptance.json")
     short = read(native / "result.json")
@@ -197,7 +206,18 @@ def available_actions(root, request, attempts, live, historical, source, attachm
             and not (native / "stop.json").exists()
             and source.get("workflow_id") == f"ingest-{request['operation_id']}"
             and source.get("state") not in SOURCE_TERMINAL and not source.get("cancel_requested")):
-        offer(attachment_node, "attach-source", "重新接管同一工作流")
+        prior = read(root / "operator-state.json")
+        mailbox = read(root / "operator-pause.json")
+        target = None
+        if prior.get("contract") == "short-operator-state/v1" and prior.get("operation_id") == request["operation_id"]:
+            attempt_id = prior.get("attempt_id")
+            target = (mailbox.get("node") if attempt_id and mailbox.get("attempt_id") == attempt_id
+                      else prior.get("pending_pause"))
+        targets = list(STAGE_ORDER)[STAGE_ORDER["exact"]:]
+        if target:
+            targets = [node for node in targets if node == target]
+        offer(attachment_node, "attach-source", "重新接管同一工作流",
+              pause_targets=targets, pending_pause=target)
     if stopped and not original and not release and not short.get("native_active_or_ready"):
         if short.get("last_stage") == "coordination_held":
             offer("coordination", "coordination", "恢复协调")
@@ -273,6 +293,9 @@ def operator_state(root, request, latest, active=False):
 def progress(directory, *, historical=False, active=False, details=True):
     request = read(directory / "request.json")
     attempts = attempts_for(directory, historical)
+    if request.get('workflow_mode') == 'incremental_v1':
+        from incremental import progress as incremental_progress
+        return incremental_progress(directory, request, attempts, active, historical, details)
     latest = attempts[-1] if attempts else {}
     root = directory / "short"
     native = root / "native"
@@ -479,6 +502,14 @@ def run_attempt(directory, attempt_id, config, lease_fd):
             bootstrap = orch.parent / BOOTSTRAP
             request_path = directory / "request.json"
             request = read(request_path)
+            if request.get('workflow_mode') == 'incremental_v1':
+                from incremental import command as incremental_command
+                command = incremental_command(directory, attempt, config, save)
+                attempt = {**attempt, 'invoked': True}
+                save(path, attempt)
+                code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=False,
+                                      pass_fds=(lease_fd,)).returncode
+                return
             script = orch / "scripts/start_post_mineru_short_test.py"
             for needed in (script, bootstrap / "scripts/init_obsidian_vault.py", Path(config["provider_config"])):
                 if not needed.is_file():
@@ -513,7 +544,7 @@ def run_attempt(directory, attempt_id, config, lease_fd):
                     command += ["--attach-source"]
                 elif action == "continue-operation":
                     command += ["--continue-operation"]
-                elif attempt.get("pause_before"):
+                if attempt.get("pause_before"):
                     command += ["--pause-before", attempt["pause_before"]]
             elif action == "delivery":
                 command += ["--resume-delivery"]

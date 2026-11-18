@@ -54,6 +54,8 @@ class HybridIndexer:
 
     def sync(self, rebuild: bool = False, expected_release_id: str | None = None,
              expected_release_hash: str | None = None) -> dict[str, Any]:
+        from hermes_source_units.incremental_delivery import require_index_admission
+        require_index_admission(self.config.vault_root, expected_release_id, expected_release_hash)
         with writer_lock(self.config.persist_dir):
             started = time.perf_counter()
             self.started = started

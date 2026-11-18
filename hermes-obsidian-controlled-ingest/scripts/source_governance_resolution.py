@@ -38,6 +38,29 @@ def operator_guard(repo,request):
         from hermes_source_units.recovery_control import check
         check(repo.vault,wid)
         w=service.status(wid);service.assert_execution_ready(w)
+        if request.get('source_boundary') == 'incremental-source/v1':
+            from hermes_source_units.incremental_control import IncrementalControl
+            from hermes_source_units.incremental_ingest import FileIncrementalIngestService
+
+            run_id = request.get('run_id', request.get('incremental_run_id'))
+            control = IncrementalControl(repo.vault, run_id)
+            incremental = FileIncrementalIngestService(repo.vault, check_admission=control.check_admission)
+            run = incremental.status(run_id)
+            snapshot = incremental.validate_source_snapshot(run_id, request.get('snapshot_id'))
+            identity = snapshot['identity']
+            if (run['state'] != 'active' or run['actor'] != request['actor'] or w['actor'] != run['actor']
+                    or run['source_workflow_id'] != wid or w['cancel_requested']
+                    or w['scope'].get('incremental_run_id') != run_id
+                    or request['resource_ids'] != [identity['resource_id']]):
+                raise GovernanceError('Requires one current sealed source in the explicit incremental run')
+            control.check_admission({'run_id': run_id, 'scope_kind': 'source',
+                'scope_id': snapshot['snapshot_id'], 'stage': 'source-seal',
+                'input_fingerprint': fingerprint({'snapshot_id': snapshot['snapshot_id'],
+                                                  'source_boundary': 'incremental-source/v1'})})
+            # Other source cards can remain active. Their writes serialize through
+            # the existing registry mutation lock and recheck their own revisions.
+            yield None
+            return
         if request.get('source_boundary') == 'post-mineru-short/v1':
             from native_stop_inventory import workflow_processes
             from post_mineru_test import bootstrap_source_boundary, imported_source_boundary

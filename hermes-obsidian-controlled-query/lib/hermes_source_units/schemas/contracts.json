@@ -2087,6 +2087,14 @@
     "ingest_workflow_scope": {
       "type": "object",
       "properties": {
+        "workflow_mode": {
+          "const": "incremental_v1"
+        },
+        "incremental_run_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$"
+        },
         "source_paths": {
           "type": "array",
           "items": {
@@ -2140,28 +2148,98 @@
         "execution_policy": {
           "type": "object",
           "properties": {
-            "input_budget_profile": {"enum":["baseline-30000","review-40000","pages-40000"]},
-            "independent_page_review": {"enum":["enabled","disabled"]},
+            "input_budget_profile": {
+              "enum": [
+                "baseline-30000",
+                "review-40000",
+                "pages-40000"
+              ]
+            },
+            "independent_page_review": {
+              "enum": [
+                "enabled",
+                "disabled"
+              ]
+            },
             "pass_worker_concurrency": {
               "type": "integer",
               "minimum": 1,
-              "enum": [1,2,3,4,5,6,7,8,9,10]
+              "enum": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10
+              ]
             },
             "source_prepare_concurrency": {
               "type": "integer",
               "minimum": 1,
-              "enum": [1,2,3,4,5,6,7,8,9,10]
+              "enum": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10
+              ]
             },
             "program_worker_concurrency": {
               "type": "integer",
               "minimum": 1,
-              "enum": [1,2,3,4,5,6,7,8,9,10]
+              "enum": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10
+              ]
             },
-            "reduce_worker_concurrency": {"type":"integer","minimum":1,"enum":[1,2,3,4,5,6,7,8,9,10]},
+            "reduce_worker_concurrency": {
+              "type": "integer",
+              "minimum": 1,
+              "enum": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10
+              ]
+            },
             "reduce_page_concurrency": {
               "type": "integer",
               "minimum": 1,
-              "enum": [1,2,3,4,5,6,7,8,9,10]
+              "enum": [
+                1,
+                2,
+                3,
+                4,
+                5,
+                6,
+                7,
+                8,
+                9,
+                10
+              ]
             }
           },
           "required": [
@@ -2174,27 +2252,75 @@
         },
         "recovery_policy": {
           "type": "object",
-          "required": ["contract", "semantic_failure", "qa", "source_resource_retries", "controller_attempts", "unknown_completion", "initial_release"],
+          "required": [
+            "contract",
+            "semantic_failure",
+            "qa",
+            "source_resource_retries",
+            "controller_attempts",
+            "unknown_completion",
+            "initial_release"
+          ],
           "properties": {
-            "contract": {"const": "workflow-recovery-policy/v1"},
-            "semantic_failure": {"enum": ["hold", "once_then_isolate"]},
+            "contract": {
+              "const": "workflow-recovery-policy/v1"
+            },
+            "semantic_failure": {
+              "enum": [
+                "hold",
+                "once_then_isolate"
+              ]
+            },
             "qa": {
               "type": "object",
               "properties": {
-                "contract": {"const": "automatic-qa-policy/v1"},
-                "labels": {"const": "advisory"},
-                "blocking_action": {"const": "isolate_with_dependents"},
-                "max_additional_hermes_checks": {"const": 1},
-                "human_review_required": {"const": false},
-                "invalid_evidence_accepted": {"const": false}
+                "contract": {
+                  "const": "automatic-qa-policy/v1"
+                },
+                "labels": {
+                  "const": "advisory"
+                },
+                "blocking_action": {
+                  "const": "isolate_with_dependents"
+                },
+                "max_additional_hermes_checks": {
+                  "const": 1
+                },
+                "human_review_required": {
+                  "const": false
+                },
+                "invalid_evidence_accepted": {
+                  "const": false
+                }
               },
-              "required": ["contract", "labels", "blocking_action", "max_additional_hermes_checks", "human_review_required", "invalid_evidence_accepted"],
+              "required": [
+                "contract",
+                "labels",
+                "blocking_action",
+                "max_additional_hermes_checks",
+                "human_review_required",
+                "invalid_evidence_accepted"
+              ],
               "additionalProperties": false
             },
-            "source_resource_retries": {"const": 1},
-            "controller_attempts": {"const": 3},
-            "unknown_completion": {"enum": ["hold", "isolate_after_drain"]},
-            "initial_release": {"enum": ["hold", "scoped_bootstrap"]}
+            "source_resource_retries": {
+              "const": 1
+            },
+            "controller_attempts": {
+              "const": 3
+            },
+            "unknown_completion": {
+              "enum": [
+                "hold",
+                "isolate_after_drain"
+              ]
+            },
+            "initial_release": {
+              "enum": [
+                "hold",
+                "scoped_bootstrap"
+              ]
+            }
           },
           "additionalProperties": false
         },

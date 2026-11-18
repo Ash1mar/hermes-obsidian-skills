@@ -115,3 +115,55 @@ def test_invalid_continue_preserves_pause(console):
         launch.run_controlled(args, request, root, vault)
     assert (root / 'operator-state.json').read_bytes() == state
     assert not calls
+
+
+def test_continue_reserves_next_boundary_before_any_downstream_work(console):
+    launch, args, request, root, vault, calls = console
+    args.pause_before = 'exact'
+    launch.run_controlled(args, request, root, vault)
+    path = root / 'operator-state.json'
+    before = path.read_bytes()
+    args.operator_attempt, args.continue_operation = 'second', True
+    with pytest.raises(ValueError, match='next pause must follow'):
+        launch.run_controlled(args, request, root, vault)
+    assert path.read_bytes() == before
+    assert calls == ['dispatch']
+
+    for i, node in enumerate(('topics', 'mapping', 'coordination', 'writing',
+                              'formal-build', 'release', 'acceptance')):
+        args.operator_attempt, args.pause_before = f'next-{i}', node
+        launch.run_controlled(args, request, root, vault)
+        state = launch._load_json(path)
+        assert (state['state'], state['node']) == ('paused', node)
+        assert node not in calls
+
+    args.operator_attempt, args.pause_before = 'last', None
+    launch.run_controlled(args, request, root, vault)
+    assert calls == ['dispatch', 'topics', 'mapping', 'coordination', 'writing', 'formal-build',
+                     'release', 'sync', 'acceptance']
+
+
+def test_attach_cannot_replace_a_pending_pause(console, monkeypatch):
+    launch, args, request, root, vault, calls = console
+    prepare = launch.prepare
+
+    def detached(*args, attach, checkpoint):
+        prepare(*args, attach=attach, checkpoint=lambda node, evidence: False)
+        raise launch.SourceWaitDetached('observation ended')
+
+    monkeypatch.setattr(launch, 'prepare', detached)
+    args.pause_before = 'topics'
+    assert launch.run_controlled(args, request, root, vault) == launch.DETACHED
+    path = root / 'operator-state.json'
+    before = path.read_bytes()
+    monkeypatch.setattr(launch, 'prepare', prepare)
+    args.operator_attempt, args.attach_source, args.pause_before = 'second', True, 'exact'
+    with pytest.raises(ValueError, match='cannot replace a pending pause'):
+        launch.run_controlled(args, request, root, vault)
+    assert path.read_bytes() == before
+
+    args.pause_before = None
+    launch.run_controlled(args, request, root, vault)
+    state = launch._load_json(path)
+    assert (state['state'], state['node']) == ('paused', 'topics')
+    assert calls == ['dispatch']

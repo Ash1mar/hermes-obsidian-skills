@@ -74,6 +74,16 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
             value = adapter.workflow.status(workflow_id)
             if value["cancel_requested"] or value["state"] == 'failed':
                 return
+            if value['scope'].get('workflow_mode') == 'incremental_v1':
+                from contextlib import closing
+                from hermes_cli import kanban_db as kb, kanban_db_connect as kc
+                if not adapter.workflow.source_coverage(value)['pending']:
+                    with closing(kc.connect(board=value['kanban']['board_id'])) as connection:
+                        active = any(task.claim_lock or task.status in ('running', 'ready', 'todo', 'triage')
+                                     for task in kb.list_tasks(connection))
+                    if not active:
+                        print('Incremental source preparation settled; round controller owns downstream work', flush=True)
+                        return
             if value['state'] in ('completed','partial'):
                 from terminal_completion import settle
                 settle(adapter,workflow_id,wake,interval)

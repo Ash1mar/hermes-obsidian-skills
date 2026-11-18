@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -105,6 +106,14 @@ class Console:
                     option = None
                 if option is None:
                     raise UserError("当前回执不支持此操作。请刷新并检查节点详情。")
+                if action.startswith('incremental-') and any(body.get(key) != option.get(key)
+                        for key in ('control_revision', 'run_revision')):
+                    raise UserError('增量运行或控制修订已经变化，请刷新后重试。')
+                pause_before = body.get("pause_before")
+                if pause_before is not None:
+                    if not isinstance(pause_before, str) or pause_before not in option.get("pause_targets", []):
+                        raise UserError("请选择当前操作允许的下一暂停节点。")
+                    option = {**option, "pause_before": pause_before}
                 if action in {"start", "attach-source", "continue-operation"}:
                     self.require_operator_launcher()
                 if option.get("gateway_required", True):
@@ -124,7 +133,12 @@ class Console:
                 pause_before = body.get("pause_before")
                 if pause_before is not None and (not isinstance(pause_before, str) or pause_before not in STAGE_ORDER):
                     raise UserError("请选择有效的暂停节点。")
-                self.require_operator_launcher()
+                if body.get('workflow_mode') == 'incremental_v1':
+                    script = Path(self.config['skills_root']) / ORCHESTRATOR / 'scripts/manage_incremental_ingest.py'
+                    if not script.is_file():
+                        raise UserError('请先部署支持增量模式的 Skill。')
+                else:
+                    self.require_operator_launcher()
                 self.require_gateway()
                 request = new_request(body, self.config)
                 run_id = request["operation_id"]
@@ -145,6 +159,8 @@ class Console:
                 record["prior_entry"] = prior_entry
             if option.get("pause_before"):
                 record["pause_before"] = option["pause_before"]
+            if action.startswith('incremental-'):
+                record.update(control_revision=option['control_revision'], run_revision=option['run_revision'])
             (directory / "short").mkdir(mode=0o700, exist_ok=True)
             path = attempt / "attempt.json"
             save(path, record)
@@ -249,7 +265,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, (HERE / "web" / name).read_bytes(), media)
             elif not write and url.path == "/api/runs":
                 self.json({"runs": app.list_runs(), "writable": app.config["writable"],
-                           "gateway": app.gateway.status})
+                           "gateway": app.gateway.status, "wsl_distro": app.config.get("distro"),
+                           "obsidian_available": platform.system() == "Linux" and bool(shutil.which("obsidian"))})
             elif not write and url.path == "/api/gateway/log":
                 self.json({"text": app.gateway.log()})
             elif write and url.path == "/api/runs":
@@ -263,6 +280,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.json(app.launch(self.payload(), run_id), HTTPStatus.ACCEPTED)
                 elif write and parts[3:] == ["pause"]:
                     self.json(app.pause(run_id, self.payload()), HTTPStatus.ACCEPTED)
+                elif write and parts[3:] == ["obsidian"]:
+                    if platform.system() != "Linux":
+                        raise UserError("请从 WSL 启动控制台以打开 Linux Obsidian。")
+                    from obsidian_app import open_obsidian
+                    vault = read(directory / "request.json")["vault_path"]
+                    self.json(open_obsidian(vault, self.payload().get("action"), app.state,
+                                            app.config.get("obsidian_user")))
                 elif not write and parts[3:] == ["log"]:
                     entries = attempts_for(directory, historical)
                     default = entries[-1]["id"] if entries else None
@@ -274,7 +298,13 @@ class Handler(BaseHTTPRequestHandler):
                         log = directory / entry["log"]
                     else:
                         log = directory / "attempts" / selected / "pipeline.log"
-                    self.json({"text": log_tail(log)})
+                    text = log_tail(log)
+                    request = read(directory / 'request.json')
+                    if request.get('workflow_mode') == 'incremental_v1':
+                        from incremental import root_for
+                        controller_log = root_for(request) / 'controller.log'
+                        text += '\n' + log_tail(controller_log)
+                    self.json({"text": text})
                 else:
                     raise FileNotFoundError(url.path)
             else:
@@ -317,11 +347,13 @@ def main():
     parser.add_argument("--wsl-distro", default=os.environ.get("WSL_DISTRO_NAME", "Ubuntu-24.04"))
     parser.add_argument("--history", type=Path, action="append", default=[])
     parser.add_argument("--read-only", action="store_true")
+    parser.add_argument("--obsidian-user", help="Linux desktop user used to open Obsidian")
     args = parser.parse_args()
     skills = args.skills_root.resolve()
     config = {"state": str(args.state.resolve()), "skills_root": str(skills), "distro": args.wsl_distro,
               "provider_config": str((args.provider_config or skills / FINALIZE / "config/retrieval-provider.json").resolve()),
               "provider_state": str(args.provider_state.resolve()),
+              "obsidian_user": args.obsidian_user,
               "writable": platform.system() == "Linux" and not args.read_only}
     with ThreadingHTTPServer(("127.0.0.1", args.port), Handler) as server:
         server.console = Console(config, [p.resolve() for p in args.history])

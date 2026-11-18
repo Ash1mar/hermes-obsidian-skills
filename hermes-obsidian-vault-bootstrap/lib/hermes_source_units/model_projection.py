@@ -23,7 +23,10 @@ class ModelProjectionMixin:
         package = self._existing_reading_package(task, batch['actor'], batch['document_registry_revision'])
         if package is None:
             assembled = self._assemble_reading(task['target_refs'], batch['actor'],
-                batch['document_registry_revision'], self._reader_config())
+                batch['document_registry_revision'], self._task_reader_config(task))
+            planned = task.get('reading_measurement')
+            if planned is not None and assembled['measurement'] != planned:
+                fail('STALE_PLAN', 'preview reading differs from the exact plan')
             package = {'contract':'hermes-reading-package/v1', 'task_id':task_id,
                 'task_revision':task['revision'] + (task['status'] == 'pending'),
                 'actor':batch['actor'], 'document_registry_revision':batch['document_registry_revision'],

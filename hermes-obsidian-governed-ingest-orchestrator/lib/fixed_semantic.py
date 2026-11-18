@@ -1057,6 +1057,16 @@ def subset(packet,tasks,phase=None):
     return view
 
 
+RULES['incremental-page-plan'] = ('Coordinate the exact frozen source mappings into create, update, reuse or hold decisions. '
+    'Use registered identities and exact parent versions for updates. Preserve source scope and version differences. '
+    'Every mapping obligation must have a disposition. Do not infer contents of pending sources. '
+    'Existing titles are hints, never proof of equivalent identity. No source evidence may silently disappear.')
+RULES['incremental-page-write'] = ('Write one full knowledge-page revision from the supplied original evidence, '
+    'necessary old evidence, prior content and exact new scope. Preserve conditions, exceptions and citations. '
+    'Inspect every required asset. Report unresolved evidence instead of inventing or dropping it. '
+    'Retain existing supported statements and exact evidence handles. Return the complete requested body.')
+
+
 def estimate_pass_output_tokens(packet,tasks,phase='candidate',policy=None):
     """Conservative planning estimate, not a claim about model compression.
 

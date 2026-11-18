@@ -275,6 +275,8 @@ def timed_event(
 
 
 def begin(args: argparse.Namespace) -> dict[str, Any]:
+    from hermes_source_units.incremental_delivery import require_query_available
+    require_query_available(args.vault_root)
     command_started_at = now_iso()
     command_started_monotonic = time.monotonic_ns()
     command_started_wall = time.time_ns()
@@ -1128,6 +1130,8 @@ def evidence_level_contract(packets: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def inspect(args: argparse.Namespace) -> dict[str, Any]:
+    from hermes_source_units.incremental_delivery import require_query_available
+    require_query_available(args.vault_root)
     command_started_at = now_iso()
     command_started_monotonic = time.monotonic_ns()
     command_started_wall = time.time_ns()

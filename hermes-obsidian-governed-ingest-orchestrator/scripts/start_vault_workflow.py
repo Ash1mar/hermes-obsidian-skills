@@ -21,10 +21,16 @@ from hermes_source_units.runtime_telemetry import measured, event
 
 @measured('vault_startup',lambda request,record,bootstrap_skill,**kwargs:{'vault':request.get('vault_path'),
     'workflow_id':'ingest-'+str(request.get('operation_id','unknown')),'operation_id':request.get('operation_id')})
-def start(request, record, bootstrap_skill, *, before_workflow=None, prepare_only=False):
+def start(request, record, bootstrap_skill, *, before_workflow=None, prepare_only=False, incremental_bootstrap=False):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise ValueError('startup requires a trusted operator')
     required={'operation_id','actor','vault_path','vault_id','vault_name','security_domain','sources'}
+    mode = request.get('workflow_mode')
+    if mode is not None and mode != 'incremental_v1':
+        raise ValueError('unknown explicit workflow mode')
+    if mode == 'incremental_v1' and not incremental_bootstrap:
+        from incremental_runtime import start as start_incremental
+        return start_incremental(request, record, bootstrap_skill)
     if not required <= set(request) or not re.fullmatch(r'[a-z0-9][a-z0-9_-]{0,70}',request['operation_id']):
         raise ValueError('missing startup fields or invalid operation_id')
     vault=Path(request['vault_path'])
@@ -37,7 +43,7 @@ def start(request, record, bootstrap_skill, *, before_workflow=None, prepare_onl
     cfg=configuration()
     from post_mineru_test import BOOTSTRAP_SHORT
     bootstrap_short = request.get('test_mode') == BOOTSTRAP_SHORT
-    if prepare_only and not bootstrap_short:
+    if prepare_only and not (bootstrap_short or mode == 'incremental_v1'):
         raise ValueError('preparing without dispatch requires a fresh short test')
     if bootstrap_short and (before_workflow is not None or 'reuse_conversion' in request
             or 'test' not in request['security_domain'].split('-') or request.get('pause_after') != ['exact_plan']
@@ -61,7 +67,9 @@ def start(request, record, bootstrap_skill, *, before_workflow=None, prepare_onl
         state=json.loads(record.read_text()) if record.exists() else None
         if state and state['input_digest']!=digest: raise ValueError('startup identity or source bytes changed')
         if state is None:
-            if vault.exists() and any(vault.iterdir()): raise ValueError('new Vault target is nonempty')
+            existing_incremental = mode == 'incremental_v1' and request.get('incremental_existing_vault') is True
+            if vault.exists() and any(vault.iterdir()) and not existing_incremental:
+                raise ValueError('new Vault target is nonempty')
             state={'contract':'vault-startup/v1','input_digest':digest,'operation_id':request['operation_id'],
                    'vault':str(vault),'execution_policy':policy,'recovery_policy':recovery,'identity':identity,'phase':'bootstrap'}
             _write_atomic(record,_json_bytes(state))
@@ -83,7 +91,16 @@ def start(request, record, bootstrap_skill, *, before_workflow=None, prepare_onl
             event('bootstrap_completed',vault_id=request['vault_id'],bootstrap_record=str(record))
         paths=[]
         for source in sources:
-            relative='10_Raw/'+source.name; target=vault/relative; data=source.read_bytes()
+            relative=(f"10_Raw/Incremental/{request['operation_id']}/{source.name}" if mode == 'incremental_v1'
+                      else '10_Raw/'+source.name)
+            reuse = request.get('incremental_reuse_originals', {}).get(str(source)) if mode == 'incremental_v1' else None
+            if reuse is not None:
+                from hermes_source_units.source_units import _vault_path
+                preserved = _vault_path(vault, reuse)
+                if not preserved.is_file() or preserved.resolve() != source:
+                    raise ValueError('explicit original reuse must name the existing Vault source itself')
+                relative = reuse
+            target=vault/relative; data=source.read_bytes()
             if not target.resolve().is_relative_to(vault): raise ValueError('original target escapes Vault')
             target.parent.mkdir(parents=True,exist_ok=True)
             if target.is_symlink() or (target.exists() and target.read_bytes()!=data): raise ValueError('original target conflict')
@@ -105,6 +122,8 @@ def start(request, record, bootstrap_skill, *, before_workflow=None, prepare_onl
             'execution_mode':'auto_full','pause_after':request.get('pause_after',[]),'canary_policy':request.get('canary_policy','sample'),
             'provider':'sync' if provider['sync_enabled'] else 'skip','execution_policy':state['execution_policy'],
             'provider_policy_sha256':hashlib.sha256(pp.read_bytes()).hexdigest(),'bootstrap_ref':ref}
+        if mode == 'incremental_v1':
+            scope.update(workflow_mode=mode, incremental_run_id=request['incremental_run_id'])
         workflow={'workflow_id':'ingest-'+request['operation_id'],'actor':request['actor'],'profile':'compact-5',
                   'scope':scope,'expected_revision':0}
         # Old startup receipts retain their original scope/digest on replay.
@@ -117,6 +136,7 @@ def start(request, record, bootstrap_skill, *, before_workflow=None, prepare_onl
         if 'recovery_policy' in state:report['recovery_policy']=state['recovery_policy']
         if test_import is not None:report['test_bundle_import']=test_import
         if bootstrap_short:report['test_mode']=BOOTSTRAP_SHORT
+        if mode == 'incremental_v1':report['workflow_mode']=mode
         rp=vault/ref
         if rp.exists() and json.loads(rp.read_text())!=report: raise ValueError('startup report conflict')
         if not rp.exists(): _write_atomic(rp,_json_bytes(report))

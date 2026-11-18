@@ -221,6 +221,8 @@ def _desired_graph(service: FileIngestWorkflowService, workflow: Mapping[str, An
                 _fail("SOURCE_CHANGED", f"source bytes changed after outcome: {path}")
             digest = fingerprint(identity)
             sources.append(add(f"source-prepare:{digest[:16]}", "source-prepare", (), identity))
+        if workflow['scope'].get('workflow_mode') == 'incremental_v1':
+            return nodes
         add("exact-plan", "exact-plan", tuple(sources),
             {"scope": workflow["scope"], "source_outcomes": workflow.get("source_outcomes", [])})
         return nodes
@@ -1134,6 +1136,11 @@ class IngestKanbanAdapter:
             _fail("INVALID_SCHEMA", "missing worker request fields: " + ", ".join(missing))
 
     def _canary_allows(self, workflow: Mapping[str, Any], node: Node, *, completing: bool = False) -> bool:
+        if workflow['scope'].get('workflow_mode') == 'incremental_v1':
+            from hermes_source_units.incremental_control import IncrementalControl
+            control = IncrementalControl(self.workflow.vault, workflow['scope']['incremental_run_id']).status()
+            if control['state'] == 'cancelled' or (not completing and control['state'] != 'active'):
+                return False
         if self.workflow.revision_allows(workflow, node.name):
             return True
         if not completing and self.workflow.pending_pause(workflow):
@@ -2133,6 +2140,14 @@ class IngestKanbanAdapter:
         self.workflow.pinned_templates(workflow)
         if workflow["cancel_requested"] or workflow["batch_id"] is not None:
             _fail("WORKFLOW_STOPPED", "source and plan work require an active pre-batch workflow")
+        incremental_state = None
+        if workflow['scope'].get('workflow_mode') == 'incremental_v1':
+            from hermes_source_units.incremental_control import IncrementalControl
+            incremental_state = IncrementalControl(self.workflow.vault, workflow['scope']['incremental_run_id']).status()['state']
+            if incremental_state == 'cancelled':
+                _fail('WORKFLOW_STOPPED', 'parent incremental run is cancelled')
+            if beginning and incremental_state == 'paused':
+                _fail('WORKFLOW_PAUSED', 'parent incremental run is paused')
         node_name = str(request["node"])
         node = next((item for item in desired_graph(self.workflow, workflow)
                      if item.name == node_name), None)
@@ -2145,6 +2160,17 @@ class IngestKanbanAdapter:
             _fail("STALE_INPUT", "Kanban node binding changed")
         if request.get('input_fingerprint', node.input_fingerprint) != node.input_fingerprint:
             _fail('STALE_INPUT', 'dispatcher input fingerprint changed')
+        if beginning and incremental_state == 'pausing':
+            if not hasattr(self.kanban, 'task_snapshot_fresh'):
+                _fail('RUNTIME_UNVERIFIED', 'pausing source admission requires a fresh native claim')
+            task = self.kanban.task_snapshot_fresh(workflow['kanban']['board_id'], request['task_id'])['task']
+            body = json.loads(task.get('body', '{}'))
+            if (task.get('id') != request['task_id']
+                    or not (task.get('status') == 'running' or task.get('claim_lock'))
+                    or body.get('workflow_id') != workflow['workflow_id'] or body.get('node') != node.name
+                    or body.get('input_fingerprint') != node.input_fingerprint
+                    or body.get('vault') != str(self.workflow.vault)):
+                _fail('WORKFLOW_PAUSED', 'pausing admits only the exact already claimed source task')
         if self._execution_blocked(workflow['workflow_id'], node):
             _fail("EXECUTION_BLOCKED", "current binding requires trusted repair before retry")
         pin = next(item for item in workflow["template_pins"] if item["kind"] == node.kind)
