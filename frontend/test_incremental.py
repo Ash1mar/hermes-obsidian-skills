@@ -9,10 +9,15 @@ from incremental import command, progress, settings
 
 
 class IncrementalConsoleTests(unittest.TestCase):
-    def test_explicit_mode_requires_real_budget_and_preserves_legacy_default(self):
+    def test_new_mode_uses_default_policy_and_accepts_valid_explicit_override(self):
         self.assertEqual(settings({}, {}, ValueError), {})
-        with self.assertRaises(ValueError):
-            settings({'workflow_mode': 'incremental_v1'}, {}, ValueError)
+        default = settings({'workflow_mode': 'incremental_v1'}, {'provider_config': '/configured/provider.json'}, ValueError)
+        self.assertEqual(default['incremental_budget'], {'max_calls': 600, 'max_input_tokens': 12000000,
+                         'max_output_tokens': 3000000, 'phase_limits': {'mapping': 360, 'coordination': 30, 'writing': 210}})
+        self.assertEqual(default['incremental_policy'], {'max_maps_per_round': 1})
+        default['incremental_budget']['phase_limits']['mapping'] = 1
+        self.assertEqual(settings({'workflow_mode': 'incremental_v1'}, {'provider_config': '/p'}, ValueError)
+                         ['incremental_budget']['phase_limits']['mapping'], 360)
         budget = {'max_calls': 30, 'max_input_tokens': 100000, 'max_output_tokens': 50000,
                   'phase_limits': {'mapping': 20, 'coordination': 5, 'writing': 20}}
         body = {'workflow_mode': 'incremental_v1', 'incremental_budget': budget,
@@ -25,6 +30,30 @@ class IncrementalConsoleTests(unittest.TestCase):
                                  {'provider_config': '/configured/provider.json'}, ValueError)['incremental_manual_sources'])
         with self.assertRaises(ValueError):
             settings({**body, 'incremental_manual_sources': 'true'}, {}, ValueError)
+        for override in (None, {}, {'max_calls': 1}):
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                settings({'workflow_mode': 'incremental_v1', 'incremental_budget': override}, {}, ValueError)
+        for override in (None, {}, {'max_maps_per_round': 0}, {'max_maps_per_round': 1, 'extra': True}):
+            with self.subTest(override=override), self.assertRaises(ValueError):
+                settings({'workflow_mode': 'incremental_v1', 'incremental_policy': override}, {}, ValueError)
+
+    def test_single_file_keeps_siblings_out_and_folder_retains_batch_collection(self):
+        import workflow
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            source = base / 'sources'
+            source.mkdir()
+            first, second = source / 'one.pdf', source / 'two.pdf'
+            first.write_bytes(b'first')
+            second.write_bytes(b'second')
+            body = {'sources': [str(first)], 'vault_path': str(base / 'new-vault'),
+                    'vault_name': 'Draft', 'workflow_mode': 'incremental_v1'}
+            config = {'distro': 'fixture', 'state': str(base / 'console'), 'provider_config': '/p'}
+            with patch.object(workflow, 'local_path', side_effect=lambda value, _: Path(value)):
+                file_request = workflow.new_request(body, config)
+                folder_request = workflow.new_request({**body, 'sources': [str(source)]}, config)
+            self.assertEqual(file_request['sources'], [str(first.resolve())])
+            self.assertEqual(folder_request['sources'], sorted([str(first.resolve()), str(second.resolve())]))
 
     def test_manual_source_actions_bind_exact_path_hash_and_keep_pause_separate(self):
         from incremental import fingerprint

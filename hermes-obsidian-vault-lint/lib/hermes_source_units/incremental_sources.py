@@ -34,13 +34,33 @@ def read_pin(vault, pointer):
     return _load_json(path)
 
 
+def completion_connection(board):
+    """Read an existing historical board without a worker's own DB override.
+
+    Hermes injects HERMES_KANBAN_DB into workers, so a board argument alone
+    still selects the worker's current board. Use the public board layout and
+    pass an explicit existing database to the normal connection entry point;
+    its delegation fences and read-only handling remain authoritative.
+    """
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kc
+
+    safe_id(board)
+    require(kb.board_exists(board), 'native evidence board is missing', 'NATIVE_UNCONFIRMED')
+    directory = kb.kanban_home() if board == 'default' else kb.board_dir(board)
+    path = directory / 'kanban.db'
+    require(not directory.is_symlink() and path.is_file() and not path.is_symlink()
+            and path.resolve(strict=True).parent == directory.resolve(strict=True),
+            'native evidence database is missing or redirected', 'NATIVE_UNCONFIRMED')
+    return kc.connect(db_path=path.resolve(strict=True), board=board)
+
+
 def verify_native_completion(vault, proof, expected):
     """Check a saved native run, never a worker's declaration of completion."""
     from hermes_cli import kanban_db as kb, kanban_db_connect as kc
 
     require(set(('board', 'task_id', 'run_id')) <= set(proof)
             and type(proof['run_id']) is int, 'exact native completion identity required')
-    with closing(kc.connect(board=proof['board'])) as conn:
+    with closing(completion_connection(proof['board'])) as conn:
         task = kb.get_task(conn, proof['task_id'])
         require(task and task.status in ('done', 'archived') and not task.claim_lock,
                 'native task has not completed', 'NATIVE_UNCONFIRMED')
@@ -91,7 +111,7 @@ def verify_native_drain(vault, proof, source_workflow_id, boards):
     require(proof.get('source_workflow_id') == source_workflow_id and set(proof.get('boards', [])) == set(boards),
             'native drain scope differs')
     for board in boards:
-        with closing(kc.connect(board=board)) as conn:
+        with closing(completion_connection(board)) as conn:
             require(not any(task.status in ('ready', 'running', 'todo', 'triage') or task.claim_lock
                             for task in kb.list_tasks(conn)), 'native board has unfinished work', 'NATIVE_ACTIVE')
         require(not workflow_processes(source_workflow_id, board), 'native processes remain active', 'NATIVE_ACTIVE')

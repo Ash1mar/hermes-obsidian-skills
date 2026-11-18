@@ -1,6 +1,7 @@
 """Console projection for explicit source/round incremental runs."""
 
 from collections import Counter
+import copy
 import hashlib
 import json
 import os
@@ -10,6 +11,9 @@ import sys
 
 MODE = 'incremental_v1'
 PAUSES = ('prepare', 'mapping', 'coordination', 'writing', 'formal-build', 'release', 'acceptance', 'closure')
+DEFAULT_BUDGET = {'max_calls': 600, 'max_input_tokens': 12000000, 'max_output_tokens': 3000000,
+                  'phase_limits': {'mapping': 360, 'coordination': 30, 'writing': 210}}
+DEFAULT_POLICY = {'max_maps_per_round': 1}
 
 
 def read(path):
@@ -24,8 +28,8 @@ def settings(body, config, error):
         raise error('请选择受支持的处理模式。')
     if body.get('workflow_mode') != MODE:
         return {}
-    budget = body.get('incremental_budget')
-    policy = body.get('incremental_policy')
+    budget = body['incremental_budget'] if 'incremental_budget' in body else copy.deepcopy(DEFAULT_BUDGET)
+    policy = body['incremental_policy'] if 'incremental_policy' in body else dict(DEFAULT_POLICY)
     pause_after = body.get('incremental_pause_after', [])
     manual_sources = body.get('incremental_manual_sources', False)
     if type(manual_sources) is not bool:

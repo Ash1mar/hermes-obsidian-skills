@@ -137,3 +137,14 @@ pre { margin: 0; min-height: 350px; max-height: 65vh; overflow: auto; background
 .scope-row small { width: 100%; overflow-wrap: anywhere; }
 .checkbox-label { display: flex; align-items: center; gap: 8px; }
 .checkbox-label input[type="checkbox"] { width: auto; margin: 0; }
+.source-entry { display: flex; gap: 8px; align-items: center; }
+.source-entry input { min-width: 0; }
+.source-entry button { flex-shrink: 0; }
+.source-draft { margin-top: 12px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: #f8fbfc; }
+.source-draft-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; font-size: 13px; }
+#source-draft-list { list-style: none; margin: 8px 0 0; padding: 0; }
+#source-draft-list li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 8px 0; }
+#source-draft-list li + li { border-top: 1px solid var(--line); }
+#source-draft-list strong, #source-draft-list small { display: block; overflow-wrap: anywhere; }
+#source-draft-list strong { font-size: 12px; }
+#source-draft-list button { flex-shrink: 0; font-size: 12px; padding: 5px 8px; }

@@ -5,7 +5,7 @@ import json
 
 from hermes_source_units.incremental_control import IncrementalControl
 from hermes_source_units.incremental_ingest import FileIncrementalIngestService
-from hermes_source_units.incremental_sources import pinned, read_pin
+from hermes_source_units.incremental_sources import completion_connection, pinned, read_pin
 from hermes_source_units.source_units import _json_bytes, _load_json, _sha, _vault_path, _write_atomic
 from hermes_source_units.validation import _check_shape, fingerprint
 from short_evidence_pass import require
@@ -95,7 +95,7 @@ def verified_result(root, row):
             and result.get('state') in ('settled', 'held') and isinstance(result.get('attempts'), list),
             'incremental result is outside its immutable native workspace')
     kb, kc, _ = runner.runtime()
-    with closing(kc.connect(board=operation['board'])) as connection:
+    with closing(completion_connection(operation['board'])) as connection:
         task = kb.get_task(connection, result['task_id'])
         require(task and task.created_by == operation['contract']
                 and task.status in ('done', 'archived') and not task.claim_lock
