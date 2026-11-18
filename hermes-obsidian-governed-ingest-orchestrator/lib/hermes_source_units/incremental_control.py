@@ -2,6 +2,7 @@
 from contextlib import contextmanager
 import os
 from pathlib import Path
+import re
 
 from .file_locks import host_identity, process_exists
 from .incremental_sources import safe_id
@@ -21,22 +22,51 @@ class IncrementalControl:
         self.root = _vault_path(vault, f'_system/ledgers/incremental-ingest/{run_id}/control')
         self.path = self.root / 'head.json'
 
-    def initialize(self, actor, pause_after):
+    def initialize(self, actor, pause_after, *, manual_sources=None):
         if (not isinstance(actor, str) or not actor.strip() or not isinstance(pause_after, list)
                 or any(stage not in CHECKPOINTS for stage in pause_after) or len(set(pause_after)) != len(pause_after)):
             raise ContractError('INVALID_SCHEMA', '$.pause_after', 'unknown incremental checkpoint')
+        admission = None
+        if manual_sources is not None:
+            if not isinstance(manual_sources, list) or not manual_sources:
+                raise ContractError('INVALID_SCHEMA', '$.manual_sources', 'manual source admission needs a fixed nonempty manifest')
+            admission = {}
+            for source in manual_sources:
+                if (not isinstance(source, dict) or set(source) != {'path', 'sha256'}
+                        or not isinstance(source['path'], str) or not source['path']
+                        or not isinstance(source['sha256'], str)
+                        or not re.fullmatch(r'[0-9a-f]{64}', source['sha256'])
+                        or source['path'] in admission):
+                    raise ContractError('INVALID_SCHEMA', '$.manual_sources', 'manual sources need unique exact paths and hashes')
+                _vault_path(self.vault, source['path'])
+                admission[source['path']] = {'sha256': source['sha256'], 'state': 'held'}
         with _exclusive_lock(self.root / '.lock'):
             if self.path.exists():
                 self._recover_pending()
                 head = _load_json(self.path)
                 if head['actor'] != actor or head['pause_after'] != pause_after:
                     raise ContractError('IDEMPOTENCY_CONFLICT', '$', 'incremental control policy changed')
+                saved = head.get('manual_source_admission')
+                saved_sources = None if saved is None else {path: row['sha256'] for path, row in saved.items()}
+                requested_sources = None if admission is None else {path: row['sha256'] for path, row in admission.items()}
+                if saved_sources != requested_sources:
+                    raise ContractError('IDEMPOTENCY_CONFLICT', '$', 'manual source admission policy changed')
                 return head
             head = {'contract': 'incremental-control/v1', 'run_id': self.run_id, 'actor': actor,
                     'revision': 1, 'state': 'active', 'pause_after': pause_after, 'boundary': None,
                     'released': [], 'active_scopes': {}}
+            if admission is not None:
+                head['manual_source_admission'] = admission
             _write_atomic(self.path, _json_bytes(head))
             return head
+
+    def source_allowed(self, path, sha256):
+        """A manual operator grant is independent of the current pause boundary."""
+        admission = self.status().get('manual_source_admission')
+        if admission is None:
+            return True
+        source = admission.get(path)
+        return bool(source and source.get('sha256') == sha256 and source.get('state') == 'released')
 
     def status(self):
         head = _load_json(self.path)
@@ -255,6 +285,22 @@ class IncrementalControl:
                             'stage': 'manual', 'input_fingerprint': identity, 'evidence': {}})
             elif action == 'cancel':
                 head.update(state='cancelled')
+            elif action == 'release-source':
+                if head['state'] == 'cancelled':
+                    raise ContractError('WORKFLOW_STOPPED', '$', 'cancelled runs cannot release sources')
+                admission = head.get('manual_source_admission')
+                path, sha256 = request.get('source_path'), request.get('source_sha256')
+                if (not isinstance(admission, dict) or not isinstance(path, str)
+                        or not isinstance(sha256, str) or path not in admission
+                        or admission[path]['sha256'] != sha256):
+                    raise ContractError('ACCESS_DENIED', '$', 'source release must match the fixed manifest and exact hash')
+                run = _load_json(self.root.parent / 'run.json')
+                if (run.get('run_id') != self.run_id or run.get('actor') != head['actor']
+                        or {'path': path, 'sha256': sha256} not in run.get('source_manifest', [])):
+                    raise ContractError('ACCESS_DENIED', '$', 'source release must match the fixed manifest and exact hash')
+                if admission[path]['state'] != 'held':
+                    raise ContractError('INVALID_TRANSITION', '$', 'source already released; replay the original operation')
+                admission[path]['state'] = 'released'
             else:
                 raise ContractError('INVALID_SCHEMA', '$.action', 'unknown control action')
             head['revision'] += 1

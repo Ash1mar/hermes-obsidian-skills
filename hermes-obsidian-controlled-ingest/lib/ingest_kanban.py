@@ -1135,11 +1135,36 @@ class IngestKanbanAdapter:
         if missing:
             _fail("INVALID_SCHEMA", "missing worker request fields: " + ", ".join(missing))
 
+    def _source_admitted(self, workflow: Mapping[str, Any], node: Node) -> bool:
+        if node.kind != 'source-prepare' or workflow['scope'].get('workflow_mode') != 'incremental_v1':
+            return True
+        from hermes_source_units.incremental_control import IncrementalControl
+        control = IncrementalControl(self.workflow.vault, workflow['scope']['incremental_run_id'])
+        admission = control.status().get('manual_source_admission')
+        if admission is None:
+            return True
+        for path in workflow['scope']['source_paths']:
+            source = admission.get(path)
+            if source and node.name == 'source-prepare:' + fingerprint({
+                    'path': path, 'content_sha256': source['sha256']})[:16]:
+                return control.source_allowed(path, source['sha256'])
+        return False
+
+    def _source_window(self, workflow: Mapping[str, Any], nodes: list[Node]) -> set[str]:
+        return {node.name for node in [
+            item for item in nodes if item.kind == 'source-prepare'
+            and self._source_admitted(workflow, item)
+            and not domain_completed(self.workflow, workflow, item)
+            and not self._failed_card(workflow['workflow_id'], item)
+        ][:self.source_prepare_concurrency]}
+
     def _canary_allows(self, workflow: Mapping[str, Any], node: Node, *, completing: bool = False) -> bool:
         if workflow['scope'].get('workflow_mode') == 'incremental_v1':
             from hermes_source_units.incremental_control import IncrementalControl
             control = IncrementalControl(self.workflow.vault, workflow['scope']['incremental_run_id']).status()
             if control['state'] == 'cancelled' or (not completing and control['state'] != 'active'):
+                return False
+            if not self._source_admitted(workflow, node):
                 return False
         if self.workflow.revision_allows(workflow, node.name):
             return True
@@ -1762,11 +1787,7 @@ class IngestKanbanAdapter:
                 nodes = [n for n in nodes if n.name in selected]
             # Reserve a stable window before exposing any cards to the dispatcher.
             # Failed cards do not occupy the window; their failure remains visible.
-            source_window = {node.name for node in [
-                item for item in nodes if item.kind == "source-prepare"
-                and not domain_completed(self.workflow, value, item)
-                and not self._failed_card(workflow_id, item)
-            ][:self.source_prepare_concurrency]}
+            source_window = self._source_window(value, nodes)
             pass_window = set()
             if value['batch_id']:
                 capacity = __import__('hermes_source_units.pass_capacity',fromlist=['effective']).effective(self.workflow.vault,self.workflow.knowledge._batch(value['batch_id']))
@@ -2153,6 +2174,8 @@ class IngestKanbanAdapter:
                      if item.name == node_name), None)
         if node is None or node.kind not in ("source-prepare", "exact-plan"):
             _fail("ACCESS_DENIED", "node is not a current pre-batch card")
+        if beginning and not self._source_admitted(workflow, node):
+            _fail('SOURCE_ADMISSION_HELD', 'source awaits an exact operator release')
         matching = [item for item in workflow["kanban"]["task_map"]
                     if item["node"] == node_name and item.get("task_id") == request["task_id"]]
         key = f"ingest:{workflow['workflow_id']}:{node.kind}:{node.input_fingerprint}"

@@ -55,6 +55,8 @@
               </div>
               <div id="incremental-options" hidden>
                 <p class="hint">来源清单在提交时固定。每轮消费已就绪映射，合格知识页按版本发布。</p>
+                <label class="checkbox-label" for="inc-manual-sources"><input id="inc-manual-sources" type="checkbox">逐文件手动开始</label>
+                <p class="hint">勾选后逐个点击来源的开始按钮。程序不设置文件之间的等待时间。</p>
                 <div class="fields">
                   <div><label for="inc-calls">累计调用上限</label><input id="inc-calls" type="number" min="1" step="1"></div>
                   <div><label for="inc-input">累计输入 token 上限</label><input id="inc-input" type="number" min="1" step="1"></div>
