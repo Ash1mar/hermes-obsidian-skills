@@ -2,6 +2,7 @@
 import base64
 import copy
 import hashlib
+import re
 
 from fixed_semantic_media import IMAGE_TYPES, images_fit
 from hermes_source_units.reading_dependencies import required_reading
