@@ -92,7 +92,8 @@ def inventory(domain, run_id, source_path, *, prefix=None):
                     and task.created_by == native.CONTRACT and task.workspace_kind == 'dir'
                     and Path(task.workspace_path).resolve() == root.resolve(), 'only the exact stopped native task can be unblocked')
             runs = kb.list_runs(connection, task.id, include_active=True)
-            require(runs and all(getattr(item, 'ended_at', None) is not None and item.status != 'running' for item in runs),
+            require(runs and all(getattr(item, 'ended_at', None) is not None and item.status != 'running'
+                                 and item.outcome != 'completed' for item in runs),
                     'original native task still has an active or unknown run')
             require(not any(any(marker in str(getattr(item, 'error', '') or '').lower()
                                 for marker in ('permission', 'access_denied', 'access denied'))

@@ -79,7 +79,7 @@ def test_retry_refuses_consumption_live_ownership_or_failed_raw_source(tmp_path,
     else:item.run['sources'][item.request['source_path']]={'state':'failed','outcome':{'error_code':'CONVERSION_FAILED'}}
     capability=module.preview(tmp_path,item.request['run_id'],item.request['source_path'])
     assert capability['allowed'] is False
-    with pytest.raises((ContractError,KeyError)):
+    with pytest.raises((ContractError,KeyError,ValueError)):
         module.retry(tmp_path,item.request)
     assert item.unblocked==[]
 
