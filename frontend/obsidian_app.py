@@ -72,7 +72,10 @@ def open_obsidian(vault, action, state, configured_user=None):
         socket = Path("/mnt/wslg/runtime-dir") / wayland
         if socket.exists():
             environment["WAYLAND_DISPLAY"] = str(socket)
-    command = [executable, uri]
+    session = shutil.which("dbus-run-session")
+    if not session:
+        raise UserError("WSL 中缺少 dbus-run-session，请安装 dbus。")
+    command = [session, "--", executable, uri]
     if os.geteuid() == 0:
         command = ["runuser", "-u", user.pw_name, "--", *command]
     state = Path(state)
