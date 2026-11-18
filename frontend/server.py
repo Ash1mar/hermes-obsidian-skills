@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -254,7 +255,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send(200, (HERE / "web" / name).read_bytes(), media)
             elif not write and url.path == "/api/runs":
                 self.json({"runs": app.list_runs(), "writable": app.config["writable"],
-                           "gateway": app.gateway.status, "wsl_distro": app.config.get("distro")})
+                           "gateway": app.gateway.status, "wsl_distro": app.config.get("distro"),
+                           "obsidian_available": platform.system() == "Linux" and bool(shutil.which("obsidian"))})
             elif not write and url.path == "/api/gateway/log":
                 self.json({"text": app.gateway.log()})
             elif write and url.path == "/api/runs":
@@ -268,6 +270,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.json(app.launch(self.payload(), run_id), HTTPStatus.ACCEPTED)
                 elif write and parts[3:] == ["pause"]:
                     self.json(app.pause(run_id, self.payload()), HTTPStatus.ACCEPTED)
+                elif write and parts[3:] == ["obsidian"]:
+                    if platform.system() != "Linux":
+                        raise UserError("请从 WSL 启动控制台以打开 Linux Obsidian。")
+                    from obsidian_app import open_obsidian
+                    vault = read(directory / "request.json")["vault_path"]
+                    self.json(open_obsidian(vault, self.payload().get("action"), app.state,
+                                            app.config.get("obsidian_user")))
                 elif not write and parts[3:] == ["log"]:
                     entries = attempts_for(directory, historical)
                     default = entries[-1]["id"] if entries else None
@@ -322,11 +331,13 @@ def main():
     parser.add_argument("--wsl-distro", default=os.environ.get("WSL_DISTRO_NAME", "Ubuntu-24.04"))
     parser.add_argument("--history", type=Path, action="append", default=[])
     parser.add_argument("--read-only", action="store_true")
+    parser.add_argument("--obsidian-user", help="Linux desktop user used to open Obsidian")
     args = parser.parse_args()
     skills = args.skills_root.resolve()
     config = {"state": str(args.state.resolve()), "skills_root": str(skills), "distro": args.wsl_distro,
               "provider_config": str((args.provider_config or skills / FINALIZE / "config/retrieval-provider.json").resolve()),
               "provider_state": str(args.provider_state.resolve()),
+              "obsidian_user": args.obsidian_user,
               "writable": platform.system() == "Linux" and not args.read_only}
     with ThreadingHTTPServer(("127.0.0.1", args.port), Handler) as server:
         server.console = Console(config, [p.resolve() for p in args.history])

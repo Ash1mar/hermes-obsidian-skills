@@ -30,7 +30,9 @@ cd /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills
 
 ## 在 Obsidian 中添加 Vault
 
-在 Vault 页复制「Obsidian 目录」，点击「打开 Obsidian 管理器」，选择「打开文件夹作为 Vault」，并粘贴目录。Windows 浏览器会显示本机可用的路径，例如 `C:\资料\TestVault` 或 `\\wsl.localhost\Ubuntu-24.04\opt\data\hermes\TestVault`。首次添加后，「打开已添加的 Vault」按实际路径打开这个目录中的 `README.md`。Hermes 显示名称可以与目录名不同。
+在 Vault 页复制「Linux Obsidian 目录」，点击「打开 Linux Obsidian 管理器」，选择「打开文件夹作为 Vault」，并粘贴 Linux 路径，例如 `/opt/data/hermes/TestFrontend`。首次添加后，「打开已添加的 Vault」通过后端启动 WSL 内的 Obsidian，按实际路径打开该目录中的 `README.md`。
+
+Obsidian 通过 WSLg 显示窗口。控制台以 root 运行时，会选择唯一一个普通 Linux 用户启动图形应用，也可用 `--obsidian-user vimdr` 指定用户。后端会授予该用户写入所选 Vault 的 `.obsidian` 设置目录的权限，用于保存应用工作区。Obsidian 启动输出记录在控制台状态目录中的 `obsidian.log`。Linux 应用和 Windows 版 Obsidian 分别维护自己的 Vault 列表。
 
 | 节点 | 界面可提供的恢复 |
 | --- | --- |

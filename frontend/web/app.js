@@ -24,7 +24,7 @@ let current;
 let selected = localStorage.getItem("hermes-console-run");
 let attempt;
 let writable = false;
-let wslDistro = "Ubuntu-24.04";
+let obsidianAvailable = false;
 let gateway = { state: "checking", ready: false };
 let posting = false;
 let refreshing = false;
@@ -146,7 +146,7 @@ function render() {
     ["查询", current.query_enabled ? "已开启" : "已关闭"],
   ] : [["运行", "未选择"]];
   facts(get("snapshot"), summary);
-  renderWhenChanged("vaults", [runs, selected, current?.release_id, current?.indexed, wslDistro], renderVaults);
+  renderWhenChanged("vaults", [runs, selected, current?.release_id, current?.indexed, obsidianAvailable], renderVaults);
   renderWhenChanged("attempts", [selected, current?.attempts, attempt], renderAttempts);
   facts(get("native"), current ? [
     ["工作流", current.workflow_id], ["来源看板", current.source_board],
@@ -257,19 +257,6 @@ function renderTimeline() {
   }));
 }
 
-function obsidianVaultPath(path, distro, windows) {
-  if (!windows || !path.startsWith("/")) return path;
-  const drive = /^\/mnt\/([a-z])(?:\/(.*))?$/i.exec(path);
-  if (drive) return drive[1].toUpperCase() + ":\\" + (drive[2] || "").replaceAll("/", "\\");
-  return "\\\\wsl.localhost\\" + distro + path.replaceAll("/", "\\");
-}
-
-function obsidianNoteLink(directory, windows) {
-  const separator = windows ? "\\" : "/";
-  const note = directory.replace(/[\\/]+$/, "") + separator + "README.md";
-  return "obsidian://open?path=" + encodeURIComponent(note);
-}
-
 async function copyVaultDirectory(field) {
   try {
     await navigator.clipboard.writeText(field.value);
@@ -281,8 +268,17 @@ async function copyVaultDirectory(field) {
   }
 }
 
+async function openLinuxObsidian(run, action) {
+  try {
+    await api("/api/runs/" + encodeURIComponent(run.id) + "/obsidian", { action });
+    message(action === "manager" ? "已启动 Linux Obsidian 管理器，请选择上面的 Linux 目录。"
+      : "已请求 Linux Obsidian 打开此 Vault。首次使用请先在管理器中添加目录。");
+  } catch (error) {
+    message(error.message, true);
+  }
+}
+
 function renderVaults() {
-  const windows = /^win/i.test(navigator.userAgentData?.platform || navigator.platform);
   const unique = new Map();
   for (const run of runs) if (!unique.has(run.vault_path)) unique.set(run.vault_path, run);
   get("vault-list").replaceChildren(...(unique.size ? [...unique.values()].map(run => {
@@ -294,24 +290,25 @@ function renderVaults() {
     directory.type = "text";
     directory.readOnly = true;
     directory.id = "obsidian-directory-" + run.id;
-    directory.value = obsidianVaultPath(run.vault_path, wslDistro, windows);
-    const directoryLabel = make("label", "Obsidian 目录");
+    directory.value = run.vault_path;
+    const directoryLabel = make("label", "Linux Obsidian 目录");
     directoryLabel.htmlFor = directory.id;
     body.append(directoryLabel, directory);
     if (current?.id === run.id && current.release_id) {
       body.append(make("p", `发布 ${current.release_id} · ${current.indexed ? "索引已就绪" : "等待索引"}`, "hint"));
     }
-    const manager = make("a", "打开 Obsidian 管理器", "button");
-    manager.href = "obsidian://choose-vault";
-    const open = make("a", "打开已添加的 Vault", "button secondary");
-    open.href = obsidianNoteLink(directory.value, windows);
+    const manager = rowButton("打开 Linux Obsidian 管理器", () => openLinuxObsidian(run, "manager"), "");
+    const open = rowButton("打开已添加的 Vault", () => openLinuxObsidian(run, "open"));
+    manager.disabled = open.disabled = !obsidianAvailable;
     const actions = make("div", undefined, "vault-actions");
     actions.append(manager, rowButton("复制目录", () => copyVaultDirectory(directory)), open, rowButton("查看运行", () => {
       selectRun(run.id);
       showForm(false);
       location.hash = "workflow";
     }));
-    body.append(actions, make("p", "首次添加时，在管理器中选「打开文件夹作为 Vault」，并选择上面的目录。", "hint"));
+    body.append(actions, make("p", obsidianAvailable
+      ? "首次添加时，在 Linux Obsidian 管理器中选「打开文件夹作为 Vault」，并选择上面的目录。"
+      : "请在安装了 Linux Obsidian 的 WSL 中启动新版控制台。", "hint"));
     card.append(heading, body);
     return card;
   }) : [make("p", "提交首次运行后，这里会显示对应 Vault。", "empty")]));
@@ -373,7 +370,7 @@ async function refresh() {
     runs = data.runs;
     writable = data.writable;
     gateway = data.gateway;
-    wslDistro = data.wsl_distro || wslDistro;
+    obsidianAvailable = data.obsidian_available === true;
     if (!runs.some(run => run.id === selected)) {
       selected = runs[0]?.id;
       attempt = undefined;
