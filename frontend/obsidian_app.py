@@ -52,7 +52,7 @@ def open_obsidian(vault, action, state, configured_user=None):
     runtime = Path("/run/user") / str(user.pw_uid)
     if os.geteuid() == 0:
         runtime.mkdir(mode=0o700, parents=True, exist_ok=True)
-        runtime.chown(user.pw_uid, user.pw_gid)
+        os.chown(runtime, user.pw_uid, user.pw_gid)
         runtime.chmod(0o700)
         settings = vault / ".obsidian"
         if settings.is_symlink():
