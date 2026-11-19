@@ -55,7 +55,13 @@ def check_operation(root, operation):
     domain = service(Path(operation['vault']), value['run_id'])
     run = domain.status(value['run_id'])
     require(run['state'] == 'active' and run['actor'] == operation['actor'], 'incremental run has closed or changed actor')
-    IncrementalControl(domain.vault, value['run_id']).check_admission(value)
+    controller = IncrementalControl(domain.vault, value['run_id'])
+    controller.check_admission(value)
+    if operation.get('writing_continuation'):
+        grant = controller.status().get('writing_continuations', {}).get(value['scope_id'], {})
+        require(grant.get('manifest') == operation['writing_continuation']
+                and value['stage'] == 'writing' and root.name == grant['operation_id'],
+                'native writing continuation lost its exact round control grant')
     source = _load_json(_vault_path(domain.vault, f"_system/ledgers/ingest-workflows/{run['source_workflow_id']}.json"))
     require(not source['cancel_requested'] and source['actor'] == run['actor']
             and source['scope'].get('incremental_run_id') == run['run_id'], 'incremental source execution stopped')
@@ -68,6 +74,10 @@ def reserve_call(root, row, ordinal, grant):
     operation = _load_json(root / 'operation.json')
     scope = operation['incremental']
     domain = service(Path(operation['vault']), scope['run_id'])
+    if operation.get('writing_continuation'):
+        manifest = read_pin(domain.vault, operation['writing_continuation'])
+        require(ordinal == 1 and row['id'] in manifest['dispatch_request_ids'],
+                'writing continuation cannot reserve an undispatched scope or retry')
     # Unknown calls remain charged against these reservations after a restart.
     reservation = {'request_fingerprint': fingerprint({'request': row['id'], 'ordinal': ordinal}),
                    'phase': scope['stage'], 'max_calls': 1,

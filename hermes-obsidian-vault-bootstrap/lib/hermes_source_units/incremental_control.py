@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 
 from .file_locks import host_identity, process_exists
-from .incremental_sources import safe_id
+from .incremental_sources import read_pin, safe_id
 from .source_units import _exclusive_lock, _json_bytes, _load_json, _sha, _vault_path, _write_atomic
 from .validation import ContractError, fingerprint
 
@@ -278,8 +278,14 @@ class IncrementalControl:
             if action == 'continue':
                 if head['state'] != 'paused' or request.get('boundary_fingerprint') != fingerprint(head['boundary']):
                     raise ContractError('STALE_INPUT', '$', 'continue requires the exact acknowledged boundary')
-                if 'repair_writing' in request:
+                if 'writing_continuation' in request:
+                    if 'repair_writing' in request:
+                        raise ContractError('INVALID_TRANSITION', '$', 'continue requires one writing recovery intent')
+                    self._authorize_writing_continuation(head, request)
+                elif 'repair_writing' in request:
                     self._authorize_writing_repair(head, request)
+                else:
+                    self._require_writing_recovery(head)
                 head['released'].append(fingerprint(head['boundary']))
                 head.update(state='active', boundary=None)
             elif action == 'pause':
@@ -313,6 +319,53 @@ class IncrementalControl:
             _write_atomic(self.path, _json_bytes(head))
             _write_atomic(receipt, _json_bytes({**transaction, 'commit_state': 'committed'}))
             return head
+
+    def _require_writing_recovery(self, head):
+        if head['boundary']['stage'] != 'manual' or not head.get('writing_repairs'):
+            return
+        round_id = _load_json(self.root.parent / 'run.json').get('active_round_id')
+        repair = head['writing_repairs'].get(round_id)
+        if repair is None:
+            return
+        round_id = safe_id(round_id)
+        continuation = head.get('writing_continuations', {}).get(round_id)
+        operation_id = safe_id((continuation or repair)['operation_id'])
+        root = self.root.parent
+        if ((root / 'native/round' / round_id / 'writing/recoveries' / operation_id / 'stop.json').is_file()
+                and not (root / 'rounds' / round_id / 'writing-revision.json').exists()):
+            raise ContractError('RECOVERY_REQUIRED', '$', 'stopped writing revision requires recover-writing')
+
+    def _authorize_writing_continuation(self, head, request):
+        pointer = request['writing_continuation']
+        manifest = read_pin(self.vault, pointer)
+        try:
+            round_id = safe_id(manifest['round_id'])
+            repair = head.get('writing_repairs', {}).get(round_id)
+            round_root = self.root.parent / 'rounds' / round_id
+            run = _load_json(self.root.parent / 'run.json')
+            expected_path = round_root / 'writing-continuations' / (request['operation_id'] + '.json')
+            if (manifest['contract'] != 'incremental-writing-continuation/v1'
+                    or pointer['ref'] != expected_path.relative_to(self.vault).as_posix()
+                    or manifest['run_id'] != self.run_id or manifest['actor'] != head['actor']
+                    or manifest['operation_id'] != request['operation_id']
+                    or manifest['control_revision'] != head['revision'] or manifest['run_revision'] != run['revision']
+                    or manifest['boundary_fingerprint'] != request['boundary_fingerprint']
+                    or run.get('active_round_id') != round_id or run['state'] != 'active'
+                    or head['boundary']['stage'] != 'manual' or head['active_scopes'] or 'writing' not in head['pause_after']
+                    or repair is None or repair != manifest['original_authorization']
+                    or (round_root / 'writing-revision.json').exists() or (round_root / 'formal-request.json').exists()
+                    or round_id in head.get('writing_continuations', {})):
+                raise ContractError('INVALID_TRANSITION', '$', 'writing continuation differs from the drained authorized revision')
+            writer = self.root.parent / 'native/round' / round_id / 'writing/recoveries' / safe_id(repair['operation_id'])
+            if (manifest['stop']['ref'] != (writer / 'stop.json').relative_to(self.vault).as_posix()
+                    or manifest['previous_operation']['ref'] != (writer / 'operation.json').relative_to(self.vault).as_posix()):
+                raise ContractError('STALE_INPUT', '$', 'writing continuation changes the original workspace')
+            read_pin(self.vault, manifest['stop'])
+            read_pin(self.vault, manifest['previous_operation'])
+        except KeyError as error:
+            raise ContractError('INVALID_SCHEMA', '$', 'missing writing continuation binding') from error
+        head.setdefault('writing_continuations', {})[round_id] = {
+            'operation_id': request['operation_id'], 'manifest': pointer}
 
     def _authorize_writing_repair(self, head, request):
         boundary = head['boundary']

@@ -214,7 +214,7 @@ def run_job(root, job, own):
     slots = row.get('missing_slots', ['r'])
     attempts = []
     drafts = {}
-    ordinals = (1,) if original['view'].get('fragment_repair') else (1, 2)
+    ordinals = (1,) if original['view'].get('fragment_repair') or operation.get('writing_continuation') else (1, 2)
     if incremental and job.with_name(job.stem + '.attempt-1.json').exists():
         from incremental_source_retry import retry_start_ordinal
         if retry_start_ordinal(root, original) == 2:

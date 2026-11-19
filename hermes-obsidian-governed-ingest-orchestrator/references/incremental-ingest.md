@@ -38,6 +38,22 @@ The original writing checkpoint and receipts stay available. Accepted work is re
 count against the existing budget, and the revised disposition reaches a new writing pause before
 Build can be authorized.
 
+For a manually stopped, already-authorized writing revision, use
+`python3 "<skill-dir>/scripts/manage_incremental_ingest.py" --vault "<vault>" recover-writing --request "<request.json>"`.
+Preview with `--preview` and the exact run_id, round_id, actor, operation_id, expected_revision
+(control revision), run_revision and boundary_fingerprint. Apply with the preview's
+`manifest_sha256` as `expected_manifest_sha256`. The new workspace binds the original stop,
+page plans, native results, all original attempts and the frozen Maps. It reuses only authenticated
+matching evidence assignments. The current writing contract dispatches previously unattempted
+independent assignments once within the existing budget. Ended attempts without acknowledgement
+retain their evidence and reservations. The resulting disposition reaches the next writing pause.
+Ordinary continue requires a recovery entry for an interrupted, stopped writing revision.
+
+Source Map, coordination and formal delivery share the native request replay and stop checks.
+Exact acknowledged results are verified when reused. New semantic attempts with unknown prior
+completion require a bound stage-specific recovery. The delivery window and source preparation
+use their own durable stage contracts.
+
 For operator-controlled file starts, explicitly set `incremental_manual_sources=true` at creation. The fixed source manifest is unchanged; all sources initially wait for admission. Use the frontend's per-source start action or `control --request` with `action=release-source`, exact `source_path`/`source_sha256`, actor, run ID, operation ID and current control revision. Admission while paused does not continue the workflow. Starting another file is a separate manual action; this option adds no delay, timer or default schedule. Already admitted work and its valid results retain their identities.
 
 For an exact source Map task that stopped before any model consumption, use `python3 "<skill-dir>/scripts/manage_incremental_ingest.py" --vault "<vault>" retry-source --request "<request.json>"`. The request binds run_id, actor, operation_id, control_revision, run_revision, source_path, source_sha256 and retry_kind=`mapping-unconsumed`. The operator entry independently verifies the current sealed source, original job/body hashes, ended native tasks, zero attempts/audits/reservations and bounded retry history. It unblocks only those same native tasks, preserves completed work and never releases a pause. Returned or unknown model consumption requires its existing evidence-based recovery, not this retry. A failed unchanged PDF does not gain a new conversion attempt through this entry.

@@ -21,7 +21,7 @@ def request_path(domain, run_id):
     return domain.root(run_id) / 'runtime-request.json'
 
 
-def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recovery_id=None):
+def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recovery_id=None, continuation=None):
     import run_short_evidence_test as native
     from prepare_short_evidence_test import save
     from orchestration import configuration
@@ -33,6 +33,7 @@ def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recove
     if path.is_file():
         operation = _load_json(path)
         require(operation['incremental']['snapshots'] == snapshots, 'incremental workspace inputs changed')
+        require(operation.get('writing_continuation') == continuation, 'incremental recovery binding changed')
         return directory, operation
     run = domain.status(run_id)
     cfg = configuration()
@@ -42,6 +43,10 @@ def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recove
                  'incremental': {'run_id': run_id, 'scope_kind': kind, 'scope_id': scope_id, 'stage': stage,
                                  'snapshots': snapshots, 'input_fingerprint': fingerprint([snapshots, scope_id])},
                  'pass_capacity': cfg['pass_worker_concurrency'], 'page_capacity': cfg['reduce_page_concurrency']}
+    if continuation is not None:
+        require(kind == 'round' and stage == 'writing' and recovery_id is not None,
+                'writing continuation requires its own round writing scope')
+        operation['writing_continuation'] = continuation
     kb, _, _ = native.runtime()
     if not any(board['slug'] == operation['board'] for board in kb.list_boards()):
         kb.create_board(operation['board'], name='Incremental ' + scope_id, default_workdir=str(directory))
@@ -51,21 +56,10 @@ def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recove
 
 def execute_rows(domain, run_id, root, operation, rows):
     import run_short_evidence_test as native
-    from incremental_source_retry import retry_start_ordinal
+    from incremental_recovery import pending_request
     from incremental_writing import PHASE as PAGE_FRAGMENT
 
-    waiting = []
-    for row in rows:
-        job = root / 'jobs' / (row['id'] + '.json')
-        if job.with_suffix('.result.json').is_file():
-            verified_result(root, row)
-        else:
-            attempts = list(job.parent.glob(job.stem + '.attempt-*.json'))
-            if attempts:
-                require(attempts == [job.with_name(job.stem + '.attempt-1.json')]
-                        and retry_start_ordinal(root, row) == 2,
-                        'consumed native request has unknown completion; supported recovery is required')
-            waiting.append(row)
+    waiting = [row for row in rows if pending_request(root, operation, row, allow_precall=True)]
     if waiting:
         native.stage(root, operation, waiting, operation['page_capacity']
                      if waiting[0]['phase'] in ('incremental-page-write', PAGE_FRAGMENT) else operation['pass_capacity'])
