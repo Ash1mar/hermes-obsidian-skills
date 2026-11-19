@@ -39,7 +39,8 @@ def ordered_components(catalogue, aliases, audit):
     relations = [{'item': key, 'role': 'evidence', 'applies_to': []} for key in items]
     by_key = {row['item']: row for row in relations}
     for left, right in audit['dependencies']:
-        if left in by_key and right in by_key:
+        if (left in by_key and right in by_key and items[left]['section'] == items[right]['section']
+                and items[left]['kind'] == items[right]['kind'] == 'block'):
             by_key[left]['applies_to'].append(right)
     _, connected = connected_groups({'items': items}, relations)
     index = {key: position for position, key in enumerate(items)}
@@ -122,22 +123,19 @@ def prepare_work(service, catalogue, plan, *, input_cap=INPUT_CAP):
         aliases = {catalogue.units[canonical_json(ref['unit_ref'])]['alias'] for ref in additions}
         groups = ordered_components(catalogue, aliases, audit)
         ordered = [key for group in groups for key in group]
-        # Retained evidence may support a new requirement without being rewritten.
-        shared = set(audit['qualified_aliases']) - aliases
         links = defaultdict(set)
         for left, right in audit['dependencies']:
             links[left].add(right)
-            links[right].add(left)
 
         def reading(assigned):
             relevant = set(assigned)
             pending = list(assigned)
             while pending:
                 key = pending.pop()
-                dependencies = (links[key] & shared) - relevant
+                dependencies = links[key] - relevant
                 relevant.update(dependencies)
                 pending.extend(dependencies)
-            return [key for key in catalogue.aliases if key in relevant and key in shared] + assigned
+            return [*assigned, *(key for key in catalogue.aliases if key in relevant and key not in assigned)]
 
         def make(assigned, position, full_input=None):
             return slot(service, catalogue, change, full_input or reading(assigned), assigned,

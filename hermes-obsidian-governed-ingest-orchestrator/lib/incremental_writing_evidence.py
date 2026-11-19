@@ -192,7 +192,9 @@ class EvidenceCatalogue:
                     require(all(self.aliases[key]['coverage'] == 'mapped' for key in (alias, target)),
                             f'clause dependency {alias} / {target} lacks mapped source coverage')
                     owned.update((alias, target))
-                    edges.add(tuple(sorted((alias, target))))
+                    edges.add((alias, target))
+                    if role in QUALIFIERS:
+                        edges.add((target, alias))
             if prior == owned:
                 break
         require(owned and all(self.aliases[key]['coverage'] == 'mapped' for key in owned),
@@ -200,7 +202,7 @@ class EvidenceCatalogue:
         explicit = self.explicit_dependencies(owned)
         for parent, asset in explicit:
             owned.add(asset)
-            edges.add(tuple(sorted((parent, asset))))
+            edges.add((parent, asset))
         refs = unique_refs(self.aliases[key]['ref'] for key in self.aliases if key in owned)
         change = {**plan, 'added_support_refs': [ref for ref in refs if ref not in plan['retained_support_refs']]}
         change.pop('change_id')

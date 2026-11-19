@@ -157,9 +157,9 @@ def test_incremental_fragment_budget_coverage_and_parent_bytes(vault, tmp_path, 
     from incremental_writing_evidence import EvidenceCatalogue
 
     prior, left, right = publish_sources(vault, [
-        '# Old\n\nOriginal condition.\n',
-        '# First\n\n' + 'First original condition applies. ' * 55 + '\n',
-        '# Second\n\n' + 'Second original condition applies. ' * 55 + '\n',
+        'Original condition.\n',
+        'First original condition applies. ' * 55 + '\n',
+        'Second original condition applies. ' * 55 + '\n',
     ])
     service = FileVaultFinalizeService(vault).build
     monkeypatch.setattr(short_build, 'native_authority', lambda *_: {'task_id': 'fixture', 'run_id': 1})
