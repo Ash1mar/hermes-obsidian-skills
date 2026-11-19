@@ -17,7 +17,8 @@ pins the original page plan, the exact source-body selection and required asset 
 numbered entry can locate the corresponding registered clause evidence in its sealed Map. Ambiguous or
 unavailable material holds the affected page. Writing tries one complete request first, then measures
 section or dependency-bound fragments with the final model request and image limits. Every new support
-has one writing owner. Build rechecks the source, scope and native receipt for every fragment, and
+has one writing owner. An indivisible fragment can combine individually bounded original reads
+when its complete model request still fits. Build rechecks the source, scope and native receipt for every fragment, and
 assembles a single page revision. Updates append the qualified new material while preserving the full
 parent body and its citation bindings.
 

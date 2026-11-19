@@ -20,7 +20,8 @@ def test_writing_repair_names_held_plan_and_requires_a_new_pause(tmp_path):
     root = control.root.parent / 'rounds/round-1'
     held = fingerprint('held plan')
     accepted = fingerprint('accepted plan')
-    _write_atomic(control.root.parent / 'run.json', _json_bytes({'active_round_id': 'round-1'}))
+    _write_atomic(control.root.parent / 'run.json', _json_bytes(
+        {'active_round_id': 'round-1', 'source_workflow_id': 'isolated-source'}))
     _write_atomic(root / 'page-changes.json', _json_bytes(
         [{'change_id': key, 'action': 'create'} for key in (held, accepted)]))
     original = _json_bytes({'written': [{'example': 'accepted'}], 'held': [{'change_id': held}]})

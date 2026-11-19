@@ -47,14 +47,26 @@ def ordered_components(catalogue, aliases, audit):
     return [sorted(group, key=index.__getitem__) for group in connected]
 
 
-def slot(service, catalogue, change, read, write, position, parent_headings, input_cap):
+def slot(service, catalogue, change, read, write, position, parent_headings, input_cap, *, atomic=False):
     refs = [catalogue.aliases[key]['ref'] for key in read]
     assigned_refs = [catalogue.aliases[key]['ref'] for key in write]
     actor, registry = catalogue.access['actor'], catalogue.access['registry_revision']
-    assembled = service._assemble_reading(refs, actor, registry, service._reader_config())
+    reader = service._reader_config()
+    assembled = service._assemble_reading(refs, actor, registry, reader)
     measurement = {key: value for key, value in assembled['measurement'].items() if key != 'input_fingerprint'}
     if not measurement['fits']:
-        return None, {'kind': 'reader', 'measurement': measurement}
+        if not atomic or measurement['core_codepoints'] >= input_cap:
+            return None, {'kind': 'reader', 'measurement': measurement}
+        # One indivisible writing slot can combine separate bounded original
+        # reads. The shared wire is still subject to the full request cap.
+        sizes = []
+        for ref in refs:
+            single = service._assemble_reading([ref], actor, registry, reader)['measurement']
+            if not single['fits']:
+                return None, {'kind': 'reader', 'measurement': measurement,
+                              'blocked_unit': ref['unit_ref']['unit_id']}
+            sizes.append(single['serialized_codepoints'])
+        measurement['individual_read_sizes'] = sizes
     projection = service.preview_reading_model_input(refs, assembled, actor, registry)
     evidence = {key: value for key, value in projection['view'].items() if key != 'input_id'}
     materials = {row['ref']: row for row in evidence['materials']}
@@ -106,7 +118,7 @@ def parent_context(service, change):
             continue
         candidate, = [row for row in evidence(service, run)['scope']['pages']
                       if row['card_path'] == change['path'] and row['authored_sha256'] == change['parent_authored_sha256']]
-        bindings = candidate['citation_bindings']
+        bindings = candidate.get('citation_bindings', {})
         break
     retained_handles = set(HANDLE.findall(body.decode('utf-8')))
     require(retained_handles <= bindings.keys(), 'parent inline evidence handles lack their original verified bindings')
@@ -138,9 +150,9 @@ def prepare_work(service, catalogue, plan, *, input_cap=INPUT_CAP):
                 pending.extend(dependencies)
             return [*assigned, *(key for key in catalogue.aliases if key in relevant and key not in assigned)]
 
-        def make(assigned, position, full_input=None):
+        def make(assigned, position, full_input=None, *, atomic=False):
             return slot(service, catalogue, change, full_input or reading(assigned), assigned,
-                        position, headings, input_cap)
+                        position, headings, input_cap, atomic=atomic)
 
         whole, whole_cost = make(ordered, 1)
         fragments = []
@@ -148,7 +160,10 @@ def prepare_work(service, catalogue, plan, *, input_cap=INPUT_CAP):
             fragments.append(whole)
         else:
             def place(assigned, measured=None, full_input=None):
-                packet, cost = measured or make(assigned, len(fragments) + 1, full_input)
+                position = len(fragments) + 1
+                packet, cost = measured or make(assigned, position, full_input)
+                if not packet and cost['kind'] == 'reader':
+                    packet, cost = make(assigned, position, full_input, atomic=True)
                 if packet:
                     fragments.append(packet)
                     return
