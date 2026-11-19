@@ -355,6 +355,25 @@ def watch(vault, run_id):
     control = IncrementalControl(domain.vault, run_id)
     with _exclusive_lock(domain.root(run_id) / '.controller.lock', timeout=0):
         control.reconcile_executors()
+        head = control.status()
+        if head['state'] == 'active' and 'mapping' in head.get('pause_after', []):
+            # A worker may have committed a Map while the old controller was
+            # draining another failed future. Restore its checkpoint before dispatch.
+            run = domain.status(run_id)
+            for map_id in run['map_result_ids']:
+                if map_id in run['consumed_map_ids']:
+                    continue
+                source = next(row for row in run['sources'].values() if row.get('map_result_id') == map_id)
+                snapshot = source['snapshot_id']
+                scope = {'scope_kind': 'source', 'scope_id': snapshot}
+                evidence = {'snapshot_id': snapshot}
+                boundary = {'scope': scope, 'stage': 'mapping', 'input_fingerprint': fingerprint(evidence),
+                            'evidence': evidence}
+                if fingerprint(boundary) not in head['released']:
+                    require(domain.read_map(run_id, map_id)['snapshot_id'] == snapshot,
+                            'saved Map differs from its source checkpoint')
+                    if control.checkpoint(scope, 'mapping', evidence)['state'] != 'active':
+                        break
         running = {}
         round_future = None
         with ThreadPoolExecutor(max_workers=configuration()['source_prepare_concurrency']) as pool, \
