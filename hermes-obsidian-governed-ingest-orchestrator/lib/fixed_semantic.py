@@ -1065,6 +1065,10 @@ RULES['incremental-page-write'] = ('Write one full knowledge-page revision from 
     'necessary old evidence, prior content and exact new scope. Preserve conditions, exceptions and citations. '
     'Inspect every required asset. Report unresolved evidence instead of inventing or dropping it. '
     'Retain existing supported statements and exact evidence handles. Return the complete requested body.')
+RULES['incremental-page-fragment'] = ('Write the assigned content of one knowledge-page revision. Use the supplied '
+    'complete original evidence and scope for this fragment. Preserve conditions and exceptions, inspect every '
+    'required material, and cite the supplied handles. Shared reading can explain an assigned requirement, '
+    'while responsibility for writing it belongs to exactly one fragment. Report every unresolved dependency.')
 
 
 def estimate_pass_output_tokens(packet,tasks,phase='candidate',policy=None):

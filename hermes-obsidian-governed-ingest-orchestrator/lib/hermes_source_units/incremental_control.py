@@ -6,13 +6,14 @@ import re
 
 from .file_locks import host_identity, process_exists
 from .incremental_sources import safe_id
-from .source_units import _exclusive_lock, _json_bytes, _load_json, _vault_path, _write_atomic
+from .source_units import _exclusive_lock, _json_bytes, _load_json, _sha, _vault_path, _write_atomic
 from .validation import ContractError, fingerprint
 
 STAGES = ('start', 'prepare', 'source-seal', 'mapping', 'map-commit', 'reserve', 'settle-budget',
           'freeze-round', 'coordination', 'writing', 'build', 'formal-build', 'release', 'index', 'acceptance',
           'settle-round', 'closure', 'close')
 CHECKPOINTS = ('prepare', 'mapping', 'coordination', 'writing', 'formal-build', 'release', 'acceptance', 'closure')
+CONTROL_LOCK_TIMEOUT = 30
 
 
 class IncrementalControl:
@@ -40,7 +41,7 @@ class IncrementalControl:
                     raise ContractError('INVALID_SCHEMA', '$.manual_sources', 'manual sources need unique exact paths and hashes')
                 _vault_path(self.vault, source['path'])
                 admission[source['path']] = {'sha256': source['sha256'], 'state': 'held'}
-        with _exclusive_lock(self.root / '.lock'):
+        with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
             if self.path.exists():
                 self._recover_pending()
                 head = _load_json(self.path)
@@ -171,7 +172,7 @@ class IncrementalControl:
         """
         if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
             raise ContractError('ACCESS_DENIED', '$', 'executor reconciliation requires a trusted controller')
-        with _exclusive_lock(self.root / '.lock'):
+        with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
             self._recover_pending()
             head = self.status()
             removed = {}
@@ -215,7 +216,7 @@ class IncrementalControl:
     @contextmanager
     def executing(self, scope, stage, input_fingerprint):
         key = fingerprint({'scope': scope, 'stage': stage, 'input_fingerprint': input_fingerprint})
-        with _exclusive_lock(self.root / '.lock'):
+        with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
             self._recover_pending()
             permission = self.check_admission(scope, stage, input_fingerprint)
             head = self.status()
@@ -229,7 +230,7 @@ class IncrementalControl:
         try:
             yield permission
         finally:
-            with _exclusive_lock(self.root / '.lock'):
+            with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
                 self._recover_pending()
                 head = self.status()
                 head['active_scopes'].pop(key, None)
@@ -239,7 +240,7 @@ class IncrementalControl:
         if stage not in CHECKPOINTS:
             raise ContractError('INVALID_SCHEMA', '$.stage', 'unsupported incremental checkpoint')
         boundary = {'scope': scope, 'stage': stage, 'input_fingerprint': fingerprint(evidence), 'evidence': evidence}
-        with _exclusive_lock(self.root / '.lock'):
+        with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
             self._recover_pending()
             head = self.status()
             if head['state'] == 'pausing':
@@ -260,7 +261,7 @@ class IncrementalControl:
         safe_id(request['operation_id'])
         if request.get('run_id', self.run_id) != self.run_id:
             raise ContractError('STALE_INPUT', '$', 'control request belongs to another run')
-        with _exclusive_lock(self.root / '.lock'):
+        with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
             self._recover_pending()
             head = self.status()
             before = fingerprint(head)
@@ -277,6 +278,8 @@ class IncrementalControl:
             if action == 'continue':
                 if head['state'] != 'paused' or request.get('boundary_fingerprint') != fingerprint(head['boundary']):
                     raise ContractError('STALE_INPUT', '$', 'continue requires the exact acknowledged boundary')
+                if 'repair_writing' in request:
+                    self._authorize_writing_repair(head, request)
                 head['released'].append(fingerprint(head['boundary']))
                 head.update(state='active', boundary=None)
             elif action == 'pause':
@@ -310,3 +313,31 @@ class IncrementalControl:
             _write_atomic(self.path, _json_bytes(head))
             _write_atomic(receipt, _json_bytes({**transaction, 'commit_state': 'committed'}))
             return head
+
+    def _authorize_writing_repair(self, head, request):
+        boundary = head['boundary']
+        scope = boundary['scope']
+        pages = request['repair_writing']
+        if (boundary['stage'] != 'writing' or scope['scope_kind'] != 'round'
+                or head['active_scopes'] or 'writing' not in head['pause_after']
+                or not isinstance(pages, list) or not pages
+                or any(not isinstance(page, str) or not re.fullmatch(r'[0-9a-f]{64}', page) for page in pages)
+                or len(pages) != len(set(pages))):
+            raise ContractError('INVALID_TRANSITION', '$', 'writing repair requires exact held plans at a drained writing pause')
+        round_id = safe_id(scope['scope_id'])
+        run = _load_json(self.root.parent / 'run.json')
+        root = self.root.parent / 'rounds' / round_id
+        original = root / 'writing-disposition.json'
+        digest = boundary['evidence'].get('writing_disposition_sha256')
+        if (run['active_round_id'] != round_id or (root / 'formal-request.json').exists()
+                or (root / 'writing-revision.json').exists()
+                or round_id in head.get('writing_repairs', {}) or not original.is_file()
+                or _sha(original.read_bytes()) != digest):
+            raise ContractError('STALE_INPUT', '$', 'writing repair requires the original paused disposition before Build')
+        held = {row['change_id'] for row in _load_json(original)['held']}
+        plans = {row['change_id'] for row in _load_json(root / 'page-changes.json')
+                 if row['action'] in ('create', 'update')}
+        if not set(pages) <= held & plans:
+            raise ContractError('ACCESS_DENIED', '$', 'writing repair can only select held create or update plans')
+        head.setdefault('writing_repairs', {})[round_id] = {
+            'operation_id': request['operation_id'], 'plan_ids': pages, 'prior_disposition_sha256': digest}

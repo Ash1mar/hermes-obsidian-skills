@@ -103,3 +103,76 @@ def test_second_operation_cannot_replenish_same_native_task_retry(tmp_path,monke
     with pytest.raises(ContractError,match='already reserved'):
         module.retry(tmp_path,request)
     assert item.unblocked==['native-a']
+
+
+def precall_fixture(tmp_path,monkeypatch):
+    item=fixture(tmp_path,monkeypatch)
+    import run_short_evidence_test as native
+    item.ended.started_at=0
+    item.ended.worker_pid=123
+    item.ended.error=f'LOCK_BUSY at $: Skill kernel lock is held: {item.root / ".runtime-mutation.lock"}; wait limit=0s'
+    item.attempt=item.job.with_name(item.job.stem+'.attempt-1.json')
+    _write_atomic(item.attempt,_json_bytes({'ordinal':1,'request':item.row,'started_at':0.5,
+        'grant':{'board':'retry-board','task_id':'native-a','run_id':item.ended.id}}))
+    board=tmp_path/'host-kanban/retry-board'
+    item.log=board/'logs/native-a.log'
+    item.log.parent.mkdir(parents=True)
+    item.log.write_text('Traceback in run_job\n reserve_call(root, original, ordinal, grant)\n'
+        'Traceback in reserve_call\nTraceback in mutate\n'
+        " with _exclusive_lock(domain.root(run_id) / '.runtime-mutation.lock'):\n"
+        'hermes_source_units.validation.ContractError: '+item.ended.error+'\n')
+    kb,_,_=native.runtime()
+    kb.board_dir=lambda _:board
+    kb.get_task=lambda *_:item.task
+    return item
+
+
+def test_attested_pre_reservation_failure_keeps_old_marker_and_adopts_ordinal_two(tmp_path,monkeypatch):
+    item=precall_fixture(tmp_path,monkeypatch)
+    original=item.attempt.read_bytes()
+    data=module.inventory(item.domain,item.request['run_id'],item.request['source_path'])
+    proof=data['targets'][0]['precall_attempt']
+    assert proof['grant']['run_id']==3
+    with pytest.raises(ContractError,match='committed precall'):
+        module.retry_start_ordinal(item.workspace,item.row)
+    module.retry(tmp_path,item.request)
+    assert module.retry_start_ordinal(item.workspace,item.row)==2
+    assert item.attempt.read_bytes()==original and item.run['reservations']=={}
+    # Native logs append on later execution; the original attested prefix stays bound.
+    with item.log.open('a') as stream:stream.write('later run log appended\n')
+    assert module.retry_start_ordinal(item.workspace,item.row)==2
+
+
+@pytest.mark.parametrize('change',['native-error','native-grant','worker-log','budget-reservation','budget-intent','budget-operation','transport'])
+def test_pre_reservation_failure_requires_positive_native_chain_and_no_consumption(tmp_path,monkeypatch,change):
+    item=precall_fixture(tmp_path,monkeypatch)
+    key=module.fingerprint({'request':item.row['id'],'ordinal':1})
+    if change=='native-error':item.ended.error='some unrelated failure'
+    elif change=='native-grant':
+        data=json.loads(item.attempt.read_text());data['grant']['run_id']=999
+        _write_atomic(item.attempt,_json_bytes(data))
+    elif change=='worker-log':item.log.write_text(item.ended.error+'\n')
+    elif change=='budget-reservation':item.run['reservations']['first']={'request_fingerprint':key}
+    elif change=='budget-intent':_write_atomic(item.root/'runtime-requests'/('call-'+key+'.json'),_json_bytes({}))
+    elif change=='budget-operation':_write_atomic(item.root/'operations'/('call-'+key+'.json'),_json_bytes({}))
+    else:_write_atomic(item.job.with_name(item.job.stem+'.transport.json'),_json_bytes({}))
+    with pytest.raises(ContractError):module.retry(tmp_path,item.request)
+    assert item.unblocked==[]
+
+
+def test_pre_reservation_adoption_rejects_later_unknown_reserved_call(tmp_path,monkeypatch):
+    item=precall_fixture(tmp_path,monkeypatch)
+    module.retry(tmp_path,item.request)
+    key=module.fingerprint({'request':item.row['id'],'ordinal':2})
+    item.run['reservations']['later']={'request_fingerprint':key,'state':'reserved'}
+    with pytest.raises(ContractError,match='later model call'):
+        module.retry_start_ordinal(item.workspace,item.row)
+
+
+def test_pre_reservation_adoption_rejects_changed_old_evidence(tmp_path,monkeypatch):
+    item=precall_fixture(tmp_path,monkeypatch)
+    module.retry(tmp_path,item.request)
+    data=json.loads(item.attempt.read_text());data['started_at']=0.6
+    _write_atomic(item.attempt,_json_bytes(data))
+    with pytest.raises(ContractError,match='evidence changed'):
+        module.retry_start_ordinal(item.workspace,item.row)

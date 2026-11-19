@@ -10,20 +10,28 @@ from hermes_source_units.source_units import _json_bytes, _load_json, _sha, _vau
 from hermes_source_units.validation import _check_shape, fingerprint
 from short_evidence_pass import require
 
+RUNTIME_MUTATION_LOCK_TIMEOUT = 30
+
 
 def service(vault, run_id):
     return FileIncrementalIngestService(vault, check_admission=IncrementalControl(vault, run_id).check_admission)
 
 
-def mutate(domain, run_id, method, operation_id, **fields):
+def mutate(domain, run_id, method, operation_id, *, new_model_call=False, **fields):
     """Serialize durable domain mutations across the independently running sources."""
     from hermes_source_units.source_units import _exclusive_lock
     from hermes_source_units.incremental_sources import safe_id
 
-    with _exclusive_lock(domain.root(run_id) / '.runtime-mutation.lock'):
+    with _exclusive_lock(domain.root(run_id) / '.runtime-mutation.lock', timeout=RUNTIME_MUTATION_LOCK_TIMEOUT):
         safe_id(operation_id)
         run = domain.status(run_id)
         path = domain.root(run_id) / 'runtime-requests' / (operation_id + '.json')
+        journal = domain.root(run_id) / 'operations' / (operation_id + '.json')
+        if new_model_call:
+            identity = fields['reservation']['request_fingerprint']
+            require(not journal.exists() and all(
+                item['request_fingerprint'] != identity for item in run['reservations'].values()),
+                'a reserved model ordinal requires supported recovery')
         request = {'run_id': run_id, 'actor': run['actor'], 'operation_id': operation_id,
                    'expected_revision': run['revision'], **fields}
         if path.exists():
@@ -33,7 +41,6 @@ def mutate(domain, run_id, method, operation_id, **fields):
                     {k: v for k, v in request.items() if k != 'expected_revision'},
                     'runtime operation key identifies different inputs')
             request = saved['request']
-            journal = domain.root(run_id) / 'operations' / (operation_id + '.json')
             if not journal.exists() and request['expected_revision'] != run['revision']:
                 request = {**request, 'expected_revision': run['revision']}
                 _write_atomic(path, _json_bytes({'method': method, 'request': request}))
@@ -67,7 +74,8 @@ def reserve_call(root, row, ordinal, grant):
                    'max_input_tokens': row['budget'].get('text_tokens') or row['budget']['utf8_bytes'],
                    'max_output_tokens': row['output_cap']}
     return mutate(domain, scope['run_id'], 'reserve_budget', 'call-' + reservation['request_fingerprint'][:64],
-                  reservation=reservation, scope_kind=scope['scope_kind'], scope_id=scope['scope_id'])
+                  new_model_call=True, reservation=reservation,
+                  scope_kind=scope['scope_kind'], scope_id=scope['scope_id'])
 
 
 def seal_response(root, row, response):
@@ -176,6 +184,7 @@ def build(root, job, request, own, runner):
     from hermes_source_units.incremental_pages import build_scope, validate_page_revision, validate_preparation
     from hermes_source_units.short_build import admit
     from hermes_source_units.vault_finalize import FileVaultFinalizeService
+    from incremental_writing import CONTRACT as FRAGMENTS, assemble, catalogue_for_round, fragment_answers, prepare_work
 
     operation = _load_json(root / 'operation.json')
     view = request['view']
@@ -230,35 +239,56 @@ def build(root, job, request, own, runner):
         return {'state': 'settled', 'attempts': [], 'delivery': output, 'formal_run_id': prior['build_run_id']}
     require(recovery is None, 'delivery recovery cannot create a replacement Build for a missing prefix')
     pages, bodies = [], {}
+    changes_path = _vault_path(service.vault,
+        f"_system/ledgers/incremental-ingest/{run_id}/rounds/{round_id}/page-changes.json")
+    planned = {change['change_id']: change for change in _load_json(changes_path)}
+    domain = catalogue = None
     eligible = {row['resource_id']: row['eligible'] for row in service._source_eligibility(service._current_sets(), {})}
     for pointer in view['written']:
         preparation = read_pin(service.vault, pointer['preparation'])
-        row = preparation['request']
         writer_root = _vault_path(service.vault, pointer['native_root'])
-        result, _ = verified_result(writer_root, row)
-        require(result['state'] == 'settled', 'incremental Build requires a settled native writing result')
-        prepared = preparation['prepared']
-        from short_evidence_pass import request as semantic_request
-        expected = semantic_request(prepared['phase'], prepared['view'], prepared['schema'],
-                                    row['budget']['estimated_output_tokens'], row['budget']['input_cap'],
-                                    row['image_inputs'], reserve=row['budget']['input_reserve'])
-        require(expected == row, 'page preparation differs from its exact native writing request')
-        validate_preparation(service.build, prepared, operation['actor'])
-        receipt = _load_json(writer_root / 'receipts' / (row['id'] + '.json'))
-        content = validate_page_revision(prepared, receipt['answer'])
-        change = prepared['view']['change']
+        if preparation.get('contract') == FRAGMENTS:
+            if catalogue is None:
+                from incremental_native import service as incremental_service
+
+                domain = incremental_service(service.vault, run_id)
+                frozen = domain.round_input(run_id, round_id)
+                catalogue = catalogue_for_round(domain, run_id, frozen, service.build)
+            plan = planned.get(preparation['plan_id'])
+            require(plan is not None, 'page writing escaped the original frozen plan')
+            require(prepare_work(service.build, catalogue, plan) == preparation,
+                    'writing fragments differ from the current original evidence or page scope')
+            writer_operation = _load_json(writer_root / 'operation.json')
+            require(writer_operation['actor'] == operation['actor'] and writer_operation['origin'] == operation['origin']
+                    and writer_operation['incremental'] == {**operation['incremental'], 'stage': 'writing'},
+                    'native writing board does not belong to this frozen round')
+            answers, native_fragments = fragment_answers(service.vault, writer_root, preparation)
+            content = assemble(service.build, preparation, answers)
+            change = preparation['change']
+        else:
+            row = preparation['request']
+            result, _ = verified_result(writer_root, row)
+            require(result['state'] == 'settled', 'incremental Build requires a settled native writing result')
+            prepared = preparation['prepared']
+            from short_evidence_pass import request as semantic_request
+            expected = semantic_request(prepared['phase'], prepared['view'], prepared['schema'],
+                                        row['budget']['estimated_output_tokens'], row['budget']['input_cap'],
+                                        row['image_inputs'], reserve=row['budget']['input_reserve'])
+            require(expected == row, 'page preparation differs from its exact native writing request')
+            validate_preparation(service.build, prepared, operation['actor'])
+            receipt = _load_json(writer_root / 'receipts' / (row['id'] + '.json'))
+            content = validate_page_revision(prepared, receipt['answer'])
+            change = prepared['view']['change']
+            native_fragments = [pointer]
         bodies[change['change_id']] = content['body']
         pages.append({'short_id': change['change_id'], 'name': change['name'], 'page_type': change['page_type'],
                       'card_path': change['path'], 'authored_sha256': content['authored_sha256'],
                       'support_refs': content['support_refs'], 'citation_bindings': content['citation_bindings'],
-                      'incremental_change': change, 'native_fragments': [pointer], 'qa_issues': [],
+                      'incremental_change': change, 'native_fragments': native_fragments, 'qa_issues': [],
                       'qa_status': 'usable', 'source_eligible_at_admission': all(
                           eligible.get(ref['unit_ref']['resource_id'], False) for ref in content['support_refs']),
                       'publication_authorized': True})
     bound_operation = {**operation, 'operation_sha256': runner.sha(root / 'operation.json')}
-    changes_path = _vault_path(service.vault,
-        f"_system/ledgers/incremental-ingest/{run_id}/rounds/{round_id}/page-changes.json")
-    planned = {change['change_id']: change for change in _load_json(changes_path)}
     excluded = []
     for held in view['excluded']:
         change = planned[held['change_id']]

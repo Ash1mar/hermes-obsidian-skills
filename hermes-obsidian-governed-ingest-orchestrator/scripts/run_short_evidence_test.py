@@ -202,7 +202,9 @@ def run_job(root, job, own):
         return replay_node_output(root, original, payload['saved_attempts'], own, mapping_overlay=overlay)
     if payload.get('replay'):
         return replay_mapping(root, original, own)
-    profile = _load_json(root / 'operation.json').get('transport_profile', 'shared')
+    operation = _load_json(root / 'operation.json')
+    profile = operation.get('transport_profile', 'shared')
+    incremental = operation.get('workflow_mode') == 'incremental_v1'
     if original['view'].get('fragment_repair') == 'short-content-recovery/v1':
         from short_content_recovery import slot_attempts
         require(all(len(slot_attempts(root, view['repair_of_fragment'])) == 1
@@ -213,6 +215,10 @@ def run_job(root, job, own):
     attempts = []
     drafts = {}
     ordinals = (1,) if original['view'].get('fragment_repair') else (1, 2)
+    if incremental and job.with_name(job.stem + '.attempt-1.json').exists():
+        from incremental_source_retry import retry_start_ordinal
+        if retry_start_ordinal(root, original) == 2:
+            ordinals = (2,)
     retry_budget = None
     for ordinal in ordinals:
         if not row['budget']['fits']:
@@ -223,6 +229,12 @@ def run_job(root, job, own):
         p['live_control_check'] = own
         reservation = job.with_name(job.stem + f'.attempt-{ordinal}.json')
         require(not reservation.exists(), 'a consumed or unknown ordinal cannot be resent')
+        if incremental:
+            from incremental_native import reserve_call
+            # A bounded accounting-lock wait must not create an SDK-attempt
+            # marker. Recheck the native lease after that wait, before calling.
+            reserve_call(root, original, ordinal, grant)
+            own()
         started = time.monotonic()
         wall = time.time()
         caller = HermesCaller()
@@ -231,9 +243,6 @@ def run_job(root, job, own):
         caller.images = row['image_inputs']
         # Persist the exact payload before entering the SDK.
         save(reservation, {'request': row, 'ordinal': ordinal, 'grant': grant, 'started_at': wall})
-        if _load_json(root / 'operation.json').get('workflow_mode') == 'incremental_v1':
-            from incremental_native import reserve_call
-            reserve_call(root, original, ordinal, grant)
         p['audit_context'] = {'short_evidence_root': str(root), 'binding': grant, 'phase': row['phase'],
                               'reservation': {'ref': reservation.relative_to(root).as_posix(), 'sha256': sha(reservation),
                                               'ordinal': ordinal, 'request_sha256': row['id']},

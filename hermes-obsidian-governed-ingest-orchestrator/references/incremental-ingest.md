@@ -12,6 +12,23 @@ Use `python3 "<skill-dir>/scripts/manage_incremental_ingest.py" --vault "<vault>
 
 Native workers perform source preparation, Map, coordination, page writing and formal Build. The controller binds exact snapshots and retains full old page evidence. Hold missing required evidence and direct dependents. Query is unavailable during delivery and remains separately authorized after index readiness. Do not reset failed sources, overwrite parent versions, fabricate native completion or cross durable pauses automatically.
 
+New coordination requests label navigation, source text and registered assets. The writing admission record
+pins the original page plan, the exact source-body selection and required asset links. An unambiguous
+numbered entry can locate the corresponding registered clause evidence in its sealed Map. Ambiguous or
+unavailable material holds the affected page. Writing tries one complete request first, then measures
+section or dependency-bound fragments with the final model request and image limits. Every new support
+has one writing owner. An indivisible fragment can combine individually bounded original reads
+when its complete model request still fits. Build rechecks the source, scope and native receipt for every fragment, and
+assembles a single page revision. Updates append the qualified new material while preserving the full
+parent body and its citation bindings.
+
+For an explicitly authorized writing repair, use the same `control --request` command with
+`action=continue`, the exact drained writing boundary, and `repair_writing` containing the held
+`change_id` values to revise. This applies once to the current frozen round before formal Build.
+The original writing checkpoint and receipts stay available. Accepted work is retained, new calls
+count against the existing budget, and the revised disposition reaches a new writing pause before
+Build can be authorized.
+
 For operator-controlled file starts, explicitly set `incremental_manual_sources=true` at creation. The fixed source manifest is unchanged; all sources initially wait for admission. Use the frontend's per-source start action or `control --request` with `action=release-source`, exact `source_path`/`source_sha256`, actor, run ID, operation ID and current control revision. Admission while paused does not continue the workflow. Starting another file is a separate manual action; this option adds no delay, timer or default schedule. Already admitted work and its valid results retain their identities.
 
 For an exact source Map task that stopped before any model consumption, use `python3 "<skill-dir>/scripts/manage_incremental_ingest.py" --vault "<vault>" retry-source --request "<request.json>"`. The request binds run_id, actor, operation_id, control_revision, run_revision, source_path, source_sha256 and retry_kind=`mapping-unconsumed`. The operator entry independently verifies the current sealed source, original job/body hashes, ended native tasks, zero attempts/audits/reservations and bounded retry history. It unblocks only those same native tasks, preserves completed work and never releases a pause. Returned or unknown model consumption requires its existing evidence-based recovery, not this retry. A failed unchanged PDF does not gain a new conversion attempt through this entry.
