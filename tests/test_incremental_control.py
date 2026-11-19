@@ -41,6 +41,42 @@ def test_writing_repair_names_held_plan_and_requires_a_new_pause(tmp_path):
     assert revised['state'] == 'paused' and revised['boundary'] != paused['boundary']
 
 
+def test_stopped_writing_rejects_plain_continue_and_binds_explicit_continuation(tmp_path):
+    from hermes_source_units.incremental_sources import pinned
+
+    control = IncrementalControl(tmp_path, 'writing-resume')
+    control.initialize('operator', ['writing'])
+    root = control.root.parent
+    _write_atomic(root / 'run.json', _json_bytes({'active_round_id': 'round-1', 'state': 'active', 'revision': 10,
+                                               'source_workflow_id': 'isolated-source'}))
+    head = control.status()
+    repair = {'operation_id': 'old-writer', 'plan_ids': [fingerprint('plan')], 'prior_disposition_sha256': 'saved'}
+    head['writing_repairs'] = {'round-1': repair}
+    _write_atomic(control.path, _json_bytes(head))
+    paused = control.control({'action': 'pause', 'actor': 'operator', 'operation_id': 'stop', 'expected_revision': 1})
+    writer = root / 'native/round/round-1/writing/recoveries/old-writer'
+    stop, operation = writer / 'stop.json', writer / 'operation.json'
+    _write_atomic(stop, _json_bytes({'stopped': True}))
+    _write_atomic(operation, _json_bytes({'bound': 'old-writer'}))
+    request = {'action': 'continue', 'actor': 'operator', 'operation_id': 'next',
+               'expected_revision': paused['revision'], 'boundary_fingerprint': fingerprint(paused['boundary'])}
+    with pytest.raises(ContractError, match='requires recover-writing'):
+        control.control(request)
+    path = root / 'rounds/round-1/writing-continuations/next.json'
+    _write_atomic(path, _json_bytes({
+        'contract': 'incremental-writing-continuation/v1', 'round_id': 'round-1', 'run_id': control.run_id,
+        'actor': 'operator', 'operation_id': 'next', 'control_revision': paused['revision'], 'run_revision': 10,
+        'boundary_fingerprint': request['boundary_fingerprint'], 'original_authorization': repair,
+        'previous_operation': pinned(tmp_path, operation.relative_to(tmp_path).as_posix()),
+        'stop': pinned(tmp_path, stop.relative_to(tmp_path).as_posix()),
+    }))
+    relation = pinned(tmp_path, path.relative_to(tmp_path).as_posix())
+    active = control.control({**request, 'writing_continuation': relation})
+    assert active['state'] == 'active'
+    assert active['writing_continuations']['round-1']['manifest'] == relation
+    assert active['writing_repairs']['round-1'] == repair
+
+
 def test_parallel_source_admission_waits_for_short_control_write(tmp_path, monkeypatch):
     from threading import Event, Thread, current_thread
 

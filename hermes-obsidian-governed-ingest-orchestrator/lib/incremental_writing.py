@@ -296,18 +296,29 @@ def selected_change(vault, pointer):
 
 
 def fragment_answers(vault, root, work):
+    operation = _load_json(root / 'operation.json')
+    if operation.get('writing_continuation'):
+        from incremental_writing_resume import continued_answers
+
+        return continued_answers(vault, root, work, operation['writing_continuation'])
+    answers, proofs = [], []
+    for fragment in work['fragments']:
+        answer, proof = fragment_receipt(vault, root, fragment)
+        answers.append(answer)
+        proofs.append(proof)
+    return answers, proofs
+
+
+def fragment_receipt(vault, root, fragment):
     from hermes_source_units.incremental_sources import pinned
     from incremental_native import verified_result
 
-    answers, proofs = [], []
-    for fragment in work['fragments']:
-        row = fragment['request']
-        result, proof = verified_result(root, row)
-        require(result['state'] == 'settled', 'page has an unsettled native writing fragment')
-        receipt = root / 'receipts' / (row['id'] + '.json')
-        proofs.append({**proof, 'request_id': row['id'], 'receipt': pinned(vault, receipt.relative_to(vault).as_posix())})
-        answers.append(_load_json(receipt)['answer'])
-    return answers, proofs
+    row = fragment['request']
+    result, proof = verified_result(root, row)
+    require(result['state'] == 'settled', 'page has an unsettled native writing fragment')
+    receipt = root / 'receipts' / (row['id'] + '.json')
+    return _load_json(receipt)['answer'], {
+        **proof, 'request_id': row['id'], 'receipt': pinned(vault, receipt.relative_to(vault).as_posix())}
 
 
 def writing_disposition(domain, control, scope, frozen, changes, service, maps):
@@ -322,6 +333,12 @@ def writing_disposition(domain, control, scope, frozen, changes, service, maps):
     path = root / 'writing-revision.json' if repair else original_path
     if path.is_file():
         return path, _load_json(path)
+    continuation = control.status().get('writing_continuations', {}).get(round_id)
+    if continuation:
+        from incremental_writing_resume import execute_continuation
+
+        with control.executing(scope, 'writing', frozen['input_fingerprint']):
+            return path, execute_continuation(domain, frozen, changes, service, maps, continuation, path)
     written, held = [], []
     if repair:
         require(_sha(original_path.read_bytes()) == repair['prior_disposition_sha256'],

@@ -104,7 +104,8 @@ def round_projection(root, rid, run, control, *, native_reader=None):
     writing = read(folder / 'writing-disposition.json')
     native = root / 'native/round' / rid
     writer = native / 'writing'
-    repair = control.get('writing_repairs', {}).get(rid)
+    repair = (control.get('writing_continuations', {}).get(rid)
+              or control.get('writing_repairs', {}).get(rid))
     if repair:
         writing = read(folder / 'writing-revision.json')
         writer = writer / 'recoveries' / repair['operation_id']

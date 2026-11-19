@@ -245,6 +245,7 @@ def round_work(domain, run_id, round_id):
     from hermes_source_units.page_governance import POLICY
     from hermes_source_units.vault_finalize import FileVaultFinalizeService
     from incremental_writing import selected_change, writing_disposition
+    from incremental_recovery import pending_request
 
     control = IncrementalControl(domain.vault, run_id)
     frozen = domain.round_input(run_id, round_id)
@@ -319,7 +320,7 @@ def round_work(domain, run_id, round_id):
         else:
             save(saved_request, row)
         job = formal / 'jobs' / (row['id'] + '.json')
-        if not job.with_suffix('.result.json').exists():
+        if pending_request(formal, formal_operation, row):
             native.stage(formal, formal_operation, [row], 1)
         result = _load_json(job.with_suffix('.result.json'))
         require(result['state'] == 'settled', 'incremental delivery remains incomplete')
@@ -355,6 +356,7 @@ def settle_held(domain, run_id, round_id, frozen, reason, *, reused=False, gaps=
 def recover_delivery(domain, run_id, round_id, operation_id, *, stop_after=None, disposition='continue',
                      isolation=None, settle_terminal=False):
     import run_short_evidence_test as native
+    from incremental_recovery import pending_request
 
     safe = __import__('hermes_source_units.incremental_sources', fromlist=['safe_id']).safe_id
     safe(operation_id)
@@ -379,8 +381,7 @@ def recover_delivery(domain, run_id, round_id, operation_id, *, stop_after=None,
     root, operation = initialize_scope(domain, run_id, 'round', round_id, 'formal-build',
                                        frozen['snapshots'], recovery_id=operation_id)
     control = IncrementalControl(domain.vault, run_id)
-    job = root / 'jobs' / (row['id'] + '.json')
-    if not job.with_suffix('.result.json').exists():
+    if pending_request(root, operation, row):
         require(domain.status(run_id)['active_round_id'] == round_id,
                 'delivery recovery must target the current frozen round')
         with control.executing({'scope_kind': 'round', 'scope_id': round_id}, 'formal-build', frozen['input_fingerprint']):
