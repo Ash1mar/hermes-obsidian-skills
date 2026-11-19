@@ -1,7 +1,7 @@
 """Shared native request history and recovery admission for incremental stages."""
 from contextlib import closing
 
-from hermes_source_units.incremental_sources import pinned
+from hermes_source_units.incremental_sources import completion_connection, pinned
 from hermes_source_units.source_units import _load_json
 from hermes_source_units.validation import ContractError, fingerprint
 from incremental_native import verified_result
@@ -38,11 +38,11 @@ def stopped_history(vault, root, operation, rows, reservations):
 
     board = operation['board']
     require(not workflow_processes('', board), 'native recovery board still has a worker')
-    kb, kc, _ = native.runtime()
+    kb, _, _ = native.runtime()
     budget = {item['request_fingerprint']: (key, item) for key, item in reservations.items()}
     expected_jobs = {root / 'jobs' / (row['id'] + '.json') for row in rows}
     require(len(expected_jobs) == len(rows), 'stopped recovery repeats a native job')
-    with closing(kc.connect(board=board)) as connection:
+    with closing(completion_connection(board)) as connection:
         tasks = kb.list_tasks(connection)
         require(not any(t.claim_lock or t.status in ('running', 'ready', 'todo', 'triage') for t in tasks),
                 'stopped recovery requires a drained native board')
