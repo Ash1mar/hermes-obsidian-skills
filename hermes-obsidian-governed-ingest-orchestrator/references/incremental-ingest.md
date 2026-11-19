@@ -56,7 +56,10 @@ held receipt and exactly one prior reservation. Mechanical review can preserve a
 bound citation and existing inspection records. Missing inspection, coverage or supplied
 evidence can instead require one targeted native result. Unconfirmed calls remain isolated.
 Numbered clause continuations are resolved against the same registered snapshot and section,
-with original text and asset dependencies measured in the new request. The repair binds
+with original text and asset dependencies measured in the new request. Explicit commentary
+anchors can resolve a missing numbered requirement to the unique original clause in the same
+snapshot. Oversized replacements can partition only independently writable assignments; a
+complete dependency group that still exceeds the limit remains held. The repair binds
 the prior receipt, exact duties, evidence, reason and remaining budget.
 
 At the next checkpoint, report accepted original pages and independent section candidates

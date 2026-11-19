@@ -1,5 +1,5 @@
 """Review held incremental fragments at their exact writing checkpoint."""
-from collections import Counter
+from collections import Counter, defaultdict
 import re
 
 from hermes_source_units.incremental_control import IncrementalControl
@@ -11,7 +11,8 @@ from hermes_source_units.validation import ContractError, canonical_json, finger
 from incremental_recovery import stopped_history
 from incremental_sections import aliases, candidates, proposals
 from incremental_writing import (
-    CURRENT_WRITING_REVISION, catalogue_for_round, compose, fragment_receipt, parent_context, prepare_work, slot,
+    CURRENT_WRITING_REVISION, catalogue_for_round, compose, fragment_receipt, ordered_components,
+    parent_context, prepare_work, slot,
 )
 from incremental_writing_resume import IDENTITY, budget_allowance, continued_fragment, owned, pin
 from prepare_short_evidence_test import save
@@ -99,7 +100,7 @@ def observed(vault, writer, work, continuation, history):
     return slots
 
 
-def revised_fragment(builder, catalogue, work, slots, identity):
+def revise_requests(builder, catalogue, work, slots, identity):
     prior = slots[identity]
     if prior['state'] != 'held' or len(prior.get('attempts', [])) != 1:
         return None, 'requires a confirmed held reply with one prior reservation'
@@ -108,9 +109,11 @@ def revised_fragment(builder, catalogue, work, slots, identity):
     selected = aliases(catalogue, prepared['support_refs'])
     reading = aliases(catalogue, prepared['material_aliases'].values())
     try:
-        continuation = catalogue.clause_continuations(selected)
-        required = {right for _, right in continuation}
-        required.update(right for _, right in catalogue.explicit_dependencies(selected | required))
+        original = catalogue.referenced_original_clauses(reading, ' '.join(prior['answer']['unresolved']))
+        continuation = catalogue.clause_continuations(selected | original)
+        required = original | {right for _, right in continuation}
+        assets = catalogue.explicit_dependencies(selected | required)
+        required.update(right for _, right in assets)
     except ContractError as error:
         return None, str(error)
     extra = required - reading
@@ -137,12 +140,43 @@ def revised_fragment(builder, catalogue, work, slots, identity):
     order = list(dict.fromkeys([*(catalogue.units[canonical_json(ref['unit_ref'])]['alias']
                                 for ref in prepared['material_aliases'].values()), *sorted(extra)]))
     _, headings, _ = parent_context(builder, work['change'])
+    def packet(assigned, read, position=None):
+        detail = binding if position is None else {**binding, 'split_position': position}
+        return slot(builder, catalogue, work['change'], read, assigned, prepared['view']['position'], headings,
+                    work['input_cap'], atomic=True, writing_revision=CURRENT_WRITING_REVISION,
+                    navigation_headings=prepared['view'].get('navigation_headings', []), revision_reason=detail)
+
     with builder.source.reading_snapshot():
-        candidate, measurement = slot(builder, catalogue, work['change'], order,
-                 [key for key in order if key in updated_owners], prepared['view']['position'], headings, work['input_cap'],
-                 atomic=True, writing_revision=CURRENT_WRITING_REVISION,
-                 navigation_headings=prepared['view'].get('navigation_headings', []), revision_reason=binding)
-    return candidate, (cause if candidate else f'complete affected evidence exceeds {measurement["kind"]} budget')
+        candidate, measurement = packet([key for key in order if key in updated_owners], order)
+        if candidate:
+            return {'fragments': [candidate]}, cause
+        # Keep the authenticated shared reading on each part. Split ownership
+        # only where established dependencies permit independent work.
+        edges = [*map(tuple, work['selection']['dependencies']),
+                 *map(tuple, work['selection']['clause_cross_references']), *continuation, *assets]
+        edges.extend((left, right) for left in selected for right in original)
+        neighbors = defaultdict(set)
+        for left, right in edges:
+            neighbors[left].add(right)
+            neighbors[right].add(left)
+        groups = ordered_components(catalogue, updated_owners, {'dependencies': edges})
+        if len(groups) > 1:
+            shared = set(order) - updated_owners
+            parts = []
+            for n, assigned in enumerate(groups, 1):
+                needed = set(assigned) | shared
+                todo = list(needed)
+                while todo:
+                    dependencies = (neighbors[todo.pop()] & set(order)) - needed
+                    needed.update(dependencies)
+                    todo.extend(dependencies)
+                candidate, measurement = packet(assigned, [key for key in order if key in needed], n)
+                if not candidate:
+                    break
+                parts.append(candidate)
+            if len(parts) == len(groups):
+                return {'fragments': parts}, f'{cause}: split into {len(parts)} bounded assignments'
+    return None, f'complete affected evidence exceeds {measurement["kind"]} budget'
 
 
 def base_paths(domain, run_id, round_id, head):
@@ -196,20 +230,25 @@ def evaluation(domain, builder, frozen, manifest, catalogue):
             held.append(original)
             section_holds[plan_id] = [{'reason': 'no complete historical fragment plan to verify'}]
             continue
-        scope = slots[plan_id]
-        for identity, row in scope.items():
+        original_scope = slots[plan_id]
+        scope = {}
+        for identity, row in original_scope.items():
             if identity not in manifest['revisions']:
+                scope[identity] = row
                 continue
             revision = manifest['revisions'][identity]
-            candidate, _ = revised_fragment(builder, catalogue, work[plan_id], scope, identity)
-            require(candidate == read_pin(vault, revision['preparation']),
+            candidate, _ = revise_requests(builder, catalogue, work[plan_id], original_scope, identity)
+            require(candidate is not None and candidate == read_pin(vault, revision['preparation']),
                     'targeted writing request differs from its original receipt and live source')
-            try:
-                answer, proof = fragment_receipt(vault, _vault_path(vault, revision['native_root']), candidate)
-            except (ContractError, FileNotFoundError) as error:
-                row.update(state='held', reason=str(error))
-                continue
-            row.update(classify(candidate, answer), fragment=candidate, proof=proof)
+            for part in candidate['fragments']:
+                key = part['request']['id']
+                try:
+                    answer, proof = fragment_receipt(vault, _vault_path(vault, revision['native_root']), part)
+                except (ContractError, FileNotFoundError) as error:
+                    scope[key] = {'fragment': part, 'state': 'held', 'reason': str(error)}
+                    continue
+                scope[key] = {**classify(part, answer), 'fragment': part, 'proof': proof}
+        slots[plan_id] = scope
         summaries[plan_id] = dict(Counter(row['state'] for row in scope.values()))
         if all(row['state'] == 'valid' for row in scope.values()):
             added = unique_refs(ref for row in scope.values() for ref in row['fragment']['prepared']['support_refs'])
@@ -276,17 +315,17 @@ def make_plan(domain, request, head):
             decisions[key] = 'already revised or parent already complete'
             continue
         with builder.source.reading_snapshot():
-            candidate, reason = revised_fragment(builder, catalogue, work[plan_id], slots[plan_id], key)
+            candidate, reason = revise_requests(builder, catalogue, work[plan_id], slots[plan_id], key)
         decisions[key] = reason
         if candidate:
-            extra_owner = owned(candidate) - owned(slots[plan_id][key]['fragment'])
+            extra_owner = set().union(*(owned(part) for part in candidate['fragments'])) - owned(slots[plan_id][key]['fragment'])
             occupied = new_owners.setdefault(plan_id, set())
             if extra_owner & occupied:
                 decisions[key] = 'another targeted slot owns the new evidence'
                 continue
             occupied.update(extra_owner)
             revised[key] = candidate
-    rows = [value['request'] for value in revised.values()]
+    rows = [part['request'] for value in revised.values() for part in value['fragments']]
     budget_allowance(run, rows)
     return {'contract': CONTRACT, **{field: request[field] for field in IDENTITY - {'expected_revision'}},
             'control_revision': head['revision'], 'revise_fragments': request['revise_fragments'],
@@ -362,7 +401,7 @@ def execute(domain, builder, frozen, authority, output):
                                           recovery_id=manifest['operation_id'], amendment=pointer)
     for key, fragment in manifest['proposed'].items():
         save(writer / 'amendment-fragments' / (key + '.json'), fragment)
-    rows = {fragment['request']['id']: fragment['request'] for fragment in manifest['proposed'].values()}
+    rows = {part['request']['id']: part['request'] for group in manifest['proposed'].values() for part in group['fragments']}
     require(set(rows) == set(manifest['dispatch_request_ids']), 'amendment dispatch differs from its authorization')
     if rows:
         execute_rows(domain, run_id, writer, operation, [rows[key] for key in manifest['dispatch_request_ids']])

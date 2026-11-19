@@ -22,6 +22,7 @@ CURRENT_WRITING_REVISION = 3
 LIST_INTRO = re.compile(r'(?:下列|如下|下述|\bfollowing\b)[^\n]{0,30}[：:]$', re.I)
 LIST_ITEM = re.compile(r'^\s*(?:[-*]\s+)?(?:[（(](\d{1,2})[）)]\s*|(\d{1,2})(?:、\s*|[.)．]\s+|\s+))\S')
 COMMENT = re.compile(r'<!--.*?-->', re.S)
+COMMENTARY_CLAUSE = re.compile(r'^\s*(?:[#>*-]+\s*)?(\d+(?:[.．]\d+){2,})\s+本条(?:规定|提出|说明)', re.M)
 
 
 def continuation_number(line):
@@ -274,6 +275,38 @@ class EvidenceCatalogue:
                 number += len(numbers)
                 cursor = span['end']
         return links
+
+    def referenced_original_clauses(self, owned, notes):
+        """Resolve a worker's identified commentary gap to a unique original clause."""
+        anchors = set()
+        for alias in owned:
+            item = self.aliases[alias]
+            if item['locator']['kind'] != 'text':
+                continue
+            for note in COMMENTARY_CLAUSE.finditer(self.read(item)):
+                clause = note[1].replace('．', '.')
+                if re.search(rf'(?<![\d.]){re.escape(clause)}(?![\d.])', notes):
+                    anchors.add((item['snapshot'], clause))
+        originals = set()
+        for snapshot, clause in sorted(anchors):
+            parent = clause.rsplit('.', 1)[0]
+            heading = re.compile(rf'^\s*(?:[#>*-]+\s*)?{re.escape(clause)}\s+([^\n]+)', re.M)
+            matches = defaultdict(list)
+            for item in self.aliases.values():
+                if (item['snapshot'] != snapshot or item['coverage'] != 'mapped'
+                        or item['locator']['kind'] != 'text'
+                        or not any(section['section_id'] in (clause, parent) for section in self.lineage(item))):
+                    continue
+                raw = self.read(item)
+                span = item['locator']['span']
+                for match in heading.finditer(raw):
+                    if STATEMENT.search(match[1]) and not COMMENTARY_CLAUSE.match(match[0]):
+                        start = span['start'] + match.start(1)
+                        matches[item['locator']['path'], start].append(item)
+            require(len(matches) == 1, f'original clause {clause} is unavailable or ambiguous in the sealed snapshot')
+            window, = matches.values()
+            originals.add(max(window, key=lambda item: (item['locator']['span']['end'], item['alias']))['alias'])
+        return originals
 
     def writing_support(self, plan, *, writing_revision=CURRENT_WRITING_REVISION):
         """Bind writing to substantive support and its specific Map dependencies."""
