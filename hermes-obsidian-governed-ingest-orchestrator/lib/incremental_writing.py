@@ -67,7 +67,7 @@ def ordered_components(catalogue, aliases, audit):
 
 
 def slot(service, catalogue, change, read, write, position, parent_headings, input_cap, *, atomic=False,
-         writing_revision=1, navigation_headings=()):
+         writing_revision=1, navigation_headings=(), revision_reason=None):
     refs = [catalogue.aliases[key]['ref'] for key in read]
     assigned_refs = [catalogue.aliases[key]['ref'] for key in write]
     actor, registry = catalogue.access['actor'], catalogue.access['registry_revision']
@@ -115,6 +115,8 @@ def slot(service, catalogue, change, read, write, position, parent_headings, inp
     if writing_revision != 1:
         view['navigation_headings'] = list(navigation_headings)
         view['instructions'] += ' ' + WRITING_REQUIREMENTS
+    if revision_reason is not None:
+        view['revision_reason'] = revision_reason
     prepared = {'phase': PHASE, 'view': view, 'schema': SCHEMA, 'material_aliases': mapping,
                 'projection': {'view': evidence, 'mapping': mapping},
                 'support_refs': assigned_refs, 'reader_measurement': measurement}
@@ -242,6 +244,15 @@ def prepare_work(service, catalogue, plan, *, input_cap=INPUT_CAP, writing_revis
 def assemble(service, work, answers):
     """Require all native parts before assembling one version, retaining exact parent bytes."""
     change = work['change']
+    for position, fragment in enumerate(work['fragments'], 1):
+        view = fragment['prepared']['view']
+        require(view['position'] == position and view['page']['change_id'] == change['change_id'],
+                'fragment position or page revision binding changed')
+    return compose(service, change, zip(work['fragments'], answers, strict=True))
+
+
+def compose(service, change, fragment_answers):
+    """Assemble already bound native fragments and retain the exact parent bytes."""
     validate_parent(service, change)
     parent, _, bindings = parent_context(service, change)
     bindings = dict(bindings)
@@ -249,10 +260,8 @@ def assemble(service, work, answers):
     taken = set(HANDLE.findall(parent.decode('utf-8'))) | set(bindings)
     index = 1
     bodies, expressed = [], []
-    for position, (fragment, answer) in enumerate(zip(work['fragments'], answers, strict=True), 1):
+    for fragment, answer in fragment_answers:
         prepared = fragment['prepared']
-        require(prepared['view']['position'] == position and prepared['view']['page']['change_id'] == change['change_id'],
-                'fragment position or page revision binding changed')
         content = validate_page_revision(prepared, answer)
         body = content['body'].decode('utf-8')
         require(not re.search(r'^#\s', body, re.M) and not body.lstrip().startswith('---'),
@@ -292,7 +301,7 @@ def selected_change(vault, pointer):
     from hermes_source_units.incremental_sources import read_pin
 
     saved = read_pin(vault, pointer['preparation'])
-    return saved['change'] if saved.get('contract') == CONTRACT else saved['prepared']['view']['change']
+    return saved['change'] if 'change' in saved else saved['prepared']['view']['change']
 
 
 def fragment_answers(vault, root, work):
@@ -329,7 +338,17 @@ def writing_disposition(domain, control, scope, frozen, changes, service, maps):
     round_id, run_id = scope['scope_id'], frozen['run_id']
     root = domain.root(run_id) / 'rounds' / round_id
     original_path = root / 'writing-disposition.json'
-    repair = control.status().get('writing_repairs', {}).get(round_id)
+    head = control.status()
+    amendment = head.get('writing_amendments', {}).get(round_id)
+    if amendment:
+        from incremental_writing_amendment import disposition_path, execute
+
+        output = disposition_path(domain, run_id, round_id, amendment['operation_id'])
+        if output.is_file():
+            return output, _load_json(output)
+        with control.executing(scope, 'writing', frozen['input_fingerprint']):
+            return output, execute(domain, service, frozen, amendment, output)
+    repair = head.get('writing_repairs', {}).get(round_id)
     path = root / 'writing-revision.json' if repair else original_path
     if path.is_file():
         return path, _load_json(path)

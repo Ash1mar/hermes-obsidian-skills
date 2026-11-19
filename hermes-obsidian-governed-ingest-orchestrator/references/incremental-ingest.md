@@ -49,6 +49,21 @@ independent assignments once within the existing budget. Ended attempts without 
 retain their evidence and reservations. The resulting disposition reaches the next writing pause.
 Ordinary continue requires a recovery entry for an interrupted, stopped writing revision.
 
+At a durable writing checkpoint, use the same recovery command with an explicit
+`revise_fragments` list of request IDs from that checkpoint. An empty list previews or
+records writing and section eligibility without model calls. A repair needs an authenticated
+held receipt and exactly one prior reservation. Mechanical review can preserve a uniquely
+bound citation and existing inspection records. Missing inspection, coverage or supplied
+evidence can instead require one targeted native result. Unconfirmed calls remain isolated.
+Numbered clause continuations are resolved against the same registered snapshot and section,
+with original text and asset dependencies measured in the new request. The repair binds
+the prior receipt, exact duties, evidence, reason and remaining budget.
+
+At the next checkpoint, report accepted original pages and independent section candidates
+separately. A candidate requires the complete registered section within the planned evidence,
+every writing fragment, all applicable dependency edges and verifiable native receipts.
+Candidate identity and provenance are revalidated at normal, separately authorized Build.
+
 Source Map, coordination and formal delivery share the native request replay and stop checks.
 Exact acknowledged results are verified when reused. New semantic attempts with unknown prior
 completion require a bound stage-specific recovery. The delivery window and source preparation

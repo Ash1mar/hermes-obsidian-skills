@@ -53,11 +53,14 @@ def main():
                 from incremental_source_retry import retry
                 result = retry(domain.vault, request)
             elif args.action == 'recover-writing':
-                from incremental_writing_resume import recover
+                if 'revise_fragments' in request:
+                    from incremental_writing_amendment import recover
+                else:
+                    from incremental_writing_resume import recover
                 result = recover(domain, request, preview=args.preview)
             elif args.action == 'control':
-                if 'writing_continuation' in request:
-                    raise ValueError('writing continuation requires the recover-writing entry point')
+                if {'writing_continuation', 'writing_amendment'} & request.keys():
+                    raise ValueError('writing recovery requires the recover-writing entry point')
                 control = IncrementalControl(domain.vault, request['run_id'])
                 result = control.control(request)
                 if result['state'] == 'active':

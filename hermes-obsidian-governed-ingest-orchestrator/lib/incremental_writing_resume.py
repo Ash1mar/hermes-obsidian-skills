@@ -210,28 +210,31 @@ def continued_answers(vault, writer, work, continuation):
     manifest = read_pin(vault, continuation)
     page = manifest['pages'][work['plan_id']]
     require(page['work_sha256'] == fingerprint(work), 'continued fragment plan changed')
-    old_writer = _vault_path(vault, manifest['previous_operation']['ref']).parent
-    originals = {part['request']['id']: part for part in read_pin(vault, page['original_work'])['fragments']}
     answers, proofs = [], []
     for fragment, slot in zip(work['fragments'], page['slots'], strict=True):
-        require(fragment['request']['id'] == slot['request_id'], 'continued request differs from its selected slot')
-        if slot['disposition'] == 'reuse':
-            prior = slot['prior_request']
-            part = originals[prior]
-            require(manifest['history'][prior]['state'] == 'valid' and owned(part) == owned(fragment)
-                    and part['prepared']['projection'] == fragment['prepared']['projection'],
-                    'reused receipt failed the original evidence and ownership checks')
-            answer, proof = fragment_receipt(vault, old_writer, part)
-            require(proof['receipt'] == manifest['history'][prior]['receipt'],
-                    'reused native receipt changed after recovery planning')
-            validate_page_revision(part['prepared'], answer)
-            proof['continued_request_id'] = slot['request_id']
-        else:
-            require(slot['disposition'] == 'dispatch', 'page has an isolated writing fragment')
-            answer, proof = fragment_receipt(vault, writer, fragment)
+        answer, proof = continued_fragment(vault, writer, fragment, slot, manifest, page)
         answers.append(answer)
         proofs.append(proof)
     return answers, proofs
+
+
+def continued_fragment(vault, writer, fragment, slot, manifest, page):
+    require(fragment['request']['id'] == slot['request_id'], 'continued request differs from its selected slot')
+    if slot['disposition'] != 'reuse':
+        require(slot['disposition'] == 'dispatch', 'page has an isolated writing fragment')
+        return fragment_receipt(vault, writer, fragment)
+    prior = slot['prior_request']
+    part, = [entry for entry in read_pin(vault, page['original_work'])['fragments']
+             if entry['request']['id'] == prior]
+    require(manifest['history'][prior]['state'] == 'valid' and owned(part) == owned(fragment)
+            and part['prepared']['projection'] == fragment['prepared']['projection'],
+            'reused receipt failed the original evidence and ownership checks')
+    old_writer = _vault_path(vault, manifest['previous_operation']['ref']).parent
+    answer, proof = fragment_receipt(vault, old_writer, part)
+    require(proof['receipt'] == manifest['history'][prior]['receipt'],
+            'reused native receipt changed after recovery planning')
+    validate_page_revision(part['prepared'], answer)
+    return answer, {**proof, 'continued_request_id': slot['request_id']}
 
 
 def execute_continuation(domain, frozen, changes, builder, maps, authority, path):
