@@ -278,7 +278,11 @@ class IncrementalControl:
             if action == 'continue':
                 if head['state'] != 'paused' or request.get('boundary_fingerprint') != fingerprint(head['boundary']):
                     raise ContractError('STALE_INPUT', '$', 'continue requires the exact acknowledged boundary')
-                if 'writing_continuation' in request:
+                if 'writing_amendment' in request:
+                    if {'writing_continuation', 'repair_writing'} & request.keys():
+                        raise ContractError('INVALID_TRANSITION', '$', 'continue requires one writing recovery intent')
+                    self._authorize_writing_amendment(head, request)
+                elif 'writing_continuation' in request:
                     if 'repair_writing' in request:
                         raise ContractError('INVALID_TRANSITION', '$', 'continue requires one writing recovery intent')
                     self._authorize_writing_continuation(head, request)
@@ -365,6 +369,36 @@ class IncrementalControl:
         except KeyError as error:
             raise ContractError('INVALID_SCHEMA', '$', 'missing writing continuation binding') from error
         head.setdefault('writing_continuations', {})[round_id] = {
+            'operation_id': request['operation_id'], 'manifest': pointer}
+
+    def _authorize_writing_amendment(self, head, request):
+        pointer = request['writing_amendment']
+        manifest = read_pin(self.vault, pointer)
+        round_id = safe_id(manifest['round_id'])
+        root = self.root.parent / 'rounds' / round_id
+        run = _load_json(self.root.parent / 'run.json')
+        prior = head.get('writing_amendments', {}).get(round_id)
+        boundary = head['boundary']
+        expected = root / 'writing-amendments' / request['operation_id'] / 'manifest.json'
+        disposition = (root / 'writing-amendments' / safe_id(prior['operation_id']) / 'disposition.json'
+                       if prior else root / ('writing-revision.json' if round_id in head.get('writing_repairs', {})
+                                             else 'writing-disposition.json'))
+        if (manifest['contract'] != 'incremental-writing-amendment/v1'
+                or pointer['ref'] != expected.relative_to(self.vault).as_posix()
+                or manifest['run_id'] != self.run_id or manifest['actor'] != head['actor']
+                or manifest['operation_id'] != request['operation_id']
+                or manifest['control_revision'] != head['revision'] or manifest['run_revision'] != run['revision']
+                or manifest['boundary_fingerprint'] != request['boundary_fingerprint']
+                or run['active_round_id'] != round_id or run['state'] != 'active'
+                or boundary['stage'] != 'writing' or boundary['scope'] != {'scope_kind': 'round', 'scope_id': round_id}
+                or head['active_scopes'] or 'writing' not in head['pause_after']
+                or (root / 'formal-request.json').exists() or (root / 'delivery.json').exists()
+                or manifest['previous_amendment'] != (prior['manifest'] if prior else None)
+                or manifest['prior_disposition']['ref'] != disposition.relative_to(self.vault).as_posix()
+                or manifest['prior_disposition']['sha256'] != boundary['evidence'].get('writing_disposition_sha256')):
+            raise ContractError('INVALID_TRANSITION', '$', 'writing amendment requires the exact drained writing checkpoint')
+        read_pin(self.vault, manifest['prior_disposition'])
+        head.setdefault('writing_amendments', {})[round_id] = {
             'operation_id': request['operation_id'], 'manifest': pointer}
 
     def _authorize_writing_repair(self, head, request):

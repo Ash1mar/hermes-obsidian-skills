@@ -104,10 +104,11 @@ def round_projection(root, rid, run, control, *, native_reader=None):
     writing = read(folder / 'writing-disposition.json')
     native = root / 'native/round' / rid
     writer = native / 'writing'
-    repair = (control.get('writing_continuations', {}).get(rid)
-              or control.get('writing_repairs', {}).get(rid))
+    amendment = control.get('writing_amendments', {}).get(rid)
+    repair = amendment or control.get('writing_continuations', {}).get(rid) or control.get('writing_repairs', {}).get(rid)
     if repair:
-        writing = read(folder / 'writing-revision.json')
+        writing = read(folder / 'writing-amendments' / amendment['operation_id'] / 'disposition.json'
+                       if amendment else folder / 'writing-revision.json')
         writer = writer / 'recoveries' / repair['operation_id']
     shared = {'scope_kind': 'round', 'scope_id': rid, 'shared': True}
     phases = []
@@ -133,7 +134,10 @@ def round_projection(root, rid, run, control, *, native_reader=None):
     return {'round_id': rid, 'active': rid == run.get('active_round_id'), 'mapping_count': len(input_.get('map_result_ids', [])),
             'page_count': len(changes), 'delivery_state': prefix or settlement.get('state'), 'release_id': delivery.get('release_id'),
             'snapshots': input_.get('snapshots', []), 'map_result_ids': input_.get('map_result_ids', []),
-            'page_changes': changes, 'stages': phases}
+            'page_changes': changes, 'stages': phases,
+            **({'original_pages_written': writing['original_pages'],
+                'independent_section_candidates': len(writing['independent_sections'])}
+               if amendment and 'original_pages' in writing else {})}
 
 
 def source_pipeline(item, root, run, control, source_workflow, rounds, *, native_reader=None):

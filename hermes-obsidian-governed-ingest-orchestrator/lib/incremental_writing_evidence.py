@@ -18,7 +18,16 @@ STATEMENT = re.compile(
     r'应(?:当|为|按|设|采用|符合|满足|在|由|保持|设置|能|有|大于|小于)|'
     r'是指|系指|指由|定义[为：:]|[为是][ \t]*\d|'
     r'\b(?:shall|must|should|means|is defined as|is required to)\b', re.I)
-CURRENT_WRITING_REVISION = 2
+CURRENT_WRITING_REVISION = 3
+LIST_INTRO = re.compile(r'(?:下列|如下|下述|\bfollowing\b)[^\n]{0,30}[：:]$', re.I)
+LIST_ITEM = re.compile(r'^\s*(?:[-*]\s+)?(?:[（(](\d{1,2})[）)]\s*|(\d{1,2})(?:、\s*|[.)．]\s+|\s+))\S')
+COMMENT = re.compile(r'<!--.*?-->', re.S)
+COMMENTARY_CLAUSE = re.compile(r'^\s*(?:[#>*-]+\s*)?(\d+(?:[.．]\d+){2,})\s+本条(?:规定|提出|说明)', re.M)
+
+
+def continuation_number(line):
+    match = LIST_ITEM.match(line)
+    return int(match[1] or match[2]) if match else None
 
 
 def normalized(text):
@@ -214,9 +223,94 @@ class EvidenceCatalogue:
             links.append((parent['alias'], asset['alias']))
         return links
 
+    def clause_continuations(self, owned):
+        """Bind a numbered list started at a registered unit boundary."""
+        sections = defaultdict(list)
+        for item in self.aliases.values():
+            loc = item['locator']
+            if loc['kind'] == 'text':
+                sections[item['snapshot'], item['section'], loc['path']].append(item)
+        links = []
+        for alias in sorted(owned):
+            item = self.aliases[alias]
+            loc = item['locator']
+            if loc['kind'] != 'text':
+                continue
+            text = self.read(item)
+            line = COMMENT.sub('', text).rstrip().split('\n')[-1].strip()
+            if not LIST_INTRO.search(line):
+                continue
+            section = sections[item['snapshot'], item['section'], loc['path']]
+            cursor, number = loc['span']['end'], 1
+            while True:
+                candidates = [entry for entry in section
+                              if entry['locator']['span']['start'] <= cursor < entry['locator']['span']['end']]
+                if not candidates:
+                    require(number > 1, f'{alias} introduces a numbered clause list with no registered continuation')
+                    break
+                # Overlapping windows share source bytes. Start at the first
+                # uncovered offset and take the window with the longest reach.
+                next_unit = max(candidates, key=lambda entry: (entry['locator']['span']['end'], entry['alias']))
+                span = next_unit['locator']['span']
+                raw = self.read(next_unit)
+                require(len(raw) == span['end'] - span['start'],
+                        f'{alias} continuation does not match its registered text span')
+                suffix = COMMENT.sub('', raw[cursor - span['start']:]).lstrip()
+                if not suffix:
+                    cursor = span['end']
+                    continue
+                seen = continuation_number(suffix.split('\n', 1)[0])
+                if seen is None and number > 1:
+                    break
+                require(seen == number and next_unit['coverage'] == 'mapped',
+                        f'{alias} numbered clause continuation is unavailable or ambiguous')
+                require(span['start'] >= loc['span']['start'],
+                        f'{alias} continuation overlaps material outside the bounded clause')
+                lines = [row for row in suffix.splitlines() if row.strip()]
+                numbers = [value for row in lines if (value := continuation_number(row)) is not None]
+                require(numbers == list(range(number, number + len(numbers)))
+                        and lines[-1].rstrip().endswith(('。', '；', '.', ';', '！', '!', '？', '?')),
+                        f'{alias} numbered clause continuation is incomplete')
+                links.append((alias, next_unit['alias']))
+                number += len(numbers)
+                cursor = span['end']
+        return links
+
+    def referenced_original_clauses(self, owned, notes):
+        """Resolve a worker's identified commentary gap to a unique original clause."""
+        anchors = set()
+        for alias in owned:
+            item = self.aliases[alias]
+            if item['locator']['kind'] != 'text':
+                continue
+            for note in COMMENTARY_CLAUSE.finditer(self.read(item)):
+                clause = note[1].replace('．', '.')
+                if re.search(rf'(?<![\d.]){re.escape(clause)}(?![\d.])', notes):
+                    anchors.add((item['snapshot'], clause))
+        originals = set()
+        for snapshot, clause in sorted(anchors):
+            parent = clause.rsplit('.', 1)[0]
+            heading = re.compile(rf'^\s*(?:[#>*-]+\s*)?{re.escape(clause)}\s+([^\n]+)', re.M)
+            matches = defaultdict(list)
+            for item in self.aliases.values():
+                if (item['snapshot'] != snapshot or item['coverage'] != 'mapped'
+                        or item['locator']['kind'] != 'text'
+                        or not any(section['section_id'] in (clause, parent) for section in self.lineage(item))):
+                    continue
+                raw = self.read(item)
+                span = item['locator']['span']
+                for match in heading.finditer(raw):
+                    if STATEMENT.search(match[1]) and not COMMENTARY_CLAUSE.match(match[0]):
+                        start = span['start'] + match.start(1)
+                        matches[item['locator']['path'], start].append(item)
+            require(len(matches) == 1, f'original clause {clause} is unavailable or ambiguous in the sealed snapshot')
+            window, = matches.values()
+            originals.add(max(window, key=lambda item: (item['locator']['span']['end'], item['alias']))['alias'])
+        return originals
+
     def writing_support(self, plan, *, writing_revision=CURRENT_WRITING_REVISION):
         """Bind writing to substantive support and its specific Map dependencies."""
-        require(type(writing_revision) is int and writing_revision in (1, CURRENT_WRITING_REVISION),
+        require(type(writing_revision) is int and writing_revision in (1, 2, CURRENT_WRITING_REVISION),
                 'unsupported incremental writing revision')
         has_body = self.body if writing_revision == 1 else self.writing_body
 
@@ -282,6 +376,10 @@ class EvidenceCatalogue:
                 break
         require(owned and all(self.aliases[key]['coverage'] == 'mapped' for key in owned),
                 'writing support includes a held or excluded source unit')
+        continuations = self.clause_continuations(owned) if writing_revision >= 3 else []
+        for parent, successor in continuations:
+            owned.add(successor)
+            edges.update(((parent, successor), (successor, parent)))
         explicit = self.explicit_dependencies(owned)
         for parent, asset in explicit:
             owned.add(asset)
@@ -298,6 +396,8 @@ class EvidenceCatalogue:
                  'dependencies': sorted([*edge] for edge in edges)}
         if writing_revision != 1:
             audit.update(writing_revision=writing_revision, located_sections=located)
+        if writing_revision >= 3:
+            audit['clause_continuations'] = sorted([*edge] for edge in continuations)
         change['writing_support_sha256'] = fingerprint(audit)
         change['change_id'] = fingerprint(change)
         return change, audit

@@ -57,11 +57,12 @@ def check_operation(root, operation):
     require(run['state'] == 'active' and run['actor'] == operation['actor'], 'incremental run has closed or changed actor')
     controller = IncrementalControl(domain.vault, value['run_id'])
     controller.check_admission(value)
-    if operation.get('writing_continuation'):
-        grant = controller.status().get('writing_continuations', {}).get(value['scope_id'], {})
-        require(grant.get('manifest') == operation['writing_continuation']
+    binding = next((key for key in ('writing_continuation', 'writing_amendment') if operation.get(key)), None)
+    if binding:
+        grant = controller.status().get(binding + 's', {}).get(value['scope_id'], {})
+        require(grant.get('manifest') == operation[binding]
                 and value['stage'] == 'writing' and root.name == grant['operation_id'],
-                'native writing continuation lost its exact round control grant')
+                'native writing recovery lost its exact round control grant')
     source = _load_json(_vault_path(domain.vault, f"_system/ledgers/ingest-workflows/{run['source_workflow_id']}.json"))
     require(not source['cancel_requested'] and source['actor'] == run['actor']
             and source['scope'].get('incremental_run_id') == run['run_id'], 'incremental source execution stopped')
@@ -74,10 +75,11 @@ def reserve_call(root, row, ordinal, grant):
     operation = _load_json(root / 'operation.json')
     scope = operation['incremental']
     domain = service(Path(operation['vault']), scope['run_id'])
-    if operation.get('writing_continuation'):
-        manifest = read_pin(domain.vault, operation['writing_continuation'])
+    binding = operation.get('writing_amendment') or operation.get('writing_continuation')
+    if binding:
+        manifest = read_pin(domain.vault, binding)
         require(ordinal == 1 and row['id'] in manifest['dispatch_request_ids'],
-                'writing continuation cannot reserve an undispatched scope or retry')
+                'writing recovery cannot reserve an undispatched scope or retry')
     # Unknown calls remain charged against these reservations after a restart.
     reservation = {'request_fingerprint': fingerprint({'request': row['id'], 'ordinal': ordinal}),
                    'phase': scope['stage'], 'max_calls': 1,
@@ -194,7 +196,8 @@ def build(root, job, request, own, runner):
     from hermes_source_units.incremental_pages import build_scope, validate_page_revision, validate_preparation
     from hermes_source_units.short_build import admit
     from hermes_source_units.vault_finalize import FileVaultFinalizeService
-    from incremental_writing import CONTRACT as FRAGMENTS, assemble, catalogue_for_round, fragment_answers, prepare_work
+    from incremental_writing import CONTRACT as FRAGMENTS, assemble, catalogue_for_round, compose, fragment_answers, prepare_work
+    from incremental_writing_amendment import CONTRACT as AMENDMENT, formal_pages
 
     operation = _load_json(root / 'operation.json')
     view = request['view']
@@ -253,29 +256,42 @@ def build(root, job, request, own, runner):
         f"_system/ledgers/incremental-ingest/{run_id}/rounds/{round_id}/page-changes.json")
     planned = {change['change_id']: change for change in _load_json(changes_path)}
     domain = catalogue = None
+    amended = {}
     eligible = {row['resource_id']: row['eligible'] for row in service._source_eligibility(service._current_sets(), {})}
     for pointer in view['written']:
         preparation = read_pin(service.vault, pointer['preparation'])
         writer_root = _vault_path(service.vault, pointer['native_root'])
-        if preparation.get('contract') == FRAGMENTS:
+        if preparation.get('contract') in (FRAGMENTS, AMENDMENT):
             if catalogue is None:
                 from incremental_native import service as incremental_service
 
                 domain = incremental_service(service.vault, run_id)
                 frozen = domain.round_input(run_id, round_id)
                 catalogue = catalogue_for_round(domain, run_id, frozen, service.build)
-            plan = planned.get(preparation['plan_id'])
-            require(plan is not None, 'page writing escaped the original frozen plan')
-            require(prepare_work(service.build, catalogue, plan,
-                                 writing_revision=preparation.get('writing_revision', 1)) == preparation,
-                    'writing fragments differ from the current original evidence or page scope')
             writer_operation = _load_json(writer_root / 'operation.json')
             require(writer_operation['actor'] == operation['actor'] and writer_operation['origin'] == operation['origin']
                     and writer_operation['incremental'] == {**operation['incremental'], 'stage': 'writing'},
                     'native writing board does not belong to this frozen round')
-            answers, native_fragments = fragment_answers(service.vault, writer_root, preparation)
-            content = assemble(service.build, preparation, answers)
             change = preparation['change']
+            if preparation['contract'] == AMENDMENT:
+                manifest = preparation['manifest']
+                grant = IncrementalControl(service.vault, run_id).status()['writing_amendments'][round_id]
+                require(writer_operation.get('writing_amendment') == grant['manifest'] == manifest,
+                        'formal Build requires the current authorized writing amendment')
+                if not amended:
+                    amended = formal_pages(domain, service.build, frozen, catalogue, manifest, writer_root)
+                expected, entries = amended[change['change_id']]
+                require(expected == preparation, 'amended page differs from its verified scope and receipts')
+                content = compose(service.build, change, ((row['fragment'], row['answer']) for row in entries))
+                native_fragments = preparation['proofs']
+            else:
+                plan = planned.get(preparation['plan_id'])
+                require(plan is not None, 'page writing escaped the original frozen plan')
+                require(prepare_work(service.build, catalogue, plan,
+                                     writing_revision=preparation.get('writing_revision', 1)) == preparation,
+                        'writing fragments differ from the current original evidence or page scope')
+                answers, native_fragments = fragment_answers(service.vault, writer_root, preparation)
+                content = assemble(service.build, preparation, answers)
         else:
             row = preparation['request']
             result, _ = verified_result(writer_root, row)

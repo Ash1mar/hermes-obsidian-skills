@@ -21,7 +21,8 @@ def request_path(domain, run_id):
     return domain.root(run_id) / 'runtime-request.json'
 
 
-def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recovery_id=None, continuation=None):
+def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recovery_id=None, continuation=None,
+                     amendment=None):
     import run_short_evidence_test as native
     from prepare_short_evidence_test import save
     from orchestration import configuration
@@ -34,6 +35,7 @@ def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recove
         operation = _load_json(path)
         require(operation['incremental']['snapshots'] == snapshots, 'incremental workspace inputs changed')
         require(operation.get('writing_continuation') == continuation, 'incremental recovery binding changed')
+        require(operation.get('writing_amendment') == amendment, 'incremental amendment binding changed')
         return directory, operation
     run = domain.status(run_id)
     cfg = configuration()
@@ -47,6 +49,10 @@ def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recove
         require(kind == 'round' and stage == 'writing' and recovery_id is not None,
                 'writing continuation requires its own round writing scope')
         operation['writing_continuation'] = continuation
+    if amendment is not None:
+        require(kind == 'round' and stage == 'writing' and recovery_id is not None and continuation is None,
+                'writing amendment requires its own round writing scope')
+        operation['writing_amendment'] = amendment
     kb, _, _ = native.runtime()
     if not any(board['slug'] == operation['board'] for board in kb.list_boards()):
         kb.create_board(operation['board'], name='Incremental ' + scope_id, default_workdir=str(directory))
