@@ -4,13 +4,40 @@ import pytest
 from hermes_source_units import ContractError
 from hermes_source_units import incremental_control as module
 from hermes_source_units.incremental_control import IncrementalControl
-from hermes_source_units.source_units import _json_bytes, _load_json
+from hermes_source_units.source_units import _json_bytes, _load_json, _sha, _write_atomic
+from hermes_source_units.validation import fingerprint
 
 
 def control_fixture(tmp_path):
     control = IncrementalControl(tmp_path, 'isolated-control')
     control.initialize('operator', ['mapping'])
     return control
+
+
+def test_writing_repair_names_held_plan_and_requires_a_new_pause(tmp_path):
+    control = IncrementalControl(tmp_path, 'writing-repair')
+    control.initialize('operator', ['writing'])
+    root = control.root.parent / 'rounds/round-1'
+    held = fingerprint('held plan')
+    accepted = fingerprint('accepted plan')
+    _write_atomic(control.root.parent / 'run.json', _json_bytes({'active_round_id': 'round-1'}))
+    _write_atomic(root / 'page-changes.json', _json_bytes(
+        [{'change_id': key, 'action': 'create'} for key in (held, accepted)]))
+    original = _json_bytes({'written': [{'example': 'accepted'}], 'held': [{'change_id': held}]})
+    path = root / 'writing-disposition.json'
+    _write_atomic(path, original)
+    scope = {'scope_kind': 'round', 'scope_id': 'round-1'}
+    paused = control.checkpoint(scope, 'writing', {'writing_disposition_sha256': _sha(original)})
+    request = {'action': 'continue', 'actor': 'operator', 'operation_id': 'repair-held',
+               'expected_revision': paused['revision'], 'boundary_fingerprint': fingerprint(paused['boundary'])}
+    with pytest.raises(ContractError, match='only select held'):
+        control.control({**request, 'repair_writing': [accepted]})
+    active = control.control({**request, 'repair_writing': [held]})
+    assert active['state'] == 'active'
+    assert active['writing_repairs']['round-1']['plan_ids'] == [held]
+    assert path.read_bytes() == original
+    revised = control.checkpoint(scope, 'writing', {'writing_disposition_sha256': fingerprint('revised')})
+    assert revised['state'] == 'paused' and revised['boundary'] != paused['boundary']
 
 
 def test_parallel_source_admission_waits_for_short_control_write(tmp_path, monkeypatch):

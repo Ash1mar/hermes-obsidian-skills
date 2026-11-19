@@ -77,8 +77,9 @@ def slot(service, catalogue, change, read, write, position, parent_headings, inp
                             'requirement within its source scope and cite its supplied handle. Use shared '
                             'material to preserve applicable conditions and exceptions without repeating '
                             'another fragment’s assigned content. For an update, write only the addition '
-                            'for this evidence; the complete existing body will be preserved. Report any '
-                            'missing essential original or table explicitly.'}
+                            'for this evidence; the complete existing body will be preserved. Preserve explicit '
+                            'cross-references to separately assigned clauses as references. Report any missing '
+                            'essential original or table explicitly.'}
     prepared = {'phase': PHASE, 'view': view, 'schema': SCHEMA, 'material_aliases': mapping,
                 'projection': {'view': evidence, 'mapping': mapping},
                 'support_refs': assigned_refs, 'reader_measurement': measurement}

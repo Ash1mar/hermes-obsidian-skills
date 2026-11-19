@@ -2,6 +2,7 @@
 from collections import defaultdict
 import re
 import unicodedata
+from urllib.parse import unquote
 
 from hermes_source_units.incremental_pages import require, unique_refs
 from hermes_source_units.reading_dependencies import required_reading
@@ -140,8 +141,9 @@ class EvidenceCatalogue:
                 continue
             item = self.aliases[key]
             text = self.read(item)
-            for path in re.findall(r'\]\(<?((?:tables|images)/[^\s)>]+)>?\)', text):
-                require(path in self.asset_paths[item['snapshot']], f'{key} refers to an unregistered required asset: {path}')
+            for path in re.findall(r'\]\(<?(?:\./)?((?:tables|images)/[^\s)>]+)>?\)', text):
+                require(unquote(path) in self.asset_paths[item['snapshot']],
+                        f'{key} refers to an unregistered required asset: {path}')
             materials.append({'role': 'core', 'source_ref': item['ref'], 'unit_content_sha256': item['sha256'],
                               'core_text': text if item['locator']['kind'] == 'text' or text else None})
         _, supplement = required_reading(self.source, {'materials': materials, 'package_id': fingerprint(sorted(owned)),
@@ -170,7 +172,7 @@ class EvidenceCatalogue:
         owned = {item['alias'] for item in selected if item['alias'] not in navigation}
         if scope:
             owned.update(scope['aliases'])
-        edges, relations = set(), []
+        edges, cross_references, relations = set(), set(), []
         for map_id, _, tid, topic in self.topics:
             if scope and (map_id, tid) != (scope['map_result_id'], scope['topic_id']):
                 continue
@@ -192,7 +194,13 @@ class EvidenceCatalogue:
                     require(all(self.aliases[key]['coverage'] == 'mapped' for key in (alias, target)),
                             f'clause dependency {alias} / {target} lacks mapped source coverage')
                     owned.update((alias, target))
-                    edges.add((alias, target))
+                    left, right = self.aliases[alias], self.aliases[target]
+                    if left['section'] == right['section'] or right['locator']['kind'] == 'asset':
+                        edges.add((alias, target))
+                    else:
+                        # A mapped clause cross-reference names another requirement.
+                        # Its separate writing owner retains the target's coverage.
+                        cross_references.add((alias, target))
                     if role in QUALIFIERS:
                         edges.add((target, alias))
             if prior == owned:
@@ -211,6 +219,7 @@ class EvidenceCatalogue:
                  'selected_aliases': [item['alias'] for item in selected],
                  'qualified_aliases': [key for key in self.aliases if key in owned],
                  'required_asset_links': sorted([parent, asset] for parent, asset in explicit),
+                 'clause_cross_references': sorted([*edge] for edge in cross_references),
                  'dependencies': sorted([*edge] for edge in edges)}
         change['writing_support_sha256'] = fingerprint(audit)
         change['change_id'] = fingerprint(change)
