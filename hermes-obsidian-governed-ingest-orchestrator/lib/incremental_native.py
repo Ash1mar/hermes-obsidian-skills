@@ -10,20 +10,28 @@ from hermes_source_units.source_units import _json_bytes, _load_json, _sha, _vau
 from hermes_source_units.validation import _check_shape, fingerprint
 from short_evidence_pass import require
 
+RUNTIME_MUTATION_LOCK_TIMEOUT = 30
+
 
 def service(vault, run_id):
     return FileIncrementalIngestService(vault, check_admission=IncrementalControl(vault, run_id).check_admission)
 
 
-def mutate(domain, run_id, method, operation_id, **fields):
+def mutate(domain, run_id, method, operation_id, *, new_model_call=False, **fields):
     """Serialize durable domain mutations across the independently running sources."""
     from hermes_source_units.source_units import _exclusive_lock
     from hermes_source_units.incremental_sources import safe_id
 
-    with _exclusive_lock(domain.root(run_id) / '.runtime-mutation.lock'):
+    with _exclusive_lock(domain.root(run_id) / '.runtime-mutation.lock', timeout=RUNTIME_MUTATION_LOCK_TIMEOUT):
         safe_id(operation_id)
         run = domain.status(run_id)
         path = domain.root(run_id) / 'runtime-requests' / (operation_id + '.json')
+        journal = domain.root(run_id) / 'operations' / (operation_id + '.json')
+        if new_model_call:
+            identity = fields['reservation']['request_fingerprint']
+            require(not journal.exists() and all(
+                item['request_fingerprint'] != identity for item in run['reservations'].values()),
+                'a reserved model ordinal requires supported recovery')
         request = {'run_id': run_id, 'actor': run['actor'], 'operation_id': operation_id,
                    'expected_revision': run['revision'], **fields}
         if path.exists():
@@ -33,7 +41,6 @@ def mutate(domain, run_id, method, operation_id, **fields):
                     {k: v for k, v in request.items() if k != 'expected_revision'},
                     'runtime operation key identifies different inputs')
             request = saved['request']
-            journal = domain.root(run_id) / 'operations' / (operation_id + '.json')
             if not journal.exists() and request['expected_revision'] != run['revision']:
                 request = {**request, 'expected_revision': run['revision']}
                 _write_atomic(path, _json_bytes({'method': method, 'request': request}))
@@ -67,7 +74,8 @@ def reserve_call(root, row, ordinal, grant):
                    'max_input_tokens': row['budget'].get('text_tokens') or row['budget']['utf8_bytes'],
                    'max_output_tokens': row['output_cap']}
     return mutate(domain, scope['run_id'], 'reserve_budget', 'call-' + reservation['request_fingerprint'][:64],
-                  reservation=reservation, scope_kind=scope['scope_kind'], scope_id=scope['scope_id'])
+                  new_model_call=True, reservation=reservation,
+                  scope_kind=scope['scope_kind'], scope_id=scope['scope_id'])
 
 
 def seal_response(root, row, response):

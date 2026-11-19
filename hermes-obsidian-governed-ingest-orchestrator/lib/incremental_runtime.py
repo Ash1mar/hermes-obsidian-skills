@@ -51,6 +51,7 @@ def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recove
 
 def execute_rows(domain, run_id, root, operation, rows):
     import run_short_evidence_test as native
+    from incremental_source_retry import retry_start_ordinal
 
     waiting = []
     for row in rows:
@@ -58,8 +59,11 @@ def execute_rows(domain, run_id, root, operation, rows):
         if job.with_suffix('.result.json').is_file():
             verified_result(root, row)
         else:
-            require(not list(job.parent.glob(job.stem + '.attempt-*.json')),
-                    'consumed native request has unknown completion; supported recovery is required')
+            attempts = list(job.parent.glob(job.stem + '.attempt-*.json'))
+            if attempts:
+                require(attempts == [job.with_name(job.stem + '.attempt-1.json')]
+                        and retry_start_ordinal(root, row) == 2,
+                        'consumed native request has unknown completion; supported recovery is required')
             waiting.append(row)
     if waiting:
         native.stage(root, operation, waiting, operation['page_capacity']

@@ -35,6 +35,116 @@ def profile_ready():
     return not profile_exists(native.ASSIGNEE)
 
 
+def precall_proof(domain, workspace, job, row, task, runs, *, expected=None):
+    """Attest the old fail-fast lock error before budget intent and SDK entry."""
+    import run_short_evidence_test as native
+
+    operation = _load_json(workspace / 'operation.json')
+    run_id = operation['incremental']['run_id']
+    run_root = domain.root(run_id)
+    attempt_path = job.with_name(job.stem + '.attempt-1.json')
+    attempt = _load_json(attempt_path)
+    grant = attempt.get('grant', {})
+    require(attempt.get('ordinal') == 1 and attempt.get('request') == row
+            and grant.get('board') == operation['board'] and grant.get('task_id') == task.id,
+            'precall marker does not match the exact original request and native task')
+    allowed = {job.name, attempt_path.name}
+    require({path.name for path in job.parent.glob(job.stem + '.*')} <= allowed,
+            'precall recovery found an audit, result, transport or later attempt')
+    error = f'LOCK_BUSY at $: Skill kernel lock is held: {run_root / ".runtime-mutation.lock"}; wait limit=0s'
+    old = next((item for item in runs if item.id == grant.get('run_id')), None)
+    require(old is not None and old.ended_at is not None and old.outcome == 'gave_up'
+            and old.error == error and old.worker_pid
+            and old.started_at <= attempt.get('started_at', -1) < old.ended_at + 1,
+            'precall marker lacks an exact ended native lock failure')
+    key = fingerprint({'request': row['id'], 'ordinal': 1})
+    run = domain.status(run_id)
+    require(not any(item.get('request_fingerprint') == key for item in run['reservations'].values())
+            and not (run_root / 'operations' / ('call-' + key + '.json')).exists()
+            and not (run_root / 'runtime-requests' / ('call-' + key + '.json')).exists(),
+            'precall attempt may have entered budget reservation')
+    kb, _, _ = native.runtime()
+    board_dir = kb.kanban_home() if operation['board'] == 'default' else kb.board_dir(operation['board'])
+    log = board_dir / 'logs' / (task.id + '.log')
+    require(log.is_file() and not log.is_symlink() and not board_dir.is_symlink(),
+            'precall native worker log is unavailable')
+    raw = log.read_bytes()
+    if expected is not None:
+        size = expected['worker_log']['prefix_bytes']
+        require(len(raw) >= size, 'precall native log was truncated')
+        raw = raw[:size]
+    text = raw.decode('utf-8', errors='replace')
+    require(text.rstrip().endswith('hermes_source_units.validation.ContractError: ' + error)
+            and all(marker in text for marker in ('in run_job', 'in reserve_call', 'in mutate',
+                'reserve_call(root, original, ordinal, grant)',
+                "with _exclusive_lock(domain.root(run_id) / '.runtime-mutation.lock')")),
+            'native log does not attest the pre-reservation lock failure chain')
+    result = {'contract': 'incremental-precall-attempt/v1',
+              'attempt': {'ref': attempt_path.relative_to(domain.vault).as_posix(),
+                          'sha256': _sha(attempt_path.read_bytes())}, 'grant': grant,
+              'ended_run': {key: getattr(old, key) for key in
+                            ('id', 'started_at', 'ended_at', 'outcome', 'error', 'worker_pid')},
+              'worker_log': {'path': str(log), 'prefix_bytes': len(raw), 'prefix_sha256': _sha(raw)}}
+    if expected is not None:
+        require(result == expected, 'precall recovery evidence changed', 'STALE_INPUT')
+    return result
+
+
+def retry_start_ordinal(workspace, row):
+    """Keep the old unconsumed marker and use ordinal 2 for the first real call."""
+    import run_short_evidence_test as native
+
+    job = workspace / 'jobs' / (row['id'] + '.json')
+    old = job.with_name(job.stem + '.attempt-1.json')
+    if not old.exists():
+        return 1
+    operation = _load_json(workspace / 'operation.json')
+    require(operation.get('workflow_mode') == 'incremental_v1'
+            and operation['incremental']['scope_kind'] == 'source'
+            and operation['incremental']['stage'] == 'mapping', 'precall adoption requires source mapping')
+    run_id = operation['incremental']['run_id']
+    domain = service(Path(operation['vault']), run_id)
+    run = domain.status(run_id)
+    for ordinal in (2, 3):
+        key = fingerprint({'request': row['id'], 'ordinal': ordinal})
+        require(not any(value.get('request_fingerprint') == key for value in run['reservations'].values())
+                and not (domain.root(run_id) / 'operations' / ('call-' + key + '.json')).exists()
+                and not (domain.root(run_id) / 'runtime-requests' / ('call-' + key + '.json')).exists(),
+                'a later model call has already reserved consumption')
+    matches = []
+    for path in (domain.root(run_id) / 'source-retries').glob('*.json'):
+        saved = _load_json(path)
+        if saved.get('state') != 'committed' or saved.get('contract') != 'incremental-source-retry/v1':
+            continue
+        evidence = saved['evidence']
+        request = saved['request']
+        require(request.get('run_id') == run_id and request.get('actor') == run['actor']
+                and request.get('retry_kind') == KIND
+                and request.get('source_path') == evidence['source_path']
+                and request.get('source_sha256') == evidence['source_sha256'],
+                'precall recovery journal lost its exact operator request')
+        if (evidence['board'] != operation['board'] or evidence['operation_sha256'] != _sha((workspace / 'operation.json').read_bytes())
+                or evidence['workspace'] != workspace.relative_to(domain.vault).as_posix()):
+            continue
+        require(evidence['snapshot_id'] == operation['incremental']['scope_id']
+                and {'path': evidence['source_path'], 'sha256': evidence['source_sha256']} in run['source_manifest'],
+                'precall recovery journal changed its source snapshot')
+        for target in evidence['targets']:
+            if target['job'] == job.name and target.get('precall_attempt'):
+                require(target['job_sha256'] == _sha(job.read_bytes()), 'adopted mapping job changed')
+                matches.append(target)
+    require(len(matches) == 1, 'unconsumed attempt needs one exact committed precall recovery')
+    target = matches[0]
+    kb, _, _ = native.runtime()
+    with closing(completion_connection(operation['board'])) as connection:
+        task = kb.get_task(connection, target['task_id'])
+        require(task and task.created_by == native.CONTRACT and task.body == native.task_body(workspace, job),
+                'precall native job binding changed')
+        runs = kb.list_runs(connection, task.id, include_active=False)
+        precall_proof(domain, workspace, job, row, task, runs, expected=target['precall_attempt'])
+    return 2
+
+
 def inventory(domain, run_id, source_path, *, prefix=None):
     import run_short_evidence_test as native
     from native_stop_inventory import workflow_processes
@@ -77,8 +187,8 @@ def inventory(domain, run_id, source_path, *, prefix=None):
                 require(result['state'] == 'settled', 'a consumed held result requires its own supported recovery')
                 completed.append({'job': job.name, 'sha256': _sha(job.read_bytes())})
                 continue
-            require(not list(job.parent.glob(job.stem + '.attempt-*.json'))
-                    and not list(job.parent.glob(job.stem + '.audit-*.json')),
+            attempts = list(job.parent.glob(job.stem + '.attempt-*.json'))
+            require(not list(job.parent.glob(job.stem + '.audit-*.json')),
                     'unknown or consumed model attempt cannot be retried')
             fingerprints = {fingerprint({'request': row['id'], 'ordinal': ordinal}) for ordinal in (1, 2, 3)}
             require(not any(value.get('request_fingerprint') in fingerprints for value in run['reservations'].values()),
@@ -99,10 +209,16 @@ def inventory(domain, run_id, source_path, *, prefix=None):
                                 for marker in ('permission', 'access_denied', 'access denied'))
                             or item.outcome in ('permission_denied', 'access_denied', 'execution_uncertain')
                             for item in runs), 'permission or uncertain execution failures require diagnosis')
-            targets.append({'task_id': task.id, 'job': job.name, 'job_sha256': _sha(job.read_bytes()),
-                            'body_sha256': fingerprint(body),
-                            'ended_runs': [{'id': item.id, 'status': item.status,
-                                            'ended_at': item.ended_at, 'outcome': item.outcome} for item in runs]})
+            target = {'task_id': task.id, 'job': job.name, 'job_sha256': _sha(job.read_bytes()),
+                      'body_sha256': fingerprint(body),
+                      'ended_runs': [{'id': item.id, 'status': item.status,
+                                      'ended_at': item.ended_at, 'outcome': item.outcome} for item in runs]}
+            if attempts:
+                target['precall_attempt'] = precall_proof(
+                    domain, root, job, row, task, runs,
+                    expected=next((item.get('precall_attempt') for item in prefix['targets']
+                                   if item['task_id'] == task.id), None) if prefix else None)
+            targets.append(target)
         require(targets, 'no blocked zero-consumption source mapping task is available')
         require(not any(task.status == 'ready' and task.id not in {row['task_id'] for row in targets} for task in tasks),
                 'another ready task is outside the exact retry scope')
