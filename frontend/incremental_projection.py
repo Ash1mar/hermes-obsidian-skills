@@ -103,11 +103,16 @@ def round_projection(root, rid, run, control, *, native_reader=None):
     changes = changes if isinstance(changes, list) else []
     writing = read(folder / 'writing-disposition.json')
     native = root / 'native/round' / rid
+    writer = native / 'writing'
+    repair = control.get('writing_repairs', {}).get(rid)
+    if repair:
+        writing = read(folder / 'writing-revision.json')
+        writer = writer / 'recoveries' / repair['operation_id']
     shared = {'scope_kind': 'round', 'scope_id': rid, 'shared': True}
     phases = []
     phases.append(stage('coordination', operation_state(native / 'coordination', control, 'round', rid,
                         'coordination', complete=bool(changes), native_reader=native_reader), **shared))
-    write_state = operation_state(native / 'writing', control, 'round', rid, 'writing', complete=bool(writing), native_reader=native_reader)
+    write_state = operation_state(writer, control, 'round', rid, 'writing', complete=bool(writing), native_reader=native_reader)
     if writing.get('held'):
         write_state = 'partial' if writing.get('written') else 'held'
     phases.append(stage('writing', write_state, **shared))

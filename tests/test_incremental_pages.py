@@ -150,6 +150,59 @@ def test_page_preparation_binds_aliases_but_allows_unrelated_registry_revision(v
         pages.validate_page_revision(tampered, response)
 
 
+def test_incremental_fragment_budget_coverage_and_parent_bytes(vault, tmp_path, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] /
+                                  'hermes-obsidian-governed-ingest-orchestrator' / 'lib'))
+    from incremental_writing import assemble, prepare_work
+    from incremental_writing_evidence import EvidenceCatalogue
+
+    prior, left, right = publish_sources(vault, [
+        '# Old\n\nOriginal condition.\n',
+        '# First\n\n' + 'First original condition applies. ' * 55 + '\n',
+        '# Second\n\n' + 'Second original condition applies. ' * 55 + '\n',
+    ])
+    service = FileVaultFinalizeService(vault).build
+    monkeypatch.setattr(short_build, 'native_authority', lambda *_: {'task_id': 'fixture', 'run_id': 1})
+    first, = pages.normalize_page_changes(service, round_input(1), {'changes': [
+        decision('create', 'inspection/fragmented', '30_Cards/工程/检查要求.md')]}, {'E1': prior})
+    old_body = b'# Requirements\n\nOriginal condition.\n'
+    old, _ = admit(service, tmp_path / 'first', first, old_body)
+    parent, = finalize(service, old)['page_revisions']
+    raw = decision('update', '', parent['path'], parent['page_id'])
+    raw['support_aliases'] = ['left', 'right']
+    plan, = pages.normalize_page_changes(service, round_input(2), {'changes': [raw]}, {'left': left, 'right': right})
+    maps = []
+    for alias, ref in [('left', left), ('right', right)]:
+        key = ref['unit_ref']
+        _, units, _ = service.source._load_set(key['resource_id'], key['unit_set_id'])
+        unit = next(row for row in units if row['ref'] == key)
+        maps.append({'snapshot_id': alias, 'map_result_id': f'map-{alias}',
+                     'alias_table': {alias: {'unit_ref': key, 'snapshot_id': alias, 'sha256': unit['content_sha256']}},
+                     'coverage': [{'unit_ref': key, 'disposition': 'mapped'}], 'mapped': {'topics': {}}})
+    catalogue = EvidenceCatalogue(service, maps, 'agent')
+    whole = prepare_work(service, catalogue, plan)
+    assert len(whole['fragments']) == 1
+    cap = whole['whole_cost']['input_size'] - 1
+    work = prepare_work(service, catalogue, plan, input_cap=cap)
+    assert len(work['fragments']) == 2
+    assert not work['whole_cost']['fits']
+    answers = []
+    for fragment in work['fragments']:
+        assert fragment['request']['budget']['fits']
+        prepared = fragment['prepared']
+        alias, = prepared['view']['assigned']
+        answers.append({'content': f'## Condition\n\nApplicable condition [{alias}].',
+                        'inspected': list(prepared['material_aliases']), 'unresolved': []})
+    result = assemble(service, work, answers)
+    assert result['body'].startswith(old_body) and result['body'].count(b'## Condition') == 2
+    assert sorted(result['citation_bindings']) == ['m1', 'm2']
+    assert work['change']['page_id'] == parent['page_id']
+    assert work['change']['expected_parent_revision_id'] == parent['revision_id']
+    assert result['support_refs'][0] == prior
+    with pytest.raises(ContractError, match='unresolved'):
+        assemble(service, work, [answers[0], {**answers[1], 'unresolved': ['missing table']}])
+
+
 def test_coordination_projection_preserves_scoped_relations_and_sealed_registry(monkeypatch):
     frozen = round_input(1)
     frozen['context_map_result_ids'] = ['map-0']

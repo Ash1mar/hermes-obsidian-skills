@@ -52,6 +52,7 @@ def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recove
 def execute_rows(domain, run_id, root, operation, rows):
     import run_short_evidence_test as native
     from incremental_source_retry import retry_start_ordinal
+    from incremental_writing import PHASE as PAGE_FRAGMENT
 
     waiting = []
     for row in rows:
@@ -67,7 +68,7 @@ def execute_rows(domain, run_id, root, operation, rows):
             waiting.append(row)
     if waiting:
         native.stage(root, operation, waiting, operation['page_capacity']
-                     if waiting[0]['phase'] == 'incremental-page-write' else operation['pass_capacity'])
+                     if waiting[0]['phase'] in ('incremental-page-write', PAGE_FRAGMENT) else operation['pass_capacity'])
     results = []
     for row in rows:
         result, proof = verified_result(root, row)

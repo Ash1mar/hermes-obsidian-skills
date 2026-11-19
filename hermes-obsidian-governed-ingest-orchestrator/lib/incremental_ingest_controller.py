@@ -8,7 +8,6 @@ from pathlib import Path
 import subprocess
 import sys
 import time
-from types import SimpleNamespace
 
 from hermes_source_units.incremental_control import IncrementalControl
 from hermes_source_units.incremental_sources import pinned, read_pin
@@ -141,25 +140,51 @@ def grouped_page_changes(domain, run_id, service, frozen, aliases, hydrated, coo
     """Resume exact, bounded native decisions over complete topic scopes."""
     from hermes_source_units.incremental_pages import (coordination_catalogue, group_aliases,
                                                        normalize_page_changes, plan_page_changes, registry_view)
+    from incremental_writing_evidence import EvidenceCatalogue, normalized
     from prepare_short_evidence_test import save
 
     manifest_path = root / 'coordination-groups.json'
     saved = _load_json(manifest_path) if manifest_path.exists() else None
     registry = saved['registered_pages'] if saved else registry_view(service)
-    revision = saved.get('planning_revision', 1) if saved else 2
+    revision = saved.get('planning_revision', 1) if saved else 3
     catalogue = coordination_catalogue(frozen, hydrated)
+    inventory = EvidenceCatalogue(service, hydrated, operation['actor']) if revision == 3 else None
     groups = []
 
     def partition(topics):
         spec = plan_page_changes(service, frozen, hydrated, topics=topics, registered_pages=registry,
-                                planning_revision=revision)
+                                planning_revision=min(revision, 2))
+        mandatory = group_aliases(topics)
+        offered = set(mandatory)
+        if inventory:
+            names = {normalized(topic['name']) for topic in topics}
+            context = []
+            for mid, snapshot, tid, topic in inventory.topics:
+                if mid not in frozen.get('context_map_result_ids', []) or normalized(topic['name']) not in names:
+                    continue
+                refs = sorted({key for link in topic['relations']
+                               for key in [link['item'], *link['applies_to']]
+                               if inventory.aliases[key]['coverage'] == 'mapped'})
+                offered.update(refs)
+                context.append({'topic_id': tid, 'snapshot_id': snapshot, 'name': topic['name'],
+                                'scope': topic['scope'], 'aliases': refs})
+            spec['view'].update(planning_revision=revision, context_support=context,
+                                support_material={key: inventory.label(key) for key in sorted(offered)})
+            spec['view']['instructions'] += (
+                ' Choose registered source text that supports the planned requirements and its linked conditions '
+                'and tables. Navigation and titles only locate material. Context support is optional, and may be '
+                'selected only for a compatible page purpose and applicability scope. A matching topic name alone '
+                'cannot establish compatibility. The program binds and verifies original material before writing.')
         request = bind_request(spec)
         if not request['budget']['fits'] and len(topics) > 1:
             half = len(topics) // 2
             partition(topics[:half])
             partition(topics[half:])
         else:
-            groups.append({'request': request, 'aliases': sorted(group_aliases(topics))})
+            group = {'request': request, 'aliases': sorted(offered)}
+            if inventory:
+                group['required_aliases'] = mandatory
+            groups.append(group)
 
     if catalogue:
         partition(catalogue)
@@ -194,7 +219,7 @@ def grouped_page_changes(domain, run_id, service, frozen, aliases, hydrated, coo
                 assigned.update(raw['support_aliases'])
             except (ContractError, ValueError) as error:
                 gaps.append({'request_id': row['id'], 'proposal_sha256': fingerprint(raw), 'reason': str(error)})
-        if missing := sorted(set(group_refs) - assigned):
+        if missing := sorted(set(group.get('required_aliases', group_refs)) - assigned):
             gaps.append({'request_id': row['id'], 'aliases': missing,
                          'reason': 'native coordination did not assign these aliases to a page or hold'})
     # A duplicate decision is safe to deduplicate. Distinct competing decisions
@@ -216,11 +241,10 @@ def grouped_page_changes(domain, run_id, service, frozen, aliases, hydrated, coo
 def round_work(domain, run_id, round_id):
     import run_short_evidence_test as native
     from prepare_short_evidence_test import save
-    from hermes_source_units.incremental_pages import prepare_page_revision, validate_page_revision
     from hermes_source_units.knowledge_build import FileKnowledgeBuildService
     from hermes_source_units.page_governance import POLICY
     from hermes_source_units.vault_finalize import FileVaultFinalizeService
-    from fixed_semantic_media import image_catalog, select_images
+    from incremental_writing import selected_change, writing_disposition
 
     control = IncrementalControl(domain.vault, run_id)
     frozen = domain.round_input(run_id, round_id)
@@ -247,44 +271,9 @@ def round_work(domain, run_id, round_id):
                                                                 hydrated, coordinator, operation, root)
     if control.checkpoint(scope, 'coordination', {'round': frozen, 'changes_sha256': native.sha(plan_path)})['state'] != 'active':
         return
-    writer, writing_operation = initialize_scope(domain, run_id, 'round', round_id, 'writing', frozen['snapshots'])
-    written, held = [], [change for change in changes if change['action'] == 'hold']
-    with control.executing(scope, 'writing', frozen['input_fingerprint']):
-        preparations = []
-        for change in changes:
-            if change['action'] not in ('create', 'update'):
-                continue
-            preparation = writer / 'preparations' / (change['change_id'] + '.json')
-            try:
-                if preparation.exists():
-                    prepared = _load_json(preparation)['prepared']
-                    row = _load_json(preparation)['request']
-                else:
-                    prepared = prepare_page_revision(build_service, change, domain.status(run_id)['actor'])
-                    task = {'task': 'page', 'materials': prepared['projection']['view']['materials']}
-                    adapter = SimpleNamespace(workflow=SimpleNamespace(knowledge=build_service, vault=domain.vault))
-                    catalog = image_catalog(adapter, {'tasks': [task]})
-                    images = select_images([task], catalog)
-                    row = bind_request(prepared, images=images)
-                    require(row['budget']['fits'], 'complete incremental page evidence exceeds model budget')
-                    save(preparation, {'prepared': prepared, 'request': row})
-                preparations.append((change, preparation, prepared, row))
-            except (ContractError, ValueError, FileNotFoundError) as error:
-                held.append({'change_id': change['change_id'], 'page_id': change['page_id'],
-                             'reason': str(error), 'state': 'held'})
-        if preparations:
-            execute_rows(domain, run_id, writer, writing_operation, [item[3] for item in preparations])
-        for change, preparation, prepared, row in preparations:
-            try:
-                answer = _load_json(writer / 'receipts' / (row['id'] + '.json'))['answer']
-                validate_page_revision(prepared, answer)
-                written.append({'preparation': pinned(domain.vault, preparation.relative_to(domain.vault).as_posix()),
-                                'native_root': writer.relative_to(domain.vault).as_posix()})
-            except (ContractError, ValueError, FileNotFoundError) as error:
-                held.append({'change_id': change['change_id'], 'page_id': change['page_id'],
-                             'reason': str(error), 'state': 'held'})
-        save(root / 'writing-disposition.json', {'written': written, 'held': held})
-    if control.checkpoint(scope, 'writing', {'writing_disposition_sha256': native.sha(root / 'writing-disposition.json')})['state'] != 'active':
+    disposition_path, disposition = writing_disposition(domain, control, scope, frozen, changes, build_service, hydrated)
+    written, held = disposition['written'], disposition['held']
+    if control.checkpoint(scope, 'writing', {'writing_disposition_sha256': native.sha(disposition_path)})['state'] != 'active':
         return
     if not written:
         reused = bool(changes) and not held and not coordination_gaps
@@ -292,7 +281,7 @@ def round_work(domain, run_id, round_id):
         return settle_held(domain, run_id, round_id, frozen, reason, reused=reused, gaps=[*held, *coordination_gaps])
     formal, formal_operation = initialize_scope(domain, run_id, 'round', round_id, 'formal-build', frozen['snapshots'])
     finalize = FileVaultFinalizeService(domain.vault)
-    selected = [_load_json(_vault_path(domain.vault, row['preparation']['ref']))['prepared']['view']['change'] for row in written]
+    selected = [selected_change(domain.vault, row) for row in written]
     auth_path = root / 'build-authorization.json'
     authorization = {'contract': 'incremental-build-authorization/v1', 'run_id': run_id, 'round_id': round_id,
         'actor': domain.status(run_id)['actor'], 'pages': [change['change_id'] for change in selected],
@@ -400,8 +389,7 @@ def recover_delivery(domain, run_id, round_id, operation_id, *, stop_after=None,
     require(result['state'] == 'settled', 'delivery recovery did not settle its native request')
     output = result['delivery']
     if settle_terminal and output['state'] in ('committed', 'aborted'):
-        held = _load_json(round_root / 'writing-disposition.json')['held']
-        held = list(held)
+        held = list(original['view']['excluded'])
         gap_path = round_root / 'coordination-gaps.json'
         if gap_path.exists():
             held.extend(_load_json(gap_path))
