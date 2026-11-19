@@ -57,7 +57,89 @@ def registry_view(service):
     return rows
 
 
-def plan_page_changes(service, round_input, maps):
+def coordination_catalogue(round_input, maps):
+    """Retain complete native topic scopes while leaving audit data out of prompts.
+
+    These rows are a deterministic projection of verified Map records, not new
+    semantic results. Context Maps remain pinned by the round but do not create
+    a second assignment of their already-consumed topics.
+    """
+    expected = [*round_input['map_result_ids'], *round_input.get('context_map_result_ids', [])]
+    by_id = {row['map_result_id']: row for row in maps}
+    require(round_input['contract'] == 'incremental-round-input/v1'
+            and len(maps) == len(by_id) and set(by_id) == set(expected),
+            'coordination catalogue requires the exact frozen mapping result set')
+    result = []
+    for map_id in round_input['map_result_ids']:
+        mapped = by_id[map_id]
+        require(mapped['snapshot_id'] in round_input['snapshots'], 'mapping snapshot is outside the round')
+        aliases = mapped['alias_table']
+        for topic_id, topic in sorted(mapped['mapped']['topics'].items()):
+            relations = []
+            for relation in topic['relations']:
+                require(relation['item'] in aliases
+                        and all(alias in aliases for alias in relation['applies_to']),
+                        'topic relation alias is outside its verified Map')
+                relations.append([relation['item'], relation['role'],
+                                  copy.deepcopy(relation['applies_to']), relation['note']])
+            result.append({'map_result_id': map_id, 'snapshot_id': mapped['snapshot_id'],
+                           'topic_id': topic_id, **{key: copy.deepcopy(topic[key])
+                            for key in ('identity', 'name', 'scope', 'source')}, 'relations': relations})
+    return result
+
+
+def group_aliases(topics):
+    """Only explicitly projected items and their application dependencies."""
+    return sorted({alias for topic in topics for relation in topic['relations']
+                   for alias in [relation[0], *relation[2]]})
+
+
+def _coordination_view(round_input, maps, topics, registered_pages):
+    authoritative = coordination_catalogue(round_input, maps)
+    known = {(row['map_result_id'], row['topic_id']): row for row in authoritative}
+    keys = [(row['map_result_id'], row['topic_id']) for row in topics]
+    require(topics and len(keys) == len(set(keys))
+            and all(known.get(key) == row for key, row in zip(keys, topics)),
+            'coordination group must contain exact complete frozen topics')
+    sources, source_indexes = [], {}
+    projected = []
+    qualifiers = {'condition', 'exception', 'conflict', 'contrary'}
+    for topic in topics:
+        source_key = (topic['map_result_id'], topic['snapshot_id'])
+        if source_key not in source_indexes:
+            source_indexes[source_key] = len(sources)
+            sources.append({'map_result_id': source_key[0], 'snapshot_id': source_key[1]})
+        projected.append({'map_index': source_indexes[source_key], 'topic_id': topic['topic_id'],
+                          **{key: copy.deepcopy(topic[key]) for key in ('name', 'scope', 'source')},
+                          'relations': [[item, role, copy.deepcopy(applies_to), note if role in qualifiers else '']
+                                        for item, role, applies_to, note in topic['relations']]})
+    context = []
+    context_ids = set(round_input.get('context_map_result_ids', []))
+    for mapped in maps:
+        if mapped['map_result_id'] in context_ids:
+            context.append({'map_result_id': mapped['map_result_id'], 'snapshot_id': mapped['snapshot_id'],
+                            'topics': [{'topic_id': topic_id, **{key: copy.deepcopy(topic[key])
+                                        for key in ('name', 'scope', 'source')}}
+                                       for topic_id, topic in sorted(mapped['mapped']['topics'].items())]})
+    registered = [{'page_id': row['page_id'], 'path': row['path'], 'page_type': row['page_type'],
+                   'name': row['identity']['canonical_name'], 'revision_id': row['revision_id'],
+                   'identity': copy.deepcopy(row['identity'])}
+                  for row in registered_pages if not row.get('held')]
+    return {'round': copy.deepcopy(round_input), 'mapping_sources': sources, 'mapping_topics': projected,
+            'relation_columns': ['item', 'role', 'applies_to', 'qualifier_note'],
+            'context_topics': context, 'registered_pages': registered,
+            'registered_page_snapshot_sha256': fingerprint(registered_pages),
+            'instructions': 'Choose explicit page identities; titles do not establish identity. Keep different '
+                            'subjects and source scopes distinct. Update only a supplied registered page_id and path. '
+                            'Create requires a stable scope identity_key. Use only item or applies_to aliases '
+                            'exposed in mapping_topics as support_aliases. Every supplied topic and its linked '
+                            'items require a page or explicit hold disposition. Context topics are names and scopes '
+                            'only, not new evidence. All original Map relations remain pinned; general evidence '
+                            'notes are omitted here, and writing independently rereads complete original evidence. '
+                            'Retain old evidence, conditions and exceptions; hold unready dependencies.'}
+
+
+def plan_page_changes(service, round_input, maps, *, topics=None, registered_pages=None):
     """Build bounded native coordination input; the native worker makes decisions."""
     require(round_input['contract'] == 'incremental-round-input/v1' and maps
             and {row['map_result_id'] for row in maps} == set(round_input['map_result_ids']) | set(round_input.get('context_map_result_ids', [])),
@@ -74,8 +156,12 @@ def plan_page_changes(service, round_input, maps):
     schema = {'type': 'object', 'properties': {'changes': {'type': 'array', 'items': {
         'type': 'object', 'properties': properties, 'required': list(properties), 'additionalProperties': False}}},
         'required': ['changes'], 'additionalProperties': False}
+    registered = registry_view(service) if registered_pages is None else registered_pages
+    if topics is not None:
+        return {'phase': 'incremental-page-plan',
+                'view': _coordination_view(round_input, maps, topics, registered), 'schema': schema}
     view = {'round': copy.deepcopy(round_input), 'mapping_results': copy.deepcopy(maps),
-            'registered_pages': registry_view(service),
+            'registered_pages': copy.deepcopy(registered),
             'instructions': 'Choose explicit page identities. A title is not identity. Preserve distinct scopes. '
                             'Update only a supplied registered page_id. New pages require a stable scope identity_key. '
                             'Retain old evidence, conditions and exceptions. Defer pages requiring unready sources. '

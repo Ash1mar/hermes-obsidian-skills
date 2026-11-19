@@ -148,3 +148,64 @@ def test_page_preparation_binds_aliases_but_allows_unrelated_registry_revision(v
         tampered['material_aliases'][second], tampered['material_aliases'][first])
     with pytest.raises(ContractError, match='preparation fingerprint'):
         pages.validate_page_revision(tampered, response)
+
+
+def test_coordination_projection_preserves_scoped_relations_and_sealed_registry(monkeypatch):
+    frozen = round_input(1)
+    frozen['context_map_result_ids'] = ['map-0']
+    frozen['snapshots'].append('snapshot-0')
+    native = {'map_result_id': 'map-1', 'snapshot_id': 'snapshot-1',
+              'alias_table': {key: {} for key in ('S1-B1', 'S1-B2', 'S1-B3')},
+              'coverage': ['control-only'], 'native_completions': ['control-only'],
+              'mapped': {'topics': {'T1': {'identity': 'native-topic-identity', 'name': 'Scope A',
+                  'scope': 'One source scope', 'source': 'S1', 'relations': [
+                      {'item': 'S1-B1', 'role': 'evidence', 'applies_to': [], 'note': 'Pinned evidence prose'},
+                      {'item': 'S1-B2', 'role': 'condition', 'applies_to': ['S1-B1', 'S1-B3'],
+                       'note': 'Required condition'}]}}}}
+    context = {'map_result_id': 'map-0', 'snapshot_id': 'snapshot-0', 'mapped': {'topics': {
+        'T1': {'identity': 'other-native-identity', 'name': 'Scope B', 'scope': 'Prior scope',
+               'source': 'S2', 'relations': [{'item': 'S2-B1', 'role': 'evidence', 'applies_to': [],
+                                            'note': 'Prior content is not new support'}]}}}}
+    registered = [{'page_id': 'stable-page', 'path': '30_Cards/Stable.md', 'page_type': 'card',
+                   'revision_id': 'exact-parent', 'support_refs': ['control-only-old-evidence'],
+                   'identity': {'kind': 'concept', 'identity_key': 'scoped-identity',
+                                'canonical_name': 'Stable', 'aliases': []}}]
+    original = copy.deepcopy([native, context])
+    topics = pages.coordination_catalogue(frozen, [native, context])
+    assert len(topics) == 1 and topics[0]['identity'] == 'native-topic-identity'
+    assert topics[0]['relations'][0][3] == 'Pinned evidence prose'
+    assert pages.group_aliases(topics) == ['S1-B1', 'S1-B2', 'S1-B3']
+    monkeypatch.setattr(pages, 'registry_view', lambda *_: pytest.fail('must use the sealed registry'))
+    spec = pages.plan_page_changes(object(), frozen, [native, context], topics=topics,
+                                   registered_pages=registered)
+    view = spec['view']
+    assert view['mapping_sources'] == [{'map_result_id': 'map-1', 'snapshot_id': 'snapshot-1'}]
+    assert view['mapping_topics'][0]['relations'] == [
+        ['S1-B1', 'evidence', [], ''], ['S1-B2', 'condition', ['S1-B1', 'S1-B3'], 'Required condition']]
+    assert 'identity' not in view['mapping_topics'][0]
+    assert view['context_topics'][0]['topics'] == [
+        {'topic_id': 'T1', 'name': 'Scope B', 'scope': 'Prior scope', 'source': 'S2'}]
+    assert view['registered_pages'][0]['page_id'] == 'stable-page'
+    assert view['registered_pages'][0]['revision_id'] == 'exact-parent'
+    assert view['registered_page_snapshot_sha256'] == fingerprint(registered)
+    assert 'control-only' not in repr(view)
+    assert [native, context] == original
+    legacy = pages.plan_page_changes(object(), frozen, [native, context], registered_pages=registered)
+    assert legacy['view']['mapping_results'] == [native, context]
+    assert legacy['view']['registered_pages'] == registered
+
+
+def test_coordination_group_rejects_partial_topics_and_unexposed_aliases():
+    frozen = round_input(1)
+    mapped = {'map_result_id': 'map-1', 'snapshot_id': 'snapshot-1', 'alias_table': {'S1-B1': {}},
+              'mapped': {'topics': {'T1': {'identity': 'original-topic', 'name': 'One', 'scope': 'Scope',
+                  'source': 'S1', 'relations': [
+                      {'item': 'S1-B1', 'role': 'evidence', 'applies_to': [], 'note': ''}]}}}}
+    catalogue = pages.coordination_catalogue(frozen, [mapped])
+    partial = copy.deepcopy(catalogue)
+    partial[0]['relations'] = []
+    with pytest.raises(ContractError, match='exact complete frozen topics'):
+        pages.plan_page_changes(object(), frozen, [mapped], topics=partial, registered_pages=[])
+    mapped['mapped']['topics']['T1']['relations'][0]['applies_to'] = ['S1-B2']
+    with pytest.raises(ContractError, match='outside its verified Map'):
+        pages.coordination_catalogue(frozen, [mapped])
