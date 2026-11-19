@@ -13,6 +13,7 @@ STAGES = ('start', 'prepare', 'source-seal', 'mapping', 'map-commit', 'reserve',
           'freeze-round', 'coordination', 'writing', 'build', 'formal-build', 'release', 'index', 'acceptance',
           'settle-round', 'closure', 'close')
 CHECKPOINTS = ('prepare', 'mapping', 'coordination', 'writing', 'formal-build', 'release', 'acceptance', 'closure')
+CONTROL_LOCK_TIMEOUT = 30
 
 
 class IncrementalControl:
@@ -40,7 +41,7 @@ class IncrementalControl:
                     raise ContractError('INVALID_SCHEMA', '$.manual_sources', 'manual sources need unique exact paths and hashes')
                 _vault_path(self.vault, source['path'])
                 admission[source['path']] = {'sha256': source['sha256'], 'state': 'held'}
-        with _exclusive_lock(self.root / '.lock'):
+        with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
             if self.path.exists():
                 self._recover_pending()
                 head = _load_json(self.path)
@@ -171,7 +172,7 @@ class IncrementalControl:
         """
         if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
             raise ContractError('ACCESS_DENIED', '$', 'executor reconciliation requires a trusted controller')
-        with _exclusive_lock(self.root / '.lock'):
+        with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
             self._recover_pending()
             head = self.status()
             removed = {}
@@ -215,7 +216,7 @@ class IncrementalControl:
     @contextmanager
     def executing(self, scope, stage, input_fingerprint):
         key = fingerprint({'scope': scope, 'stage': stage, 'input_fingerprint': input_fingerprint})
-        with _exclusive_lock(self.root / '.lock'):
+        with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
             self._recover_pending()
             permission = self.check_admission(scope, stage, input_fingerprint)
             head = self.status()
@@ -229,7 +230,7 @@ class IncrementalControl:
         try:
             yield permission
         finally:
-            with _exclusive_lock(self.root / '.lock'):
+            with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
                 self._recover_pending()
                 head = self.status()
                 head['active_scopes'].pop(key, None)
@@ -239,7 +240,7 @@ class IncrementalControl:
         if stage not in CHECKPOINTS:
             raise ContractError('INVALID_SCHEMA', '$.stage', 'unsupported incremental checkpoint')
         boundary = {'scope': scope, 'stage': stage, 'input_fingerprint': fingerprint(evidence), 'evidence': evidence}
-        with _exclusive_lock(self.root / '.lock'):
+        with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
             self._recover_pending()
             head = self.status()
             if head['state'] == 'pausing':
@@ -260,7 +261,7 @@ class IncrementalControl:
         safe_id(request['operation_id'])
         if request.get('run_id', self.run_id) != self.run_id:
             raise ContractError('STALE_INPUT', '$', 'control request belongs to another run')
-        with _exclusive_lock(self.root / '.lock'):
+        with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
             self._recover_pending()
             head = self.status()
             before = fingerprint(head)

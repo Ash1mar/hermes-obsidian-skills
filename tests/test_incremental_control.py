@@ -13,6 +13,59 @@ def control_fixture(tmp_path):
     return control
 
 
+def test_parallel_source_admission_waits_for_short_control_write(tmp_path, monkeypatch):
+    from threading import Event, Thread, current_thread
+
+    control = control_fixture(tmp_path)
+    writing, release_write, release_workers = Event(), Event(), Event()
+    entered_a, entered_b, finished_b = Event(), Event(), Event()
+    failures = []
+    original = module._write_atomic
+    gated = False
+
+    def write(path, data):
+        nonlocal gated
+        if path == control.path and current_thread().name == 'source-a' and not gated:
+            gated = True
+            writing.set()
+            assert release_write.wait(5), 'test did not release the first admission write'
+        return original(path, data)
+
+    monkeypatch.setattr(module, '_write_atomic', write)
+
+    def source(identity, entered, finished=None):
+        try:
+            with control.executing({'scope_kind': 'source', 'scope_id': identity}, 'mapping', identity):
+                entered.set()
+                assert release_workers.wait(5), 'test did not release admitted workers'
+        except BaseException as error:
+            failures.append(error)
+        finally:
+            if finished is not None:
+                finished.set()
+
+    first = Thread(target=source, args=('source-a', entered_a), name='source-a')
+    second = Thread(target=source, args=('source-b', entered_b, finished_b), name='source-b')
+    first.start()
+    try:
+        assert writing.wait(5)
+        second.start()
+        # The second source must wait rather than fail at the zero-timeout lock.
+        assert not finished_b.wait(.1)
+        release_write.set()
+        assert entered_a.wait(5) and entered_b.wait(5)
+        assert {scope['scope_id'] for scope in control.status()['active_scopes'].values()} == {'source-a', 'source-b'}
+    finally:
+        release_write.set()
+        release_workers.set()
+        first.join(5)
+        if second.ident is not None:
+            second.join(5)
+    assert not first.is_alive() and not second.is_alive()
+    assert failures == []
+    assert control.status()['active_scopes'] == {}
+
+
 def test_prepared_pause_revokes_admission_before_head_replacement(tmp_path, monkeypatch):
     control = control_fixture(tmp_path)
     write = module._write_atomic
