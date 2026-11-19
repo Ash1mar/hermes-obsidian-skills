@@ -12,6 +12,13 @@ QUALIFIERS = {'condition', 'exception', 'conflict', 'contrary', 'definition'}
 CONTENTS = re.compile(r'^(?:目\s*[次录錄]|(?:table of )?contents?)$', re.I)
 ENTRY = re.compile(r'^\s*(?:[#>*-]+\s*)?(\d+(?:[.．]\d+)*)\s+(.+?)\s*(?:[.．…·]{2,}\s*\(?\d+\)?\s*)$', re.M)
 HEADING = re.compile(r'^(\d+(?:[.．]\d+)*)\s+(.+)$')
+ATX_HEADING = re.compile(r'^#{1,6}\s+(.+?)(?:\s+#+)?$')
+STATEMENT = re.compile(
+    r'不[应得宜]|严禁|禁止|必须|须(?:按|设|为|符合)|宜(?:采用|设置|符合|为)|'
+    r'应(?:当|为|按|设|采用|符合|满足|在|由|保持|设置|能|有|大于|小于)|'
+    r'是指|系指|指由|定义[为：:]|[为是][ \t]*\d|'
+    r'\b(?:shall|must|should|means|is defined as|is required to)\b', re.I)
+CURRENT_WRITING_REVISION = 2
 
 
 def normalized(text):
@@ -90,7 +97,25 @@ class EvidenceCatalogue:
         return any(not line.startswith('#') or re.match(r'^#+\s+\d+(?:[.．]\d+){2,}\s+.+', line)
                    for line in lines)
 
-    def chapter_support(self, page_name, selected):
+    def writing_body(self, item):
+        """Distinguish a structural label from a clause rendered as a heading."""
+        if self.label(item['alias'])[0] != 'source_text':
+            return False
+        section = self.sections[item['snapshot']][item['section']]
+        text = re.sub(r'<!--.*?-->', '', self.read(item), flags=re.S).strip()
+        for line in map(str.strip, text.splitlines()):
+            if not line or ENTRY.fullmatch(line) or re.fullmatch(r'[-=]{2,}', line):
+                continue
+            heading = ATX_HEADING.fullmatch(line)
+            if heading or normalized(line) == normalized(section['title']):
+                title = heading[1] if heading else line
+                if STATEMENT.search(title) or (HEADING.fullmatch(title) and title.endswith(('。', '！', '？'))):
+                    return True
+                continue
+            return True
+        return False
+
+    def chapter_support(self, page_name, selected, has_body):
         """Resolve a uniquely named numbered entry through the same Map and chapter."""
         anchors = set()
         page = normalized(page_name)
@@ -124,8 +149,8 @@ class EvidenceCatalogue:
             relations = [r for r in topic['relations'] if r['role'] != 'context']
             aliases = list(dict.fromkeys(r['item'] for r in relations
                            if self.aliases[r['item']]['coverage'] == 'mapped'
-                           and self.body(self.aliases[r['item']])
-                           and root in {s['section_id'] for s in self.lineage(self.aliases[r['item']])}))
+                           and root in {s['section_id'] for s in self.lineage(self.aliases[r['item']])}
+                           and has_body(self.aliases[r['item']])))
             if aliases:
                 candidates.append((map_id, tid, aliases))
         if len(candidates) != 1:
@@ -133,6 +158,37 @@ class EvidenceCatalogue:
         map_id, tid, aliases = candidates[0]
         return {'map_result_id': map_id, 'topic_id': tid, 'snapshot_id': snapshot,
                 'section_id': root, 'aliases': aliases}
+
+    def section_support(self, selected):
+        """Locate mapped body only under an explicitly selected registered section."""
+        anchors = {}
+        for item in selected:
+            if self.label(item['alias'])[0] != 'source_text' or self.writing_body(item):
+                continue
+            section = self.sections[item['snapshot']][item['section']]
+            title = section['title']
+            if not HEADING.fullmatch(title):
+                continue
+            raw = re.sub(r'<!--.*?-->', '', self.read(item), flags=re.S)
+            labels = [heading[1] if (heading := ATX_HEADING.fullmatch(line.strip())) else line.strip()
+                      for line in raw.splitlines() if line.strip()]
+            if normalized(title) in {normalized(line) for line in labels}:
+                anchors[item['snapshot'], item['section']] = title
+        located = []
+        for (snapshot, section_id), title in anchors.items():
+            aliases = [item['alias'] for item in self.aliases.values()
+                       if item['snapshot'] == snapshot and item['coverage'] == 'mapped'
+                       and any(s['section_id'] == section_id for s in self.lineage(item)) and self.writing_body(item)]
+            require(aliases, f'no mapped original body in the registered section {title} ({section_id})')
+            located.append({'snapshot_id': snapshot, 'section_id': section_id, 'aliases': aliases})
+        return located
+
+    def navigation_titles(self, read, navigation):
+        """Expose selected headings along the reading's registered section paths."""
+        lineage = {(self.aliases[alias]['snapshot'], section['section_id'])
+                   for alias in read for section in self.lineage(self.aliases[alias])}
+        return list(dict.fromkeys(self.label(alias)[1] for alias in navigation
+                                 if (self.aliases[alias]['snapshot'], self.aliases[alias]['section']) in lineage))
 
     def explicit_dependencies(self, owned):
         materials = []
@@ -158,20 +214,36 @@ class EvidenceCatalogue:
             links.append((parent['alias'], asset['alias']))
         return links
 
-    def writing_support(self, plan):
+    def writing_support(self, plan, *, writing_revision=CURRENT_WRITING_REVISION):
         """Bind writing to substantive support and its specific Map dependencies."""
+        require(type(writing_revision) is int and writing_revision in (1, CURRENT_WRITING_REVISION),
+                'unsupported incremental writing revision')
+        has_body = self.body if writing_revision == 1 else self.writing_body
+
+        def navigation_only(item):
+            if writing_revision == 1:
+                return self.label(item['alias'])[0] == 'navigation'
+            return item['locator']['kind'] == 'text' and not has_body(item)
+
         selected = [self.units.get(canonical_json(ref['unit_ref'])) for ref in plan['added_support_refs']]
         require(all(selected) and all(ref['span'] is None for ref in plan['added_support_refs']),
                 'new page support must resolve to complete units in the frozen Maps')
-        navigation = {u['alias'] for u in selected if self.label(u['alias'])[0] == 'navigation'}
+        navigation = {item['alias'] for item in selected if navigation_only(item)}
         scope = None
-        if not any(self.body(item) for item in selected):
-            scope = self.chapter_support(plan['name'], selected)
-            require(scope, 'substantive page lacks uniquely located source body and clause evidence for '
-                    + ', '.join(item['alias'] for item in selected))
+        located = []
+        if not any(has_body(item) for item in selected):
+            if writing_revision != 1:
+                located = self.section_support(selected)
+            if not located and (writing_revision == 1 or navigation):
+                scope = self.chapter_support(plan['name'], selected, has_body)
+                names = [item['alias'] if writing_revision == 1 else
+                         f"{item['alias']} ({self.label(item['alias'])[1]})" for item in selected]
+                require(scope, 'substantive page lacks uniquely located source body and clause evidence for '
+                        + ', '.join(names))
         owned = {item['alias'] for item in selected if item['alias'] not in navigation}
         if scope:
             owned.update(scope['aliases'])
+        owned.update(alias for section in located for alias in section['aliases'])
         edges, cross_references, relations = set(), set(), []
         for map_id, _, tid, topic in self.topics:
             if scope and (map_id, tid) != (scope['map_result_id'], scope['topic_id']):
@@ -189,7 +261,10 @@ class EvidenceCatalogue:
                         continue
                     if alias in navigation or target in navigation:
                         continue
-                    if any(self.label(key)[0] == 'navigation' for key in (alias, target)):
+                    context_only = {key for key in (alias, target) if navigation_only(self.aliases[key])}
+                    if context_only:
+                        if writing_revision != 1:
+                            navigation.update(context_only)
                         continue
                     require(all(self.aliases[key]['coverage'] == 'mapped' for key in (alias, target)),
                             f'clause dependency {alias} / {target} lacks mapped source coverage')
@@ -221,6 +296,8 @@ class EvidenceCatalogue:
                  'required_asset_links': sorted([parent, asset] for parent, asset in explicit),
                  'clause_cross_references': sorted([*edge] for edge in cross_references),
                  'dependencies': sorted([*edge] for edge in edges)}
+        if writing_revision != 1:
+            audit.update(writing_revision=writing_revision, located_sections=located)
         change['writing_support_sha256'] = fingerprint(audit)
         change['change_id'] = fingerprint(change)
         return change, audit

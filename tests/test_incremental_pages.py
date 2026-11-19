@@ -182,6 +182,11 @@ def test_incremental_fragment_budget_coverage_and_parent_bytes(vault, tmp_path, 
     catalogue = EvidenceCatalogue(service, maps, 'agent')
     whole = prepare_work(service, catalogue, plan)
     assert len(whole['fragments']) == 1
+    assert '[m1][m2]' in whole['fragments'][0]['request']['messages']
+    assert 'context_truncated flag alone' in whole['fragments'][0]['request']['messages']
+    legacy = prepare_work(service, catalogue, plan, writing_revision=1)
+    assert 'writing_revision' not in legacy
+    assert '[m1][m2]' not in legacy['fragments'][0]['request']['messages']
     cap = whole['whole_cost']['input_size'] - 1
     work = prepare_work(service, catalogue, plan, input_cap=cap)
     assert len(work['fragments']) == 2
@@ -201,6 +206,49 @@ def test_incremental_fragment_budget_coverage_and_parent_bytes(vault, tmp_path, 
     assert result['support_refs'][0] == prior
     with pytest.raises(ContractError, match='unresolved'):
         assemble(service, work, [answers[0], {**answers[1], 'unresolved': ['missing table']}])
+
+
+def test_incremental_heading_without_registered_body_does_not_use_parallel_source(vault, monkeypatch):
+    monkeypatch.syspath_prepend(str(Path(__file__).resolve().parents[1] /
+                                  'hermes-obsidian-governed-ingest-orchestrator' / 'lib'))
+    from incremental_writing import prepare_work
+    from incremental_writing_evidence import EvidenceCatalogue
+
+    refs = publish_sources(vault, [
+        '# 2.1 术语\n',
+        '# 2.1 术语\n\n## 2.1.1 系统\n\nAn unrelated version defines a different system.\n',
+        '# 5.0.1 设计参数不应低于 10。\n',
+    ])
+    service = FileVaultFinalizeService(vault).build
+    maps = []
+    for index, ref in enumerate(refs, 1):
+        key = ref['unit_ref']
+        _, units, _ = service.source._load_set(key['resource_id'], key['unit_set_id'])
+        snapshot = f'snapshot-{index}'
+        maps.append({'snapshot_id': snapshot, 'map_result_id': f'map-{index}',
+                     'alias_table': {f'E{index}-{i}': {'unit_ref': unit['ref'], 'snapshot_id': snapshot,
+                                                     'sha256': unit['content_sha256']}
+                                     for i, unit in enumerate(units)},
+                     'coverage': [{'unit_ref': unit['ref'], 'disposition': 'mapped'} for unit in units],
+                     'mapped': {'topics': {}}})
+    catalogue = EvidenceCatalogue(service, maps, 'agent')
+    intent = decision('create', 'terms', '30_Cards/工程/术语.md')
+    intent['name'] = '术语'
+    plan, = pages.normalize_page_changes(service, round_input(1), {'changes': [intent]}, {'E1': refs[0]})
+    with pytest.raises(ContractError, match='no mapped original body in the registered section 2.1 术语'):
+        prepare_work(service, catalogue, plan)
+
+    plan, = pages.normalize_page_changes(service, round_input(2), {'changes': [intent]}, {'E1': refs[1]})
+    work = prepare_work(service, catalogue, plan)
+    assert len(work['selection']['located_sections']) == 1
+    fragment, = work['fragments']
+    assert fragment['request']['view']['navigation_headings'] == ['2.1 术语']
+    assert refs[1] not in fragment['prepared']['support_refs']
+
+    plan, = pages.normalize_page_changes(service, round_input(3), {'changes': [intent]}, {'E1': refs[2]})
+    work = prepare_work(service, catalogue, plan)
+    fragment, = work['fragments']
+    assert fragment['prepared']['support_refs'] == [refs[2]]
 
 
 def test_coordination_projection_preserves_scoped_relations_and_sealed_registry(monkeypatch):
