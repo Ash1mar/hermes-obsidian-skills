@@ -190,6 +190,11 @@ def test_coordination_projection_preserves_scoped_relations_and_sealed_registry(
     assert view['registered_page_snapshot_sha256'] == fingerprint(registered)
     assert 'control-only' not in repr(view)
     assert [native, context] == original
+    clarified = pages.plan_page_changes(object(), frozen, [native, context], topics=topics,
+                                        registered_pages=registered, planning_revision=2)['view']
+    assert clarified['planning_revision'] == 2
+    assert clarified['mapping_topics'] == view['mapping_topics']
+    assert 'allowed_output_paths' in clarified and 'planning_revision' not in view
     legacy = pages.plan_page_changes(object(), frozen, [native, context], registered_pages=registered)
     assert legacy['view']['mapping_results'] == [native, context]
     assert legacy['view']['registered_pages'] == registered

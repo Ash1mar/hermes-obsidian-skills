@@ -94,7 +94,9 @@ def group_aliases(topics):
                    for alias in [relation[0], *relation[2]]})
 
 
-def _coordination_view(round_input, maps, topics, registered_pages):
+def _coordination_view(round_input, maps, topics, registered_pages, *, planning_revision=1):
+    require(type(planning_revision) is int and planning_revision in (1, 2),
+            'unsupported coordination planning revision')
     authoritative = coordination_catalogue(round_input, maps)
     known = {(row['map_result_id'], row['topic_id']): row for row in authoritative}
     keys = [(row['map_result_id'], row['topic_id']) for row in topics]
@@ -125,7 +127,7 @@ def _coordination_view(round_input, maps, topics, registered_pages):
                    'name': row['identity']['canonical_name'], 'revision_id': row['revision_id'],
                    'identity': copy.deepcopy(row['identity'])}
                   for row in registered_pages if not row.get('held')]
-    return {'round': copy.deepcopy(round_input), 'mapping_sources': sources, 'mapping_topics': projected,
+    view = {'round': copy.deepcopy(round_input), 'mapping_sources': sources, 'mapping_topics': projected,
             'relation_columns': ['item', 'role', 'applies_to', 'qualifier_note'],
             'context_topics': context, 'registered_pages': registered,
             'registered_page_snapshot_sha256': fingerprint(registered_pages),
@@ -137,9 +139,31 @@ def _coordination_view(round_input, maps, topics, registered_pages):
                             'only, not new evidence. All original Map relations remain pinned; general evidence '
                             'notes are omitted here, and writing independently rereads complete original evidence. '
                             'Retain old evidence, conditions and exceptions; hold unready dependencies.'}
+    if planning_revision == 2:
+        from .short_build import PAGE_DIRECTORIES
+
+        view['planning_revision'] = planning_revision
+        view['allowed_output_paths'] = {
+            page_type: '/'.join([*directory, *(['{theme}'] if page_type == 'card' else []), '{name}.md'])
+            for page_type, directory in PAGE_DIRECTORIES.items()}
+        view['instructions'] += (
+            ' This is page planning, not page writing or publication. Create and update propose a page plan '
+            'from the supplied verified, sealed Map now; they do not claim that the page has been authored '
+            'or its original evidence has already been inspected by the writer. The later writer must '
+            'independently read complete original evidence, inspect required assets, and verify conditions '
+            'and exceptions before Build. Do not hold merely because this customary writing and original '
+            'reading have not happened yet, or because raw source text is omitted from this planning view. '
+            'Hold only for a specific missing material or unready dependency that prevents a supported plan, '
+            'and identify that material or dependency in the reason. Keep distinct standards and their '
+            'applicability scopes separate; a shared title or subject alone does not justify merging them. '
+            'For a new page, select the template matching page_type in allowed_output_paths and replace '
+            '{theme} and {name} with portable names. Use a relative POSIX Markdown path with exactly the '
+            'shown directory depth, no reserved characters, and no 00_目录.md filename. For an update, '
+            'preserve the supplied registered page_id, page_type and exact path.')
+    return view
 
 
-def plan_page_changes(service, round_input, maps, *, topics=None, registered_pages=None):
+def plan_page_changes(service, round_input, maps, *, topics=None, registered_pages=None, planning_revision=1):
     """Build bounded native coordination input; the native worker makes decisions."""
     require(round_input['contract'] == 'incremental-round-input/v1' and maps
             and {row['map_result_id'] for row in maps} == set(round_input['map_result_ids']) | set(round_input.get('context_map_result_ids', [])),
@@ -159,7 +183,8 @@ def plan_page_changes(service, round_input, maps, *, topics=None, registered_pag
     registered = registry_view(service) if registered_pages is None else registered_pages
     if topics is not None:
         return {'phase': 'incremental-page-plan',
-                'view': _coordination_view(round_input, maps, topics, registered), 'schema': schema}
+                'view': _coordination_view(round_input, maps, topics, registered,
+                                           planning_revision=planning_revision), 'schema': schema}
     view = {'round': copy.deepcopy(round_input), 'mapping_results': copy.deepcopy(maps),
             'registered_pages': copy.deepcopy(registered),
             'instructions': 'Choose explicit page identities. A title is not identity. Preserve distinct scopes. '

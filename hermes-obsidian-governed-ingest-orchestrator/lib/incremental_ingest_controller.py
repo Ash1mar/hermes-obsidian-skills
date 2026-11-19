@@ -146,11 +146,13 @@ def grouped_page_changes(domain, run_id, service, frozen, aliases, hydrated, coo
     manifest_path = root / 'coordination-groups.json'
     saved = _load_json(manifest_path) if manifest_path.exists() else None
     registry = saved['registered_pages'] if saved else registry_view(service)
+    revision = saved.get('planning_revision', 1) if saved else 2
     catalogue = coordination_catalogue(frozen, hydrated)
     groups = []
 
     def partition(topics):
-        spec = plan_page_changes(service, frozen, hydrated, topics=topics, registered_pages=registry)
+        spec = plan_page_changes(service, frozen, hydrated, topics=topics, registered_pages=registry,
+                                planning_revision=revision)
         request = bind_request(spec)
         if not request['budget']['fits'] and len(topics) > 1:
             half = len(topics) // 2
@@ -163,6 +165,8 @@ def grouped_page_changes(domain, run_id, service, frozen, aliases, hydrated, coo
         partition(catalogue)
     manifest = {'contract': 'incremental-coordination-groups/v1', 'round': frozen['input_fingerprint'],
                 'map_inputs_sha256': fingerprint(hydrated), 'registered_pages': registry, 'groups': groups}
+    if revision != 1:
+        manifest['planning_revision'] = revision
     save(manifest_path, manifest)
     changes, gaps = [], []
     rows = [group['request'] for group in groups if group['request']['budget']['fits']]
