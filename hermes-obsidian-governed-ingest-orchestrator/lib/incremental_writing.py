@@ -10,7 +10,7 @@ from hermes_source_units.incremental_pages import (
 )
 from hermes_source_units.source_units import _load_json, _sha, _vault_path
 from hermes_source_units.validation import ContractError, canonical_json, fingerprint
-from incremental_writing_evidence import EvidenceCatalogue
+from incremental_writing_evidence import CURRENT_WRITING_REVISION, EvidenceCatalogue
 from short_evidence_pass import request as semantic_request
 from short_page_contract import writing_output
 from short_page_fragments import connected_groups
@@ -22,6 +22,25 @@ HANDLE = re.compile(r'\[(m[0-9]+)\]')
 PROPERTIES = {'content': {'type': 'string'}, 'inspected': {'type': 'array', 'items': {'type': 'string'}},
               'unresolved': {'type': 'array', 'items': {'type': 'string'}}}
 SCHEMA = {'type': 'object', 'properties': PROPERTIES, 'required': list(PROPERTIES), 'additionalProperties': False}
+WRITING_REQUIREMENTS = (
+    'Use headings and navigation_headings to orient the reader. A structural heading supplies no definition, '
+    'parameter, condition or exception by itself. Put each material handle in its own ASCII square brackets '
+    'immediately after the statement it supports. Write "…[m1]" for one source or "…[m1][m2]" when both '
+    'sources support the same statement. Cite separate statements where each is made. Use only handles '
+    'from this request. Forms such as "（m1）", "〔m1〕", "[来源：m1]" and "（m1、m2）" cannot be bound. '
+    'Express and cite every assigned substantive material. Record each required original and asset you read '
+    'in inspected. Also cite the table at the point where you use its data. '
+    'For each unresolved entry, identify the assigned statement affected, the exact missing, clipped or '
+    'unreadable clause, handle, table, figure or footnote, and what therefore cannot be determined. '
+    'For example, if an assigned maximum storage height ends with "must not exceed" and the value and unit '
+    'are cut off, identify that specific limit and keep it unresolved. Write the other supported content. '
+    'Return an empty unresolved list when the assigned content has complete support. An omitted-context count '
+    'or context_truncated flag alone, or a nearby table that the assigned content does not depend on, '
+    'does not make the fragment unresolved. If Table A and its continuation cover the assigned classification, '
+    'cite them and complete the classification despite omitted background. A missing footnote that determines '
+    'a classification must remain unresolved. Preserve an explicit clause number when only directing readers '
+    'to that clause. Read the referenced original when assigned to explain its requirements.'
+)
 
 
 def ordered_components(catalogue, aliases, audit):
@@ -47,7 +66,8 @@ def ordered_components(catalogue, aliases, audit):
     return [sorted(group, key=index.__getitem__) for group in connected]
 
 
-def slot(service, catalogue, change, read, write, position, parent_headings, input_cap, *, atomic=False):
+def slot(service, catalogue, change, read, write, position, parent_headings, input_cap, *, atomic=False,
+         writing_revision=1, navigation_headings=()):
     refs = [catalogue.aliases[key]['ref'] for key in read]
     assigned_refs = [catalogue.aliases[key]['ref'] for key in write]
     actor, registry = catalogue.access['actor'], catalogue.access['registry_revision']
@@ -92,6 +112,9 @@ def slot(service, catalogue, change, read, write, position, parent_headings, inp
                             'for this evidence; the complete existing body will be preserved. Preserve explicit '
                             'cross-references to separately assigned clauses as references. Report any missing '
                             'essential original or table explicitly.'}
+    if writing_revision != 1:
+        view['navigation_headings'] = list(navigation_headings)
+        view['instructions'] += ' ' + WRITING_REQUIREMENTS
     prepared = {'phase': PHASE, 'view': view, 'schema': SCHEMA, 'material_aliases': mapping,
                 'projection': {'view': evidence, 'mapping': mapping},
                 'support_refs': assigned_refs, 'reader_measurement': measurement}
@@ -125,11 +148,11 @@ def parent_context(service, change):
     return body, headings, bindings
 
 
-def prepare_work(service, catalogue, plan, *, input_cap=INPUT_CAP):
+def prepare_work(service, catalogue, plan, *, input_cap=INPUT_CAP, writing_revision=CURRENT_WRITING_REVISION):
     """Prepare all slots before any execution, so an atomic oversize cannot waste calls."""
     validate_parent(service, plan)
     with service.source.reading_snapshot():
-        change, audit = catalogue.writing_support(plan)
+        change, audit = catalogue.writing_support(plan, writing_revision=writing_revision)
         _, headings, _ = parent_context(service, change)
         additions = change['added_support_refs']
         require(additions, 'incremental writing requires substantive new page support')
@@ -151,8 +174,10 @@ def prepare_work(service, catalogue, plan, *, input_cap=INPUT_CAP):
             return [*assigned, *(key for key in catalogue.aliases if key in relevant and key not in assigned)]
 
         def make(assigned, position, full_input=None, *, atomic=False):
-            return slot(service, catalogue, change, full_input or reading(assigned), assigned,
-                        position, headings, input_cap, atomic=atomic)
+            read = full_input or reading(assigned)
+            navigation = catalogue.navigation_titles(read, audit['navigation_aliases']) if writing_revision != 1 else ()
+            return slot(service, catalogue, change, read, assigned, position, headings, input_cap, atomic=atomic,
+                        writing_revision=writing_revision, navigation_headings=navigation)
 
         whole, whole_cost = make(ordered, 1)
         fragments = []
@@ -207,8 +232,11 @@ def prepare_work(service, catalogue, plan, *, input_cap=INPUT_CAP):
                         pending.extend(group)
                     if pending:
                         place(pending)
-    return {'contract': CONTRACT, 'plan_id': plan['change_id'], 'change': change, 'selection': audit,
+    work = {'contract': CONTRACT, 'plan_id': plan['change_id'], 'change': change, 'selection': audit,
             'whole_cost': whole_cost, 'fragments': fragments, 'input_cap': input_cap}
+    if writing_revision != 1:
+        work['writing_revision'] = writing_revision
+    return work
 
 
 def assemble(service, work, answers):
@@ -307,6 +335,10 @@ def writing_disposition(domain, control, scope, frozen, changes, service, maps):
                                          recovery_id=repair['operation_id'] if repair else None)
     with control.executing(scope, 'writing', frozen['input_fingerprint']):
         catalogue = EvidenceCatalogue(service, maps, operation['actor'])
+        prior_fragments = sorted((writer / 'fragment-plans').glob('*.json'))
+        # A resumed writer retains the same input contract as its saved work.
+        writing_revision = (_load_json(prior_fragments[0]).get('writing_revision', 1)
+                            if prior_fragments else CURRENT_WRITING_REVISION)
         work = []
         rows = []
         for plan in changes:
@@ -328,7 +360,7 @@ def writing_disposition(domain, control, scope, frozen, changes, service, maps):
                     prep, request_rows = legacy, [saved['request']]
                 else:
                     prep = writer / 'fragment-plans' / (plan_id + '.json')
-                    saved = prepare_work(service, catalogue, plan)
+                    saved = prepare_work(service, catalogue, plan, writing_revision=writing_revision)
                     save(prep, saved)
                     request_rows = [fragment['request'] for fragment in saved['fragments']]
                 work.append((plan, prep, saved))

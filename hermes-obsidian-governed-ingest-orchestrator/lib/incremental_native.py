@@ -256,7 +256,8 @@ def build(root, job, request, own, runner):
                 catalogue = catalogue_for_round(domain, run_id, frozen, service.build)
             plan = planned.get(preparation['plan_id'])
             require(plan is not None, 'page writing escaped the original frozen plan')
-            require(prepare_work(service.build, catalogue, plan) == preparation,
+            require(prepare_work(service.build, catalogue, plan,
+                                 writing_revision=preparation.get('writing_revision', 1)) == preparation,
                     'writing fragments differ from the current original evidence or page scope')
             writer_operation = _load_json(writer_root / 'operation.json')
             require(writer_operation['actor'] == operation['actor'] and writer_operation['origin'] == operation['origin']

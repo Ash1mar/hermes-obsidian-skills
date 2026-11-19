@@ -22,6 +22,15 @@ when its complete model request still fits. Build rechecks the source, scope and
 assembles a single page revision. Updates append the qualified new material while preserving the full
 parent body and its citation bindings.
 
+Structural headings stay in navigation. When a page selects a registered numbered heading
+without substantive text, use only mapped original text from that exact source snapshot and
+section or hold the page with the missing scope. A heading that contains a substantive numbered
+requirement can itself be evidence. New fragment requests require an individual bracketed handle
+for each inline citation, including a table handle where its data is used. An unresolved entry
+identifies the assigned statement, the exact missing evidence and the conclusion it prevents.
+Omitted background blocks writing only when a specific required dependency is missing.
+Saved fragment plans and native receipts use their pinned writing instructions.
+
 For an explicitly authorized writing repair, use the same `control --request` command with
 `action=continue`, the exact drained writing boundary, and `repair_writing` containing the held
 `change_id` values to revise. This applies once to the current frozen round before formal Build.
