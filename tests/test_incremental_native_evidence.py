@@ -65,3 +65,29 @@ def test_completion_never_creates_a_missing_board_or_database(tmp_path, monkeypa
     with pytest.raises(ContractError, match='database is missing'):
         completion_connection('empty-board')
     assert not (empty / 'kanban.db').exists()
+
+
+def test_stopped_writer_history_reads_the_historical_board_from_a_worker(tmp_path, monkeypatch):
+    library = ROOT / 'hermes-obsidian-governed-ingest-orchestrator' / 'lib'
+    monkeypatch.syspath_prepend(str(library))
+    from incremental_recovery import stopped_history
+
+    connected = []
+    past = SimpleNamespace(close=lambda: None)
+
+    def connect(*, db_path=None, board=None):
+        assert db_path == historical.resolve()
+        connected.append(board)
+        return past
+
+    _, boards = runtime(tmp_path, monkeypatch, connect)
+    historical = boards / 'writing' / 'kanban.db'
+    historical.parent.mkdir(parents=True)
+    historical.touch()
+    monkeypatch.setenv('HERMES_KANBAN_DB', str(boards / 'formal-build' / 'kanban.db'))
+    monkeypatch.setitem(sys.modules, 'native_stop_inventory', SimpleNamespace(workflow_processes=lambda *_: []))
+    kanban = SimpleNamespace(list_tasks=lambda connection: [] if connection is past else pytest.fail('wrong board'))
+    scoped = sys.modules['hermes_cli'].kanban_db_connect
+    monkeypatch.setitem(sys.modules, 'run_short_evidence_test', SimpleNamespace(runtime=lambda: (kanban, scoped, None)))
+    assert stopped_history(tmp_path, tmp_path, {'board': 'writing'}, [], {}) == {}
+    assert connected == ['writing']
