@@ -75,9 +75,8 @@ def main():
                 control = IncrementalControl(domain.vault, request['run_id'])
                 result = control.control(request)
                 if result['state'] == 'active':
-                    from incremental_ingest_controller import attach_sources, spawn
-                    attach_sources(domain, request['run_id'])
-                    spawn(domain.vault, request['run_id'])
+                    from incremental_ingest_controller import resume_run
+                    resume_run(domain, request['run_id'])
                 elif result['state'] == 'cancelled':
                     from native_ingest import control_workflow
                     from hermes_source_units.validation import fingerprint
@@ -87,7 +86,8 @@ def main():
                         control_workflow(domain.vault, run['source_workflow_id'], 'cancel',
                                          'incremental-cancel-' + fingerprint([run['run_id'], request['operation_id']])[:64])
             elif args.action == 'recover-delivery':
-                from incremental_ingest_controller import delivery_checkpoint, pending_delivery_pause, recover_delivery
+                from incremental_ingest_controller import (delivery_checkpoint, delivery_recovery_stop,
+                                                           recover_delivery, resume_run)
                 from hermes_source_units.incremental_sources import safe_id
                 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _write_atomic
 
@@ -97,6 +97,8 @@ def main():
                     raise ValueError('delivery recovery requires one exact operator intent')
                 safe_id(request['operation_id'])
                 safe_id(request['round_id'])
+                scoped = 'control_revision' in request
+                follow = scoped and request['disposition'] == 'continue'
                 with _exclusive_lock(domain.root(request['run_id']) / '.controller.lock', timeout=0):
                     run = domain.status(request['run_id'])
                     intent = domain.root(run['run_id']) / 'rounds' / request['round_id'] / 'recovery-requests' / (request['operation_id'] + '.json')
@@ -109,14 +111,13 @@ def main():
                     else:
                         if type(request['expected_revision']) is not int or request['expected_revision'] != run['revision']:
                             raise ValueError('delivery recovery run revision changed')
-                        if 'control_revision' in request:
+                        if scoped:
                             head = control.status()
                             if (run['state'] != 'active' or run['active_round_id'] != request['round_id']
                                     or head['state'] != 'active' or head['revision'] != request['control_revision']):
                                 raise ValueError('delivery node lost its active round or control revision')
                         _write_atomic(intent, _json_bytes(request))
                     control.reconcile_executors()
-                    scoped = 'control_revision' in request
                     stop_after = request.get('stop_after')
                     if scoped:
                         admission = intent.parent.parent / 'recovery-admissions' / intent.name
@@ -125,24 +126,26 @@ def main():
                         else:
                             prefix = intent.parent.parent / 'delivery.json'
                             prior = _load_json(prefix)
-                            if pending_delivery_pause(control.status(), request['round_id'], prior):
-                                stop_after = prior['state']
+                            boundary = delivery_recovery_stop(control.status(), request['round_id'], prior)
+                            if boundary == prior['state'] or boundary == 'build_committed' or stop_after is None:
+                                stop_after = boundary
                             _write_atomic(admission, _json_bytes({'stop_after': stop_after}))
                     result = recover_delivery(domain, run['run_id'], request['round_id'], request['operation_id'],
                                               disposition=request['disposition'], stop_after=stop_after,
-                                              isolation=request.get('isolation'), settle_terminal=True)
+                                              isolation=request.get('isolation'), settle_terminal=not follow)
                     if scoped:
                         delivery_checkpoint(control, request['round_id'], result)
+                if follow:
+                    result = {**result, 'controller': resume_run(domain, run['run_id'])}
             else:
-                from incremental_ingest_controller import attach_sources, spawn
+                from incremental_ingest_controller import resume_run
                 run = domain.status(request['run_id'])
                 if request['actor'] != run['actor'] or request['expected_revision'] != run['revision']:
                     raise ValueError('reconcile actor or run revision changed')
                 IncrementalControl(domain.vault, run['run_id']).check_admission({
                     'scope_kind': 'run', 'scope_id': run['run_id'], 'stage': 'prepare',
                     'input_fingerprint': run['start_fingerprint']})
-                attach_sources(domain, run['run_id'])
-                result = {'run': run, 'controller': spawn(domain.vault, run['run_id'])}
+                result = {'run': run, 'controller': resume_run(domain, run['run_id'])}
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return 0
     except Exception as error:

@@ -4,13 +4,63 @@ from threading import Event
 from types import SimpleNamespace
 import sys
 import time
+import json
+
+import pytest
 
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'hermes-obsidian-governed-ingest-orchestrator/lib'))
+sys.path.insert(0,str(ROOT/'hermes-obsidian-governed-ingest-orchestrator/scripts'))
 import incremental_ingest_controller as controller
 import incremental_runtime as runtime
 from hermes_source_units.incremental_qualification import QualificationContention, qualification_lock
 from hermes_source_units.source_units import _exclusive_lock
+
+
+@pytest.mark.parametrize('control_state', ['active', 'paused', 'cancelled'])
+def test_node_delivery_releases_lock_then_reattaches_only_if_still_active(tmp_path, monkeypatch, control_state):
+    import manage_incremental_ingest as command
+
+    run = {'state': 'active', 'run_id': 'run', 'actor': 'agent', 'revision': 3, 'active_round_id': 'round-1'}
+    head = {'state': 'active', 'revision': 4, 'pause_after': [], 'released': []}
+    domain = SimpleNamespace(vault=tmp_path, root=lambda _: tmp_path, status=lambda _: run)
+    lock = tmp_path / '.controller.lock'
+    folder = tmp_path / 'rounds/round-1'
+    folder.mkdir(parents=True)
+    (folder/'delivery.json').write_text(json.dumps({'state': 'release_applying'}))
+    request = tmp_path/'recover.json'
+    request.write_text(json.dumps({'run_id': 'run', 'round_id': 'round-1', 'expected_revision': 3,
+        'actor': 'agent', 'operation_id': 'resume', 'disposition': 'continue', 'control_revision': 4,
+        'stop_after': 'index_verified'}))
+    events = []
+
+    class Control:
+        def __init__(self, *_): pass
+        def status(self): return head
+        def reconcile_executors(self): pass
+        def checkpoint(self, *_): return head
+
+    def recover(*_, **options):
+        assert options['stop_after'] == 'index_verified' and not options['settle_terminal']
+        events.append('native receipt')
+        head['state'] = control_state
+        return {'state': 'index_verified', 'release_id': 'release', 'release_hash': 'hash',
+                'provider': {'index_generation': 'generation'}}
+
+    def spawn(*_):
+        with _exclusive_lock(lock, timeout=0, marker=False):
+            events.append('controller')
+        return {'pid': 1}
+
+    monkeypatch.setattr(sys, 'argv', ['manage', '--vault', str(tmp_path), 'recover-delivery', '--request', str(request)])
+    monkeypatch.setattr(command, 'service', lambda *_: domain)
+    monkeypatch.setattr(command, 'IncrementalControl', Control)
+    monkeypatch.setattr(controller, 'IncrementalControl', Control)
+    monkeypatch.setattr(controller, 'recover_delivery', recover)
+    monkeypatch.setattr(controller, 'attach_sources', lambda *_: events.append('attach sources'))
+    monkeypatch.setattr(controller, 'spawn', spawn)
+    assert command.main() == 0
+    assert events == (['native receipt', 'attach sources', 'controller'] if control_state == 'active' else ['native receipt'])
 
 
 def test_resume_restores_unobserved_mapping_checkpoint_before_dispatch(tmp_path, monkeypatch):

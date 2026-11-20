@@ -251,6 +251,15 @@ def preview(vault, run_id, source_path):
 
 
 def retry(vault, request):
+    from incremental_ingest_controller import resume_run
+
+    result = authorize_retry(vault, request)
+    domain = service(Path(vault), request['run_id'])
+    resume_run(domain, request['run_id'])
+    return result
+
+
+def authorize_retry(vault, request):
     require(not any(os.environ.get(name) for name in ('HERMES_KANBAN_TASK', 'HERMES_DELEGATED_CHILD_CONTEXT', 'HERMES_KANBAN_DB')),
             'source retry requires a trusted operator without a worker database override', 'ACCESS_DENIED')
     required = {'run_id', 'actor', 'operation_id', 'control_revision', 'run_revision', 'source_path', 'source_sha256', 'retry_kind'}
@@ -258,7 +267,6 @@ def retry(vault, request):
     safe_id(request['run_id']); safe_id(request['operation_id'])
     domain = service(Path(vault), request['run_id'])
     root = domain.root(request['run_id'])
-    start_controller = False
     with _exclusive_lock(root / '.controller.lock', timeout=0):
         journal = root / 'source-retries' / (request['operation_id'] + '.json')
         run, control = domain.status(request['run_id']), IncrementalControl(domain.vault, request['run_id']).status()
@@ -294,8 +302,4 @@ def retry(vault, request):
                    'semantic_calls_replayed': 0, 'pause_released': False, 'state': 'ready',
                    'controller_requested': control['state'] == 'active'}
         _write_atomic(journal, _json_bytes({**saved, 'state': 'committed', 'receipt': receipt}))
-        start_controller = control['state'] == 'active'
-    if start_controller:
-        from incremental_ingest_controller import spawn
-        spawn(domain.vault, request['run_id'])
     return receipt

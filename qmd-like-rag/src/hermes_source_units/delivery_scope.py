@@ -42,16 +42,18 @@ def closure_path(vault,pointer):
     path=_vault_path(vault,pointer['ref'])
     return path.with_name(path.stem+'.closure.json')
 
-def dependency_partition(pages,excluded):
+def dependency_partition(pages,excluded,*,unavailable=()):
     """Resolve declared page links, then exclude their transitive dependents.
 
     Shared source evidence is not a page dependency. Link identity is resolved
     from the complete page set, never a document-specific title whitelist.
     """
     lookup={};by_id={p['page_id']:p for p in pages};edges={p:set() for p in by_id}
-    for p in pages:
-        for key in (p['path'],p['path'].removesuffix('.md'),Path(p['path']).stem,
-                    p['identity']['canonical_name'],*p['identity'].get('aliases',[])):
+    unavailable_ids={p['page_id'] for p in unavailable}-by_id.keys()
+    for p in [*pages, *(row for row in unavailable if row['page_id'] in unavailable_ids)]:
+        path=p.get('path')
+        path_keys=(path,path.removesuffix('.md'),Path(path).stem) if path else ()
+        for key in (*path_keys,p['identity']['canonical_name'],*p['identity'].get('aliases',[])):
             lookup.setdefault(key.casefold(),set()).add(p['page_id'])
     reasons=copy.deepcopy(excluded)
     for p in pages:
@@ -71,9 +73,10 @@ def dependency_partition(pages,excluded):
     while changed:
         changed=False
         for pid,deps in edges.items():
-            if pid in reasons or not deps.intersection(reasons):continue
+            blocked=deps.intersection(reasons.keys() | unavailable_ids)
+            if pid in reasons or not blocked:continue
             reasons[pid]={'category':'dependent_exclusion','reason':'depends on excluded page content',
-                'depends_on':sorted(deps.intersection(reasons)),
+                'depends_on':sorted(blocked),
                 'reopen_condition':'resolve the dependency and authorize a new delivery scope'};changed=True
     return {'included':sorted(set(by_id)-set(reasons)),'excluded':reasons,
         'dependencies':{k:sorted(v) for k,v in edges.items() if v}}

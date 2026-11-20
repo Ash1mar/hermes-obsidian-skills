@@ -18,6 +18,10 @@ revalidated, and guarded `00_目录.md` files are derived from eligible pages at
 
 `recover-delivery --request` requires run_id, actor, expected_revision, round_id, operation_id, disposition (`continue`, `abort_uncommitted`, or `isolate_committed`) and optional stop_after (`build_committed` or `index_verified`). Recovery uses the original Build authorization and draft targets. Never regenerate semantic outputs to clear a delivery diagnostic. Canonical mutation requires a prepared delivery window; abort is allowed only before canonical writes, while isolation must have been preauthorized.
 
+The console's file-node recovery operations reattach the same run after their scoped authorization or acknowledged recovery. A delivery-node request binds the current control revision and reattaches only after the native delivery receipt is verified and the controller lock is released. The controller reuses saved results and proceeds to the next eligible stage. Paused, cancelled and completed runs receive no new dispatch. The applicable durable checkpoint stays in force, including when recovery itself reaches it. Partial closure finishes the original run.
+
+Scoped publication records held plans without a verified page path under `held_plan_gaps`. Each record identifies the frozen change, page identity, reason and pinned Build evidence. A registered path can be recovered from the exact committed page revision. Page exclusions continue to require paths. A required link to a held identity blocks its dependent pages even when that identity has no file.
+
 Native workers perform source preparation, Map, coordination, page writing and formal Build. The controller binds exact snapshots and retains full old page evidence. Hold missing required evidence and direct dependents. Query is unavailable during delivery and remains separately authorized after index readiness. Do not reset failed sources, overwrite parent versions, fabricate native completion or cross durable pauses automatically.
 
 New coordination requests label navigation, source text and registered assets. The writing admission record
