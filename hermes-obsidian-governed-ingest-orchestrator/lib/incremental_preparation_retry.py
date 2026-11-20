@@ -16,6 +16,14 @@ CONTRACT = 'incremental-preparation-retry/v1'
 
 
 def retry(domain, request):
+    from incremental_ingest_controller import resume_run
+
+    result = authorize_retry(domain, request)
+    resume_run(domain, request['run_id'])
+    return result
+
+
+def authorize_retry(domain, request):
     from hermes_cli import kanban_db as kb
     from ingest_kanban import IngestKanbanAdapter, desired_graph, failure_record
     from program_worker import canonical_binding
@@ -99,10 +107,6 @@ def retry(domain, request):
                   'source_path': source_path, 'task_id': task.id, 'prior_run_id': grant['prior_run_id'],
                   'pause_released': False}
         save(grant_path.with_suffix('.dispatch.json'), result)
-    from incremental_ingest_controller import attach_sources, spawn
-
-    attach_sources(domain, run_id)
-    spawn(domain.vault, run_id)
     return result
 
 

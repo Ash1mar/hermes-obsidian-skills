@@ -7,10 +7,10 @@ from .partial_finalize import pin,pinned
 from .short_build import content_isolation, evidence as short_evidence, identity as short_identity, output_path, qa_advisory
 
 
-def short_scope(service, runs):
+def short_scope(service, runs, registered_revisions=None):
     proofs = [r['short_evidence'] for r in runs if r.get('short_evidence')]
     selected = {p['page_id'] for r in runs if r.get('short_evidence') for p in r['page_revisions']}
-    excluded = {}
+    excluded, held_plans = {}, {}
     for run in runs:
         if not run.get('short_evidence'):
             continue
@@ -22,8 +22,25 @@ def short_scope(service, runs):
             else:
                 identity, page_id = short_identity(service.build, row['short_id'], row['name'])
                 path = output_path(row['short_id'], row.get('card_path'), page_type=row.get('page_type'))
-            excluded[page_id] = {**row['disposition'], 'identity': identity, 'path': path,
-                                 'original_scope': run['short_evidence']}
+            exclusion = {**row['disposition'], 'identity': identity, 'path': path,
+                         'original_scope': run['short_evidence']}
+            if change and not path:
+                revision_id = (registered_revisions or {}).get(page_id)
+                if revision_id:
+                    from .knowledge_destinations import destination
+
+                    page = service._page_revision(page_id, revision_id)
+                    if page['subject_id'] != change['subject_id']:
+                        fail('registered hold path belongs to another page identity', 'SOURCE_CHANGED')
+                    exclusion.update(path=destination(page['path'], existing=True), registered_revision_id=revision_id)
+                else:
+                    held_plans[change['change_id']] = {
+                        'change_id': change['change_id'], 'page_id': page_id,
+                        'reason': row['disposition']['reason'], 'original_scope': run['short_evidence'],
+                        'identity': identity,
+                    }
+                    continue
+            excluded[page_id] = exclusion
     if selected.intersection(excluded):
         fail('short Build selected an excluded page')
     for run in runs:
@@ -38,7 +55,11 @@ def short_scope(service, runs):
                                        'reopen_condition': 'verify a new revision of the affected page',
                                        'identity': decision['identity'], 'path': decision['path'],
                                        'original_scope': pointer}
-    return selected, excluded, proofs
+    return selected, excluded, proofs, [held_plans[key] for key in sorted(held_plans)]
+
+
+def held_plan_records(held_plans):
+    return [{key: value for key, value in plan.items() if key != 'identity'} for plan in held_plans]
 
 
 def retained_exclusions(service, exclusions, base_id, previous, current):
@@ -68,9 +89,9 @@ def reading_requirements(service, runs):
     return required
 
 
-def reading_partition(candidates, exclusions, eligible, requirements):
+def reading_partition(candidates, exclusions, eligible, requirements, *, held_plans=()):
     """Resolve required reading targets from the same eligible release."""
-    partition = dependency_partition(candidates, exclusions)
+    partition = dependency_partition(candidates, exclusions, unavailable=held_plans)
     if not requirements:
         return partition
     prefix = 'short-evidence:'
@@ -105,7 +126,7 @@ def reading_partition(candidates, exclusions, eligible, requirements):
                               'reopen_condition': 'verify every required reading target in the same release'}
         if not holds:
             break
-        partition = dependency_partition(candidates, {**partition['excluded'], **holds})
+        partition = dependency_partition(candidates, {**partition['excluded'], **holds}, unavailable=held_plans)
     for pid in set(partition['included']) & requirements.keys():
         partition['dependencies'][pid] = sorted(edges[pid])
     return partition
@@ -124,7 +145,8 @@ def build_plan(service,request,state,runs,scopes):
         published={(p['page_id'],p['current_revision_id']) for p in old['subjects']}
         allowed.update(s['page_id'] for s in active if (s['page_id'],s['current_revision_id']) in published)
     exclusions={p['page_id']:{**p,'reason':p.get('reason','excluded by delivery scope')} for row in scopes.values() for p in row['scope']['excluded']}
-    short_pages,short_excluded,short_proofs=short_scope(service,runs)
+    registered_revisions = {row['page_id']: row['current_revision_id'] for row in active}
+    short_pages,short_excluded,short_proofs,held_plans=short_scope(service,runs,registered_revisions)
     if prior:
         short_excluded=retained_exclusions(service,short_excluded,prior,old['subjects'],active)
     for run in runs:
@@ -190,7 +212,7 @@ def build_plan(service,request,state,runs,scopes):
             if p['page_id'] in known:continue
             known.add(p['page_id']);candidates.append({'page_id':p['page_id'],'path':view['path'],
                 'identity':view['identity'],'content':view['content']})
-    partition=reading_partition(candidates,exclusions,eligible,reading_requirements(service,runs))
+    partition=reading_partition(candidates,exclusions,eligible,reading_requirements(service,runs),held_plans=held_plans)
     included=set(partition['included'])&set(rows)
     subjects=[s for s in active if s['page_id'] in included]
     with span('release_scope_summary',vault=service.vault, unique_body_reads=len(contents),
@@ -209,13 +231,16 @@ def build_plan(service,request,state,runs,scopes):
         'base_release':(pin(service.vault,service._manifest_path(prior).relative_to(service.vault).as_posix()) if prior else None),
         'included_page_ids':sorted(included),'excluded':[{'page_id':k,'path':v.get('path') or next(p['path'] for p in candidates if p['page_id']==k),
             'category':v['category'],'reason':v['reason'],'reopen_condition':v['reopen_condition'],
-            'depends_on':v.get('depends_on',[]),'original_scope':v.get('original_scope') or source_by_page.get(k)}
+            'depends_on':v.get('depends_on',[]),'original_scope':v.get('original_scope') or source_by_page.get(k),
+            **({'registered_revision_id':v['registered_revision_id']} if 'registered_revision_id' in v else {})}
             for k,v in sorted(partition['excluded'].items())],
         'inherited_coverage_gaps':list({r['closure']['authorization']['ref']:r['closure']['authorization'] for r in scopes.values()}.values())
             + [r['coverage_scope'] for r in runs if r.get('coverage_scope')] + short_proofs + previous_qa,
         'coverage_gap_summaries':[{'scope_id':r['scope']['scope_id'],'held_page_count':r['scope']['coverage_gaps'].get('held_page_count',0),
             'deferred_candidate_occurrences':r['scope']['coverage_gaps'].get('deferred_candidate_occurrences',0)} for r in scopes.values()],
         'raw_source_indexing':False,'dependencies':[{'page_id':k,'depends_on':v} for k,v in partition['dependencies'].items()]}
+    if held_plans:
+        delivery['held_plan_gaps'] = held_plan_records(held_plans)
     plan={'contract':'hermes-vault-finalize-plan/v1','release_id':str(request['release_id']),
         'revision':1,'state':'draft','actor':str(request['actor']),'expected_state_revision':state['revision'],
         'identity_registry_revision':registry['revision'],'build_runs':[{'run_id':r['run_id'],'revision':r['revision']} for r in runs],
@@ -234,7 +259,8 @@ def validate_manifest(service,plan,release,*,scopes=None):
             fail('published facts differ from the applied plan','SOURCE_CHANGED')
     if (release.get('page_governance')!=plan.get('page_governance') or release.get('delivery_scopes')!=plan.get('delivery_scopes') or release.get('delivery')!=plan.get('delivery')):
         fail('published scope or exclusions differ from the applied plan','SOURCE_CHANGED')
-    selected=set(release['delivery']['included_page_ids']);excluded={p['page_id'] for p in release['delivery']['excluded']}
+    selected=set(release['delivery']['included_page_ids'])
+    excluded={p['page_id']:p for p in release['delivery']['excluded']}
     if fingerprint({k:v for k,v in plan.items() if k not in ('revision','state','plan_id')})!=plan['plan_id']:
         fail('scoped plan content differs from its identity','SOURCE_CHANGED')
     from .delivery_scope import release_closures
@@ -250,7 +276,14 @@ def validate_manifest(service,plan,release,*,scopes=None):
         completed.append(run)
         allowed.update(p['page_id'] for p in run['page_revisions'])
     required_exclusions={p['page_id'] for row in scopes.values() for p in row['scope']['excluded']}
-    short_pages,short_excluded,short_proofs=short_scope(service,completed)
+    registered_revisions = {pid: row['registered_revision_id'] for pid, row in excluded.items()
+                            if 'registered_revision_id' in row}
+    short_pages,short_excluded,short_proofs,held_plans=short_scope(service,completed,registered_revisions)
+    if held_plan_records(held_plans) != release['delivery'].get('held_plan_gaps', []):
+        fail('release changed or omitted held page plans', 'SOURCE_CHANGED')
+    if any(pid not in short_excluded or any(excluded[pid].get(key) != short_excluded[pid].get(key)
+               for key in ('registered_revision_id', 'path', 'original_scope')) for pid in registered_revisions):
+        fail('release changed a registered hold path or its proof', 'SOURCE_CHANGED')
     if any(p not in release['delivery']['inherited_coverage_gaps'] for p in short_proofs):
         fail('release omitted short Build coverage evidence','SOURCE_CHANGED')
     if release['delivery'].get('base_release'):
@@ -262,7 +295,7 @@ def validate_manifest(service,plan,release,*,scopes=None):
     required_exclusions.update(short_excluded)
     if not selected.issubset(allowed) or not required_exclusions.issubset(excluded):
         fail('release omitted exclusions or exceeded its delivery','SOURCE_CHANGED')
-    if (selected&excluded or selected!={s['page_id'] for s in release['subjects']}
+    if (selected.intersection(excluded) or selected!={s['page_id'] for s in release['subjects']}
             or selected!={r['id'] for r in release['index_eligibility']}
             or any(r['kind']!='knowledge_page' for r in release['index_eligibility'])):
         fail('release subjects/index escaped the exact eligible page set','SOURCE_CHANGED')

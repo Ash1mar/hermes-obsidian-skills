@@ -116,9 +116,9 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
         from hermes_source_units import scoped_release
         short_scope = scoped_release.short_scope
         def material_exclusion(*args):
-            selected_ids, omissions, pointers = short_scope(*args)
+            selected_ids, omissions, pointers, held_plans = short_scope(*args)
             omissions[page['page_id']].update(category='unresolved', reason='missing required evidence')
-            return selected_ids, omissions, pointers
+            return selected_ids, omissions, pointers, held_plans
         with monkeypatch.context() as patch:
             patch.setattr(scoped_release, 'short_scope', material_exclusion)
             negative = service._build_plan(request('release-material-test', [added['run_id']], state=service.status()['revision']))
@@ -146,6 +146,38 @@ def test_native_short_build_keeps_qa_out_of_partial_release(vault: Path, tmp_pat
     proof.write_bytes(proof.read_bytes() + b' ')
     with pytest.raises(ContractError, match='changed'):
         service.validate(release['release_id'])
+
+
+def test_pathless_incremental_holds_keep_the_build_proof_and_block_only_dependents(monkeypatch):
+    from types import SimpleNamespace
+    from hermes_source_units import scoped_release
+
+    proof = {'ref': 'frozen/short-evidence.json', 'sha256': 'a' * 64}
+    changes = [{'change_id': 'plan-' + pid, 'page_id': pid, 'subject_id': 'subject-' + pid,
+                'identity': {'canonical_name': name}, 'path': ''}
+               for pid, name in [('unlocated', 'Held topic'), ('registered', 'Existing topic')]]
+    original = [{'incremental_change': change, 'disposition': {'category': 'unresolved',
+                 'reason': 'Missing original evidence', 'reopen_condition': 'Verify evidence'}} for change in changes]
+    monkeypatch.setattr(scoped_release, 'short_evidence', lambda *_: {'scope': {'excluded': original}})
+    monkeypatch.setattr(scoped_release, 'content_isolation', lambda *_: (None, []))
+    service = SimpleNamespace(build=None, _page_revision=lambda pid, rev: {
+        'subject_id': 'subject-' + pid, 'path': '30_Cards/existing.md'})
+    run = {'short_evidence': proof, 'page_revisions': []}
+    _, exclusions, _, held = scoped_release.short_scope(service, [run], {'registered': 'revision-1'})
+    assert exclusions['registered']['path'] == '30_Cards/existing.md'
+    assert exclusions['registered']['registered_revision_id'] == 'revision-1'
+    assert scoped_release.held_plan_records(held) == [{'page_id': 'unlocated', 'change_id': 'plan-unlocated',
+        'reason': 'Missing original evidence', 'original_scope': proof}]
+    pages = [
+        {'page_id': pid, 'path': '30_Cards/' + pid + '.md', 'identity': {'canonical_name': name}, 'content': body}
+        for pid, name, body in [('direct', 'Direct', '[[Held topic]]'),
+                                ('indirect', 'Indirect', '[[Direct]]'), ('independent', 'Independent', 'Other evidence')]]
+    partition = scoped_release.reading_partition(pages, exclusions, {}, {}, held_plans=held)
+    assert partition['included'] == ['independent']
+    assert partition['excluded']['direct']['depends_on'] == ['unlocated']
+    assert partition['excluded']['indirect']['depends_on'] == ['direct']
+    assert 'unlocated' not in partition['excluded']
+    assert original[0]['incremental_change']['path'] == original[1]['incremental_change']['path'] == ''
 
 
 def test_only_localized_actual_material_defect_is_a_hold():

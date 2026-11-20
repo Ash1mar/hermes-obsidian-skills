@@ -197,12 +197,10 @@ def recover(domain, request, *, preview=False):
         active = control.status()
         require(active.get('writing_continuations', {}).get(round_id, {}).get('manifest') == pointer,
                 'writing continuation control receipt is missing')
-    if active['state'] != 'active':
-        return {**summary, 'state': active['state']}
-    from incremental_ingest_controller import attach_sources, spawn
+    from incremental_ingest_controller import resume_run
 
-    attach_sources(domain, run_id)
-    return {**summary, 'state': 'active', 'controller': spawn(domain.vault, run_id), 'manifest': pointer}
+    controller = resume_run(domain, run_id)
+    return {**summary, 'state': control.status()['state'], 'controller': controller, 'manifest': pointer}
 
 
 def continued_answers(vault, writer, work, continuation):

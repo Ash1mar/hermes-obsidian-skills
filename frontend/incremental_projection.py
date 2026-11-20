@@ -9,7 +9,7 @@ import sqlite3
 import sys
 
 sys.path.append(str(Path(__file__).resolve().parents[1] / 'hermes-obsidian-governed-ingest-orchestrator/lib'))
-from incremental_preparation_state import can_retry_preparation, interrupted_preparation, native_state
+from incremental_preparation_state import ABNORMAL_ENDS, can_retry_preparation, interrupted_preparation, native_state
 
 STAGES = (('prepare', '来源准备'), ('mapping', '证据映射'), ('coordination', '页面协调'),
           ('writing', '页面写作'), ('formal-build', '正式构建'), ('release', '发布与索引'),
@@ -37,7 +37,8 @@ def native_tasks(board):
                 runs = kb.list_runs(connection, task.id, include_active=False)
                 last = max(runs, key=lambda row: row.id, default=None)
                 result[task.id] = {'task_id': task.id, **native_state(task, last),
-                                   'created_by': getattr(task, 'created_by', None), 'body': getattr(task, 'body', None)}
+                                   'created_by': getattr(task, 'created_by', None), 'body': getattr(task, 'body', None),
+                                   'last_error': getattr(last, 'error', None)}
             return result
     except (ImportError, OSError, ValueError, RuntimeError, sqlite3.Error):
         return {}
@@ -96,6 +97,18 @@ def operation_state(directory, control, kind, identity, phase, *, complete=False
     return 'held' if results and all(row.get('state') == 'settled' for row in results) else 'pending'
 
 
+def delivery_failure(directory, native_reader):
+    operations = [directory / 'operation.json', *directory.glob('recoveries/*/operation.json')]
+    tasks = [task for path in operations
+             for task in native_reader(read(path).get('board')).values()]
+    if any(task['claimed'] or task['status'] in ('ready', 'running') for task in tasks):
+        return None
+    latest = max(tasks, key=lambda task: (task.get('last_ended_at') or 0, task.get('last_run_id') or 0), default=None)
+    if latest and latest.get('last_outcome') in ABNORMAL_ENDS and latest.get('last_error'):
+        return latest['last_error'][:1000]
+    return None
+
+
 def round_projection(root, rid, run, control, *, native_reader=None):
     folder = root / 'rounds' / rid
     input_ = read(folder / 'input.json')
@@ -135,6 +148,13 @@ def round_projection(root, rid, run, control, *, native_reader=None):
     phases.append(stage('release', 'completed' if prefix in ('index_verified', 'committed') else
                         'running' if prefix in ('release_applying', 'release_applied', 'index_pending') else 'pending', **shared))
     phases.append(stage('acceptance', 'completed' if prefix == 'committed' else 'pending', **shared))
+    if prefix in ('prepared', 'build_committing', 'build_committed', 'release_applying',
+                  'release_applied', 'index_pending', 'index_verified') and not active_scope(
+            control, 'round', rid, 'formal-build'):
+        error = delivery_failure(native / 'formal-build', native_reader or native_tasks)
+        if error:
+            failed = phases[-3] if not built else phases[-1] if prefix == 'index_verified' else phases[-2]
+            failed.update(state='failed', detail=error)
     if settlement.get('state') == 'held':
         for value in phases:
             if value['state'] == 'pending':
@@ -211,12 +231,14 @@ def source_pipeline(item, root, run, control, source_workflow, rounds, *, native
         dependencies[row['round_id']] = list(dict.fromkeys(change['page_id'] for change in matching))
         dependent_changes[row['round_id']] = [change['change_id'] for change in matching if 'change_id' in change]
     for key, _ in STAGES[2:-1]:
-        states = [next(value for value in row['stages'] if value['key'] == key)['state'] for row in related]
+        relevant = [next(value for value in row['stages'] if value['key'] == key) for row in related]
+        states = [row['state'] for row in relevant]
         value = aggregate(states)
         if not related and (prep_state == 'failed' or item['state'] == 'mapping_held'):
             value = 'held'
+        failure = next((phase.get('detail') for phase in reversed(relevant) if phase['state'] == 'failed'), None)
         pipeline.append(stage(key, value, shared=True, round_ids=[row['round_id'] for row in related],
-                              detail='共享轮次结果' if related else '等待本来源映射进入共享轮次'))
+                              detail=failure or ('共享轮次结果' if related else '等待本来源映射进入共享轮次')))
     closed = run.get('state') in ('completed', 'partial')
     pipeline.append(apply_boundary(stage('closure', run.get('state') if closed else 'pending', shared=True,
                                        detail='整次运行统一收尾'), control, 'run', run.get('run_id')))

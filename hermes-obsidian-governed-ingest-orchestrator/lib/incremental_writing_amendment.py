@@ -381,12 +381,10 @@ def recover(domain, request, *, preview):
         head = control.status()
         require(head.get('writing_amendments', {}).get(round_id, {}).get('manifest') == pointer,
                 'writing amendment lost its exact control authorization')
-    if head['state'] != 'active':
-        return {**summary, 'state': head['state']}
-    from incremental_ingest_controller import attach_sources, spawn
+    from incremental_ingest_controller import resume_run
 
-    attach_sources(domain, run_id)
-    return {**summary, 'state': 'active', 'manifest': pointer, 'controller': spawn(domain.vault, run_id)}
+    controller = resume_run(domain, run_id)
+    return {**summary, 'state': control.status()['state'], 'manifest': pointer, 'controller': controller}
 
 
 def execute(domain, builder, frozen, authority, output):
