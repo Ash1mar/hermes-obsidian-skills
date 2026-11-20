@@ -410,8 +410,9 @@ class FileIncrementalIngestService:
                     and all(row['state'] in ('mapped', 'failed') for row in run['sources'].values())
                     and set(run['map_result_ids']) == set(run['consumed_map_ids']),
                     'sources or rounds remain unfinished', 'INCOMPLETE_COVERAGE')
-            require(all(row['state'] == 'settled' for row in run['reservations'].values()),
-                    'reserved or unknown semantic consumption remains unsettled')
+            accounting = request.get('usage_reconciliation')
+            reserved = {key: row for key, row in run['reservations'].items() if row['state'] == 'reserved'}
+            require(accounting or not reserved, 'reserved or unknown semantic consumption remains unsettled')
             dispositions = [self.root(run['run_id']) / 'rounds' / rid / 'settlement.json' for rid in run['round_ids']]
             require(all(path.is_file() for path in dispositions), 'round settlement is missing')
             gaps = [row for row in run['sources'].values() if row['state'] == 'failed']
@@ -453,13 +454,54 @@ class FileIncrementalIngestService:
                 finalize.validate(release_id)
             else:
                 require(final_delivery is None, 'closure has no delivered round')
+            additional, retained = [], []
+            if accounting:
+                head = _load_json(self.root(run['run_id']) / 'control/head.json')
+                require(head.get('partial_closure') == accounting and head['state'] == 'active',
+                        'usage reconciliation requires the authorized closure checkpoint', 'ACCESS_DENIED')
+                reconciliation = read_pin(self.vault, accounting)
+                require(reconciliation['contract'] == 'incremental-closure-accounting/v1'
+                        and reconciliation['run_id'] == run['run_id'] and reconciliation['actor'] == run['actor']
+                        and reconciliation['run_revision'] == run['revision']
+                        and set(reconciliation['entries']) == reserved.keys(),
+                        'closure reconciliation differs from the original reservations')
+                for key, entry in reconciliation['entries'].items():
+                    row = reserved[key]
+                    require(entry['reservation'] == row, 'closure reconciliation changed the original reservation')
+                    for field in ('job', 'attempt', 'audit', 'failure', 'native_result'):
+                        if entry.get(field):
+                            read_pin(self.vault, entry[field])
+                    for proof in entry.get('http_sends', []):
+                        read_pin(self.vault, proof)
+                    actual = entry.get('actual')
+                    if actual is None:
+                        retained.append(key)
+                        continue
+                    require(entry['disposition'] in ('settled_actual', 'settled_zero') and entry['audit'] and entry.get('session')
+                            and (entry['disposition'] != 'settled_zero'
+                                 or (not any(actual.values()) and entry['failure']
+                                     and entry['http_journal']['send_count'] == 0 and not entry['http_sends']))
+                            and set(actual) == {'calls', 'input_tokens', 'output_tokens'}
+                            and all(type(value) is int and 0 <= value <= row['max_' + field]
+                                    for field, value in actual.items()), 'closure usage exceeds its bound reservation')
+                    usage = self._immutable(self.reports(run['run_id']) / 'closure-usage' / (key + '.json'),
+                                            {'request_fingerprint': row['request_fingerprint'], 'actual': actual,
+                                             'reconciliation': accounting, 'audit': entry['audit'],
+                                             'session': entry['session']})
+                    row.update(state='settled', actual=actual, usage=usage)
+                    additional.append(usage)
+                additional.append(accounting)
             result = {'contract': 'incremental-run-closure/v1', 'run_id': run['run_id'],
-                      'state': 'partial' if gaps else 'completed', 'source_outcomes': run['sources'],
+                      'state': 'partial' if gaps or retained else 'completed', 'source_outcomes': run['sources'],
                       'rounds': settlements, 'coverage_gaps': gaps, 'usage': run['reservations'],
                       'final_delivery': final_delivery, 'native_drained': drain}
+            if accounting:
+                result.update(usage_reconciliation=accounting, retained_reservation_ids=sorted(retained))
+            if 'directory_navigation' in request:
+                result['directory_navigation'] = request['directory_navigation']
             pointer = self._immutable(self.reports(run['run_id']) / 'closure.json', result)
             run.update(state=result['state'], closure=pointer)
-            return result, [pointer]
+            return result, [*additional, pointer]
 
         return self._mutate(request, 'close', 'run', request['run_id'], update)
 

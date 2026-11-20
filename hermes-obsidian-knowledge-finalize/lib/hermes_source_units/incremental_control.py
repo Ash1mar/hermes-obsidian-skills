@@ -278,7 +278,11 @@ class IncrementalControl:
             if action == 'continue':
                 if head['state'] != 'paused' or request.get('boundary_fingerprint') != fingerprint(head['boundary']):
                     raise ContractError('STALE_INPUT', '$', 'continue requires the exact acknowledged boundary')
-                if 'writing_amendment' in request:
+                if 'partial_closure' in request:
+                    if {'writing_continuation', 'writing_amendment', 'repair_writing'} & request.keys():
+                        raise ContractError('INVALID_TRANSITION', '$', 'continue requires one recovery intent')
+                    self._authorize_partial_closure(head, request)
+                elif 'writing_amendment' in request:
                     if {'writing_continuation', 'repair_writing'} & request.keys():
                         raise ContractError('INVALID_TRANSITION', '$', 'continue requires one writing recovery intent')
                     self._authorize_writing_amendment(head, request)
@@ -323,6 +327,24 @@ class IncrementalControl:
             _write_atomic(self.path, _json_bytes(head))
             _write_atomic(receipt, _json_bytes({**transaction, 'commit_state': 'committed'}))
             return head
+
+    def _authorize_partial_closure(self, head, request):
+        pointer = request['partial_closure']
+        report = read_pin(self.vault, pointer)
+        root = self.root.parent
+        run = _load_json(root / 'run.json')
+        boundary = head['boundary']
+        path = root / 'closure-recoveries' / (request['operation_id'] + '.json')
+        if (boundary['stage'] != 'closure' or boundary['scope'] != {'scope_kind': 'run', 'scope_id': self.run_id}
+                or head['active_scopes'] or 'partial_closure' in head or run['state'] != 'active'
+                or run['active_round_id'] is not None or pointer['ref'] != path.relative_to(self.vault).as_posix()
+                or report.get('contract') != 'incremental-closure-accounting/v1'
+                or report.get('run_id') != self.run_id or report.get('actor') != head['actor']
+                or report.get('operation_id') != request['operation_id']
+                or report.get('control_revision') != head['revision'] or report.get('run_revision') != run['revision']
+                or report.get('boundary_fingerprint') != request['boundary_fingerprint']):
+            raise ContractError('INVALID_TRANSITION', '$', 'partial closure requires the exact drained closure checkpoint')
+        head['partial_closure'] = pointer
 
     def _require_writing_recovery(self, head):
         if head['boundary']['stage'] != 'manual' or not head.get('writing_repairs'):
