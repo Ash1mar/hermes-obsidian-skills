@@ -29,9 +29,9 @@ def native_tasks(board):
             return {}
         with closing(kc.connect(board=board)) as connection:
             result = {}
-            for task in kb.list_tasks(connection):
+            for task in kb.list_tasks(connection, include_archived=True):
                 runs = kb.list_runs(connection, task.id, include_active=False)
-                last = runs[-1] if runs else None
+                last = max(runs, key=lambda row: row.id, default=None)
                 result[task.id] = {'task_id': task.id, 'status': task.status,
                                    'claimed': bool(task.claim_lock),
                                    'last_outcome': getattr(last, 'outcome', None),
@@ -104,16 +104,24 @@ def round_projection(root, rid, run, control, *, native_reader=None):
     writing = read(folder / 'writing-disposition.json')
     native = root / 'native/round' / rid
     writer = native / 'writing'
+    base_writer = writer
     amendment = control.get('writing_amendments', {}).get(rid)
     repair = amendment or control.get('writing_continuations', {}).get(rid) or control.get('writing_repairs', {}).get(rid)
     if repair:
         writing = read(folder / 'writing-amendments' / amendment['operation_id'] / 'disposition.json'
                        if amendment else folder / 'writing-revision.json')
         writer = writer / 'recoveries' / repair['operation_id']
+        original_repair = control.get('writing_continuations', {}).get(rid) or control.get('writing_repairs', {}).get(rid)
+        if original_repair:
+            base_writer = base_writer / 'recoveries' / original_repair['operation_id']
     shared = {'scope_kind': 'round', 'scope_id': rid, 'shared': True}
     phases = []
-    phases.append(stage('coordination', operation_state(native / 'coordination', control, 'round', rid,
-                        'coordination', complete=bool(changes), native_reader=native_reader), **shared))
+    coordination = operation_state(native / 'coordination', control, 'round', rid,
+                                   'coordination', complete=(folder / 'page-changes.json').is_file(), native_reader=native_reader)
+    gaps = read(folder / 'coordination-gaps.json') or []
+    if gaps or any(row.get('action') == 'hold' for row in changes):
+        coordination = 'partial' if any(row.get('action') != 'hold' for row in changes) else 'held'
+    phases.append(stage('coordination', coordination, **shared))
     write_state = operation_state(writer, control, 'round', rid, 'writing', complete=bool(writing), native_reader=native_reader)
     if writing.get('held'):
         write_state = 'partial' if writing.get('written') else 'held'
@@ -134,7 +142,10 @@ def round_projection(root, rid, run, control, *, native_reader=None):
     return {'round_id': rid, 'active': rid == run.get('active_round_id'), 'mapping_count': len(input_.get('map_result_ids', [])),
             'page_count': len(changes), 'delivery_state': prefix or settlement.get('state'), 'release_id': delivery.get('release_id'),
             'snapshots': input_.get('snapshots', []), 'map_result_ids': input_.get('map_result_ids', []),
-            'page_changes': changes, 'stages': phases,
+            'page_changes': changes, 'stages': phases, 'coordination_gaps': gaps,
+            'writing_held': writing.get('held', []), 'build_run_id': delivery.get('build_run_id'),
+            'provider_generation': (delivery.get('provider') or {}).get('index_generation'),
+            'writing_workspace': base_writer.relative_to(root).as_posix(),
             **({'original_pages_written': writing['original_pages'],
                 'independent_section_candidates': len(writing['independent_sections'])}
                if amendment and 'original_pages' in writing else {})}
@@ -153,8 +164,10 @@ def source_pipeline(item, root, run, control, source_workflow, rounds, *, native
     prepared = bool(item.get('snapshot_id'))
     prep_state = ('completed' if prepared else 'failed' if item['state'] == 'failed' or outcome.get('status') == 'failed'
                   else 'running' if task.get('status') == 'running' or task.get('claimed')
+                  else 'held' if task.get('status') in ('blocked', 'scheduled', 'archived') and task.get('last_outcome')
                   else 'partial' if outcome.get('status') == 'ready' else 'pending')
-    pipeline = [stage('prepare', prep_state, detail=reason, task_id=card.get('task_id'), native_status=task.get('status'))]
+    pipeline = [stage('prepare', prep_state, detail=reason, task_id=card.get('task_id'), native_status=task.get('status'),
+                      error_code=outcome.get('error_code'), evidence_refs=outcome.get('artifact_refs', []))]
     snapshot = item.get('snapshot_id')
     mapping = 'completed' if item['state'] == 'mapped' else 'held' if prep_state == 'failed' else (
         operation_state(root / 'native/source' / snapshot / 'mapping', control, 'source', snapshot, 'mapping', native_reader=native_reader) if snapshot else 'pending')
@@ -167,12 +180,14 @@ def source_pipeline(item, root, run, control, source_workflow, rounds, *, native
         vault = root.parents[3].resolve()
         if target.is_relative_to(vault):
             resource = read(target).get('identity', {}).get('resource_id')
-    dependencies = {}
+    dependencies, dependent_changes = {}, {}
     for row in related:
-        dependencies[row['round_id']] = [change['page_id'] for change in row['page_changes']
+        matching = [change for change in row['page_changes']
             if snapshot in change.get('coverage_scope', {}).get('snapshots', []) or
                (resource and any(ref.get('unit_ref', {}).get('resource_id') == resource
                 for ref in [*change.get('retained_support_refs', []), *change.get('added_support_refs', [])]))]
+        dependencies[row['round_id']] = list(dict.fromkeys(change['page_id'] for change in matching))
+        dependent_changes[row['round_id']] = [change['change_id'] for change in matching if 'change_id' in change]
     for key, _ in STAGES[2:-1]:
         states = [next(value for value in row['stages'] if value['key'] == key)['state'] for row in related]
         value = aggregate(states)
@@ -189,12 +204,15 @@ def source_pipeline(item, root, run, control, source_workflow, rounds, *, native
     display = mapping if item['state'] == 'prepared' and mapping in ('running', 'failed', 'held', 'paused', 'pausing') else prep_state if item['state'] == 'pending' else item['state']
     item.update(source_sha256=digest, display_state=display, pipeline=pipeline, native_preparation={k: v for k, v in task.items() if k != 'body'}, failure_reason=reason, related_rounds=[
         {'round_id': row['round_id'], 'dependent_page_ids': dependencies[row['round_id']], 'shared': True,
+         'dependent_change_ids': dependent_changes[row['round_id']],
          'role': 'input' if item.get('map_result_id') in row['map_result_ids'] else 'context'} for row in related], retry=retry)
     return item
 
 
 def retry_capability(item, root, run, control, *, native_reader=None):
     """Advertise only a stopped, exactly bound, never-consumed mapping request."""
+    from incremental import fingerprint
+
     unavailable = {'allowed': False, 'reason': '当前没有可安全重试的未消耗请求。'}
     snapshot = item.get('snapshot_id')
     if item['state'] != 'prepared' or not snapshot or run.get('state') != 'active' or control.get('state') == 'cancelled':
@@ -210,6 +228,7 @@ def retry_capability(item, root, run, control, *, native_reader=None):
     if not tasks or any(row['claimed'] or row['status'] in ('running', 'ready', 'todo', 'triage') for row in tasks):
         return {**unavailable, 'reason': '原生任务尚未停止，暂不能重试。'}
     matched = []
+    reserved = {row['request_fingerprint'] for row in run.get('reservations', {}).values()}
     for job in (directory / 'jobs').glob('*.json'):
         value = read(job)
         if value.get('request', {}).get('id') != job.stem or job.with_suffix('.result.json').exists():
@@ -226,7 +245,8 @@ def retry_capability(item, root, run, control, *, native_reader=None):
                 bound.append(task)
         if len(bound) != 1 or bound[0]['status'] != 'blocked':
             return unavailable
-        if list(job.parent.glob(job.stem + '.attempt-*.json')) or list(job.parent.glob(job.stem + '.audit-*.json')):
+        if (any(job.parent.glob(job.stem + '.attempt-*.json')) or any(job.parent.glob(job.stem + '.audit-*.json'))
+                or any(fingerprint({'request': job.stem, 'ordinal': n}) in reserved for n in (1, 2))):
             return {**unavailable, 'reason': '请求已产生调用记录，需要按已有凭据恢复。'}
         matched.append(job.stem)
     if not matched:

@@ -265,6 +265,9 @@ function renderTimeline() {
   }));
 }
 
+const openRecoveryScopes = new Set();
+const selectedRecoveryFragments = new Map();
+
 function renderIncremental(timeline) {
   const value = current.incremental;
   timeline.dataset.run = selected || "";
@@ -290,21 +293,15 @@ function renderIncremental(timeline) {
     row.append(make("strong", source.name), badge(source.display_state || source.state));
     if (source.admission) row.append(badge(source.admission.state === "held" ? "manual-held" : "released"));
     for (const action of source.actions || []) {
-      if (action.id === 'incremental-retry-source') continue;
+      if (action.id !== "incremental-release-source") continue;
       const button = rowButton(action.label, () => reenter(action));
       button.disabled = !writable || posting || (action.gateway_required !== false && !gateway.ready);
       row.append(button);
     }
-    const retry = source.retry || {allowed: false, reason: "当前没有可用的受控重试入口。"};
-    const retryButton = rowButton("重试此文件", () => reenter(retry.action));
-    retryButton.disabled = !retry.allowed || !retry.action || !writable || posting || !gateway.ready;
-    retryButton.title = retry.reason || "";
-    row.append(retryButton);
     card.append(row);
     if (source.failure_reason || source.reason || source.error) card.append(make("p", source.failure_reason || source.reason || source.error, "source-error hint"));
-    if (!retry.allowed && source.display_state === "failed") card.append(make("p", `重试不可用：${retry.reason}`, "hint"));
     const pipeline = make("ol", undefined, "incremental-pipeline");
-    for (const phase of source.pipeline || []) pipeline.append(renderIncrementalPhase(phase));
+    for (const phase of source.pipeline || []) pipeline.append(renderIncrementalPhase(phase, source));
     card.append(pipeline);
     if (source.related_rounds?.length) card.append(make("p", source.related_rounds.map(round =>
       `参与共享轮次 ${round.round_id}（${round.role === "input" ? "本轮新输入" : "已有上下文"}）· ${round.dependent_page_ids.length} 项依赖页面`).join("；"), "hint"));
@@ -326,13 +323,91 @@ function renderIncremental(timeline) {
   timeline.replaceChildren(controls, stages, sources, rounds);
 }
 
-function renderIncrementalPhase(phase) {
+function renderIncrementalPhase(phase, source) {
   const row = make("li");
   row.append(make("strong", phase.name), badge(phase.state));
   if (phase.counts) row.append(make("small", Object.entries(phase.counts).map(([state, count]) => `${count} ${labels[state] || state}`).join(" · ")));
   if (phase.round_ids?.length) row.append(make("small", `共享轮次 ${phase.round_ids.join("、")}`));
   if (phase.detail) row.append(make("small", phase.detail));
   if (phase.boundary) row.append(make("small", phase.result_state === "completed" ? "本步成果已完成，停在此边界" : "停在此边界"));
+  if (source && (phase.recovery_scopes?.length || phase.actions?.length)) {
+    const key = `${current.id}:${source.path}:${phase.key}`;
+    const detail = make("details", undefined, "node-recovery");
+    detail.append(make("summary", phase.actions?.length ? "查看范围与操作" : "查看处理范围"));
+    detail.open = openRecoveryScopes.has(key);
+    detail.addEventListener("toggle", () => {
+      if (detail.isConnected) detail.open ? openRecoveryScopes.add(key) : openRecoveryScopes.delete(key);
+    });
+    for (const scope of phase.recovery_scopes || []) {
+      const section = make("div", undefined, "node-recovery-scope");
+      if (scope.round_id) section.append(make("strong", `${scope.round_id} · 共享轮次`),
+        make("small", `${scope.page_count} 项依赖页面${scope.blocked_pages ? ` · ${scope.blocked_pages.length} 项暂缓` : ""}`));
+      if (scope.snapshot_id) section.append(make("small", `来源快照 ${scope.snapshot_id}`));
+      if (scope.map_result_id) section.append(make("small", `复用已核验 Map ${scope.map_result_id}`));
+      if (scope.task_id) section.append(make("small", `原生任务 ${scope.task_id}`));
+      if (scope.error_code) section.append(make("small", scope.error_code));
+      if (scope.evidence_refs?.length) {
+        const evidence = make("ul");
+        for (const ref of scope.evidence_refs) evidence.append(make("li", ref));
+        section.append(evidence);
+      }
+      if (scope.shared_gap_count) section.append(make("small", `该轮另有 ${scope.shared_gap_count} 项共享协调缺口`));
+      if (scope.build_run_id) section.append(make("small", `构建 ${scope.build_run_id}`));
+      if (scope.release_id) section.append(make("small", `发布 ${scope.release_id}`));
+      if (scope.provider_generation) section.append(make("small", `索引 ${scope.provider_generation}`));
+      if (scope.blocked_pages?.length) {
+        const pages = make("ul");
+        for (const page of scope.blocked_pages) {
+          const item = make("li", page.name);
+          if (page.reason) item.append(make("small", page.reason));
+          pages.append(item);
+        }
+        section.append(pages);
+      }
+      const actions = (phase.actions || []).filter(action => action.round_id === (scope.round_id || null));
+      if (scope.fragments?.length && !actions.some(action => action.fragment_ids)) {
+        const fragments = make("details");
+        fragments.append(make("summary", `查看 ${scope.fragments.length} 个计划分片`));
+        const list = make("ul");
+        for (const fragment of scope.fragments) {
+          const item = make("li", `${fragment.name} · 分片 ${fragment.ordinal}`);
+          item.append(make("small", fragment.request_id));
+          list.append(item);
+        }
+        fragments.append(list);
+        section.append(fragments);
+      }
+      for (const action of actions) {
+        const allowed = action.fragment_ids;
+        const selected = selectedRecoveryFragments.get(action.scope_token) || new Set();
+        const enabled = writable && !posting && !runs.some(run => run.launcher_active) && (action.gateway_required === false || gateway.ready);
+        const button = rowButton(action.label, () => reenter(action, undefined, undefined, allowed ? [...selected] : undefined));
+        button.disabled = !enabled || (allowed && !selected.size);
+        if (allowed) {
+          const choices = make("fieldset");
+          choices.append(make("legend", "选择要核对原生回执的分片"));
+          for (const fragment of scope.fragments.filter(fragment => allowed.includes(fragment.request_id))) {
+            const label = make("label");
+            const input = make("input");
+            input.type = "checkbox";
+            input.checked = selected.has(fragment.request_id);
+            input.addEventListener("change", () => {
+              if (input.checked) selected.add(fragment.request_id);
+              else selected.delete(fragment.request_id);
+              selectedRecoveryFragments.set(action.scope_token, selected);
+              button.disabled = !enabled || !selected.size;
+            });
+            label.append(input, document.createTextNode(`${fragment.name} · 分片 ${fragment.ordinal}`));
+            choices.append(label);
+          }
+          section.append(choices);
+        }
+        section.append(button);
+      }
+      detail.append(section);
+    }
+    row.append(detail);
+  }
   return row;
 }
 
@@ -492,11 +567,17 @@ async function submit(path, body) {
   }
 }
 
-function reenter(action, manifest, pauseBefore) {
+function reenter(action, manifest, pauseBefore, fragments) {
   if (action.id.startsWith("incremental-")) {
+    if (action.scope_token) {
+      const scope = action.round_id ? `共享轮次 ${action.round_id}` : action.source_path;
+      const fragmentScope = fragments ? `，已选 ${fragments.length} 个分片` : "";
+      if (!window.confirm(`${action.label}？\n${scope}${fragmentScope}`)) return;
+    }
     submit(`/api/runs/${current.id}/reenter`, {action: action.id, node: action.node, attempt: action.attempt,
       control_revision: action.control_revision, run_revision: action.run_revision,
-      source_path: action.source_path, source_sha256: action.source_sha256, retry_kind: action.retry_kind});
+      source_path: action.source_path, source_sha256: action.source_sha256, retry_kind: action.retry_kind,
+      phase: action.phase, round_id: action.round_id, scope_token: action.scope_token, revise_fragments: fragments});
     return;
   }
   if (action.manifest && !manifest?.trim()) {

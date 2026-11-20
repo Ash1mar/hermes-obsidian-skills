@@ -507,6 +507,19 @@ def run_attempt(directory, attempt_id, config, lease_fd):
                 command = incremental_command(directory, attempt, config, save)
                 attempt = {**attempt, 'invoked': True}
                 save(path, attempt)
+                if attempt['action'] == 'incremental-node-writing':
+                    preview = subprocess.run([*command, '--preview'], stdout=subprocess.PIPE, stderr=log, check=False,
+                                             pass_fds=(lease_fd,))
+                    if preview.returncode:
+                        code = preview.returncode
+                        return
+                    review = json.loads(preview.stdout)
+                    save(path.with_name('recovery-preview.json'), review)
+                    print(json.dumps(review, ensure_ascii=False), file=log, flush=True)
+                    original = read(Path(command[-1]))
+                    confirmed = path.with_name('incremental-confirmed-request.json')
+                    save(confirmed, {**original, 'expected_manifest_sha256': review['manifest_sha256']})
+                    command[-1] = str(confirmed)
                 code = subprocess.run(command, stdout=log, stderr=subprocess.STDOUT, check=False,
                                       pass_fds=(lease_fd,)).returncode
                 return

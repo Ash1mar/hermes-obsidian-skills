@@ -145,6 +145,77 @@ def acknowledged_coordination(root, row):
     return None
 
 
+def recover_coordination(domain, request):
+    """Reattach the current frozen round and reopen only proved-unconsumed native jobs."""
+    import run_short_evidence_test as native
+    from hermes_source_units.incremental_sources import completion_connection, safe_id
+    from incremental_recovery import request_files
+    from prepare_short_evidence_test import save
+
+    require(set(request) == {'run_id', 'round_id', 'actor', 'operation_id', 'expected_revision', 'control_revision'},
+            'coordination recovery requires an exact round and revisions')
+    run_id, rid, operation_id = (safe_id(request[key]) for key in ('run_id', 'round_id', 'operation_id'))
+    root = domain.root(run_id)
+    local = root / 'rounds' / rid
+    arena = root / 'native/round' / rid / 'coordination'
+    control = IncrementalControl(domain.vault, run_id)
+    with _exclusive_lock(root / '.controller.lock', timeout=0, marker=False):
+        run, head = domain.status(run_id), control.status()
+        require(run['state'] == 'active' and run['active_round_id'] == rid and head['state'] == 'active'
+                and run['revision'] == request['expected_revision'] and head['revision'] == request['control_revision']
+                and run['actor'] == request['actor'] == head['actor'], 'coordination recovery revision or scope changed')
+        frozen = domain.round_input(run_id, rid)
+        require(not (local / 'page-changes.json').exists() and not (arena / 'stop.json').exists(),
+                'coordination recovery needs an unfinished, admitted native scope')
+        control.reconcile_executors()
+        target_ids = []
+        intent = local / 'coordination-reentries' / (operation_id + '.json')
+        if (arena / 'operation.json').is_file():
+            op = _load_json(arena / 'operation.json')
+            require(op['vault'] == str(domain.vault) and op['actor'] == run['actor']
+                    and op['incremental'] == {'run_id': run_id, 'scope_kind': 'round', 'scope_id': rid,
+                                             'stage': 'coordination', 'snapshots': frozen['snapshots'],
+                                             'input_fingerprint': fingerprint([frozen['snapshots'], rid])},
+                    'coordination recovery native scope changed')
+            if (local / 'coordination-groups.json').is_file():
+                rows = [group['request'] for group in _load_json(local / 'coordination-groups.json')['groups']]
+            else:
+                original = local / 'coordination-request.json'
+                rows = [_load_json(original)] if original.is_file() else []
+            prior = _load_json(intent)['task_ids'] if intent.is_file() else []
+            consumed = {entry['request_fingerprint'] for entry in run['reservations'].values()}
+            attempted = {task for path in intent.parent.glob('*.json') if path != intent
+                         for task in _load_json(path)['task_ids']}
+            kb, _, _ = native.runtime()
+            with closing(completion_connection(op['board'])) as connection:
+                tasks = {task.body: task for task in kb.list_tasks(connection, include_archived=True)}
+                for row in rows:
+                    job, attempts = request_files(arena, row)
+                    if not job.is_file() or job.with_suffix('.result.json').is_file():
+                        continue
+                    require(_load_json(job)['request'] == row, 'original coordination job changed')
+                    task = tasks.get(native.task_body(arena, job))
+                    if not task:
+                        continue
+                    require(task.created_by == op['contract'] and not task.claim_lock and task.status != 'running',
+                            'coordination recovery cannot reenter a claimed or unbound task')
+                    if (task.status not in ('blocked', 'scheduled') and task.id not in prior) or task.id in attempted:
+                        continue
+                    if (attempts or any(job.parent.glob(job.stem + '.audit-*.json'))
+                            or any(job.parent.glob(job.stem + '.program-retry-*.json'))
+                            or any(fingerprint({'request': row['id'], 'ordinal': n}) in consumed for n in (1, 2))):
+                        continue
+                    target_ids.append(task.id)
+                save(intent, {'request': request, 'frozen_input': frozen['input_fingerprint'], 'task_ids': sorted(target_ids)})
+                for tid in target_ids:
+                    if kb.get_task(connection, tid).status in ('blocked', 'scheduled'):
+                        require(kb.unblock_task(connection, tid), 'native coordination task could not be released')
+        else:
+            save(intent, {'request': request, 'frozen_input': frozen['input_fingerprint'], 'task_ids': []})
+    return {'round_id': rid, 'reused_maps': frozen['map_result_ids'], 'released_task_ids': sorted(target_ids),
+            'controller': spawn(domain.vault, run_id)}
+
+
 def grouped_page_changes(domain, run_id, service, frozen, aliases, hydrated, coordinator, operation, root):
     """Resume exact, bounded native decisions over complete topic scopes."""
     from hermes_source_units.incremental_pages import (coordination_catalogue, group_aliases,
@@ -389,10 +460,14 @@ def round_work(domain, run_id, round_id):
         else:
             save(saved_request, row)
         job = formal / 'jobs' / (row['id'] + '.json')
-        if pending_request(formal, formal_operation, row):
-            native.stage(formal, formal_operation, [row], 1)
-        result = _load_json(job.with_suffix('.result.json'))
-        require(result['state'] == 'settled', 'incremental delivery remains incomplete')
+        continued = (root / 'delivery.json').is_file() and acknowledged_delivery_prefix(formal, root, row)
+        if not continued:
+            require(not (root / 'delivery.json').is_file() or job.with_suffix('.result.json').is_file(),
+                    'incremental delivery requires its native recovery result')
+            if pending_request(formal, formal_operation, row):
+                native.stage(formal, formal_operation, [row], 1)
+            result = _load_json(job.with_suffix('.result.json'))
+            require(result['state'] == 'settled', 'incremental delivery remains incomplete')
     delivery_state = _load_json(root / 'delivery.json')
     if delivery_state['state'] == 'build_committed':
         if control.checkpoint(scope, 'formal-build', {'build': delivery_state['build_run_id']})['state'] != 'active':
@@ -481,6 +556,48 @@ def recover_delivery(domain, run_id, round_id, operation_id, *, stop_after=None,
                 if change['change_id'] not in represented)
         mutate(domain, run_id, 'settle_round', 'settled-' + round_id, round_id=round_id, disposition=settlement)
     return output
+
+
+def acknowledged_delivery_prefix(formal, round_root, original):
+    current = _load_json(round_root / 'delivery.json')
+    original_view = {key: value for key, value in original['view'].items() if key != 'stop_after'}
+    for path in (formal / 'recoveries').glob('*/jobs/*.result.json'):
+        record = _load_json(path)
+        if record.get('state') != 'settled' or record.get('delivery') != current:
+            continue
+        row = _load_json(path.with_name(path.name.removesuffix('.result.json') + '.json'))['request']
+        if {key: value for key, value in row['view'].items() if key not in ('stop_after', 'recovery')} != original_view:
+            continue
+        try:
+            verified_result(path.parents[1], row)
+        except NativeCompletionUnconfirmed:
+            continue
+        return True
+    return False
+
+
+def delivery_boundaries(delivery):
+    if delivery['state'] == 'build_committed':
+        return [('formal-build', {'build': delivery['build_run_id']})]
+    if delivery['state'] == 'index_verified':
+        evidence = {'release': delivery['release_id'], 'hash': delivery['release_hash'],
+                    'generation': delivery['provider']['index_generation']}
+        return [('release', evidence), ('acceptance', evidence)]
+    return []
+
+
+def pending_delivery_pause(head, round_id, delivery):
+    scope = {'scope_kind': 'round', 'scope_id': round_id}
+    return any(stage in head['pause_after'] and fingerprint({'scope': scope, 'stage': stage,
+               'input_fingerprint': fingerprint(evidence), 'evidence': evidence}) not in head['released']
+               for stage, evidence in delivery_boundaries(delivery))
+
+
+def delivery_checkpoint(control, round_id, delivery):
+    scope = {'scope_kind': 'round', 'scope_id': round_id}
+    for stage, evidence in delivery_boundaries(delivery):
+        if control.checkpoint(scope, stage, evidence)['state'] != 'active':
+            break
 
 
 def watch(vault, run_id):
