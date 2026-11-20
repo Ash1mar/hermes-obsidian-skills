@@ -30,6 +30,16 @@ when its complete model request still fits. Build rechecks the source, scope and
 assembles a single page revision. Updates append the qualified new material while preserving the full
 parent body and its citation bindings.
 
+New coordination groups can reconsider a hold that explicitly defers normal writing-time source
+inspection. The controller checks available original material and required dependencies against the
+sealed Map. Only a group with one verified returned attempt can receive one bounded local model
+correction. A structural correction already uses that allowance. The follow-up must cover the
+original held evidence for each target and preserve previously accepted identities. True evidence
+gaps, unavailable budget and unknown completion remain held. Retry an uncommitted coordination
+budget-lock or revision race once under the same live native grant before model invocation.
+Original receipts and per-target outcomes remain auditable. Previously pinned coordination groups
+retain their original planning revision and decisions.
+
 Structural headings stay in navigation. When a page selects a registered numbered heading
 without substantive text, use only mapped original text from that exact source snapshot and
 section or hold the page with the missing scope. A heading that contains a substantive numbered

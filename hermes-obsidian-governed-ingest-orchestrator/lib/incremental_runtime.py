@@ -13,7 +13,7 @@ from hermes_source_units.incremental_ingest import CONTRACTS, FileIncrementalIng
 from hermes_source_units.incremental_sources import pinned, read_pin, safe_id
 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _sha, _vault_path, _write_atomic
 from hermes_source_units.validation import ContractError, fingerprint
-from incremental_native import mutate, service, verified_result
+from incremental_native import NativeCompletionUnconfirmed, mutate, service, verified_result
 from short_evidence_pass import load_sources, require, request as semantic_request, seed_requests, mapping_groups, MAP_CONTRACT
 
 
@@ -62,16 +62,55 @@ def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recove
 
 def execute_rows(domain, run_id, root, operation, rows):
     import run_short_evidence_test as native
-    from incremental_recovery import pending_request
+    from incremental_recovery import pending_request, request_files
     from incremental_writing import PHASE as PAGE_FRAGMENT
 
-    waiting = [row for row in rows if pending_request(root, operation, row, allow_precall=True)]
+    bounded_coordination = bool(rows) and all(row['phase'] == 'incremental-page-plan' and (
+        row['view'].get('planning_revision', 0) >= 4 or row['view'].get('coordination_repair')) for row in rows)
+    if bounded_coordination:
+        # Existing unacknowledged work stays in its original budget and arena.
+        # A saved job without a lease or charge is dispatchable only if its
+        # exact task is still ready or has not yet been created.
+        kb, kc, _ = native.runtime()
+        with closing(kc.connect(board=operation['board'])) as connection:
+            tasks = {}
+            for task in kb.list_tasks(connection):
+                require(task.body not in tasks and task.created_by == operation['contract'],
+                        'coordination board has a duplicate or unbound task')
+                require(not task.claim_lock and task.status != 'running', 'coordination board still has an active task')
+                tasks[task.body] = task
+        reservations = {item['request_fingerprint'] for item in domain.status(run_id)['reservations'].values()}
+        waiting = []
+        for row in rows:
+            job, attempts = request_files(root, row)
+            if job.with_suffix('.result.json').is_file():
+                continue
+            require(not (root / 'stop.json').exists(), 'stopped coordination requires its supported recovery')
+            charged = any(fingerprint({'request': row['id'], 'ordinal': n}) in reservations for n in (1, 2))
+            activity = any(job.parent.glob(job.stem + '.program-retry-*.json')) or any(
+                job.parent.glob(job.stem + '.audit-*.json'))
+            if job.is_file():
+                require(_load_json(job)['request'] == row, 'saved coordination job differs from its bound request')
+                task = tasks.get(native.task_body(root, job))
+                if task is not None and task.status != 'ready':
+                    continue
+            if not attempts and not charged and not activity:
+                waiting.append(row)
+    else:
+        waiting = [row for row in rows if pending_request(root, operation, row, allow_precall=True)]
     if waiting:
         native.stage(root, operation, waiting, operation['page_capacity']
                      if waiting[0]['phase'] in ('incremental-page-write', PAGE_FRAGMENT) else operation['pass_capacity'])
     results = []
     for row in rows:
-        result, proof = verified_result(root, row)
+        if bounded_coordination and not (root / 'jobs' / (row['id'] + '.result.json')).is_file():
+            continue
+        try:
+            result, proof = verified_result(root, row)
+        except NativeCompletionUnconfirmed:
+            if bounded_coordination:
+                continue
+            raise
         results.append((row, result, proof))
         settle_usage(domain, run_id, root, row, result)
     return results

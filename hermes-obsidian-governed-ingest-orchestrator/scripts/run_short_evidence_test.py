@@ -214,8 +214,11 @@ def run_job(root, job, own):
     slots = row.get('missing_slots', ['r'])
     attempts = []
     drafts = {}
-    ordinals = (1,) if original['view'].get('fragment_repair') or operation.get('writing_continuation') else (1, 2)
-    if incremental and job.with_name(job.stem + '.attempt-1.json').exists():
+    coordination_repair = original['view'].get('coordination_repair')
+    ordinals = ((1,) if original['view'].get('fragment_repair') or operation.get('writing_continuation')
+                or coordination_repair else (1, 2))
+    if (incremental and operation['incremental']['stage'] == 'mapping'
+            and job.with_name(job.stem + '.attempt-1.json').exists()):
         from incremental_source_retry import retry_start_ordinal
         if retry_start_ordinal(root, original) == 2:
             ordinals = (2,)
@@ -233,7 +236,20 @@ def run_job(root, job, own):
             from incremental_native import reserve_call
             # A bounded accounting-lock wait must not create an SDK-attempt
             # marker. Recheck the native lease after that wait, before calling.
-            reserve_call(root, original, ordinal, grant)
+            try:
+                reserve_call(root, original, ordinal, grant)
+            except ContractError as error:
+                if (original['phase'] != 'incremental-page-plan'
+                        or not (coordination_repair or original['view'].get('planning_revision', 0) >= 4)
+                        or error.code not in ('LOCK_BUSY', 'LOCK_TIMEOUT', 'REVISION_CONFLICT')):
+                    raise
+                # No attempt exists, and reserve_call fences any apportioned ordinal.
+                retry_marker = job.with_name(job.stem + f'.program-retry-{ordinal}.json')
+                require(not retry_marker.exists(), 'coordination program retry allowance already consumed')
+                save(retry_marker,
+                     {'request': original['id'], 'ordinal': ordinal, 'code': error.code, 'grant': grant})
+                require(own() == grant, 'native program retry lost its original grant')
+                reserve_call(root, original, ordinal, grant)
             own()
         started = time.monotonic()
         wall = time.time()

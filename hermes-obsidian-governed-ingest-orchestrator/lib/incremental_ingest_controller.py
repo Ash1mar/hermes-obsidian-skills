@@ -13,7 +13,7 @@ from hermes_source_units.incremental_control import IncrementalControl
 from hermes_source_units.incremental_sources import pinned, read_pin
 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _vault_path, _write_atomic
 from hermes_source_units.validation import ContractError, fingerprint
-from incremental_native import mutate, service, verified_result
+from incremental_native import NativeCompletionUnconfirmed, mutate, service, verified_result
 from incremental_runtime import (execute_rows, initialize_scope, map_source, request_path, source_alias,
                                  source_pin)
 from short_evidence_pass import require, request as semantic_request
@@ -136,19 +136,29 @@ def verified_page_changes(service, frozen, aliases, hydrated, coordinator, row, 
     return changes
 
 
+def acknowledged_coordination(root, row):
+    if (root / 'jobs' / (row['id'] + '.result.json')).is_file():
+        try:
+            return verified_result(root, row)[0]
+        except NativeCompletionUnconfirmed:
+            pass
+    return None
+
+
 def grouped_page_changes(domain, run_id, service, frozen, aliases, hydrated, coordinator, operation, root):
     """Resume exact, bounded native decisions over complete topic scopes."""
     from hermes_source_units.incremental_pages import (coordination_catalogue, group_aliases,
                                                        normalize_page_changes, plan_page_changes, registry_view)
     from incremental_writing_evidence import EvidenceCatalogue, normalized
+    from incremental_coordination_repair import (corrected_changes, corrected_request, eligible_targets, has_budget)
     from prepare_short_evidence_test import save
 
     manifest_path = root / 'coordination-groups.json'
     saved = _load_json(manifest_path) if manifest_path.exists() else None
     registry = saved['registered_pages'] if saved else registry_view(service)
-    revision = saved.get('planning_revision', 1) if saved else 3
+    revision = saved.get('planning_revision', 1) if saved else 4
     catalogue = coordination_catalogue(frozen, hydrated)
-    inventory = EvidenceCatalogue(service, hydrated, operation['actor']) if revision == 3 else None
+    inventory = EvidenceCatalogue(service, hydrated, operation['actor']) if revision >= 3 else None
     groups = []
 
     def partition(topics):
@@ -175,6 +185,11 @@ def grouped_page_changes(domain, run_id, service, frozen, aliases, hydrated, coo
                 'and tables. Navigation and titles only locate material. Context support is optional, and may be '
                 'selected only for a compatible page purpose and applicability scope. A matching topic name alone '
                 'cannot establish compatibility. The program binds and verifies original material before writing.')
+        if revision >= 4:
+            spec['view']['instructions'] += (
+                ' Propose a page when the sealed Map supports its scope. The writer checks the full original and '
+                'necessary assets later. If a concrete evidence dependency blocks planning, identify it in the hold reason. '
+                'If a hold only awaits the later writing check, start its reason with writing_review_pending.')
         request = bind_request(spec)
         if not request['budget']['fits'] and len(topics) > 1:
             half = len(topics) // 2
@@ -193,7 +208,7 @@ def grouped_page_changes(domain, run_id, service, frozen, aliases, hydrated, coo
     if revision != 1:
         manifest['planning_revision'] = revision
     save(manifest_path, manifest)
-    changes, gaps = [], []
+    changes, gaps, repairs = [], [], []
     rows = [group['request'] for group in groups if group['request']['budget']['fits']]
     plan_path = root / 'page-changes.json'
     if rows and not plan_path.exists():
@@ -205,23 +220,77 @@ def grouped_page_changes(domain, run_id, service, frozen, aliases, hydrated, coo
             gaps.append({'request_id': row['id'], 'aliases': list(group_refs),
                          'reason': 'complete topic scope exceeds the coordination request budget'})
             continue
-        result, _ = verified_result(coordinator, row)
+        result = acknowledged_coordination(coordinator, row) if revision >= 4 else verified_result(coordinator, row)[0]
+        if result is None:
+            gaps.append({'request_id': row['id'], 'aliases': list(group_refs),
+                         'reason': 'native coordination completion is unconfirmed'})
+            continue
         if result['state'] != 'settled':
             gaps.append({'request_id': row['id'], 'aliases': list(group_refs),
                          'reason': 'native coordination held this topic group'})
             continue
         answer = _load_json(coordinator / 'receipts' / (row['id'] + '.json'))['answer']
-        assigned = set()
-        for raw in answer['changes']:
+        assigned, held = set(), {}
+        for position, raw in enumerate(answer['changes'], 1):
             try:
-                changes.extend(normalize_page_changes(service, frozen, {'changes': [raw]}, group_refs,
-                                                      registered_pages=registry))
+                change, = normalize_page_changes(service, frozen, {'changes': [raw]}, group_refs,
+                                                registered_pages=registry)
+                changes.append(change)
                 assigned.update(raw['support_aliases'])
+                if change['action'] == 'hold':
+                    held[str(position)] = raw, change
             except (ContractError, ValueError) as error:
                 gaps.append({'request_id': row['id'], 'proposal_sha256': fingerprint(raw), 'reason': str(error)})
         if missing := sorted(set(group.get('required_aliases', group_refs)) - assigned):
             gaps.append({'request_id': row['id'], 'aliases': missing,
                          'reason': 'native coordination did not assign these aliases to a page or hold'})
+        if revision < 4 or not held or len(result.get('attempts', [])) != 1 or result['attempts'][0]['state'] != 'returned':
+            continue
+        approval_path = coordinator / 'coordination-repairs' / (row['id'] + '.json')
+        if approval_path.is_file():
+            approval = _load_json(approval_path)
+            targets = approval['targets']
+            require(all(slot in held and fingerprint(held[slot][0]) == target['hold_sha256']
+                        for slot, target in targets.items()), 'saved repair targets differ from their original holds')
+        elif plan_path.exists():
+            continue
+        else:
+            with service.source.reading_snapshot():
+                targets = eligible_targets(held, inventory, set(group_refs))
+        if not targets:
+            continue
+        corrected = corrected_request(row, answer, targets)
+        save(approval_path, {'targets': targets, 'request_id': corrected['id']})
+        repairs.append((row['id'], corrected, targets, held, group_refs))
+    if repairs:
+        repaired_rows = [row for _, row, *_ in repairs if row['budget']['fits']]
+        dispatched = ({row['id'] for row in has_budget(domain.status(run_id), repaired_rows)}
+                      if not plan_path.exists() else set(_load_json(root / 'coordination-repair-outcomes.json')['dispatched']))
+        if not plan_path.exists() and dispatched:
+            execute_rows(domain, run_id, coordinator, operation, [row for row in repaired_rows if row['id'] in dispatched])
+        occupied = ({row['page_id'] for row in changes if row['action'] != 'hold'},
+                    {row['path'].casefold() for row in changes if row['action'] != 'hold'})
+        outcomes, replaced, recovered = [], set(), []
+        for prior, row, targets, held, group_refs in repairs:
+            accepted = {}
+            status = 'over_budget' if not row['budget']['fits'] else 'budget_unavailable'
+            if row['id'] in dispatched:
+                result = acknowledged_coordination(coordinator, row)
+                status = 'native_completion_unconfirmed'
+                if result is not None:
+                    status = 'native_repair_held'
+                    if result['state'] == 'settled':
+                        answer = _load_json(coordinator / 'receipts' / (row['id'] + '.json'))['answer']
+                        accepted = corrected_changes(service, frozen, answer, targets, group_refs, registry, occupied)
+                        status = 'evaluated'
+            replaced.update(held[slot][1]['change_id'] for slot in accepted)
+            recovered.extend(accepted.values())
+            outcomes.append({'parent_request_id': prior, 'request_id': row['id'], 'state': status,
+                             'accepted': {slot: change['change_id'] for slot, change in accepted.items()},
+                             'retained_hold_ids': [held[slot][1]['change_id'] for slot in sorted(targets, key=int)
+                                                   if slot not in accepted]})
+        save(root / 'coordination-repair-outcomes.json', {'dispatched': sorted(dispatched), 'outcomes': outcomes})
+        changes = [row for row in changes if row['change_id'] not in replaced] + recovered
     # A duplicate decision is safe to deduplicate. Distinct competing decisions
     # must not overwrite one another or be merged by the mechanical scheduler.
     changes = list({change['change_id']: change for change in changes}.values())
