@@ -26,7 +26,11 @@ def pin(vault, path):
 def session_row(connection, session_id):
     row = connection.execute('SELECT source, ended_at, api_call_count, input_tokens, output_tokens '
                              'FROM sessions WHERE id=?', (session_id,)).fetchone()
-    return dict(zip(('source', 'ended_at', 'calls', 'input_tokens', 'output_tokens'), row)) if row else None
+    if not row:
+        return None
+    source, ended, calls, input_tokens, output_tokens = row
+    return {'source': source, 'ended_at_us': round(ended * 1_000_000) if ended is not None else None,
+            'calls': calls, 'input_tokens': input_tokens, 'output_tokens': output_tokens}
 
 
 def returned_usage(native, original, job, saved, audit, ended, connection):
@@ -44,7 +48,7 @@ def returned_usage(native, original, job, saved, audit, ended, connection):
         return None
     sid = model['session_id']
     row = session_row(connection, sid)
-    if (not row or row['source'] != 'kanban' or not row['ended_at'] or row['calls'] != 1
+    if (not row or row['source'] != 'kanban' or not row['ended_at_us'] or row['calls'] != 1
             or any(type(row[k]) is not int or row[k] < 0 for k in ('input_tokens', 'output_tokens'))):
         return None
     return {**row, 'session_id': sid, 'response_sha256': proof['response_sha256'],
@@ -98,7 +102,7 @@ def failure_evidence(vault, workspace, native, audit, saved, entry, connection):
     actual = dict.fromkeys(('calls', 'input_tokens', 'output_tokens'), 0)
     if (evidence.get('state') == 'request_rejected' and evidence.get('source') == 'local_request_guard'
             and transport['physical_attempts'] == count == 0 and not sends
-            and session and session['source'] == 'kanban' and session['ended_at']
+            and session and session['source'] == 'kanban' and session['ended_at_us']
             and all(type(session[k]) is int and session[k] == n for k, n in actual.items())):
         entry.update(disposition='settled_zero', actual=actual, session=entry['observed_session'],
                      reason='bound_local_rejection_without_http_send')
@@ -168,7 +172,7 @@ def inspect_reservations(domain, run):
                     require(ended and ended.ended_at, 'closure attempt still has an active native owner')
                     entry.update(attempt=pin(vault, attempt),
                                  native={'board': board, 'task_id': task.id, 'run_id': ended.id,
-                                         'outcome': ended.outcome, 'ended_at': ended.ended_at})
+                                         'outcome': ended.outcome, 'ended_at_us': round(ended.ended_at * 1_000_000)})
                     if not audit_path.is_file():
                         entry['reason'] = 'ended_attempt_without_audit'
                         continue

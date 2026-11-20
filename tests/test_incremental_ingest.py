@@ -158,6 +158,18 @@ def test_partial_closure_settles_only_the_authorized_usage(incremental, monkeypa
     assert result['usage']['unknown'] == unknown and result['usage']['known']['actual'] == actual
 
 
+def test_closure_usage_session_serializes_native_fractional_time(monkeypatch):
+    from types import SimpleNamespace
+
+    library = Path(__file__).resolve().parents[1] / 'hermes-obsidian-governed-ingest-orchestrator' / 'lib'
+    monkeypatch.syspath_prepend(str(library))
+    from incremental_closure import session_row
+
+    connection = SimpleNamespace(execute=lambda *_: SimpleNamespace(fetchone=lambda: ('kanban', 12.625, 1, 3, 4)))
+    row = session_row(connection, 'fixed-session')
+    assert row['ended_at_us'] == 12_625_000 and fingerprint(row)
+
+
 def test_budget_cannot_reset_by_restarting_and_unknown_consumption_blocks_closure(incremental):
     service, request, _, _, _, _, _ = incremental
     source = seal(incremental)
