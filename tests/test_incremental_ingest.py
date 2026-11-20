@@ -117,6 +117,47 @@ def test_changed_source_and_revoked_governance_block_snapshot_reuse(incremental)
         service.validate_source_snapshot('fixture', snap['snapshot_id'])
 
 
+def test_partial_closure_settles_only_the_authorized_usage(incremental, monkeypatch):
+    from hermes_source_units import incremental_ingest
+
+    service, _, _, workflow, _, _, _ = incremental
+    base = service.root('fixture')
+    run = service.status('fixture')
+    run['sources'] = {key: {'state': 'failed'} for key in run['sources']}
+    known = {'request_fingerprint': 'known', 'phase': 'mapping', 'state': 'reserved', 'actual': None,
+             'max_calls': 1, 'max_input_tokens': 100, 'max_output_tokens': 50}
+    unknown = {**known, 'request_fingerprint': 'unknown'}
+    run['reservations'] = {'known': known, 'unknown': unknown}
+    put(base/'run.json', run)
+    put(workflow, {**json.loads(workflow.read_text()), 'kanban': {'board_id': 'fixture'}})
+    monkeypatch.setattr(incremental_ingest, 'verify_native_drain', lambda *_: {'boards': ['fixture']})
+    native = {'source_workflow_id': run['source_workflow_id'], 'boards': ['fixture']}
+    with pytest.raises(ContractError, match='remains unsettled'):
+        service.close_run(mutation(service, 'strict-close', native_drained=native))
+    evidence = base/'native-audit.json'
+    put(evidence, {'state': 'returned'})
+    audit = pinned(service.vault, evidence.relative_to(service.vault).as_posix())
+    actual = {'calls': 1, 'input_tokens': 31, 'output_tokens': 7}
+    manifest = base/'closure-recoveries/fixture-proof.json'
+    report = {'contract': 'incremental-closure-accounting/v1', 'run_id': 'fixture', 'actor': 'builder',
+              'run_revision': run['revision'], 'entries': {
+                  'known': {'reservation': known, 'disposition': 'settled_actual', 'actual': actual,
+                            'audit': audit, 'session': {'session_id': 'native-1'}},
+                  'unknown': {'reservation': unknown, 'actual': None}}}
+    put(manifest, report)
+    pointer = pinned(service.vault, manifest.relative_to(service.vault).as_posix())
+    head = base/'control/head.json'
+    put(head, {'state': 'active'})
+    closure = mutation(service, 'authorized-close', native_drained=native, usage_reconciliation=pointer)
+    with pytest.raises(ContractError, match='authorized closure checkpoint'):
+        service.close_run(closure)
+    put(head, {'state': 'active', 'partial_closure': pointer})
+    result = service.close_run(closure)
+    assert service.close_run(closure) == result
+    assert result['state'] == 'partial' and result['retained_reservation_ids'] == ['unknown']
+    assert result['usage']['unknown'] == unknown and result['usage']['known']['actual'] == actual
+
+
 def test_budget_cannot_reset_by_restarting_and_unknown_consumption_blocks_closure(incremental):
     service, request, _, _, _, _, _ = incremental
     source = seal(incremental)

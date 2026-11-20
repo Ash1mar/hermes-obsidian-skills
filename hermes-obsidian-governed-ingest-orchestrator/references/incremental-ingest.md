@@ -8,6 +8,14 @@ Use `python3 "<skill-dir>/scripts/manage_incremental_ingest.py" --vault "<vault>
 
 `reconcile --request` uses the saved run_id, actor, operation_id and expected_revision (run revision) to attach a new controller to the same execution. Do not create a new run to hide unknown model consumption. `preview-reuse --request` is read-only and checks current snapshot identities/hashes/contracts. Existing raw refs may only be reused by explicit `incremental_reuse_originals` bindings.
 
+At a drained `closure` checkpoint, `recover-closure --request` takes the run ID, actor, operation ID,
+expected control revision, run revision and exact boundary fingerprint. Review `--preview` before
+applying with `expected_report_sha256`. The operation verifies each original native attempt and
+settles measured usage. A local rejection is zero usage only with an ended zero-use session and no
+matching HTTP journal entry. Unconfirmed consumption retains the original reservation and pinned
+evidence, and produces a partial outcome. The original release and Provider generation are
+revalidated, and guarded `00_目录.md` files are derived from eligible pages at closure.
+
 `recover-delivery --request` requires run_id, actor, expected_revision, round_id, operation_id, disposition (`continue`, `abort_uncommitted`, or `isolate_committed`) and optional stop_after (`build_committed` or `index_verified`). Recovery uses the original Build authorization and draft targets. Never regenerate semantic outputs to clear a delivery diagnostic. Canonical mutation requires a prepared delivery window; abort is allowed only before canonical writes, while isolation must have been preauthorized.
 
 Native workers perform source preparation, Map, coordination, page writing and formal Build. The controller binds exact snapshots and retains full old page evidence. Hold missing required evidence and direct dependents. Query is unavailable during delivery and remains separately authorized after index readiness. Do not reset failed sources, overwrite parent versions, fabricate native completion or cross durable pauses automatically.

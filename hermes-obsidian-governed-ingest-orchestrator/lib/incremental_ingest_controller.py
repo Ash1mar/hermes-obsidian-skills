@@ -491,11 +491,15 @@ def watch(vault, run_id):
     return domain.status(run_id)
 
 
-def close(domain, run_id):
+def closure_inputs(domain, run):
     import run_short_evidence_test as native
     from native_stop_inventory import workflow_processes
 
-    run = domain.status(run_id)
+    run_id = run['run_id']
+    require(run['active_round_id'] is None and all(row['state'] in ('mapped', 'failed') for row in run['sources'].values())
+            and set(run['map_result_ids']) == set(run['consumed_map_ids'])
+            and all((domain.root(run_id) / 'rounds' / rid / 'settlement.json').is_file() for rid in run['round_ids']),
+            'closure requires all original sources and rounds to be settled')
     boards = []
     workflow = _load_json(_vault_path(domain.vault, f"_system/ledgers/ingest-workflows/{run['source_workflow_id']}.json"))
     boards.append(workflow['kanban']['board_id'])
@@ -525,5 +529,11 @@ def close(domain, run_id):
             if _load_json(delivery_path)['state'] == 'committed':
                 delivery = pinned(domain.vault, delivery_path.relative_to(domain.vault).as_posix())
                 break
-    return mutate(domain, run_id, 'close_run', 'close-' + run_id,
-                  native_drained={'source_workflow_id': run['source_workflow_id'], 'boards': boards}, final_delivery=delivery)
+    return {'source_workflow_id': run['source_workflow_id'], 'boards': boards}, delivery
+
+
+def close(domain, run_id):
+    from incremental_closure import finish
+
+    run = domain.status(run_id)
+    return finish(domain, run, *closure_inputs(domain, run))

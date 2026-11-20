@@ -23,12 +23,13 @@ def main():
         sub.add_parser(action).add_argument('--run-id', required=True)
     for action in ('reconcile', 'preview-reuse', 'control', 'recover-delivery', 'retry-source'):
         sub.add_parser(action).add_argument('--request', type=Path, required=True)
-    resume_writing = sub.add_parser('recover-writing')
-    resume_writing.add_argument('--request', type=Path, required=True)
-    resume_writing.add_argument('--preview', action='store_true')
+    for action in ('recover-writing', 'recover-closure'):
+        recovery = sub.add_parser(action)
+        recovery.add_argument('--request', type=Path, required=True)
+        recovery.add_argument('--preview', action='store_true')
     args = parser.parse_args()
     try:
-        if args.action in ('start', 'reconcile', 'control', 'recover-delivery', 'retry-source', 'recover-writing') and (os.environ.get('HERMES_KANBAN_TASK') or
+        if args.action in ('start', 'reconcile', 'control', 'recover-delivery', 'retry-source', 'recover-writing', 'recover-closure') and (os.environ.get('HERMES_KANBAN_TASK') or
                                                                 os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT')):
             raise ValueError('incremental operator actions require a trusted operator')
         if args.action == 'start':
@@ -58,9 +59,12 @@ def main():
                 else:
                     from incremental_writing_resume import recover
                 result = recover(domain, request, preview=args.preview)
+            elif args.action == 'recover-closure':
+                from incremental_closure import recover
+                result = recover(domain, request, preview=args.preview)
             elif args.action == 'control':
-                if {'writing_continuation', 'writing_amendment'} & request.keys():
-                    raise ValueError('writing recovery requires the recover-writing entry point')
+                if {'writing_continuation', 'writing_amendment', 'partial_closure'} & request.keys():
+                    raise ValueError('bound recovery requires its specific operator entry point')
                 control = IncrementalControl(domain.vault, request['run_id'])
                 result = control.control(request)
                 if result['state'] == 'active':
