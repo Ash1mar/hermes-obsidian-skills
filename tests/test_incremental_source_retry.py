@@ -60,6 +60,7 @@ def test_preparation_operator_retry_requires_matching_abnormal_worker_run(tmp_pa
     monkeypatch.setattr(program_worker, 'canonical_binding', lambda *_: (claim, None))
     monkeypatch.setattr(preparation, 'FileIngestWorkflowService', lambda *_: SimpleNamespace(status=lambda _: workflow))
     monkeypatch.setattr(preparation, 'IncrementalControl', lambda *_: SimpleNamespace(status=lambda: head))
+    monkeypatch.setattr(controller, 'IncrementalControl', preparation.IncrementalControl)
     monkeypatch.setattr(controller, 'attach_sources', lambda *_: None)
     monkeypatch.setattr(controller, 'spawn', lambda *_: None)
     domain = SimpleNamespace(vault=tmp_path, root=lambda _: tmp_path / 'run', status=lambda _: run)
@@ -108,6 +109,7 @@ def fixture(tmp_path,monkeypatch):
     import run_short_evidence_test as native
     import native_stop_inventory
     import ingest_kanban
+    import incremental_ingest_controller as controller
     run_id='retry-source-fixture'
     path='10_Raw/a.pdf'
     raw_hash='a'*64
@@ -126,6 +128,7 @@ def fixture(tmp_path,monkeypatch):
     domain=SimpleNamespace(vault=tmp_path,root=lambda _:root,status=lambda _:run,validate_source_snapshot=lambda *_:{'original':{'ref':path,'sha256':raw_hash}})
     monkeypatch.setattr(module,'service',lambda *_:domain)
     monkeypatch.setattr(module,'IncrementalControl',lambda *_:SimpleNamespace(status=lambda:control))
+    monkeypatch.setattr(controller,'IncrementalControl',module.IncrementalControl)
     monkeypatch.setattr(module,'profile_ready',lambda:True)
     monkeypatch.setattr(module,'controller_alive',lambda _:False)
     monkeypatch.setattr(module,'completion_connection',lambda _:SimpleNamespace(close=lambda:None))
@@ -153,6 +156,21 @@ def test_paused_retry_unblocks_same_task_without_releasing_boundary_or_reserving
     assert item.control['boundary']=={'stage':'mapping'} and item.run['reservations']=={}
     assert item.job.read_bytes()==original
     assert module.retry(tmp_path,item.request)==receipt and item.unblocked==['native-a']
+
+
+def test_active_retry_and_receipt_replay_attach_existing_controller(tmp_path, monkeypatch):
+    import incremental_ingest_controller as controller
+
+    item = fixture(tmp_path, monkeypatch)
+    item.control.update(state='active', boundary=None)
+    resumed = []
+    monkeypatch.setattr(controller, 'attach_sources', lambda *_: resumed.append('attach'))
+    monkeypatch.setattr(controller, 'spawn', lambda *_: resumed.append('start-or-reuse'))
+    receipt = module.retry(tmp_path, item.request)
+    assert receipt['controller_requested']
+    assert module.retry(tmp_path, item.request) == receipt
+    assert item.unblocked == ['native-a']
+    assert resumed == ['attach', 'start-or-reuse', 'attach', 'start-or-reuse']
 
 
 @pytest.mark.parametrize('evidence',['attempt','audit','result','reservation','claim','live-controller','changed-job','unsupported-raw','permission'])
