@@ -6,6 +6,10 @@ import hashlib
 import os
 from pathlib import Path
 import sqlite3
+import sys
+
+sys.path.append(str(Path(__file__).resolve().parents[1] / 'hermes-obsidian-governed-ingest-orchestrator/lib'))
+from incremental_preparation_state import can_retry_preparation, interrupted_preparation, native_state
 
 STAGES = (('prepare', '来源准备'), ('mapping', '证据映射'), ('coordination', '页面协调'),
           ('writing', '页面写作'), ('formal-build', '正式构建'), ('release', '发布与索引'),
@@ -32,9 +36,7 @@ def native_tasks(board):
             for task in kb.list_tasks(connection, include_archived=True):
                 runs = kb.list_runs(connection, task.id, include_active=False)
                 last = max(runs, key=lambda row: row.id, default=None)
-                result[task.id] = {'task_id': task.id, 'status': task.status,
-                                   'claimed': bool(task.claim_lock),
-                                   'last_outcome': getattr(last, 'outcome', None),
+                result[task.id] = {'task_id': task.id, **native_state(task, last),
                                    'created_by': getattr(task, 'created_by', None), 'body': getattr(task, 'body', None)}
             return result
     except (ImportError, OSError, ValueError, RuntimeError, sqlite3.Error):
@@ -162,16 +164,36 @@ def source_pipeline(item, root, run, control, source_workflow, rounds, *, native
     outcome = next((row for row in source_workflow.get('source_outcomes', []) if row.get('path') == path), {})
     reason = outcome.get('reason') or outcome.get('error_code') or item.get('reason') or item.get('error')
     prepared = bool(item.get('snapshot_id'))
+    execution = {}
+    review = {}
+    if card.get('idempotency_key') and source_workflow.get('workflow_id'):
+        workflow_root = root.parent.parent / 'ingest-workflows' / source_workflow['workflow_id']
+        execution = read(workflow_root / 'bindings' / (fingerprint(card['idempotency_key']) + '.execution.json'))
+        review = read(workflow_root / 'reports' / ('failed-' + fingerprint(node)[:16] + '.json'))
+    admission = (item.get('admission') or {}).get('state')
+    needs_review = bool(review.get('error_code'))
+    retry_preparation = can_retry_preparation(run_state=run.get('state'), control_state=control.get('state'),
+        admission=admission, source_state=item['state'], outcome=outcome, task=task, execution=execution,
+        needs_review=needs_review) and not (root / 'preparation-retries' / (fingerprint(path) + '.json')).is_file()
     prep_state = ('completed' if prepared else 'failed' if item['state'] == 'failed' or outcome.get('status') == 'failed'
+                  else 'partial' if outcome.get('status') == 'ready'
                   else 'running' if task.get('status') == 'running' or task.get('claimed')
-                  else 'held' if task.get('status') in ('blocked', 'scheduled', 'archived') and task.get('last_outcome')
-                  else 'partial' if outcome.get('status') == 'ready' else 'pending')
+                  else 'manual-held' if admission == 'held'
+                  else 'held' if needs_review or interrupted_preparation(task, execution)
+                  else 'waiting-dispatch' if task.get('status') in ('scheduled', 'ready', 'todo', 'blocked') else 'pending')
     pipeline = [stage('prepare', prep_state, detail=reason, task_id=card.get('task_id'), native_status=task.get('status'),
-                      error_code=outcome.get('error_code'), evidence_refs=outcome.get('artifact_refs', []))]
+                      error_code=outcome.get('error_code'), evidence_refs=outcome.get('artifact_refs', []),
+                      retry_eligible=retry_preparation, interrupted_run_id=task.get('last_run_id') if retry_preparation else None)]
     snapshot = item.get('snapshot_id')
-    mapping = 'completed' if item['state'] == 'mapped' else 'held' if prep_state == 'failed' else (
+    wait = read(root / 'source-qualification' / snapshot / 'wait.json') if snapshot else {}
+    mapping = 'completed' if item['state'] == 'mapped' else 'held' if prep_state == 'failed' or item['state'] == 'mapping_held' else (
         operation_state(root / 'native/source' / snapshot / 'mapping', control, 'source', snapshot, 'mapping', native_reader=native_reader) if snapshot else 'pending')
-    pipeline.append(apply_boundary(stage('mapping', mapping), control, 'source', snapshot))
+    mapping_detail = None
+    if item['state'] == 'prepared' and wait.get('state') in ('waiting', 'exhausted'):
+        mapping, mapping_detail = 'waiting-qualification', f"来源资格锁争用，已记录 {len(wait['attempts'])} 次等待"
+    elif item['state'] == 'mapping_held':
+        mapping_detail = '来源资格核验已达到重试上限'
+    pipeline.append(apply_boundary(stage('mapping', mapping, detail=mapping_detail), control, 'source', snapshot))
     related = [row for row in rounds if snapshot and snapshot in row['snapshots']]
     resource = None
     pointer = item.get('snapshot') or {}
@@ -191,7 +213,7 @@ def source_pipeline(item, root, run, control, source_workflow, rounds, *, native
     for key, _ in STAGES[2:-1]:
         states = [next(value for value in row['stages'] if value['key'] == key)['state'] for row in related]
         value = aggregate(states)
-        if not related and prep_state == 'failed':
+        if not related and (prep_state == 'failed' or item['state'] == 'mapping_held'):
             value = 'held'
         pipeline.append(stage(key, value, shared=True, round_ids=[row['round_id'] for row in related],
                               detail='共享轮次结果' if related else '等待本来源映射进入共享轮次'))
@@ -201,7 +223,8 @@ def source_pipeline(item, root, run, control, source_workflow, rounds, *, native
     retry = retry_capability(item, root, run, control, native_reader=native_reader)
     if not retry['allowed'] and prep_state == 'failed':
         retry['reason'] = reason or '此来源失败尚无可用的受控重试入口。'
-    display = mapping if item['state'] == 'prepared' and mapping in ('running', 'failed', 'held', 'paused', 'pausing') else prep_state if item['state'] == 'pending' else item['state']
+    display = mapping if item['state'] == 'mapping_held' or (item['state'] == 'prepared' and mapping != 'pending') else (
+        prep_state if item['state'] == 'pending' else item['state'])
     item.update(source_sha256=digest, display_state=display, pipeline=pipeline, native_preparation={k: v for k, v in task.items() if k != 'body'}, failure_reason=reason, related_rounds=[
         {'round_id': row['round_id'], 'dependent_page_ids': dependencies[row['round_id']], 'shared': True,
          'dependent_change_ids': dependent_changes[row['round_id']],
@@ -257,7 +280,7 @@ def retry_capability(item, root, run, control, *, native_reader=None):
 
 def overall_stages(sources, rounds, run, control):
     result = []
-    final_inputs = all(row['state'] in ('mapped', 'failed') for row in sources) and not run.get('active_round_id') and set(
+    final_inputs = all(row['state'] in ('mapped', 'failed', 'mapping_held') for row in sources) and not run.get('active_round_id') and set(
         run.get('map_result_ids', [])) == set(run.get('consumed_map_ids', []))
     for key, _ in STAGES:
         values = ([next(row for row in source['pipeline'] if row['key'] == key)['state'] for source in sources]

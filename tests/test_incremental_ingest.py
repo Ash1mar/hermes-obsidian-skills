@@ -64,6 +64,33 @@ def seal(incremental, index=0):
     return service.seal_source_snapshot(request)
 
 
+def test_mapping_hold_preserves_seal_and_pins_exhausted_wait(incremental):
+    from hermes_source_units.incremental_qualification import WAIT_CONTRACT, qualification_id
+
+    service, _, outcomes, _, _, _, _ = incremental
+    snapshot = seal(incremental)['snapshot']
+    sid, source = snapshot['snapshot_id'], outcomes[0]['path']
+    old = service.status('fixture')['sources'][source]
+    path = service.root('fixture') / 'source-qualification' / sid / 'wait.json'
+    evidence = {'contract': WAIT_CONTRACT, 'run_id': 'fixture', 'snapshot_id': sid,
+                'qualification_id': qualification_id('fixture', sid), 'retry_at': None, 'state': 'exhausted',
+                'attempts': [{'attempt': i, 'lock': '_system/ledgers/ingest-workflows/.dispatch-locks/ingest-fixture.lock',
+                              'error_code': 'LOCK_TIMEOUT', 'wait_ms': 5000} for i in (1, 2, 3)]}
+    for invalid in ({**evidence, 'attempts': evidence['attempts'][:2]}, {**evidence, 'snapshot_id': 'another'}):
+        put(path, invalid)
+        request = mutation(service, 'hold-a', source_path=source, snapshot_id=sid,
+                           wait=pinned(service.vault, path.relative_to(service.vault).as_posix()))
+        with pytest.raises(ContractError, match='not evidenced as exhausted'):
+            service.hold_source_mapping(request)
+    put(path, evidence)
+    request = mutation(service, 'hold-a', source_path=source, snapshot_id=sid,
+                       wait=pinned(service.vault, path.relative_to(service.vault).as_posix()))
+    hold = service.hold_source_mapping(request)
+    current = service.status('fixture')
+    assert current['sources'][source] == {**old, 'state': 'mapping_held', 'mapping_hold': hold}
+    assert current['reservations'] == {} and current['map_result_ids'] == []
+
+
 def map_source(incremental, source):
     service, _, _, _, _, _, _ = incremental
     snap = source['snapshot']

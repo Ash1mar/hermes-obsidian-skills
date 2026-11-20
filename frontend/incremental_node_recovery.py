@@ -3,16 +3,6 @@ from incremental import fingerprint
 from incremental_projection import read
 
 
-def preparation_retry(item, root, run, control, phase):
-    task = item['native_preparation']
-    if (run['state'] != 'active' or control.get('state') != 'active' or item['state'] != 'pending'
-            or (item.get('admission') or {}).get('state') == 'held' or phase.get('error_code')
-            or task.get('status') not in ('blocked', 'scheduled') or task.get('claimed')
-            or not task.get('last_outcome') or task['last_outcome'] == 'completed'):
-        return False
-    return not (root / 'preparation-retries' / (fingerprint(item['path']) + '.json')).is_file()
-
-
 def source_actions(item, root, run, control, rounds, latest, *, writable, interrupted):
     """Project review scopes even when the original run is terminal."""
     identity = {'source_path': item['path'], 'source_sha256': item['source_sha256']}
@@ -39,8 +29,9 @@ def source_actions(item, root, run, control, rounds, latest, *, writable, interr
         if key == 'prepare':
             if phase.get('task_id') or phase.get('detail'):
                 phase['recovery_scopes'] = [{k: phase.get(k) for k in ('detail', 'error_code', 'task_id', 'evidence_refs')}]
-            if preparation_retry(item, root, run, control, phase):
-                offer({'task_id': phase['task_id']}, 'incremental-retry-source', '重试此文件转换',
+            if phase['retry_eligible']:
+                offer({'task_id': phase['task_id'], 'native_run_id': phase['interrupted_run_id']},
+                      'incremental-retry-source', '重试此文件转换',
                       retry_kind='preparation-unfinished')
         elif key == 'mapping':
             snapshot = item.get('snapshot_id')

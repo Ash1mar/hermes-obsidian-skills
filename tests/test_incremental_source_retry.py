@@ -14,6 +14,67 @@ from hermes_source_units.source_units import _json_bytes,_write_atomic
 from hermes_source_units.validation import fingerprint
 
 
+@pytest.mark.parametrize('outcome,started,allowed', [('scheduled', False, False), ('crashed', False, False),
+                                                     ('scheduled', True, False), ('crashed', True, True)])
+def test_preparation_operator_retry_requires_matching_abnormal_worker_run(tmp_path, monkeypatch, outcome, started, allowed):
+    import incremental_ingest_controller as controller
+    import incremental_preparation_retry as preparation
+    import ingest_kanban
+    import program_worker
+    from hermes_source_units.source_units import _sha
+
+    relative = '10_Raw/sample.pdf'
+    raw = tmp_path / relative
+    raw.parent.mkdir()
+    raw.write_bytes(b'fixture')
+    digest = _sha(raw.read_bytes())
+    node = 'source-prepare:' + fingerprint({'path': relative, 'content_sha256': digest})[:16]
+    claim = {'workflow_id': 'origin', 'node': node, 'input_fingerprint': 'inputs', 'task_id': 'card'}
+    card = {'node': node, 'task_id': 'card', 'idempotency_key': 'slot'}
+    folder = tmp_path / '_system/ledgers/ingest-workflows/origin'
+    binding = folder / 'bindings' / (fingerprint('slot') + '.json')
+    if started:
+        _write_atomic(binding.with_suffix('.execution.json'), _json_bytes({'run_id': 7, 'state': 'running',
+            'executor': 'program-v1', 'grant': {'worker_pid': 51, 'claim_lock': 'past-claim'}}))
+    task = SimpleNamespace(id='card', status='scheduled', claim_lock=None, worker_pid=None, created_by='ingest-workflow',
+                           body=json.dumps({**claim, 'worker_binding': str(binding)}))
+    ended = SimpleNamespace(id=7, outcome=outcome, started_at=1, ended_at=2 if started else 1)
+    dispatched = []
+
+    def unblock(_db, identity):
+        dispatched.append(identity)
+        return True
+
+    native = SimpleNamespace(get_task=lambda *_: task, list_runs=lambda *_a, **_kw: [ended], unblock_task=unblock)
+    monkeypatch.setitem(sys.modules, 'hermes_cli', SimpleNamespace(kanban_db=native))
+    monkeypatch.setattr(preparation, 'completion_connection', lambda _: SimpleNamespace(close=lambda: None))
+    workflow = {'cancel_requested': False, 'actor': 'operator', 'batch_id': None, 'workflow_id': 'origin',
+                'scope': {'incremental_run_id': 'run'}, 'source_outcomes': [],
+                'kanban': {'board_id': 'origin', 'task_map': [card]}}
+    run = {'actor': 'operator', 'state': 'active', 'revision': 1, 'source_workflow_id': 'origin',
+           'source_manifest': [{'path': relative, 'sha256': digest}], 'sources': {relative: {'state': 'pending'}}}
+    head = {'actor': 'operator', 'state': 'active', 'revision': 1}
+    adapter = SimpleNamespace(workflow=None, _source_window=lambda *_: {node}, worker_check=lambda *_: None)
+    monkeypatch.setattr(ingest_kanban, 'IngestKanbanAdapter', lambda *_a, **_k: adapter)
+    monkeypatch.setattr(ingest_kanban, 'desired_graph', lambda *_: [])
+    monkeypatch.setattr(program_worker, 'canonical_binding', lambda *_: (claim, None))
+    monkeypatch.setattr(preparation, 'FileIngestWorkflowService', lambda *_: SimpleNamespace(status=lambda _: workflow))
+    monkeypatch.setattr(preparation, 'IncrementalControl', lambda *_: SimpleNamespace(status=lambda: head))
+    monkeypatch.setattr(controller, 'attach_sources', lambda *_: None)
+    monkeypatch.setattr(controller, 'spawn', lambda *_: None)
+    domain = SimpleNamespace(vault=tmp_path, root=lambda _: tmp_path / 'run', status=lambda _: run)
+    request = {'run_id': 'run', 'actor': 'operator', 'operation_id': 'retry', 'control_revision': 1,
+               'run_revision': 1, 'source_path': relative, 'source_sha256': digest, 'retry_kind': preparation.KIND}
+    if allowed:
+        assert preparation.retry(domain, request)['prior_run_id'] == 7
+        assert dispatched == ['card']
+    else:
+        with pytest.raises(ContractError, match='no evidenced interrupted worker'):
+            preparation.retry(domain, request)
+        assert not dispatched
+        assert not list((tmp_path / 'run/preparation-retries').glob('*.json'))
+
+
 def test_preparation_retry_claim_preserves_original_and_is_bound_to_one_native_run(tmp_path, monkeypatch):
     from incremental_preparation_retry import CONTRACT, conversion_generation
 

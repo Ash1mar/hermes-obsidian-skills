@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 
+from .incremental_qualification import BACKOFF_SECONDS, LOCK_CONTENTION_CODES, WAIT_CONTRACT, qualification_id
 from .incremental_sources import (pinned, read_pin, require, safe_id, snapshot_content,
                                   verify_native_completion, verify_native_drain)
 from .source_units import _exclusive_lock, _json_bytes, _load_json, _sha, _vault_path, _write_atomic
@@ -232,6 +233,36 @@ class FileIncrementalIngestService:
 
         return self._mutate(request, 'source-seal', 'source', request['source_path'], update)
 
+    def hold_source_mapping(self, request):
+        def update(run, grant):
+            path, snapshot_id = request['source_path'], request['snapshot_id']
+            source = run['sources'].get(path, {})
+            require(source.get('state') == 'prepared' and source.get('snapshot_id') == snapshot_id,
+                    'qualification hold must name this exact prepared source')
+            self.validate_source_snapshot(run['run_id'], snapshot_id)
+            pointer = request['wait']
+            expected = self.root(run['run_id']) / 'source-qualification' / safe_id(snapshot_id) / 'wait.json'
+            require(pointer['ref'] == expected.relative_to(self.vault).as_posix(), 'qualification wait evidence is outside its snapshot')
+            wait = read_pin(self.vault, pointer)
+            workflow_id = run['source_workflow_id']
+            locks = {f'_system/ledgers/ingest-workflows/{folder}/{workflow_id}.lock'
+                     for folder in ('.dispatch-locks', '.locks')}
+            locks.add('_system/metadata/.incremental-source-qualification.lock')
+            attempts = wait.get('attempts', [])
+            require(wait.get('contract') == WAIT_CONTRACT and wait.get('run_id') == run['run_id']
+                    and wait.get('snapshot_id') == snapshot_id and wait.get('state') == 'exhausted'
+                    and wait.get('qualification_id') == qualification_id(run['run_id'], snapshot_id)
+                    and wait.get('retry_at') is None and len(attempts) == len(BACKOFF_SECONDS) + 1
+                    and all(a['attempt'] == i and a['lock'] in locks and a['error_code'] in LOCK_CONTENTION_CODES
+                            and type(a['wait_ms']) is int and a['wait_ms'] >= 0 for i, a in enumerate(attempts, 1)),
+                    'source qualification retry allowance is not evidenced as exhausted')
+            hold = {'state': 'held', 'stage': 'mapping', 'source_path': path, 'snapshot_id': snapshot_id,
+                    'reason': 'source qualification lock retry allowance exhausted', 'wait': pointer}
+            run['sources'][path] = {**source, 'state': 'mapping_held', 'mapping_hold': hold}
+            return hold, [pointer]
+
+        return self._mutate(request, 'mapping', 'source', request['snapshot_id'], update)
+
     def reserve_budget(self, request):
         def update(run, grant):
             reservation = request['reservation']
@@ -407,7 +438,7 @@ class FileIncrementalIngestService:
     def close_run(self, request):
         def update(run, grant):
             require(run['active_round_id'] is None
-                    and all(row['state'] in ('mapped', 'failed') for row in run['sources'].values())
+                    and all(row['state'] in ('mapped', 'failed', 'mapping_held') for row in run['sources'].values())
                     and set(run['map_result_ids']) == set(run['consumed_map_ids']),
                     'sources or rounds remain unfinished', 'INCOMPLETE_COVERAGE')
             accounting = request.get('usage_reconciliation')
@@ -416,6 +447,11 @@ class FileIncrementalIngestService:
             dispositions = [self.root(run['run_id']) / 'rounds' / rid / 'settlement.json' for rid in run['round_ids']]
             require(all(path.is_file() for path in dispositions), 'round settlement is missing')
             gaps = [row for row in run['sources'].values() if row['state'] == 'failed']
+            for row in run['sources'].values():
+                if row['state'] == 'mapping_held':
+                    hold = row['mapping_hold']
+                    read_pin(self.vault, hold['wait'])
+                    gaps.append(hold)
             maps = [self.read_map(run['run_id'], mid) for mid in run['map_result_ids']]
             gaps.extend(row for result in maps for row in result['coverage'] if row['disposition'] == 'held')
             gaps.extend(row for result in maps for row in result['unresolved'])

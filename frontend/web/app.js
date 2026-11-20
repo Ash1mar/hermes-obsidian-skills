@@ -6,6 +6,7 @@ const labels = {
   active: "处理中", preparing: "来源准备中", prepared: "来源就绪", mapping: "映射中", mapped: "映射已完成",
   frozen: "输入已固定", settled: "已结算", held: "受阻", committed: "已提交",
   "manual-held": "待手动开始", released: "已允许处理",
+  "waiting-dispatch": "等待调度", "waiting-qualification": "等待来源资格核验",
 };
 const waitLabels = { waiting: "等待交接", detached: "等待已结束", handoff: "交接就绪", failed: "来源交接失败" };
 const fileLabels = { ready: "就绪", failed: "转换失败", pending: "未结算", running: "处理中", queued: "排队中",

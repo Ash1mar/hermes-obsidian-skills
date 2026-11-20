@@ -8,6 +8,7 @@ from hermes_source_units.incremental_control import IncrementalControl
 from hermes_source_units.incremental_sources import completion_connection, require, safe_id
 from hermes_source_units.source_units import _exclusive_lock, _load_json, _sha, _vault_path
 from hermes_source_units.validation import fingerprint
+from incremental_preparation_state import can_retry_preparation, native_state
 from prepare_short_evidence_test import save
 
 KIND = 'preparation-unfinished'
@@ -71,20 +72,28 @@ def retry(domain, request):
                     and all(wire.get(key) == binding[key] for key in ('workflow_id', 'node', 'input_fingerprint')),
                     'native preparation task binding changed')
             history = kb.list_runs(native, task.id, include_active=False)
+            ended = max(history, key=lambda row: row.id, default=None)
+            started = grant_path.with_suffix('.started.json').exists()
             if not grant:
-                ended = max(history, key=lambda row: row.id, default=None)
-                require(task.status in ('blocked', 'scheduled') and not task.claim_lock and not task.worker_pid
-                        and ended and ended.ended_at is not None and ended.outcome != 'completed',
-                        'native preparation has no stopped, unfinished attempt')
+                require(not started and task.status in ('blocked', 'scheduled'), 'native preparation is no longer stopped')
+            if task.status in ('blocked', 'scheduled') and not started:
+                execution_path = binding_path.with_suffix('.execution.json')
+                execution = _load_json(execution_path) if execution_path.is_file() else {}
+                require(can_retry_preparation(run_state=run['state'], control_state=head['state'],
+                            admission=admission.get('state'), source_state=run['sources'][source_path]['state'],
+                            outcome=None, task=native_state(task, ended), execution=execution)
+                        and (grant is None or ended.id == grant['prior_run_id']),
+                        'native preparation has no evidenced interrupted worker execution')
+            if not grant:
                 grant = {'contract': CONTRACT, 'request': request, 'board': board, 'binding': binding,
                          'prior_run_id': ended.id, 'prior_outcome': ended.outcome}
                 save(grant_path, grant)
             require(grant['board'] == board and grant['binding'] == binding, 'preparation recovery binding changed')
             require(controller.status()['state'] == 'active', 'source recovery cannot release a pause')
-            if task.status in ('blocked', 'scheduled') and not grant_path.with_suffix('.started.json').exists():
+            if task.status in ('blocked', 'scheduled') and not started:
                 require(kb.unblock_task(native, task.id), 'native preparation could not be released')
             else:
-                require(grant_path.with_suffix('.started.json').exists() or task.status in ('ready', 'running'),
+                require(started or task.status in ('ready', 'running'),
                         'preparation recovery is no longer dispatchable')
         result = {'state': 'authorized', 'retry_kind': KIND, 'operation_id': operation_id,
                   'source_path': source_path, 'task_id': task.id, 'prior_run_id': grant['prior_run_id'],

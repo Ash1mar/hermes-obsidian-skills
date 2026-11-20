@@ -95,3 +95,54 @@ def test_stopped_operator_guard_checks_other_cancelled_workflows_and_rejects_act
     other.update(state='release_planning',cancel_requested=False);path.write_text(json.dumps(other))
     with pytest.raises(GovernanceError,match='Another workflow'): 
         with resolution.operator_guard(SimpleNamespace(vault=tmp_path),q):pass
+
+
+def test_incremental_guard_bounds_combined_workflow_locks(tmp_path, monkeypatch):
+    from threading import Event, Thread
+    import time
+    import hermes_source_units.incremental_control as control_module
+    import hermes_source_units.incremental_ingest as domain_module
+    import hermes_source_units.ingest_workflow as workflow_module
+    import hermes_source_units.incremental_qualification as qualification
+    from hermes_source_units.source_units import _exclusive_lock
+
+    root = tmp_path / '_system/ledgers/ingest-workflows'
+    wid = 'ingest-run'
+    dispatch_lock = root / '.dispatch-locks' / (wid + '.lock')
+    workflow_lock = root / '.locks' / (wid + '.lock')
+    workflow = {'actor': 'operator', 'cancel_requested': False, 'scope': {'incremental_run_id': 'run'}}
+    origin = SimpleNamespace(_path=lambda _: root / (wid + '.json'), _lock=lambda _: workflow_lock,
+                             status=lambda _: workflow, assert_execution_ready=lambda _: None)
+    head = {'state': 'active'}
+    control = SimpleNamespace(status=lambda: head, check_admission=lambda _: None)
+    snapshot = {'snapshot_id': 'snap', 'identity': {'resource_id': 'source'}}
+    domain = SimpleNamespace(status=lambda _: {'state': 'active', 'actor': 'operator', 'source_workflow_id': wid},
+                             validate_source_snapshot=lambda *_: snapshot)
+    monkeypatch.setattr(workflow_module, 'FileIngestWorkflowService', lambda _: origin)
+    monkeypatch.setattr(control_module, 'IncrementalControl', lambda *_: control)
+    monkeypatch.setattr(domain_module, 'FileIncrementalIngestService', lambda *_a, **_k: domain)
+    intent = {'workflow_id': wid, 'actor': 'operator', 'source_boundary': 'incremental-source/v1',
+              'workflow_ref': '_system/ledgers/ingest-workflows/' + wid + '.json', 'resource_ids': ['source'],
+              'snapshot_id': 'snap', 'incremental_run_id': 'run'}
+    started = Event()
+
+    def short_hold():
+        with _exclusive_lock(dispatch_lock):
+            started.set()
+            time.sleep(.53)
+
+    worker = Thread(target=short_hold)
+    worker.start()
+    assert started.wait(5)
+    mark = time.monotonic()
+    with resolution.operator_guard(SimpleNamespace(vault=tmp_path), intent):
+        assert time.monotonic() - mark >= .4
+    worker.join(timeout=5)
+
+    with _exclusive_lock(workflow_lock):
+        mark = time.monotonic()
+        with pytest.raises(qualification.QualificationContention) as caught:
+            with resolution.operator_guard(SimpleNamespace(vault=tmp_path), intent):
+                pytest.fail('both locks must be available')
+        assert caught.value.lock == workflow_lock and caught.value.code == 'LOCK_TIMEOUT'
+        assert 4.8 <= (time.monotonic() - mark) < 7 and caught.value.wait_ms >= 4800

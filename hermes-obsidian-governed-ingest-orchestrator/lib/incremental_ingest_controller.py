@@ -14,8 +14,8 @@ from hermes_source_units.incremental_sources import pinned, read_pin
 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _vault_path, _write_atomic
 from hermes_source_units.validation import ContractError, fingerprint
 from incremental_native import NativeCompletionUnconfirmed, mutate, service, verified_result
-from incremental_runtime import (execute_rows, initialize_scope, map_source, request_path, source_alias,
-                                 source_pin)
+from incremental_runtime import (MAPPING_DEFERRED, execute_rows, initialize_scope, map_source, qualification_wait,
+                                 qualification_wait_path, request_path, source_alias, source_pin)
 from short_evidence_pass import require, request as semantic_request
 
 
@@ -642,19 +642,36 @@ def watch(vault, run_id):
                         return domain.status(run_id)
                 for snapshot, future in list(running.items()):
                     if future.done():
-                        future.result()
+                        result = future.result()
                         del running[snapshot]
-                        control.checkpoint({'scope_kind': 'source', 'scope_id': snapshot}, 'mapping',
-                                           {'snapshot_id': snapshot})
+                        if result is not MAPPING_DEFERRED:
+                            control.checkpoint({'scope_kind': 'source', 'scope_id': snapshot}, 'mapping',
+                                               {'snapshot_id': snapshot})
                 if control.status()['state'] != 'active':
                     time.sleep(1)
                     continue
                 run = sync_sources(domain, run_id)
-                for source in run['sources'].values():
-                    if source['state'] == 'prepared' and source['snapshot_id'] not in running:
-                        if len(running) >= configuration()['source_prepare_concurrency']:
-                            break
-                        running[source['snapshot_id']] = pool.submit(map_source, str(domain.vault), run_id, source['snapshot_id'])
+                for path, source in run['sources'].items():
+                    if source['state'] != 'prepared' or source['snapshot_id'] in running:
+                        continue
+                    if control.status()['state'] != 'active':
+                        break
+                    snapshot = source['snapshot_id']
+                    wait = qualification_wait(domain.root(run_id), snapshot)
+                    if wait and wait['state'] == 'exhausted':
+                        pointer = qualification_wait_path(domain.root(run_id), snapshot)
+                        try:
+                            mutate(domain, run_id, 'hold_source_mapping', 'qualification-held-' + snapshot[-56:],
+                                   source_path=path, snapshot_id=snapshot,
+                                   wait=pinned(domain.vault, pointer.relative_to(domain.vault).as_posix()))
+                        except ContractError as error:
+                            if error.code != 'INCREMENTAL_PAUSED':
+                                raise
+                        continue
+                    if (wait and wait['state'] == 'waiting' and time.time() < wait['retry_at']
+                            or len(running) >= configuration()['source_prepare_concurrency']):
+                        continue
+                    running[snapshot] = pool.submit(map_source, str(domain.vault), run_id, snapshot)
                 run = domain.status(run_id)
                 if round_future is not None:
                     pass  # Keep sealing and mapping later-ready sources during this one fixed round.
@@ -668,7 +685,7 @@ def watch(vault, run_id):
                     except ContractError as error:
                         if error.code != 'ROUND_BUSY':
                             raise
-                elif not running and all(row['state'] in ('mapped', 'failed') for row in run['sources'].values()):
+                elif not running and all(row['state'] in ('mapped', 'failed', 'mapping_held') for row in run['sources'].values()):
                     if control.checkpoint({'scope_kind': 'run', 'scope_id': run_id}, 'closure',
                                           {'maps': run['map_result_ids'], 'rounds': run['round_ids']})['state'] != 'active':
                         return run
@@ -682,7 +699,7 @@ def closure_inputs(domain, run):
     from native_stop_inventory import workflow_processes
 
     run_id = run['run_id']
-    require(run['active_round_id'] is None and all(row['state'] in ('mapped', 'failed') for row in run['sources'].values())
+    require(run['active_round_id'] is None and all(row['state'] in ('mapped', 'failed', 'mapping_held') for row in run['sources'].values())
             and set(run['map_result_ids']) == set(run['consumed_map_ids'])
             and all((domain.root(run_id) / 'rounds' / rid / 'settlement.json').is_file() for rid in run['round_ids']),
             'closure requires all original sources and rounds to be settled')
