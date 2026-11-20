@@ -114,6 +114,11 @@ class Console:
                     raise UserError('请选择当前来源的准确处理入口，请刷新后重试。')
                 if action == 'incremental-retry-source' and body.get('retry_kind') != option.get('retry_kind'):
                     raise UserError('来源重试范围已经变化，请刷新后重试。')
+                scoped = {}
+                if 'scope_token' in option:
+                    from incremental_node_recovery import validate_action
+
+                    scoped = validate_action(body, option, UserError)
                 pause_before = body.get("pause_before")
                 if pause_before is not None:
                     if not isinstance(pause_before, str) or pause_before not in option.get("pause_targets", []):
@@ -170,6 +175,8 @@ class Console:
                     record.update(source_path=option['source_path'], source_sha256=option['source_sha256'])
                 if action == 'incremental-retry-source':
                     record['retry_kind'] = option['retry_kind']
+                if 'scope_token' in option:
+                    record.update(scoped, prior_attempt=option['attempt'])
             (directory / "short").mkdir(mode=0o700, exist_ok=True)
             path = attempt / "attempt.json"
             save(path, record)

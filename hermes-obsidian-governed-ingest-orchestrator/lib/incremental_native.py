@@ -13,6 +13,10 @@ from short_evidence_pass import require
 RUNTIME_MUTATION_LOCK_TIMEOUT = 30
 
 
+class NativeCompletionUnconfirmed(ValueError):
+    """The result file exists, but the native task never acknowledged completion."""
+
+
 def service(vault, run_id):
     return FileIncrementalIngestService(vault, check_admission=IncrementalControl(vault, run_id).check_admission)
 
@@ -80,6 +84,11 @@ def reserve_call(root, row, ordinal, grant):
         manifest = read_pin(domain.vault, binding)
         require(ordinal == 1 and row['id'] in manifest['dispatch_request_ids'],
                 'writing recovery cannot reserve an undispatched scope or retry')
+    if 'coordination_repair' in row['view']:
+        from incremental_coordination_repair import authorize
+
+        require(scope['stage'] == 'coordination', 'coordination repair is outside its original stage')
+        authorize(root, row, ordinal)
     # Unknown calls remain charged against these reservations after a restart.
     reservation = {'request_fingerprint': fingerprint({'request': row['id'], 'ordinal': ordinal}),
                    'phase': scope['stage'], 'max_calls': 1,
@@ -117,12 +126,12 @@ def verified_result(root, row):
     kb, kc, _ = runner.runtime()
     with closing(completion_connection(operation['board'])) as connection:
         task = kb.get_task(connection, result['task_id'])
-        require(task and task.created_by == operation['contract']
-                and task.status in ('done', 'archived') and not task.claim_lock
-                and task.body == runner.task_body(root, job)
-                and any(run.id == result['run_id'] and run.outcome == 'completed'
-                        for run in kb.list_runs(connection, task.id, include_active=False)),
-                'incremental result lacks native completion')
+        require(task and task.created_by == operation['contract'] and task.body == runner.task_body(root, job),
+                'incremental result lacks native completion binding')
+        if (task.status not in ('done', 'archived') or task.claim_lock
+                or not any(run.id == result['run_id'] and run.outcome == 'completed'
+                           for run in kb.list_runs(connection, task.id, include_active=False))):
+            raise NativeCompletionUnconfirmed('incremental result lacks native completion')
     require(_load_json(job)['request'] == row and result['request_id'] == row['id'], 'native request identity changed')
     if row['phase'] == 'incremental-formal-build':
         from hermes_source_units.short_build import evidence

@@ -30,6 +30,16 @@ when its complete model request still fits. Build rechecks the source, scope and
 assembles a single page revision. Updates append the qualified new material while preserving the full
 parent body and its citation bindings.
 
+New coordination groups can reconsider a hold that explicitly defers normal writing-time source
+inspection. The controller checks available original material and required dependencies against the
+sealed Map. Only a group with one verified returned attempt can receive one bounded local model
+correction. A structural correction already uses that allowance. The follow-up must cover the
+original held evidence for each target and preserve previously accepted identities. True evidence
+gaps, unavailable budget and unknown completion remain held. Retry an uncommitted coordination
+budget-lock or revision race once under the same live native grant before model invocation.
+Original receipts and per-target outcomes remain auditable. Previously pinned coordination groups
+retain their original planning revision and decisions.
+
 Structural headings stay in navigation. When a page selects a registered numbered heading
 without substantive text, use only mapped original text from that exact source snapshot and
 section or hold the page with the missing scope. A heading that contains a substantive numbered
@@ -82,4 +92,8 @@ use their own durable stage contracts.
 
 For operator-controlled file starts, explicitly set `incremental_manual_sources=true` at creation. The fixed source manifest is unchanged; all sources initially wait for admission. Use the frontend's per-source start action or `control --request` with `action=release-source`, exact `source_path`/`source_sha256`, actor, run ID, operation ID and current control revision. Admission while paused does not continue the workflow. Starting another file is a separate manual action; this option adds no delay, timer or default schedule. Already admitted work and its valid results retain their identities.
 
-For an exact source Map task that stopped before any model consumption, use `python3 "<skill-dir>/scripts/manage_incremental_ingest.py" --vault "<vault>" retry-source --request "<request.json>"`. The request binds run_id, actor, operation_id, control_revision, run_revision, source_path, source_sha256 and retry_kind=`mapping-unconsumed`. The operator entry independently verifies the current sealed source, original job/body hashes, ended native tasks, zero attempts/audits/reservations and bounded retry history. It unblocks only those same native tasks, preserves completed work and never releases a pause. Returned or unknown model consumption requires its existing evidence-based recovery, not this retry. A failed unchanged PDF does not gain a new conversion attempt through this entry.
+Use `python3 "<skill-dir>/scripts/manage_incremental_ingest.py" --vault "<vault>" retry-source --request "<request.json>"` for a file node. The request binds run_id, actor, operation_id, control_revision, run_revision, source_path, source_sha256 and retry_kind. `mapping-unconsumed` verifies the sealed source, original job/body hashes, ended native tasks, zero attempts/audits/reservations and bounded retry history. `preparation-unfinished` verifies an admitted file, the original bytes and canonical native preparation binding, and a stopped unfinished task with no durable source outcome. The single authorised fresh conversion uses a separate attempt directory and retains the prior diagnostics. Typed document failures and already prepared sources are ineligible. Both operations preserve the rest of the run and its pauses.
+
+`recover-coordination --request` reattaches the current admitted frozen round. The request binds run_id, round_id, actor, operation_id, expected_revision and control_revision. It reuses the same Maps and native workspace, and only releases a stopped original task when its job, receipts, runtime records and cumulative reservation ledger prove no attempt. Grouped coordination still applies its pinned planning revision. A manual stop is a separate durable boundary.
+
+The console files node actions and writing previews under their own operation IDs. The file node supplies a starting point for reviewing a shared round. The recovery operation remains bound to the round, its original writing or Build authorization and the applicable checkpoint. Terminal runs expose the affected historical scope and evidence for review.

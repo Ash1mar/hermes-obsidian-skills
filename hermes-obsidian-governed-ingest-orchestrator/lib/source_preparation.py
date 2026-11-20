@@ -29,14 +29,17 @@ def prepare_source(adapter, request):
     bound = {**request, "template_hash": begun["template_hash"]}
     source, actor = begun["assigned_source"], begun["actor"]
     vault = adapter.workflow.vault
+    from incremental_preparation_retry import conversion_generation
+
+    recovery = conversion_generation(adapter, bound, source)
     scripts = Path(__file__).resolve().parents[2] / "hermes-obsidian-controlled-ingest/scripts"
     sys.path.insert(0, str(scripts))
     from governance_repository import JsonGovernanceRepository, GovernanceError
     from manage_document_governance import command_ingest_finish
     from validate_document_bundle import validate_bundle
 
-    attempt_identity = fingerprint({'node': request['node'],
-                                    'input_fingerprint': begun['input_fingerprint']})[:16]
+    attempt_identity = fingerprint({'node': request['node'], 'input_fingerprint': begun['input_fingerprint'],
+                                    **({'recovery': recovery} if recovery else {})})[:16]
     root = _vault_path(vault, f"{WORKFLOW_ROOT}/{request['workflow_id']}/source-preparation/{attempt_identity}")
     with _exclusive_lock(root / ".prepare.lock"), worker_binding(bound):
         adapter.worker_check(bound)
@@ -69,8 +72,8 @@ def prepare_source(adapter, request):
             raw = _vault_path(vault, source["path"])
             if raw.suffix.lower() != ".pdf":
                 _fail("PREPARATION_REVIEW_REQUIRED", "automatic preparation currently supports PDF; use governed manual preparation for other formats")
-            generation = fingerprint({'workflow_id': request['workflow_id'],
-                                      'input_fingerprint': begun['input_fingerprint']})[:16]
+            generation = fingerprint({'workflow_id': request['workflow_id'], 'input_fingerprint': begun['input_fingerprint'],
+                                      **({'recovery': recovery} if recovery else {})})[:16]
             base = f"_system/reports/source-bundles/{raw.stem}-{source['content_sha256'][:16]}-{generation}"
             bundle = None
             document_failures = []

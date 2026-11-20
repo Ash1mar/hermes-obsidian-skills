@@ -21,7 +21,7 @@ def main():
     start.add_argument('--bootstrap-skill', type=Path, required=True)
     for action in ('status', 'watch'):
         sub.add_parser(action).add_argument('--run-id', required=True)
-    for action in ('reconcile', 'preview-reuse', 'control', 'recover-delivery', 'retry-source'):
+    for action in ('reconcile', 'preview-reuse', 'control', 'recover-coordination', 'recover-delivery', 'retry-source'):
         sub.add_parser(action).add_argument('--request', type=Path, required=True)
     for action in ('recover-writing', 'recover-closure'):
         recovery = sub.add_parser(action)
@@ -29,7 +29,7 @@ def main():
         recovery.add_argument('--preview', action='store_true')
     args = parser.parse_args()
     try:
-        if args.action in ('start', 'reconcile', 'control', 'recover-delivery', 'retry-source', 'recover-writing', 'recover-closure') and (os.environ.get('HERMES_KANBAN_TASK') or
+        if args.action in ('start', 'reconcile', 'control', 'recover-coordination', 'recover-delivery', 'retry-source', 'recover-writing', 'recover-closure') and (os.environ.get('HERMES_KANBAN_TASK') or
                                                                 os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT')):
             raise ValueError('incremental operator actions require a trusted operator')
         if args.action == 'start':
@@ -51,8 +51,15 @@ def main():
             if args.action == 'preview-reuse':
                 result = domain.preview_reuse(request)
             elif args.action == 'retry-source':
-                from incremental_source_retry import retry
-                result = retry(domain.vault, request)
+                if request.get('retry_kind') == 'preparation-unfinished':
+                    from incremental_preparation_retry import retry
+                    result = retry(domain, request)
+                else:
+                    from incremental_source_retry import retry
+                    result = retry(domain.vault, request)
+            elif args.action == 'recover-coordination':
+                from incremental_ingest_controller import recover_coordination
+                result = recover_coordination(domain, request)
             elif args.action == 'recover-writing':
                 if 'revise_fragments' in request:
                     from incremental_writing_amendment import recover
@@ -80,13 +87,13 @@ def main():
                         control_workflow(domain.vault, run['source_workflow_id'], 'cancel',
                                          'incremental-cancel-' + fingerprint([run['run_id'], request['operation_id']])[:64])
             elif args.action == 'recover-delivery':
-                from incremental_ingest_controller import recover_delivery
+                from incremental_ingest_controller import delivery_checkpoint, pending_delivery_pause, recover_delivery
                 from hermes_source_units.incremental_sources import safe_id
                 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _write_atomic
 
                 required = {'run_id', 'round_id', 'operation_id', 'actor', 'expected_revision', 'disposition'}
                 if (not required <= set(request)
-                        or not set(request) - required <= {'stop_after', 'isolation'}):
+                        or not set(request) - required <= {'stop_after', 'isolation', 'control_revision'}):
                     raise ValueError('delivery recovery requires one exact operator intent')
                 safe_id(request['operation_id'])
                 safe_id(request['round_id'])
@@ -95,17 +102,37 @@ def main():
                     intent = domain.root(run['run_id']) / 'rounds' / request['round_id'] / 'recovery-requests' / (request['operation_id'] + '.json')
                     if request['actor'] != run['actor']:
                         raise ValueError('delivery recovery actor changed')
+                    control = IncrementalControl(domain.vault, run['run_id'])
                     if intent.is_file():
                         if _load_json(intent) != request:
                             raise ValueError('delivery recovery operation identifies different inputs')
                     else:
                         if type(request['expected_revision']) is not int or request['expected_revision'] != run['revision']:
                             raise ValueError('delivery recovery run revision changed')
+                        if 'control_revision' in request:
+                            head = control.status()
+                            if (run['state'] != 'active' or run['active_round_id'] != request['round_id']
+                                    or head['state'] != 'active' or head['revision'] != request['control_revision']):
+                                raise ValueError('delivery node lost its active round or control revision')
                         _write_atomic(intent, _json_bytes(request))
-                    IncrementalControl(domain.vault, run['run_id']).reconcile_executors()
+                    control.reconcile_executors()
+                    scoped = 'control_revision' in request
+                    stop_after = request.get('stop_after')
+                    if scoped:
+                        admission = intent.parent.parent / 'recovery-admissions' / intent.name
+                        if admission.is_file():
+                            stop_after = _load_json(admission)['stop_after']
+                        else:
+                            prefix = intent.parent.parent / 'delivery.json'
+                            prior = _load_json(prefix)
+                            if pending_delivery_pause(control.status(), request['round_id'], prior):
+                                stop_after = prior['state']
+                            _write_atomic(admission, _json_bytes({'stop_after': stop_after}))
                     result = recover_delivery(domain, run['run_id'], request['round_id'], request['operation_id'],
-                                              disposition=request['disposition'], stop_after=request.get('stop_after'),
+                                              disposition=request['disposition'], stop_after=stop_after,
                                               isolation=request.get('isolation'), settle_terminal=True)
+                    if scoped:
+                        delivery_checkpoint(control, request['round_id'], result)
             else:
                 from incremental_ingest_controller import attach_sources, spawn
                 run = domain.status(request['run_id'])

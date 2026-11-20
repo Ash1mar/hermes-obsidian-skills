@@ -89,14 +89,17 @@ def progress(directory, request, attempts, active, historical, details):
             'source_count': len(request['sources']), 'started_at': attempts[0].get('started_at') if attempts else None}
     if not details:
         return data
-    source = read(Path(request['vault_path']) / '_system/ledgers/ingest-workflows' / f"ingest-{request['operation_id']}.json")
+    source_workflow = run.get('source_workflow_id', 'ingest-' + request['operation_id'])
+    source = read(Path(request['vault_path']) / '_system/ledgers/ingest-workflows' / (source_workflow + '.json'))
     from incremental_projection import native_tasks, overall_stages, round_projection, source_pipeline
+    from incremental_node_recovery import source_actions
     native_cache = {}
     def native_reader(board):
         if board not in native_cache:
             native_cache[board] = native_tasks(board)
         return native_cache[board]
     rounds = [round_projection(root, rid, run, control, native_reader=native_reader) for rid in run.get('round_ids', [])]
+    rounds_by_id = {row['round_id']: row for row in rounds}
     manual = control.get('manual_source_admission', {})
     sources = [{'name': Path(path).name, 'path': path, **row,
                 'admission': manual.get(path), 'actions': []} for path, row in run.get('sources', {}).items()]
@@ -124,12 +127,9 @@ def progress(directory, request, attempts, active, historical, details):
                 'attempt': latest.get('id'), 'control_revision': control.get('revision'),
                 'run_revision': run.get('revision'), 'source_path': item['path'],
                 'source_sha256': admission['sha256']})
-        if item['retry']['allowed'] and not historical and not active:
-            retry_action = {'id': 'incremental-retry-source', 'node': node, 'label': '重试此文件',
-                'attempt': latest.get('id'), 'control_revision': control.get('revision'), 'run_revision': run.get('revision'),
-                'source_path': item['path'], 'source_sha256': item['source_sha256'], 'retry_kind': item['retry']['retry_kind']}
-            item['actions'].append(retry_action)
-            item['retry']['action'] = retry_action
+        source_actions(item, root, run, control, rounds_by_id, latest.get('id'),
+                       writable=not historical and not active and run.get('state') == 'active',
+                       interrupted=controller_active is not True)
         if admission or item['actions']:
             source_nodes.append({'key': node, 'name': item['name'], 'state': item['state'],
                                  'description': '逐文件手动准入；允许处理不会释放暂停边界。',
@@ -169,9 +169,34 @@ def command(directory, attempt, config, save):
     if control['revision'] != attempt['control_revision'] or run['revision'] != attempt['run_revision']:
         raise ValueError('增量运行或控制修订已经变化，请刷新后重试。')
     operation = {'run_id': request['operation_id'], 'actor': request['actor'], 'operation_id': attempt['id']}
+    if 'scope_token' in attempt:
+        from incremental_node_recovery import validate_action
+
+        snapshot = progress(directory, request, [{'id': attempt['prior_attempt']}], False, False, True)
+        option = next((action for node in snapshot['nodes'] for action in node['actions']
+                       if action['id'] == attempt['action'] and action['node'] == attempt['node']), None)
+        if option is None:
+            raise ValueError('此节点的恢复条件已经变化，请刷新后重试。')
+        validate_action({**attempt, 'attempt': attempt['prior_attempt']}, option, ValueError)
+        if option.get('retry_kind') != attempt.get('retry_kind') or option.get('stop_after') != attempt.get('stop_after'):
+            raise ValueError('恢复方式已经变化，请刷新后重试。')
     if attempt['action'] == 'incremental-reconcile':
         operation['expected_revision'] = run['revision']
         mode = 'reconcile'
+    elif attempt['action'] == 'incremental-node-coordination':
+        operation.update(expected_revision=run['revision'], round_id=attempt['round_id'],
+                         control_revision=control['revision'])
+        mode = 'recover-coordination'
+    elif attempt['action'] == 'incremental-node-writing':
+        operation.update(expected_revision=control['revision'], run_revision=run['revision'],
+                         round_id=attempt['round_id'], boundary_fingerprint=fingerprint(control['boundary']))
+        if 'revise_fragments' in attempt:
+            operation['revise_fragments'] = attempt['revise_fragments']
+        mode = 'recover-writing'
+    elif attempt['action'] == 'incremental-node-delivery':
+        operation.update(expected_revision=run['revision'], round_id=attempt['round_id'], disposition='continue',
+                         stop_after=attempt['stop_after'], control_revision=control['revision'])
+        mode = 'recover-delivery'
     elif attempt['action'] == 'incremental-retry-source':
         from incremental_projection import retry_capability
         path, digest = attempt.get('source_path'), attempt.get('source_sha256')
@@ -179,14 +204,14 @@ def command(directory, attempt, config, save):
         item = run.get('sources', {}).get(path)
         expected_node = 'incremental-source-' + fingerprint({'path': path, 'sha256': digest})[:24]
         capability = retry_capability(item, root, run, control) if item else {}
-        if (not manifest or manifest['sha256'] != digest or attempt.get('node') != expected_node
+        if 'scope_token' not in attempt and (not manifest or manifest['sha256'] != digest or attempt.get('node') != expected_node
                 or not capability.get('allowed') or capability.get('retry_kind') != attempt.get('retry_kind')):
             raise ValueError('此来源没有可用的受控重试入口，请刷新并检查失败原因。')
         operation.update(control_revision=control['revision'], run_revision=run['revision'], source_path=path,
-                         source_sha256=digest, retry_kind=capability['retry_kind'])
+                         source_sha256=digest, retry_kind=attempt['retry_kind'])
         mode = 'retry-source'
     else:
-        operation.update(expected_revision=control['revision'], action=attempt['action'].removeprefix('incremental-'))
+        operation.update(expected_revision=control['revision'], action=attempt['action'].removeprefix('incremental-').removeprefix('node-'))
         if operation['action'] == 'continue':
             operation['boundary_fingerprint'] = fingerprint(control['boundary'])
         elif operation['action'] == 'release-source':

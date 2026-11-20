@@ -11,6 +11,36 @@ sys.path[:0]=[str(ROOT/'hermes-obsidian-governed-ingest-orchestrator/lib'),str(R
 import incremental_source_retry as module
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _json_bytes,_write_atomic
+from hermes_source_units.validation import fingerprint
+
+
+def test_preparation_retry_claim_preserves_original_and_is_bound_to_one_native_run(tmp_path, monkeypatch):
+    from incremental_preparation_retry import CONTRACT, conversion_generation
+
+    source = {'path': '10_Raw/first.pdf', 'content_sha256': 'a' * 64}
+    binding = {'workflow_id': 'workflow', 'node': 'source-prepare:a', 'task_id': 'task-a', 'template_hash': 'template'}
+    workflow = SimpleNamespace(vault=tmp_path, status=lambda _: {'scope': {'incremental_run_id': 'incremental'}})
+    adapter = SimpleNamespace(workflow=workflow)
+    root = tmp_path / '_system/ledgers/incremental-ingest/incremental/preparation-retries'
+    path = root / (fingerprint(source['path']) + '.json')
+    request = {'operation_id': 'recovery-a', 'run_id': 'incremental', 'source_path': source['path'],
+               'source_sha256': source['content_sha256']}
+    assert conversion_generation(adapter, binding, source) == ''
+    grant = {'contract': CONTRACT, 'request': request, 'binding': binding, 'board': 'board-a', 'prior_run_id': 9}
+    _write_atomic(path, _json_bytes(grant))
+    monkeypatch.setenv('HERMES_KANBAN_BOARD', 'board-a')
+    monkeypatch.setenv('HERMES_KANBAN_TASK', 'task-a')
+    monkeypatch.setenv('HERMES_KANBAN_RUN_ID', '9')
+    with pytest.raises(ContractError, match='escaped its native task'):
+        conversion_generation(adapter, binding, source)
+    monkeypatch.setenv('HERMES_KANBAN_RUN_ID', '10')
+    assert conversion_generation(adapter, binding, source) == 'recovery-a'
+    assert conversion_generation(adapter, binding, source) == 'recovery-a'
+    monkeypatch.setenv('HERMES_KANBAN_RUN_ID', '11')
+    with pytest.raises(ValueError, match='different identity'):
+        conversion_generation(adapter, binding, source)
+    assert json.loads(path.read_bytes()) == grant
+    assert json.loads(path.with_suffix('.started.json').read_bytes())['run_id'] == 10
 
 
 def fixture(tmp_path,monkeypatch):
