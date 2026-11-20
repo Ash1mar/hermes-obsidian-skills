@@ -3,6 +3,8 @@ from contextlib import contextmanager
 import json
 from pathlib import Path
 import sys
+from threading import Event, Thread
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -14,7 +16,8 @@ sys.path.insert(0, str(ROOT / 'hermes-obsidian-controlled-ingest/scripts'))
 import incremental_runtime as runtime
 import incremental_native
 from hermes_source_units import ContractError
-from hermes_source_units.source_units import _json_bytes
+from hermes_source_units.incremental_qualification import qualification_lock
+from hermes_source_units.source_units import _exclusive_lock, _json_bytes
 
 
 def put(path, value):
@@ -22,7 +25,8 @@ def put(path, value):
     path.write_bytes(_json_bytes(value))
 
 
-def test_mapping_restart_collects_previously_finished_producers(tmp_path, monkeypatch):
+@pytest.mark.parametrize('first_request', [False, True], ids=('reuse', 'half-second-contention'))
+def test_mapping_verifies_producers_and_dispatches_fresh_request_once(tmp_path, monkeypatch, first_request):
     import prepare_short_evidence_test as planner
     import run_short_evidence_test as native
 
@@ -35,16 +39,19 @@ def test_mapping_restart_collects_previously_finished_producers(tmp_path, monkey
         key = str(i) * 64
         row = {'id': key, 'phase': 'short-topics' if i == 1 else 'short-map'}
         path = root / 'jobs' / (key + '.json')
-        put(path, {'request': row})
-        put(path.with_suffix('.result.json'), {'state': 'settled'})
+        if not first_request or i == 1:
+            put(path, {'request': row})
+            put(path.with_suffix('.result.json'), {'state': 'settled'})
         jobs.append(row)
     unit = {'resource_id': 'resource', 'unit_set_id': 'units', 'unit_id': 'unit'}
     sources = {'S1': {'items': {'S1-B1': {'source_ref': {'unit_ref': unit, 'span': None}, 'sha256': 'bytes'}}}}
     seen = []
     run = {'actor': 'actor', 'source_manifest': [{'path': '10_Raw/a.pdf'}]}
-    domain = SimpleNamespace(vault=tmp_path, validate_source_snapshot=lambda *_: snapshot, status=lambda _: run)
+    domain = SimpleNamespace(vault=tmp_path, root=lambda _: tmp_path, validate_source_snapshot=lambda *_: snapshot, status=lambda _: run)
 
     class Control:
+        def status(self): return {'state': 'active'}
+
         @contextmanager
         def executing(self, *args):
             yield {'allowed': True}
@@ -52,16 +59,46 @@ def test_mapping_restart_collects_previously_finished_producers(tmp_path, monkey
     monkeypatch.setattr(runtime, 'service', lambda *_: domain)
     monkeypatch.setattr(runtime, 'IncrementalControl', lambda *_: Control())
     monkeypatch.setattr(runtime, 'initialize_scope', lambda *_: (root, {}))
-    monkeypatch.setattr(runtime, 'qualify', lambda *_: None)
+    lock = tmp_path / 'native-dispatch.lock'
+    if first_request:
+        acquired = Event()
+
+        def hold():
+            with _exclusive_lock(lock):
+                acquired.set()
+                time.sleep(.53)
+
+        holder = Thread(target=hold)
+        holder.start()
+        assert acquired.wait(5)
+
+        def qualify(*_):
+            with qualification_lock(lock, time.monotonic() + 5, lambda: None):
+                pass
+    else:
+        def qualify(*_): pass
+    monkeypatch.setattr(runtime, 'qualify', qualify)
     monkeypatch.setattr(runtime, 'source_pin', lambda _: {})
     monkeypatch.setattr(runtime, 'load_sources', lambda *_a, **_k: sources)
     monkeypatch.setattr(runtime, 'seed_requests', lambda _: [])
     monkeypatch.setattr(runtime, 'mapping_groups', lambda *_: [])
-    monkeypatch.setattr(planner, 'advance', lambda *_a, **_k: {'stage': 'coordination', 'reduced': {
-        'dispositions': {'S1-B1': {'status': 'excluded', 'reason': 'non-substantive context'}}, 'unresolved': []}})
+    def advance(*_a, **_k):
+        if first_request and not (root / 'jobs' / (jobs[1]['id'] + '.json')).is_file():
+            return {'stage': 'map', 'requests': jobs[1:]}
+        return {'stage': 'coordination', 'reduced': {
+            'dispositions': {'S1-B1': {'status': 'excluded', 'reason': 'non-substantive context'}}, 'unresolved': []}}
+
+    monkeypatch.setattr(planner, 'advance', advance)
+    created = []
 
     def execute(_domain, _run, _root, _operation, rows):
         seen.extend(row['id'] for row in rows)
+        for row in rows:
+            path = root / 'jobs' / (row['id'] + '.json')
+            if not path.is_file():
+                created.append(row['id'])
+                put(path, {'request': row})
+                put(path.with_suffix('.result.json'), {'state': 'settled'})
         return [(row, {'state': 'settled'}, {'task_id': row['id']}) for row in rows]
 
     monkeypatch.setattr(runtime, 'execute_rows', execute)
@@ -74,7 +111,10 @@ def test_mapping_restart_collects_previously_finished_producers(tmp_path, monkey
 
     monkeypatch.setattr(runtime, 'mutate', mutate)
     result = runtime.map_source(tmp_path, 'run', snapshot['snapshot_id'])
-    assert seen == [row['id'] for row in jobs]
+    assert seen[-2:] == [row['id'] for row in jobs]
+    assert created == ([jobs[1]['id']] if first_request else [])
+    if first_request:
+        holder.join(timeout=5)
     assert len(result['native_completions']) == 2
     assert result['coverage'][0]['disposition'] == 'excluded'
     assert sources['S1']['incremental_snapshot_id'] == snapshot['snapshot_id']
@@ -90,8 +130,9 @@ def test_qualification_replays_original_transaction_after_registry_moves(tmp_pat
     put(transaction, {'request': request})
     calls = []
     repo = SimpleNamespace(load_state=lambda: pytest.fail('current registry must not replace saved request'),
-                           resolve_sources=lambda q: calls.append(q) or {'ok': True, 'resolved': 1, 'replayed': True})
+                           resolve_sources=lambda q, **_: calls.append(q) or {'ok': True, 'resolved': 1, 'replayed': True})
     monkeypatch.setattr(governance_repository, 'JsonGovernanceRepository', lambda _: repo)
+    monkeypatch.setattr(runtime, 'IncrementalControl', lambda *_: SimpleNamespace(status=lambda: {'state': 'active'}))
     domain = SimpleNamespace(vault=tmp_path, root=lambda _: tmp_path / 'run',
                               validate_source_snapshot=lambda *_: {'identity': {'resource_id': 'resource'}},
                               status=lambda _: {'source_workflow_id': 'ingest-run'})

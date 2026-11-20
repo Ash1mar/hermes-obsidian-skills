@@ -10,7 +10,8 @@ import json
 import os
 import re
 import sys
-from contextlib import closing, contextmanager
+import time
+from contextlib import ExitStack, closing, contextmanager
 from pathlib import Path
 
 from governance_repository import GovernanceError, atomic_write_json, load_json, utc_now, safe_control_path
@@ -21,7 +22,7 @@ from hermes_source_units.workflow_guard import workflow_write_guard
 
 
 @contextmanager
-def operator_guard(repo,request):
+def operator_guard(repo,request, *, qualification_deadline=None):
     """Separate stopped-operator authority; never impersonate a source worker."""
     if not request.get('workflow_ref'):
         with workflow_write_guard(repo.vault,actor=request['actor']) as worker:yield worker
@@ -34,16 +35,29 @@ def operator_guard(repo,request):
     from ingest_kanban import IngestKanbanAdapter
     from native_stop_inventory import verify_cancel_drain
     lock=_vault_path(repo.vault,f'{WORKFLOW_ROOT}/.dispatch-locks/{wid}.lock')
-    with _exclusive_lock(lock),_exclusive_lock(service._lock(wid)):
-        from hermes_source_units.recovery_control import check
-        check(repo.vault,wid)
-        w=service.status(wid);service.assert_execution_ready(w)
-        if request.get('source_boundary') == 'incremental-source/v1':
+    incremental_boundary = request.get('source_boundary') == 'incremental-source/v1'
+    with ExitStack() as locks:
+        if incremental_boundary:
             from hermes_source_units.incremental_control import IncrementalControl
-            from hermes_source_units.incremental_ingest import FileIncrementalIngestService
+            from hermes_source_units.incremental_qualification import (LOCK_WAIT_SECONDS, check_qualification_active,
+                                                                       qualification_lock)
 
             run_id = request.get('run_id', request.get('incremental_run_id'))
             control = IncrementalControl(repo.vault, run_id)
+            deadline = time.monotonic() + LOCK_WAIT_SECONDS
+            if qualification_deadline is not None:
+                deadline = min(deadline, qualification_deadline)
+            for path in (lock, service._lock(wid)):
+                locks.enter_context(qualification_lock(path, deadline, lambda: check_qualification_active(control)))
+        else:
+            locks.enter_context(_exclusive_lock(lock))
+            locks.enter_context(_exclusive_lock(service._lock(wid)))
+        from hermes_source_units.recovery_control import check
+        check(repo.vault,wid)
+        w=service.status(wid);service.assert_execution_ready(w)
+        if incremental_boundary:
+            from hermes_source_units.incremental_ingest import FileIncrementalIngestService
+
             incremental = FileIncrementalIngestService(repo.vault, check_admission=control.check_admission)
             run = incremental.status(run_id)
             snapshot = incremental.validate_source_snapshot(run_id, request.get('snapshot_id'))
@@ -57,6 +71,7 @@ def operator_guard(repo,request):
                 'scope_id': snapshot['snapshot_id'], 'stage': 'source-seal',
                 'input_fingerprint': fingerprint({'snapshot_id': snapshot['snapshot_id'],
                                                   'source_boundary': 'incremental-source/v1'})})
+            check_qualification_active(control)
             # Other source cards can remain active. Their writes serialize through
             # the existing registry mutation lock and recheck their own revisions.
             yield None
@@ -172,7 +187,7 @@ def inventory(repo, request, organizations, registry):
     return rows
 
 
-def resolve(repo, request, *, dry_run=False):
+def resolve(repo, request, *, dry_run=False, qualification_deadline=None):
     if os.environ.get('HERMES_KANBAN_TASK') or os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'):
         raise GovernanceError('Only the trusted authorized operator may resolve governance')
     body={k:v for k,v in request.items() if k!='input_digest'}
@@ -183,7 +198,7 @@ def resolve(repo, request, *, dry_run=False):
         raise GovernanceError('Stable operation identity and reason required')
     root=repo.vault/'_system/metadata/source-governance-resolutions'/operation
     txn_path=root/'transaction.json';receipt=root/'receipt.json'
-    with operator_guard(repo,request) as worker,repo.mutation_lock(request['actor']):
+    with operator_guard(repo, request, qualification_deadline=qualification_deadline) as worker, repo.mutation_lock(request['actor']):
         if worker:raise GovernanceError('Worker cannot approve source governance')
         if txn_path.exists():
             txn=load_json(txn_path)

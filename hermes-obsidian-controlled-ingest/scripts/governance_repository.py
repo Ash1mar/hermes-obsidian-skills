@@ -487,9 +487,9 @@ class JsonGovernanceRepository:
             output = {key: value for key, value in result.items() if key != "event_context"}
             return {**output, "changed": True, "registry_revision": next_revision}
 
-    def resolve_sources(self, request, *, dry_run=False):
+    def resolve_sources(self, request, *, dry_run=False, qualification_deadline=None):
         from source_governance_resolution import resolve
-        return resolve(self, request, dry_run=dry_run)
+        return resolve(self, request, dry_run=dry_run, qualification_deadline=qualification_deadline)
 
     def add_organization(
         self,

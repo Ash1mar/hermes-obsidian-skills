@@ -1,6 +1,6 @@
 """Source-parallel, finite-round incremental ingest using native Hermes workers."""
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import ExitStack, closing
 import json
 import os
 from pathlib import Path
@@ -10,11 +10,47 @@ import time
 
 from hermes_source_units.incremental_control import IncrementalControl
 from hermes_source_units.incremental_ingest import CONTRACTS, FileIncrementalIngestService
+from hermes_source_units.incremental_qualification import (BACKOFF_SECONDS, LOCK_WAIT_SECONDS, WAIT_CONTRACT,
+    QualificationContention, check_qualification_active, qualification_id, qualification_lock)
 from hermes_source_units.incremental_sources import pinned, read_pin, safe_id
 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _sha, _vault_path, _write_atomic
 from hermes_source_units.validation import ContractError, fingerprint
 from incremental_native import NativeCompletionUnconfirmed, mutate, service, verified_result
 from short_evidence_pass import load_sources, require, request as semantic_request, seed_requests, mapping_groups, MAP_CONTRACT
+
+MAPPING_DEFERRED = object()
+
+
+def qualification_wait_path(root, snapshot_id):
+    return root / 'source-qualification' / safe_id(snapshot_id) / 'wait.json'
+
+
+def qualification_wait(root, snapshot_id):
+    path = qualification_wait_path(root, snapshot_id)
+    return _load_json(path) if path.is_file() else None
+
+
+def record_qualification_wait(domain, run_id, snapshot_id, error):
+    root = domain.root(run_id)
+    previous = qualification_wait(root, snapshot_id)
+    attempts = list(previous['attempts']) if previous else []
+    require(len(attempts) <= len(BACKOFF_SECONDS), 'source qualification wait allowance already exhausted')
+    waiting = len(attempts) < len(BACKOFF_SECONDS)
+    now = time.time()
+    retry_at = now + BACKOFF_SECONDS[len(attempts)] if waiting else None
+    attempts.append({'attempt': len(attempts) + 1, 'lock': error.lock.relative_to(domain.vault).as_posix(),
+                     'error_code': error.code, 'wait_ms': error.wait_ms, 'observed_at': now})
+    value = {'contract': WAIT_CONTRACT, 'run_id': run_id, 'snapshot_id': snapshot_id,
+             'qualification_id': qualification_id(run_id, snapshot_id), 'attempts': attempts,
+             'state': 'waiting' if waiting else 'exhausted', 'retry_at': retry_at}
+    _write_atomic(qualification_wait_path(root, snapshot_id), _json_bytes(value))
+
+
+def mark_qualification_succeeded(root, snapshot_id):
+    value = qualification_wait(root, snapshot_id)
+    if value and value['state'] == 'waiting':
+        _write_atomic(qualification_wait_path(root, snapshot_id),
+                      _json_bytes({**value, 'state': 'qualified', 'retry_at': None}))
 
 
 def request_path(domain, run_id):
@@ -162,9 +198,20 @@ def map_source(vault, run_id, snapshot_id):
     snapshot = domain.validate_source_snapshot(run_id, snapshot_id)
     control = IncrementalControl(domain.vault, run_id)
     scope = {'scope_kind': 'source', 'scope_id': snapshot_id}
-    with control.executing(scope, 'mapping', fingerprint(snapshot)):
+    with ExitStack() as executor:
+        try:
+            executor.enter_context(control.executing(scope, 'mapping', fingerprint(snapshot)))
+            qualify(domain, run_id, snapshot_id)
+            mark_qualification_succeeded(domain.root(run_id), snapshot_id)
+            check_qualification_active(control)
+        except QualificationContention as error:
+            record_qualification_wait(domain, run_id, snapshot_id, error)
+            return MAPPING_DEFERRED
+        except ContractError as error:
+            if error.code != 'INCREMENTAL_PAUSED':
+                raise
+            return MAPPING_DEFERRED
         root, operation = initialize_scope(domain, run_id, 'source', snapshot_id, 'mapping', [snapshot_id])
-        qualify(domain, run_id, snapshot_id)
         alias = source_alias(domain.status(run_id), snapshot)
         sources = load_sources(domain.vault, [source_pin(snapshot)], aliases={snapshot['identity']['resource_id']: alias},
                                actor=domain.status(run_id)['actor'])
@@ -172,12 +219,16 @@ def map_source(vault, run_id, snapshot_id):
             source['incremental_snapshot_id'] = snapshot_id
         seeds, groups = seed_requests(sources), mapping_groups(sources, MAP_CONTRACT)
         holds = {}
+        dispatch_started = False
         while True:
             plan = advance(sources, seeds, groups, root / 'receipts', native.LIMIT,
                            native_holds=holds, mapping_contract=MAP_CONTRACT, page_contract=PAGE_CONTRACT)
             if plan['stage'] not in ('topic-seed', 'map', 'local-map'):
                 require('reduced' in plan, 'source Map stopped without a coverage result')
                 break
+            if not dispatch_started and control.status()['state'] != 'active':
+                return MAPPING_DEFERRED
+            dispatch_started = True
             results = execute_rows(domain, run_id, root, operation, plan['requests'])
             for row, result, proof in results:
                 if result['state'] == 'held':
@@ -229,19 +280,22 @@ def qualify(domain, run_id, snapshot_id):
 
     snapshot = domain.validate_source_snapshot(run_id, snapshot_id)
     run = domain.status(run_id)
+    control = IncrementalControl(domain.vault, run_id)
+    deadline = time.monotonic() + LOCK_WAIT_SECONDS
     repo = JsonGovernanceRepository(domain.vault)
     wid = run['source_workflow_id']
-    operation_id = 'incremental-source-' + fingerprint([run_id, snapshot_id])[:48]
+    operation_id = qualification_id(run_id, snapshot_id)
     transaction = domain.vault / '_system/metadata/source-governance-resolutions' / operation_id / 'transaction.json'
     root = domain.root(run_id) / 'source-qualification' / snapshot_id
     # Serialize qualifiers across runs. A source worker can still register its
     # own result between preview and apply; retry one uncommitted revision race.
-    with _exclusive_lock(_vault_path(domain.vault, '_system/metadata/.incremental-source-qualification.lock')):
+    with qualification_lock(_vault_path(domain.vault, '_system/metadata/.incremental-source-qualification.lock'),
+                            time.monotonic(), lambda: check_qualification_active(control)):
         if transaction.is_file():
             resolution = _load_json(transaction)['request']
             require(resolution['incremental_run_id'] == run_id and resolution['snapshot_id'] == snapshot_id,
                     'saved qualification belongs to another incremental source')
-            result = repo.resolve_sources(resolution)
+            result = repo.resolve_sources(resolution, qualification_deadline=deadline)
             save(root / 'receipt.json', {key: value for key, value in result.items() if key != 'replayed'})
             return result
         for attempt in (1, 2):
@@ -257,12 +311,12 @@ def qualify(domain, run_id, snapshot_id):
                           'resource_ids': [snapshot['identity']['resource_id']]}
             resolution['input_digest'] = digest(resolution)
             try:
-                preview = repo.resolve_sources(resolution, dry_run=True)
+                preview = repo.resolve_sources(resolution, dry_run=True, qualification_deadline=deadline)
                 require(preview['resolved'], 'source identity has no deterministic qualification')
                 resolution['preview_digest'] = preview['preview_digest']
                 resolution['input_digest'] = digest({k: v for k, v in resolution.items() if k != 'input_digest'})
                 save(root / ('request-' + fingerprint(resolution) + '.json'), resolution)
-                result = repo.resolve_sources(resolution)
+                result = repo.resolve_sources(resolution, qualification_deadline=deadline)
                 save(root / 'receipt.json', result)
                 return result
             except GovernanceError as error:

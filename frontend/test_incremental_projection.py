@@ -23,8 +23,21 @@ class PipelineProjectionTests(unittest.TestCase):
                 {'path': 'a.pdf', 'sha256': 'a' * 64}, {'path': 'b.pdf', 'sha256': 'b' * 64}]}
             control = {'state': 'active', 'revision': 4, 'active_scopes': {}}
             node = 'source-prepare:' + fingerprint({'path': 'b.pdf', 'content_sha256': 'b' * 64})[:16]
-            workflow = {'kanban': {'board_id': 'sources', 'task_map': [{'node': node, 'task_id': 'task-b'}]}}
-            reader = lambda _: {'task-b': {'status': 'blocked', 'claimed': False, 'last_outcome': 'worker_exited'}}
+            workflow = {'workflow_id': 'workflow', 'kanban': {'board_id': 'sources', 'task_map': [
+                {'node': node, 'task_id': 'task-b', 'idempotency_key': 'binding-key'}]}}
+            task = {'status': 'scheduled', 'claimed': False, 'last_outcome': 'scheduled',
+                    'last_run_id': 7, 'last_started_at': 1, 'last_ended_at': 1}
+            reader = lambda _: {'task-b': task}
+            queued = source_pipeline({'path': 'b.pdf', 'state': 'pending', 'actions': []}, root, run, control,
+                                     workflow, [], native_reader=reader)
+            source_actions(queued, root, run, control, {}, 'prior', writable=True, interrupted=False)
+            self.assertEqual(queued['pipeline'][0]['state'], 'waiting-dispatch')
+            self.assertFalse(queued['pipeline'][0]['actions'])
+
+            task.update(status='blocked', last_outcome='worker_exited', last_ended_at=2)
+            put(root.parent.parent / 'ingest-workflows/workflow/bindings' / (fingerprint('binding-key') + '.execution.json'),
+                {'state': 'running', 'executor': 'program-v1', 'run_id': 7,
+                 'grant': {'worker_pid': 37, 'claim_lock': 'native-claim'}})
             failed = source_pipeline({'path': 'b.pdf', 'state': 'pending', 'actions': []}, root, run, control,
                                      workflow, [], native_reader=reader)
             source_actions(failed, root, run, control, {}, 'prior', writable=True, interrupted=False)
