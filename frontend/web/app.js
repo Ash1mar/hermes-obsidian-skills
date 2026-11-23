@@ -143,8 +143,9 @@ function render() {
   get("selected-label").textContent = current ? current.vault_name : "选择一次运行查看节点状态";
   get("run-status").replaceChildren(...(current ? [badge(current.state)] : []));
   renderWhenChanged("timeline", [selected, current?.nodes, current?.incremental, current?.historical, busy, posting, gateway.ready, writable], renderTimeline);
+  const pausedAt = current?.pause === "network_recovery" ? "等待网络恢复" : current?.pause;
   const summary = current ? [
-    ["来源", `${current.source_count} 份 PDF`], ["源工作流暂停", current.pause],
+    ["来源", `${current.source_count} 份 PDF`], ["暂停点", pausedAt],
     ["本机启动器", labels[current.launcher_state]],
     ["暂停目标", stageNames[current.pause_request?.node]],
     ["源工作流修订", current.source_revision], ["当前发布", current.release_id || "尚无"],
@@ -156,7 +157,7 @@ function render() {
   renderWhenChanged("attempts", [selected, current?.attempts, attempt], renderAttempts);
   facts(get("native"), current ? [
     ["工作流", current.workflow_id], ["来源看板", current.source_board],
-    ["来源阶段", current.source_stage], ["暂停点", current.pause],
+    ["来源阶段", current.source_stage], ["暂停点", pausedAt],
     ["交接观察", waitLabels[current.source_wait?.state]],
     ["最近进展", formatTime(current.source_wait?.last_progress_at)],
     ["观察记录", current.source_wait?.error],
@@ -276,7 +277,10 @@ function renderIncremental(timeline) {
   const controls = make("li", undefined, "incremental-scope");
   controls.append(make("strong", "增量运行"), badge(current.state));
   const boundary = value.control.boundary;
-  if (boundary) controls.append(make("p", `${boundary.scope.scope_kind} · ${boundary.scope.scope_id} · ${boundary.stage}`, "hint"));
+  if (boundary?.stage === "network_recovery" && ["paused", "pausing"].includes(current.state)) {
+    const phase = boundary.evidence.phase === "coordination" ? "页面协调" : "页面写作";
+    controls.append(make("p", `${boundary.scope.scope_id} · ${phase}模型连接连续失败。已保留本轮进度。`, "hint"));
+  } else if (boundary) controls.append(make("p", `${boundary.scope.scope_kind} · ${boundary.scope.scope_id} · ${boundary.stage}`, "hint"));
   for (const action of current.nodes[0].actions) {
     const button = rowButton(action.label, () => reenter(action));
     button.disabled = !writable || posting || (action.gateway_required !== false && !gateway.ready);
@@ -340,7 +344,8 @@ function renderIncrementalPhase(phase, source) {
     }
     return row;
   }
-  if (phase.boundary) row.append(make("small", phase.result_state === "completed" ? "本步成果已完成，停在此边界" : "停在此边界"));
+  if (phase.boundary) row.append(make("small", phase.network_recovery ? "等待网络恢复" :
+    phase.result_state === "completed" ? "本步成果已完成，停在此边界" : "停在此边界"));
   if (source && (phase.recovery_scopes?.length || phase.actions?.length)) {
     const key = `${current.id}:${source.path}:${phase.key}`;
     const detail = make("details", undefined, "node-recovery");
@@ -625,6 +630,7 @@ function reenter(action, manifest, pauseBefore, fragments) {
       control_revision: action.control_revision, run_revision: action.run_revision,
       source_path: action.source_path, source_sha256: action.source_sha256, retry_kind: action.retry_kind,
       phase: action.phase, round_id: action.round_id, scope_token: action.scope_token, revise_fragments: fragments,
+      boundary_fingerprint: action.boundary_fingerprint,
       preview_attempt: action.preview_attempt, report_sha256: action.report_sha256});
     return;
   }

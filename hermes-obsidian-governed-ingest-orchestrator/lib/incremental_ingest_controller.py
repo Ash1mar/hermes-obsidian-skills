@@ -376,8 +376,16 @@ def grouped_page_changes(domain, run_id, service, frozen, aliases, hydrated, coo
         repairs.append((row['id'], corrected, targets, held, group_refs))
     if repairs:
         repaired_rows = [row for _, row, *_ in repairs if row['budget']['fits']]
-        dispatched = ({row['id'] for row in has_budget(domain.status(run_id), repaired_rows)}
-                      if not plan_path.exists() else set(_load_json(root / 'coordination-repair-outcomes.json')['dispatched']))
+        dispatch_path = root / 'coordination-repair-dispatch.json'
+        if plan_path.exists():
+            dispatched = set(_load_json(root / 'coordination-repair-outcomes.json')['dispatched'])
+        elif dispatch_path.is_file():
+            dispatched = set(_load_json(dispatch_path))
+            require(dispatched <= {row['id'] for row in repaired_rows}, 'saved coordination repair dispatch changed')
+        else:
+            dispatched = {row['id'] for row in has_budget(domain.status(run_id), repaired_rows)}
+            if operation.get('network_recovery'):
+                save(dispatch_path, sorted(dispatched))
         if not plan_path.exists() and dispatched:
             execute_rows(domain, run_id, coordinator, operation, [row for row in repaired_rows if row['id'] in dispatched])
         occupied = ({row['page_id'] for row in changes if row['action'] != 'hold'},
@@ -695,6 +703,7 @@ def delivery_checkpoint(control, round_id, delivery):
 
 def watch(vault, run_id):
     from orchestration import configuration
+    from incremental_network import RoundNetworkPaused
 
     domain = service(Path(vault), run_id)
     control = IncrementalControl(domain.vault, run_id)
@@ -725,7 +734,12 @@ def watch(vault, run_id):
                 ThreadPoolExecutor(max_workers=1) as rounds:
             while domain.status(run_id)['state'] == 'active':
                 if round_future is not None and round_future.done():
-                    round_future.result()
+                    try:
+                        round_future.result()
+                    except RoundNetworkPaused as paused:
+                        head = control.status()
+                        if head['state'] == 'active':
+                            control.hold_network_recovery(paused.scope, paused.evidence, head['revision'])
                     round_future = None
                 if control.status()['state'] in ('paused', 'cancelled'):
                     return domain.status(run_id)

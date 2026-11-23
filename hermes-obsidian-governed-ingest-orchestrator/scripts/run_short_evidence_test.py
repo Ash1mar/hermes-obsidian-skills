@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'lib'))
 from fixed_semantic import HermesCaller, decode_semantic_response, prepare_request_projection
 from hermes_source_units import ContractError
 from hermes_source_units.file_locks import exclusive_lock
-from hermes_source_units.source_units import _load_json, _vault_path
+from hermes_source_units.source_units import _json_bytes, _load_json, _vault_path
 from hermes_source_units.validation import fingerprint
 from native_stop_inventory import workflow_processes
 from orchestration import configuration
@@ -39,6 +39,27 @@ STAGE_NODE = {
     'writing': 'writing', 'offline_build': 'writing',
 }
 OPERATOR_STAGE_NODE = {**STAGE_NODE, 'topic-seed': 'topics'}
+NETWORK_DEFERRED = 'native-short-network-deferred/v1'
+NETWORK_BLOCK_REASON = 'network admission deferred: '
+NETWORK_PROBE_ENV = 'HERMES_SHORT_NETWORK_PROBE'
+
+
+class NetworkStagePaused(RuntimeError):
+    """The model route is held and all admitted workers have drained."""
+
+    def __init__(self, root, circuit):
+        super().__init__('model route paused after consecutive transport failures')
+        self.root, self.circuit = root, circuit
+
+
+def network_scope(root, operation):
+    scope = operation.get('incremental') or {}
+    if (operation.get('network_recovery') is True and operation.get('workflow_mode') == 'incremental_v1'
+            and scope.get('scope_kind') == 'round'
+            and scope.get('stage') in ('coordination', 'writing')
+            and not (operation.get('writing_continuation') or operation.get('writing_amendment'))):
+        return fingerprint([operation['vault'], scope['run_id']])
+    return None
 
 
 def sha(path):
@@ -113,6 +134,183 @@ def task_body(root, job):
         'contract': CONTRACT, 'operation_sha256': sha(root / 'operation.json'),
         'job': job.name, 'job_sha256': sha(job),
     }, sort_keys=True)
+
+
+def network_defer_path(job, run_id):
+    return job.with_name(f'{job.stem}.network-deferred-{run_id}.json')
+
+
+def pin_network_report(root, report):
+    path = Path(report).resolve(strict=True)
+    require(path.parent == (root / 'call-failures').resolve(), 'network admission report escaped its workspace')
+    return {'ref': path.relative_to(root.resolve()).as_posix(), 'sha256': sha(path)}
+
+
+def validate_network_deferral(root, job, task, run):
+    from model_transport import CONTRACT as HTTP_CONTRACT, circuit_status, network_send_count
+
+    operation = _load_json(root / 'operation.json')
+    marker_path = network_defer_path(job, run.id)
+    marker = _load_json(marker_path)
+    grant = {'task_id': task.id, 'run_id': run.id, 'board': operation['board']}
+    prepared = marker['attempt']
+    row = _load_json(job)['request']
+    identity = {'ref': job.with_name(job.stem + '.attempt-1.json').relative_to(root).as_posix(),
+                'sha256': hashlib.sha256(_json_bytes(prepared)).hexdigest(),
+                'ordinal': 1, 'request_sha256': row['id']}
+    wire = fingerprint(checked_projection(row)['wire'])
+    key = fingerprint([str(root), grant, identity, wire])
+    report_pointer = marker['report']
+    report_path = _vault_path(root, report_pointer['ref'])
+    require(pin_network_report(root, report_path) == report_pointer, 'network admission report changed')
+    report = _load_json(report_path)
+    transport = report.get('http_transport') or {}
+    current = circuit_status(marker['scope'])
+    require(marker['contract'] == NETWORK_DEFERRED and marker['operation_sha256'] == sha(root / 'operation.json')
+            and marker['scope'] == network_scope(root, operation) and marker['grant'] == grant
+            and prepared['request'] == row and prepared['ordinal'] == 1 and prepared['grant'] == grant
+            and report_path.stem == fingerprint(report) and report['wire_sha256'] == wire
+            and report['task_id'] == task.id and str(report['run_id']) == str(run.id)
+            and report['state'] == 'request_rejected' and report['source'] == 'transport_circuit'
+            and report['http_key'] == key and report['circuit'] == marker['circuit']
+            and report['prior_send_count'] == 0 and transport['contract'] == HTTP_CONTRACT
+            and transport['physical_attempts'] == 0 and transport['sends'] == []
+            and current and current['route_id'] == report['circuit']['route_id']
+            and marker['http_key'] == key and run.ended_at is not None and run.outcome == 'gave_up'
+            and run.error == NETWORK_BLOCK_REASON + sha(marker_path)
+            and (run.metadata or {}).get('trigger_outcome') == 'network_admission_deferred'
+            and network_send_count(key) == 0,
+            'network-deferred native request lacks bound proof of zero HTTP sends')
+    return marker_path, marker
+
+
+def native_network_deferrals(root, job, connection, kb, task):
+    runs = kb.list_runs(connection, task.id, include_active=False)
+    markers = sorted(job.parent.glob(job.stem + '.network-deferred-*.json'))
+    by_id = {item.id: item for item in runs}
+    out = []
+    for marker in markers:
+        saved = _load_json(marker)
+        run = by_id.get(saved.get('grant', {}).get('run_id'))
+        require(run is not None, 'network deferral lacks its ended native run')
+        out.append(validate_network_deferral(root, job, task, run))
+    return runs, sorted(out, key=lambda item: item[1]['grant']['run_id'])
+
+
+def network_history(root, operation, rows, reservations):
+    """Classify the original stage requests after all its native workers have drained."""
+    from hermes_source_units.incremental_sources import completion_connection, pinned
+    from incremental_native import NativeCompletionUnconfirmed, verified_result
+
+    require(network_scope(root, operation) and not workflow_processes('', operation['board']),
+            'network pause requires an idle incremental round board')
+    kb, _, _ = runtime()
+    budget = {row['request_fingerprint']: (key, row) for key, row in reservations.items()}
+    with closing(completion_connection(operation['board'])) as connection:
+        tasks = kb.list_tasks(connection)
+        require(not any(task.claim_lock or task.status in ('running', 'ready', 'todo', 'triage', 'scheduled')
+                        for task in tasks), 'network pause requires a drained native board')
+        by_body = {task.body: task for task in tasks}
+        require(len(by_body) == len(tasks), 'network pause found duplicate task bodies')
+        history = {}
+        for row in rows:
+            job = root / 'jobs' / (row['id'] + '.json')
+            task = by_body.get(task_body(root, job)) if job.is_file() else None
+            if job.is_file():
+                require(_load_json(job)['request'] == row, 'network pause request changed')
+            entry = {'state': 'unsent', 'task_id': task.id if task else None}
+            if job.with_suffix('.result.json').is_file():
+                try:
+                    result, proof = verified_result(root, row)
+                except NativeCompletionUnconfirmed:
+                    entry['state'] = 'unconfirmed'
+                else:
+                    unknown = any(item['state'] == 'transport_or_runtime_hold' for item in result['attempts'])
+                    entry.update(state='unconfirmed' if unknown else 'completed', proof=proof)
+            else:
+                first = budget.get(fingerprint({'request': row['id'], 'ordinal': 1}))
+                activity = (list(job.parent.glob(job.stem + '.attempt-*.json'))
+                            + list(job.parent.glob(job.stem + '.audit-*.json')))
+                deferred_files = list(job.parent.glob(job.stem + '.network-deferred-*.json'))
+                program = list(job.parent.glob(job.stem + '.program-retry-*.json'))
+                other_ordinal = budget.get(fingerprint({'request': row['id'], 'ordinal': 2}))
+                receipt = root / 'receipts' / (row['id'] + '.json')
+                if task and task.status == 'blocked' and not activity:
+                    require(task.created_by == operation['contract'], 'network deferral has the wrong native owner')
+                    runs, deferred = native_network_deferrals(root, job, connection, kb, task)
+                    if (deferred and len(deferred) == len(runs) and first and not other_ordinal and not receipt.exists()
+                            and first[1]['state'] == 'reserved'
+                            and first[1]['phase'] == operation['incremental']['stage']):
+                        entry.update(budget_id=first[0], deferrals=[pinned(Path(operation['vault']),
+                                     path.relative_to(operation['vault']).as_posix()) for path, _ in deferred])
+                    else:
+                        entry['state'] = 'unconfirmed'
+                elif first or other_ordinal or task or activity or deferred_files or program or receipt.exists():
+                    entry['state'] = 'unconfirmed'
+            history[row['id']] = entry
+    return history
+
+
+def open_network_circuit(scope):
+    if scope is None:
+        return None
+    from model_transport import circuit_status
+
+    state = circuit_status(scope)
+    return state if state and state['state'] == 'open' else None
+
+
+def may_probe(circuit, probe, dispatched):
+    return bool(probe and not dispatched and circuit['probe_state'] is None
+                and all(circuit[key] == probe[key] for key in ('route_id', 'trip_id')))
+
+
+def check_network_probe(operation, original, probe):
+    from hermes_source_units.incremental_control import IncrementalControl, NETWORK_RECOVERY
+    from hermes_source_units.incremental_sources import read_pin
+
+    scope = operation['incremental']
+    vault = Path(operation['vault'])
+    continuation = IncrementalControl(vault, scope['run_id']).status().get('network_continuation') or {}
+    boundary = continuation.get('boundary') or {}
+    evidence = boundary.get('evidence') or {}
+    require(probe['request_id'] == original['id'] and continuation.get('operation_id') == probe['operation_id']
+            and boundary.get('stage') == NETWORK_RECOVERY and continuation.get('round_id') == scope['scope_id']
+            and boundary.get('scope') == {'scope_kind': 'round', 'scope_id': scope['scope_id']}
+            and continuation['boundary_fingerprint'] == fingerprint(boundary)
+            and evidence['phase'] == scope['stage'], 'network probe escaped its durable continuation')
+    for pointer in evidence['stage_reports']:
+        report = read_pin(vault, pointer)
+        if (report['run_id'] == scope['run_id'] and report['round_id'] == scope['scope_id']
+                and report['phase'] == scope['stage'] and report['probe_request_id'] == original['id']
+                and report['round_input_fingerprint'] == evidence['round_input_fingerprint']
+                and report['rows'][original['id']]['state'] == 'unsent'
+                and any(all(circuit[key] == probe[key] for key in ('route_id', 'trip_id'))
+                        for circuit in report['circuits'])):
+            return
+    raise ValueError('network probe lacks its pinned original unsent request')
+
+
+def reuse_network_reservation(root, operation, job, row, grant):
+    if not list(job.parent.glob(job.stem + '.network-deferred-*.json')):
+        return False
+    from incremental_native import service
+
+    kb, kc, _ = runtime()
+    with closing(kc.connect(board=grant['board'])) as connection:
+        task = kb.get_task(connection, grant['task_id'])
+        runs, deferred = native_network_deferrals(root, job, connection, kb, task)
+        require(deferred and len(deferred) == len(runs), 'network reservation has another native attempt')
+    scope = operation['incremental']
+    run = service(Path(operation['vault']), scope['run_id']).status(scope['run_id'])
+    request_fingerprint = fingerprint({'request': row['id'], 'ordinal': 1})
+    matches = [reservation for reservation in run['reservations'].values()
+               if reservation['request_fingerprint'] == request_fingerprint]
+    require(len(matches) == 1 and matches[0]['state'] == 'reserved' and matches[0]['phase'] == scope['stage']
+            and matches[0]['max_calls'] == 1 and matches[0]['max_output_tokens'] == row['output_cap']
+            and matches[0]['max_input_tokens'] == (row['budget'].get('text_tokens') or row['budget']['utf8_bytes']),
+            'network deferral lost its original cumulative reservation')
+    return True
 
 
 def build_call(row, *, diagnostic, slots):
@@ -205,6 +403,10 @@ def run_job(root, job, own):
     operation = _load_json(root / 'operation.json')
     profile = operation.get('transport_profile', 'shared')
     incremental = operation.get('workflow_mode') == 'incremental_v1'
+    scope = network_scope(root, operation)
+    probe = json.loads(os.environ[NETWORK_PROBE_ENV]) if scope and NETWORK_PROBE_ENV in os.environ else None
+    if probe is not None:
+        check_network_probe(operation, original, probe)
     if original['view'].get('fragment_repair') == 'short-content-recovery/v1':
         from short_content_recovery import slot_attempts
         require(all(len(slot_attempts(root, view['repair_of_fragment'])) == 1
@@ -224,6 +426,8 @@ def run_job(root, job, own):
             ordinals = (2,)
     retry_budget = None
     for ordinal in ordinals:
+        if ordinal > 1 and open_network_circuit(scope):
+            break
         if not row['budget']['fits']:
             retry_budget = row['budget']
             break
@@ -236,20 +440,21 @@ def run_job(root, job, own):
             from incremental_native import reserve_call
             # A bounded accounting-lock wait must not create an SDK-attempt
             # marker. Recheck the native lease after that wait, before calling.
-            try:
-                reserve_call(root, original, ordinal, grant)
-            except ContractError as error:
-                if (original['phase'] != 'incremental-page-plan'
-                        or not (coordination_repair or original['view'].get('planning_revision', 0) >= 4)
-                        or error.code not in ('LOCK_BUSY', 'LOCK_TIMEOUT', 'REVISION_CONFLICT')):
-                    raise
-                # No attempt exists, and reserve_call fences any apportioned ordinal.
-                retry_marker = job.with_name(job.stem + f'.program-retry-{ordinal}.json')
-                require(not retry_marker.exists(), 'coordination program retry allowance already consumed')
-                save(retry_marker,
-                     {'request': original['id'], 'ordinal': ordinal, 'code': error.code, 'grant': grant})
-                require(own() == grant, 'native program retry lost its original grant')
-                reserve_call(root, original, ordinal, grant)
+            if not (scope and ordinal == 1 and reuse_network_reservation(root, operation, job, original, grant)):
+                try:
+                    reserve_call(root, original, ordinal, grant)
+                except ContractError as error:
+                    if (original['phase'] != 'incremental-page-plan'
+                            or not (coordination_repair or original['view'].get('planning_revision', 0) >= 4)
+                            or error.code not in ('LOCK_BUSY', 'LOCK_TIMEOUT', 'REVISION_CONFLICT')):
+                        raise
+                    # No attempt exists, and reserve_call fences any apportioned ordinal.
+                    retry_marker = job.with_name(job.stem + f'.program-retry-{ordinal}.json')
+                    require(not retry_marker.exists(), 'coordination program retry allowance already consumed')
+                    save(retry_marker,
+                         {'request': original['id'], 'ordinal': ordinal, 'code': error.code, 'grant': grant})
+                    require(own() == grant, 'native program retry lost its original grant')
+                    reserve_call(root, original, ordinal, grant)
             own()
         started = time.monotonic()
         wall = time.time()
@@ -257,12 +462,19 @@ def run_job(root, job, own):
         caller.input_limit = row['budget']['input_cap']
         caller.output_token_limit = row['output_cap']
         caller.images = row['image_inputs']
-        # Persist the exact payload before entering the SDK.
-        save(reservation, {'request': row, 'ordinal': ordinal, 'grant': grant, 'started_at': wall})
+        attempt = {'request': row, 'ordinal': ordinal, 'grant': grant, 'started_at': wall}
+        if not scope:
+            save(reservation, attempt)
         p['audit_context'] = {'short_evidence_root': str(root), 'binding': grant, 'phase': row['phase'],
-                              'reservation': {'ref': reservation.relative_to(root).as_posix(), 'sha256': sha(reservation),
+                              'reservation': {'ref': reservation.relative_to(root).as_posix(),
+                                              'sha256': hashlib.sha256(_json_bytes(attempt)).hexdigest(),
                                               'ordinal': ordinal, 'request_sha256': row['id']},
                               'transport_profile': profile}
+        if scope:
+            # Only the first physical HTTP admission publishes the canonical
+            # attempt. A rejected admission can retain the same logical budget.
+            p['audit_context'].update(circuit_scope=scope, circuit_probe=probe if ordinal == 1 else None,
+                                      persist_attempt=lambda: save(reservation, attempt))
         audit_path = job.with_name(job.stem + f'.audit-{ordinal}.json')
         audit = {'phase': row['phase'], 'request_id': row['id'], 'ordinal': ordinal, 'grant': grant,
                  'started_at': wall}
@@ -270,10 +482,26 @@ def run_job(root, job, own):
             with caller.request_scope(p):
                 raw, model = caller(row['phase'], row['view'], row['schema'])
         except Exception as error:
+            if scope:
+                from model_transport import TransportCircuitOpen
+
+                if isinstance(error, TransportCircuitOpen) and not error.send_started:
+                    require(not reservation.exists(), 'blocked HTTP admission already had a canonical attempt')
+                    if ordinal == 1:
+                        marker = network_defer_path(job, grant['run_id'])
+                        save(marker, {'contract': NETWORK_DEFERRED, 'operation_sha256': sha(root / 'operation.json'),
+                                      'scope': scope, 'grant': grant, 'attempt': attempt,
+                                      'http_key': error.http_key, 'circuit': error.circuit,
+                                      'report': pin_network_report(root, error.report)})
+                        return {'state': 'network_deferred', 'marker_sha256': sha(marker)}
+                # Non-circuit exceptions may occur before entering the HTTP
+                # hook. Preserve their evidence under the existing contract.
+                save(reservation, attempt)
             audit.update(state='transport_or_runtime_hold', error=str(error), seconds=time.monotonic() - started)
             save(audit_path, audit)
             attempts.append(audit)
             break
+        require(reservation.is_file(), 'native model response has no admitted attempt')
         audit.update(raw=raw, model=model, seconds=time.monotonic() - started, state='returned')
         save(audit_path, audit)
         own()
@@ -450,6 +678,13 @@ def worker(root, job):
     try:
         result = run_job(root, job, own)
         own()
+        if result['state'] == 'network_deferred':
+            with closing(kc.connect(board=board)) as conn:
+                require(kd._record_task_failure(conn, task_id, NETWORK_BLOCK_REASON + result['marker_sha256'],
+                                                outcome='network_admission_deferred', force_trip=True,
+                                                release_claim=True, end_run=True),
+                        'native network-deferred task could not release its original claim')
+            return
         save(job.with_suffix('.result.json'), {**result, 'task_id': task_id, 'run_id': run,
                                                'request_id': _load_json(job)['request']['id']})
         with closing(kc.connect(board=board)) as conn:
@@ -489,9 +724,15 @@ def drain_on_error(root, conn, kb, kd, active, resumed, entry):
         raise
 
 
-def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry=None, saved_attempts=None):
+def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry=None, saved_attempts=None,
+          network_probe=None):
     kb, kc, kd = runtime()
     board = operation['board']
+    scope = network_scope(root, operation)
+    require(network_probe is None or scope is not None, 'network probe requires an admitted incremental round')
+    if network_probe:
+        require(len(rows) == 1 and rows[0]['id'] == network_probe['request_id'],
+                'network recovery probes exactly one original pending request')
     pending = []
     for row in rows:
         prefix = f'entry-{entry}-' if entry else 'replay-' if replay else ''
@@ -509,6 +750,8 @@ def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry
     active, results = {}, []
     native_cap = kd.resolve_max_in_progress(kd.configured_max_in_progress())
     capacity_wait = time.monotonic()
+    dispatched_probe = False
+    held_circuit = None
     with closing(kc.connect(board=board)) as conn, drain_on_error(root, conn, kb, kd, active, resumed, entry):
         while pending or active:
             live(root, operation, resumed=resumed, entry=entry)
@@ -521,6 +764,11 @@ def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry
                     result = _load_json(result_path)
                     require(result['task_id'] == tid, 'native completion binding changed')
                     results.append(result)
+                elif (scope and task.status == 'blocked' and not task.claim_lock
+                      and list(job.parent.glob(job.stem + '.network-deferred-*.json'))):
+                    runs, deferred = native_network_deferrals(root, job, conn, kb, task)
+                    require(deferred and len(deferred) == len(runs), 'network deferral escaped native work history')
+                    held_circuit = held_circuit or deferred[-1][1]['circuit']
                 else:
                     if task.status == 'running':
                         kd._record_task_failure(conn, tid, 'native worker exited before acknowledgement',
@@ -529,6 +777,11 @@ def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry
                                     'request_id': _load_json(job)['request']['id'], 'attempts': []})
                 del active[tid]
             while pending and len(active) < capacity:
+                paused = held_circuit or open_network_circuit(scope)
+                if paused and (active or not may_probe(paused, network_probe, dispatched_probe)):
+                    if not network_probe:
+                        held_circuit = paused
+                    break
                 pressure = kd._memory_pressure_level()
                 if pressure == 'critical' or (pressure == 'elevated' and active):
                     break
@@ -542,12 +795,21 @@ def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry
                                      project_id='', initial_status='running', max_retries=1,
                                      max_runtime_seconds=1200, idempotency_key=job.stem, board=board)
                 task = kb.get_task(conn, tid)
+                if scope and task.body == body and task.status == 'blocked' and not task.claim_lock:
+                    runs, deferred = native_network_deferrals(root, job, conn, kb, task)
+                    require(deferred and len(deferred) == len(runs) and kb.unblock_task(conn, tid),
+                            'native deferred request was not provably unsent')
+                    task = kb.get_task(conn, tid)
                 require(task.body == body and task.status == 'ready', 'existing native run requires explicit recovery')
                 claim = kb.claim_task(conn, tid, claimer=CONTRACT)
                 require(claim is not None, 'could not claim exact short-path request')
                 env = dict(os.environ, HERMES_KANBAN_TASK=tid, HERMES_KANBAN_BOARD=board,
                            HERMES_KANBAN_DB=str(kb.kanban_db_path(board=board)),
                            HERMES_KANBAN_RUN_ID=str(claim.current_run_id), HERMES_KANBAN_CLAIM_LOCK=claim.claim_lock)
+                env.pop(NETWORK_PROBE_ENV, None)
+                if paused and network_probe:
+                    env[NETWORK_PROBE_ENV] = json.dumps(network_probe, sort_keys=True)
+                    dispatched_probe = True
                 argv = [sys.executable, str(Path(__file__).resolve()), 'worker', '--output', str(root), '--job', str(job)]
                 try:
                     with kd._open_worker_log(claim, board) as log:
@@ -561,10 +823,18 @@ def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry
                     raise
             if active:
                 capacity_wait = time.monotonic()
+            paused = held_circuit or open_network_circuit(scope)
+            if paused and not network_probe:
+                held_circuit = paused
+            if not active and paused and not may_probe(paused, network_probe, dispatched_probe):
+                break
             if pending and time.monotonic() - capacity_wait > 120:
                 raise RuntimeError('native capacity stayed unavailable for 120 seconds')
             if pending or active:
                 time.sleep(.4)
+    paused = open_network_circuit(scope) or held_circuit
+    if paused:
+        raise NetworkStagePaused(root, paused)
     return results
 
 
