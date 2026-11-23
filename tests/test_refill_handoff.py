@@ -318,6 +318,9 @@ def test_incremental_source_refill_retries_exact_stderr_lock_without_replacing_w
         return {'revision': 2, 'state': 'preparing', 'program_dispatch': True, 'background_dispatch': True}
 
     def wait(interval):
+        if task.status == 'done':
+            assert wake.is_set()
+            return True
         assert task.claim_lock is None and 'claim:' + task.id not in refill.events and prior_map.read_bytes() == receipt
         waits.append((interval, task.status, len(reads)))
         return False

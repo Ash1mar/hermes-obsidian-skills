@@ -18,7 +18,7 @@ def completion(tmp_path,monkeypatch):
     s=NS(events=[],clock=0.0,syncs=0,pending=True,linger=False,transient=None,permanent=None)
     w={'workflow_id':'isolated-final','actor':'agent','state':'partial','cancel_requested':False,
        'revision':12,'batch_id':'batch','current_stage':'validating','release_id':'release',
-       'kanban':{'board_id':'board','task_map':[]}}
+       'scope':{},'kanban':{'board_id':'board','task_map':[]}}
     def sync(wid,**kw):
         s.syncs+=1;s.events.append('sync')
         if s.transient and s.syncs==1:raise ContractError(s.transient,'$','transient native contention')
