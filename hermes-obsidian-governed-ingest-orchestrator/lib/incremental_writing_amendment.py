@@ -12,7 +12,7 @@ from incremental_recovery import stopped_history
 from incremental_sections import aliases, candidates, proposals
 from incremental_writing import (
     CURRENT_WRITING_REVISION, catalogue_for_round, compose, fragment_receipt, ordered_components,
-    parent_context, prepare_work, slot,
+    parent_context, prepare_work, selected_change, slot,
 )
 from incremental_writing_resume import IDENTITY, budget_allowance, continued_fragment, owned, pin
 from prepare_short_evidence_test import save
@@ -224,6 +224,9 @@ def evaluation(domain, builder, frozen, manifest, catalogue):
     vault = domain.vault
     plans, base, work, slots = inspect_base(domain, builder, frozen, manifest['base'], catalogue)
     prior_held = {item['change_id']: item for item in base['held']}
+    prior_written = [(row, selected_change(vault, row)) for row in base['written']]
+    prior_sections = {change['identity']['identity_key'] for _, change in prior_written if change.get('independent_section')}
+    restored = set()
     held, pages, sections, section_holds, summaries = [], [], [], {}, {}
     for plan_id, original in prior_held.items():
         if plan_id not in work:
@@ -258,16 +261,23 @@ def evaluation(domain, builder, frozen, manifest, catalogue):
             entries = list(scope.values())
             compose(builder, change, ((x['fragment'], x['answer']) for x in entries))
             pages.append((change, entries))
+            restored.add(plan_id)
             continue
         blockers = [row for row in scope.values() if row['state'] != 'valid']
         held.append({**original, 'reason': next((row['reason'] for row in blockers if 'reason' in row), original['reason'])})
         with builder.source.reading_snapshot():
             result, section_holds[plan_id] = proposals(catalogue, plans[plan_id], work[plan_id], scope)
-        sections.extend(result)
+        sections.extend(item for item in result if f"short-evidence:{item['id']}" not in prior_sections)
     cards = candidates(builder, manifest['layout'], plans, sections, slots)
     for change, entries in cards:
         compose(builder, change, ((x['fragment'], x['answer']) for x in entries))
-    return base['written'], held, pages, cards, section_holds, summaries
+    existing = [row for row, change in prior_written
+                if change.get('independent_section', {}).get('parent_plan_id') not in restored]
+    return existing, held, pages, cards, section_holds, summaries
+
+
+def carried_sections(vault, written):
+    return [change for row in written if (change := selected_change(vault, row)).get('independent_section')]
 
 
 def disposition_path(domain, run_id, round_id, operation_id):
@@ -327,12 +337,13 @@ def make_plan(domain, request, head):
             revised[key] = candidate
     rows = [part['request'] for value in revised.values() for part in value['fragments']]
     budget_allowance(run, rows)
+    base_cards = carried_sections(vault, read_pin(vault, base['disposition'])['written'])
     return {'contract': CONTRACT, **{field: request[field] for field in IDENTITY - {'expected_revision'}},
             'control_revision': head['revision'], 'revise_fragments': request['revise_fragments'],
             'frozen_input': frozen['input_fingerprint'], 'base': base, 'prior_disposition': prior_pointer,
             'previous_amendment': prior['manifest'] if prior else None, 'layout': previous['layout'] if previous else
             {**(layout := card_layout(vault)), 'occupied': sorted(set(layout['occupied']) | {
-                plan['path'] for plan in read_pin(vault, base['changes']) if plan.get('path')})},
+                plan['path'] for plan in [*read_pin(vault, base['changes']), *base_cards] if plan.get('path')})},
             'revisions': previously, 'proposed': revised, 'decisions': decisions,
             'dispatch_request_ids': [row['id'] for row in rows]}
 
@@ -370,8 +381,10 @@ def recover(domain, request, *, preview):
             frozen = domain.round_input(run_id, round_id)
             catalogue = catalogue_for_round(domain, run_id, frozen, builder)
             written, held, pages, cards, _, _ = evaluation(domain, builder, frozen, manifest, catalogue)
-            return {**summary, 'original_pages_ready': len(written) + len(pages), 'held_parent_pages': len(held),
-                    'section_candidates': [change['name'] for change, _ in cards]}
+            carried = carried_sections(domain.vault, written)
+            return {**summary, 'original_pages_ready': len(written) - len(carried) + len(pages),
+                    'held_parent_pages': len(held),
+                    'section_candidates': [change['name'] for change in carried] + [change['name'] for change, _ in cards]}
         require(digest == request['expected_manifest_sha256'], 'targeted writing preview no longer matches')
         save(path, manifest)
         pointer = pin(domain.vault, path)
@@ -411,8 +424,10 @@ def execute(domain, builder, frozen, authority, output):
         path = writer / 'amendment-pages' / (change['change_id'] + '.json')
         save(path, page_record(change, entries, pointer))
         written.append({'preparation': pin(domain.vault, path), 'native_root': writer.relative_to(domain.vault).as_posix()})
+    carried = carried_sections(domain.vault, existing)
     result = {'written': written, 'held': held, 'amendment': pointer, 'revisions': bound['revisions'],
-              'original_pages': len(existing) + len(pages), 'independent_sections': [change for change, _ in cards],
+              'original_pages': len(existing) - len(carried) + len(pages),
+              'independent_sections': [*carried, *(change for change, _ in cards)],
               'section_holds': section_holds, 'fragments': summaries}
     save(output, result)
     return result

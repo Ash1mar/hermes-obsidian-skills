@@ -176,7 +176,7 @@ def round_projection(root, rid, run, control, *, native_reader=None):
             'writing_workspace': base_writer.relative_to(root).as_posix(),
             **({'original_pages_written': writing['original_pages'],
                 'independent_section_candidates': len(writing['independent_sections'])}
-               if amendment and 'original_pages' in writing else {})}
+               if 'original_pages' in writing and 'independent_sections' in writing else {})}
 
 
 def source_pipeline(item, root, run, control, source_workflow, rounds, *, native_reader=None):

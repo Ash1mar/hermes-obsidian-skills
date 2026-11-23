@@ -15,6 +15,19 @@ def put(path, value):
 
 
 class PipelineProjectionTests(unittest.TestCase):
+    def test_ordinary_writing_reports_independent_section_candidates(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            put(root / 'rounds/round-1/writing-disposition.json', {
+                'written': [{'preparation': 'qualified-section'}], 'original_pages': 0,
+                'independent_sections': [{'name': '4.1 合格小节'}], 'held': [{'change_id': 'parent'}],
+            })
+            round_ = round_projection(root, 'round-1', {'active_round_id': 'round-1'}, {}, native_reader=lambda _: {})
+            self.assertEqual(round_['original_pages_written'], 0)
+            self.assertEqual(round_['independent_section_candidates'], 1)
+            self.assertEqual(next(row for row in round_['stages'] if row['key'] == 'writing')['state'], 'partial')
+            self.assertEqual(round_['writing_held'], [{'change_id': 'parent'}])
+
     def test_network_pause_exposes_and_binds_only_the_current_round(self):
         from incremental import command, progress
 

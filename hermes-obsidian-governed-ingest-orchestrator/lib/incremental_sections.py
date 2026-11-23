@@ -4,17 +4,58 @@ from pathlib import PurePosixPath
 import re
 
 from hermes_source_units.incremental_pages import require
+from hermes_source_units.incremental_sources import pinned, read_pin
 from hermes_source_units.short_build import identity
 from hermes_source_units.validation import ContractError, canonical_json, fingerprint
-from incremental_writing_evidence import HEADING
+from incremental_writing_evidence import ATX_HEADING, COMMENT, HEADING
 from short_cards import place
+
+ORDINARY_SECTION = 'incremental-independent-section-selection/v1'
+ORDINARY_QUALIFICATION = 'incremental-independent-section-qualification/v1'
 
 
 def aliases(catalogue, refs):
     return {catalogue.units[canonical_json(ref['unit_ref'])]['alias'] for ref in refs}
 
 
-def proposals(catalogue, plan, work, slots):
+def exact_heading(text, title):
+    if not isinstance(text, str):
+        return False
+    lines = [line.strip() for line in COMMENT.sub('', text).splitlines() if line.strip()]
+    if len(lines) == 2 and re.fullmatch(r'(?:={2,}|-{2,})', lines[-1]):
+        lines.pop()
+    if len(lines) != 1:
+        return False
+    atx = ATX_HEADING.fullmatch(lines[0])
+    heading = atx[1] if atx else lines[0]
+    return heading.split() == title.split()
+
+
+def ordinary_reads_within_section(catalogue, slot, relevant, snapshot, edges):
+    prepared = slot['fragment']['prepared']
+    materials = {row['ref']: row for row in prepared['projection']['view']['materials']}
+    cited = set(re.findall(r'\[(m[0-9]+)\]', slot['answer']['content']))
+    lineage = {row['section_id'] for row in catalogue.lineage(catalogue.aliases[min(relevant)])}
+    dependencies = {alias for edge in edges for alias in edge}
+    for handle, ref in prepared['material_aliases'].items():
+        item = catalogue.units.get(canonical_json(ref['unit_ref']))
+        if item is None:
+            return False
+        alias = item['alias']
+        if alias in relevant:
+            continue
+        material = materials.get(handle) or {}
+        if (handle in cited or material.get('role') != 'context' or material.get('required_dependency')
+                or alias in dependencies or item['snapshot'] != snapshot or item['section'] not in lineage
+                or item['locator']['kind'] != 'text' or catalogue.writing_body(item)):
+            return False
+        title = catalogue.sections[snapshot][item['section']]['title']
+        if not (exact_heading(catalogue.read(item), title) and exact_heading(material.get('text'), title)):
+            return False
+    return True
+
+
+def proposals(catalogue, plan, work, slots, *, allow_structural_navigation=False):
     """Derive a section only from complete, uniquely bounded registered coverage."""
     if (plan['action'] != 'create' or plan['page_type'] == 'project'
             or re.search(r'对比|比较|compar(?:e|ison)', plan['name'], re.I)):
@@ -61,8 +102,13 @@ def proposals(catalogue, plan, work, slots):
             continue
         # Each fragment must itself be independently readable. Its complete
         # projections and coherent citations are checked before it reaches here.
-        if any(not aliases(catalogue, slots[key]['fragment']['prepared']['material_aliases'].values()) <= relevant
-               for key in members):
+        if allow_structural_navigation:
+            local_reading = all(ordinary_reads_within_section(catalogue, slots[key], relevant, snapshot, edges)
+                                for key in members)
+        else:
+            local_reading = all(aliases(catalogue, slots[key]['fragment']['prepared']['material_aliases'].values()) <= relevant
+                                for key in members)
+        if not local_reading:
             deferred.append({'snapshot': snapshot, 'section': section_id, 'reason': 'fragment reads material outside the section'})
             continue
         covered.update(relevant)
@@ -100,3 +146,114 @@ def candidates(service, layout, plans, proposed, page_slots):
         change['change_id'] = fingerprint(change)
         selected.append((change, parts))
     return selected
+
+
+def ordinary_candidates(vault, service, catalogue, writer, layout, parents, *, placements=None):
+    """Select independent sections only from the original, strictly valid native receipts."""
+    from incremental_writing import compose, fragment_receipt
+    from incremental_writing_amendment import validate_fragment
+
+    plans, page_slots, deferred, proposed = {}, {}, {}, []
+    with service.source.reading_snapshot():
+        for plan, work in parents:
+            plan_id = plan['change_id']
+            plans[plan_id] = plan
+            slots = {}
+            for fragment in work['fragments']:
+                slot = {'fragment': fragment, 'state': 'held'}
+                try:
+                    answer, proof = fragment_receipt(vault, writer, fragment)
+                    validate_fragment(fragment, answer)
+                except (ContractError, ValueError, OSError):
+                    pass
+                else:
+                    slot.update(state='valid', answer=answer, proof=proof)
+                slots[fragment['request']['id']] = slot
+            page_slots[plan_id] = slots
+            try:
+                selected, deferred[plan_id] = proposals(catalogue, plan, work, slots, allow_structural_navigation=True)
+            except (ContractError, ValueError, OSError) as error:
+                deferred[plan_id] = [{'reason': str(error)}]
+                continue
+            proposed.extend(selected)
+
+    cards, used = [], set()
+    available = {**layout, 'occupied': list(layout['occupied']), 'directories': list(layout['directories'])}
+    if placements is None:
+        ordered = [(item, None) for item in sorted(proposed, key=lambda row: row['id'])]
+    else:
+        by_identity = {(item['id'], item['snapshot']): item for item in proposed}
+        require(len({item['id'] for item in placements}) == len(placements), 'pinned independent section identity repeats')
+        ordered = [(by_identity.get((fixed['id'], fixed['snapshot'])), fixed) for fixed in placements]
+    for item, fixed in ordered:
+        occupied = fixed['path'] if fixed else None
+        if item is not None:
+            try:
+                require(item['id'] not in used, 'independent section already qualified in this round')
+                selected = candidates(service, available, plans, [item], page_slots)
+                require(selected, 'independent section identity already has a registered path')
+                (change, entries), = selected
+                require(fixed is None or (change['path'], change['change_id']) == (occupied, fixed['change_id']),
+                        'independent section differs from its pinned selection')
+                compose(service, change, ((entry['fragment'], entry['answer']) for entry in entries))
+            except (ContractError, ValueError, OSError) as error:
+                deferred[item['parent_plan_id']].append(
+                    {'section': item['section'], 'snapshot': item['snapshot'], 'reason': str(error)})
+            else:
+                cards.append((change, entries))
+                used.add(item['id'])
+                occupied = change['path']
+        if occupied:
+            # Keep an earlier pinned path reserved for later candidates even
+            # when its own evidence is no longer eligible on reentry.
+            available['occupied'].append(occupied)
+            available['directories'].append(PurePosixPath(occupied).parent.name)
+    return cards, deferred
+
+
+def section_placements(cards):
+    return [{'id': change['identity']['identity_key'].removeprefix('short-evidence:'),
+             'snapshot': change['independent_section']['snapshot'], 'path': change['path'],
+             'change_id': change['change_id']} for change, _ in cards]
+
+
+def ordinary_record(change, entries, pointer):
+    return {'contract': ORDINARY_SECTION, 'change': change, 'qualification': pointer,
+            'proofs': [entry['proof'] for entry in entries]}
+
+
+def ordinary_formal_pages(domain, builder, frozen, catalogue, pointer, writer):
+    """Requalify original frozen plans and receipts at Build ingress."""
+    from incremental_writing import CONTRACT, prepare_work
+
+    run_id, round_id = frozen['run_id'], frozen['round_id']
+    round_root = domain.root(run_id) / 'rounds' / round_id
+    vault = domain.vault
+    manifest = read_pin(vault, pointer)
+    require(pointer['ref'] == (writer / 'section-qualification.json').relative_to(vault).as_posix()
+            and writer == domain.root(run_id) / 'native' / 'round' / round_id / 'writing'
+            and manifest['contract'] == ORDINARY_QUALIFICATION and manifest['run_id'] == run_id
+            and manifest['round_id'] == round_id and manifest['round_input_fingerprint'] == frozen['input_fingerprint']
+            and manifest['plans'] == pinned(vault, (round_root / 'page-changes.json').relative_to(vault).as_posix()),
+            'independent section lost its original ordinary writing scope')
+    plans = {plan['change_id']: plan for plan in read_pin(vault, manifest['plans'])}
+    layout = manifest['layout']
+    require({row['path'] for row in plans.values() if row.get('path')} <= set(layout['occupied']),
+            'independent section layout lost a frozen page path')
+    parents, seen = [], set()
+    for entry in manifest['parents']:
+        plan_id = entry['plan_id']
+        require(plan_id in plans and plan_id not in seen, 'independent section parent scope changed')
+        plan = plans[plan_id]
+        work_pointer = entry['work']
+        require(work_pointer['ref'] == (writer / 'fragment-plans' / (plan_id + '.json')).relative_to(vault).as_posix(),
+                'independent section work belongs to a different page')
+        work = read_pin(vault, work_pointer)
+        require(work['contract'] == CONTRACT and work['plan_id'] == plan_id
+                and prepare_work(builder, catalogue, plan, input_cap=work['input_cap'],
+                                 writing_revision=work.get('writing_revision', 1)) == work,
+                'independent section original fragment plan changed')
+        parents.append((plan, work))
+        seen.add(plan_id)
+    cards, _ = ordinary_candidates(vault, builder, catalogue, writer, layout, parents, placements=manifest['placements'])
+    return {change['change_id']: (ordinary_record(change, entries, pointer), entries) for change, entries in cards}
