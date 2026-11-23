@@ -79,7 +79,7 @@ label[for="pause-before"] { margin-top: 16px; }
 .badge.completed { background: #e1f5ec; color: #0a634f; }
 .badge.running { background: #daf3ef; color: #07594e; }
 .badge.partial { background: #fff2d9; color: #794c07; }
-.badge.paused, .badge.pausing, .badge.detached { background: #fff2d9; color: #794c07; }
+.badge.paused, .badge.pausing, .badge.detached, .badge.closure-accounting, .badge.partially-closed { background: #fff2d9; color: #794c07; }
 .badge.failed, .badge.interrupted { background: #ffebe6; color: #9a3629; }
 details { margin-top: 6px; }
 summary { color: var(--teal); font-size: 12px; cursor: pointer; width: fit-content; }

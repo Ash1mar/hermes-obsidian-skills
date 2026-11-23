@@ -109,6 +109,9 @@ class Console:
                 if action.startswith('incremental-') and any(body.get(key) != option.get(key)
                         for key in ('control_revision', 'run_revision')):
                     raise UserError('增量运行或控制修订已经变化，请刷新后重试。')
+                if action in ('incremental-closure-preview', 'incremental-closure-confirm') and any(
+                        body.get(key) != option.get(key) for key in ('node', 'attempt', 'preview_attempt', 'report_sha256')):
+                    raise UserError('结案节点或预览已变化，请刷新后重新核对。')
                 if action in ('incremental-release-source', 'incremental-retry-source') and any(body.get(key) != option.get(key)
                         for key in ('node', 'attempt', 'source_path', 'source_sha256')):
                     raise UserError('请选择当前来源的准确处理入口，请刷新后重试。')
@@ -171,6 +174,8 @@ class Console:
                 record["pause_before"] = option["pause_before"]
             if action.startswith('incremental-'):
                 record.update(control_revision=option['control_revision'], run_revision=option['run_revision'])
+                if action == 'incremental-closure-confirm':
+                    record.update(preview_attempt=option['preview_attempt'], report_sha256=option['report_sha256'])
                 if action in ('incremental-release-source', 'incremental-retry-source'):
                     record.update(source_path=option['source_path'], source_sha256=option['source_sha256'])
                 if action == 'incremental-retry-source':

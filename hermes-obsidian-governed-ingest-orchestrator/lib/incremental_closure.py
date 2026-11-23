@@ -237,20 +237,34 @@ def directory_navigation(domain, delivery):
         return [{'state': 'deferred', 'reason': str(error)}]
 
 
+def accounting_boundary(run, native, delivery, release):
+    """Bind the overdue reservations to the drained run and accepted delivery."""
+    return {'reason': 'unreconciled_model_reservations', 'run_revision': run['revision'],
+            'reservation_ids': sorted(key for key, row in run['reservations'].items() if row['state'] == 'reserved'),
+            'rounds': run['round_ids'], 'native_drained': native, 'final_delivery': delivery,
+            'published_pages': len(release['subjects']) if release else 0}
+
+
 def finish(domain, run, native_drained, delivery):
     run_id = run['run_id']
     pointer = IncrementalControl(domain.vault, run_id).status().get('partial_closure')
     fields = {'native_drained': native_drained, 'final_delivery': delivery}
+    operation = 'close-' + run_id
     if pointer:
         report = read_pin(domain.vault, pointer)
         require(report['run_revision'] == run['revision'] and report['final_delivery'] == delivery
                 and report['native_drained'] == native_drained
                 and report['entries'] == inspect_reservations(domain, run), 'native accounting changed since closure authorization')
         fields['usage_reconciliation'] = pointer
-    elif any(row['state'] == 'reserved' for row in run['reservations'].values()):
-        return mutate(domain, run_id, 'close_run', 'close-' + run_id, **fields)
+        old_intent = domain.root(run_id) / 'runtime-requests' / (operation + '.json')
+        if not old_intent.is_file() or _load_json(old_intent)['request'].get('usage_reconciliation') != pointer:
+            # Old rejected ordinary closes have a durable intent with different inputs.
+            operation = 'close-accounted-' + pointer['sha256'][:40]
+    else:
+        require(not any(row['state'] == 'reserved' for row in run['reservations'].values()),
+                'reserved usage requires the closure accounting checkpoint')
     fields['directory_navigation'] = directory_navigation(domain, delivery)
-    return mutate(domain, run_id, 'close_run', 'close-' + run_id, **fields)
+    return mutate(domain, run_id, 'close_run', operation, **fields)
 
 
 def recover(domain, request, *, preview=False):
@@ -260,15 +274,35 @@ def recover(domain, request, *, preview=False):
             'partial closure requires one exact operator intent')
     run_id, op = safe_id(request['run_id']), safe_id(request['operation_id'])
     root = domain.root(run_id)
-    path = root / 'closure-recoveries' / (op + '.json')
     control = IncrementalControl(domain.vault, run_id)
     with _exclusive_lock(root / '.controller.lock', timeout=0, marker=False):
         head, run = control.status(), domain.status(run_id)
         require(request['actor'] == run['actor'] == head['actor'], 'partial closure actor changed')
+        if preview and request['boundary_fingerprint'] is None:
+            require(run['state'] == head['state'] == 'active' and not head['active_scopes']
+                    and request['run_revision'] == run['revision'] and request['expected_revision'] == head['revision'],
+                    'interrupted closure run or control revision changed')
+            if head.get('partial_closure'):
+                report = read_pin(domain.vault, head['partial_closure'])
+                require(report['contract'] == CONTRACT and report['run_id'] == run_id
+                        and report['actor'] == run['actor'], 'prepared closure authorization changed')
+                native, delivery = closure_inputs(domain, run)
+                current_release(domain, delivery)
+                verify_review(domain, run, report, native, delivery)
+                original = {k: report[k if k != 'expected_revision' else 'control_revision'] for k in REQUEST}
+                return review_summary(report, original)
+            native, delivery = closure_inputs(domain, run)
+            _, release = current_release(domain, delivery)
+            evidence = accounting_boundary(run, native, delivery, release)
+            require(evidence['reservation_ids'], 'interrupted closure has no usage to reconcile')
+            head = control.hold_closure_for_accounting(evidence, head['revision'])
+            request = {**request, 'expected_revision': head['revision'],
+                       'boundary_fingerprint': fingerprint(head['boundary'])}
+        path = root / 'closure-recoveries' / (op + '.json')
         if not preview and path.is_file():
             report = _load_json(path)
         else:
-            boundary = head['boundary']
+            boundary = head.get('boundary') or {}
             require(head['state'] == 'paused' and not head['active_scopes'] and boundary['stage'] == 'closure'
                     and boundary['scope'] == {'scope_kind': 'run', 'scope_id': run_id}
                     and run['active_round_id'] is None and run['state'] == 'active'
@@ -276,27 +310,47 @@ def recover(domain, request, *, preview=False):
                     and request['boundary_fingerprint'] == fingerprint(boundary),
                     'partial closure needs the exact drained closure checkpoint')
             native, delivery = closure_inputs(domain, run)
-            current_release(domain, delivery)
+            _, release = current_release(domain, delivery)
+            if boundary['evidence'].get('reason') == 'unreconciled_model_reservations':
+                require(boundary['evidence'] == accounting_boundary(run, native, delivery, release),
+                        'closure accounting checkpoint differs from the current run')
             report = {'contract': CONTRACT, **{k: request[k] for k in REQUEST - {'expected_revision'}},
                       'control_revision': head['revision'], 'native_drained': native,
                       'final_delivery': delivery, 'entries': inspect_reservations(domain, run)}
         digest = fingerprint(report)
         require(all(report[k] == request[k] for k in REQUEST - {'expected_revision'})
                 and report['control_revision'] == request['expected_revision'], 'partial closure intent differs')
-        summary = {'report_sha256': digest, 'counts': dict(Counter(e['disposition'] for e in report['entries'].values())),
-                   'reservations': {key: {k: row[k] for k in ('disposition', 'reason', 'actual')}
-                                    for key, row in report['entries'].items()}}
+        summary = review_summary(report, {k: request[k] for k in REQUEST})
         if preview:
             return summary
         require(digest == request['expected_report_sha256'], 'partial closure preview digest changed')
-        pointer = domain._immutable(path, report)
         if run['state'] != 'active':
-            require(head.get('partial_closure') == pointer, 'terminal closure has a different authorization')
+            require(head.get('partial_closure') == pin(domain.vault, path), 'terminal closure has a different authorization')
             return {**summary, 'closure': read_pin(domain.vault, run['closure']), 'closure_ref': run['closure']}
+        native, delivery = closure_inputs(domain, run)
+        current_release(domain, delivery)
+        verify_review(domain, run, report, native, delivery)
+        pointer = domain._immutable(path, report)
         control.control({'run_id': run_id, 'actor': run['actor'], 'operation_id': op, 'action': 'continue',
                          'expected_revision': request['expected_revision'], 'boundary_fingerprint': request['boundary_fingerprint'],
                          'partial_closure': pointer})
         require(control.status().get('partial_closure') == pointer, 'partial closure authorization was not retained')
-        native, delivery = closure_inputs(domain, run)
         closure = finish(domain, run, native, delivery)
         return {**summary, 'closure': closure, 'closure_ref': domain.status(run_id)['closure']}
+
+
+def verify_review(domain, run, report, native, delivery):
+    require(report['run_revision'] == run['revision'] and report['final_delivery'] == delivery
+            and report['native_drained'] == native
+            and report['entries'] == inspect_reservations(domain, run), 'native accounting changed since closure review')
+
+
+def review_summary(report, request):
+    return {'request': request, 'report_sha256': fingerprint(report),
+            'counts': dict(Counter(e['disposition'] for e in report['entries'].values())),
+            'reservations': {key: {'phase': row['reservation']['phase'],
+                                   **{k: row[k] for k in ('disposition', 'reason', 'actual')},
+                                   'evidence': {k: row[k] for k in ('job', 'attempt', 'audit', 'failure',
+                                       'native_result', 'native', 'failure_type', 'observed_session', 'session',
+                                       'http_journal', 'http_sends') if k in row}}
+                             for key, row in report['entries'].items()}}

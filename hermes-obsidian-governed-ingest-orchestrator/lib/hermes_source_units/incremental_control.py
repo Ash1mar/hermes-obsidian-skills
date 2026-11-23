@@ -257,6 +257,25 @@ class IncrementalControl:
             _write_atomic(self.path, _json_bytes(head))
             return head
 
+    def hold_closure_for_accounting(self, evidence, expected_revision):
+        """Latch the verified accounting boundary independently of pause_after."""
+        with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
+            self._recover_pending()
+            head = self.status()
+            run = _load_json(self.root.parent / 'run.json')
+            reserved = sorted(key for key, row in run['reservations'].items() if row['state'] == 'reserved')
+            if (head['state'] != 'active' or head['revision'] != expected_revision
+                    or head['active_scopes'] or head.get('partial_closure')
+                    or run['state'] != 'active' or run['active_round_id'] is not None
+                    or run['revision'] != evidence['run_revision']
+                    or not reserved or reserved != evidence['reservation_ids']):
+                raise ContractError('STALE_INPUT', '$', 'closure accounting run or control changed before the pause')
+            boundary = {'scope': {'scope_kind': 'run', 'scope_id': self.run_id}, 'stage': 'closure',
+                        'input_fingerprint': fingerprint(evidence), 'evidence': evidence}
+            head.update(state='paused', boundary=boundary, revision=head['revision'] + 1)
+            _write_atomic(self.path, _json_bytes(head))
+            return head
+
     def control(self, request):
         safe_id(request['operation_id'])
         if request.get('run_id', self.run_id) != self.run_id:
@@ -278,6 +297,10 @@ class IncrementalControl:
             if action == 'continue':
                 if head['state'] != 'paused' or request.get('boundary_fingerprint') != fingerprint(head['boundary']):
                     raise ContractError('STALE_INPUT', '$', 'continue requires the exact acknowledged boundary')
+                if head['boundary']['stage'] == 'closure' and 'partial_closure' not in request:
+                    run = _load_json(self.root.parent / 'run.json')
+                    if any(row['state'] == 'reserved' for row in run['reservations'].values()):
+                        raise ContractError('INVALID_TRANSITION', '$', 'closure with reserved usage requires recover-closure')
                 if 'partial_closure' in request:
                     if {'writing_continuation', 'writing_amendment', 'repair_writing'} & request.keys():
                         raise ContractError('INVALID_TRANSITION', '$', 'continue requires one recovery intent')

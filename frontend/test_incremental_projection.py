@@ -15,6 +15,35 @@ def put(path, value):
 
 
 class PipelineProjectionTests(unittest.TestCase):
+    def test_closure_review_binds_latest_control_and_exposes_confirmation(self):
+        from incremental import closure_node, closure_ready
+
+        with tempfile.TemporaryDirectory() as folder:
+            directory = Path(folder) / 'console'
+            root = Path(folder) / 'vault/_system/ledgers/incremental-ingest/run'
+            run = {'state': 'active', 'revision': 8, 'reservations': {'one': {'state': 'reserved', 'phase': 'mapping'}},
+                   'map_result_ids': ['map'], 'consumed_map_ids': ['map'], 'round_ids': ['round-1']}
+            put(root/'rounds/round-1/settlement.json', {'state': 'delivered'})
+            put(Path(folder)/'vault/_system/knowledge-releases/release-1/manifest.json', {'subjects': [{}] * 15})
+            rounds = [{'delivery_state': 'committed', 'release_id': 'release-1'}]
+            control = {'state': 'active', 'revision': 2, 'active_scopes': {}}
+            self.assertTrue(closure_ready(root, run, control, interrupted=True))
+            self.assertFalse(closure_ready(root, run, control, interrupted=False))
+            node = closure_node(directory, root, run, control, rounds, [], ready=True, available=True)
+            self.assertEqual(node['detail'], '1 轮已验收，15 页已发布，1 笔待对账')
+            self.assertEqual([a['id'] for a in node['actions']], ['incremental-closure-preview'])
+            boundary = {'stage': 'closure', 'evidence': {'published_pages': 15}}
+            control.update(state='paused', revision=3, boundary=boundary)
+            attempts = [{'action': 'incremental-closure-preview', 'id': 'preview', 'returncode': 0}]
+            review = {'request': {'run_revision': 8, 'expected_revision': 3, 'boundary_fingerprint': fingerprint(boundary)},
+                      'report_sha256': 'preview-hash', 'reservations': {'one': {'phase': 'mapping'}}}
+            put(directory/'attempts/preview/closure-preview.json', review)
+            node = closure_node(directory, root, run, control, rounds, attempts, ready=True, available=True)
+            self.assertEqual(node['actions'][-1]['report_sha256'], 'preview-hash')
+            self.assertEqual(node['reservations'], review['reservations'])
+            node = closure_node(directory, root, run, {**control, 'revision': 4}, rounds, attempts, ready=True, available=True)
+            self.assertEqual([a['id'] for a in node['actions']], ['incremental-closure-preview'])
+
     def test_source_nodes_bind_preparation_to_file_and_writing_to_dependent_fragments(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder) / 'vault/_system/ledgers/incremental-ingest/run'
