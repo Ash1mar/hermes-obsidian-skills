@@ -779,9 +779,6 @@ def watch(vault, run_id):
                         if error.code != 'ROUND_BUSY':
                             raise
                 elif not running and all(row['state'] in ('mapped', 'failed', 'mapping_held') for row in run['sources'].values()):
-                    if control.checkpoint({'scope_kind': 'run', 'scope_id': run_id}, 'closure',
-                                          {'maps': run['map_result_ids'], 'rounds': run['round_ids']})['state'] != 'active':
-                        return run
                     return close(domain, run_id)
                 time.sleep(1)
     return domain.status(run_id)
@@ -820,16 +817,39 @@ def closure_inputs(domain, run):
         time.sleep(0.2)
     delivery = None
     for round_id in reversed(run['round_ids']):
-        delivery_path = domain.root(run_id) / 'rounds' / round_id / 'delivery.json'
-        if delivery_path.exists():
-            if _load_json(delivery_path)['state'] == 'committed':
-                delivery = pinned(domain.vault, delivery_path.relative_to(domain.vault).as_posix())
-                break
+        folder = domain.root(run_id) / 'rounds' / round_id
+        settlement = _load_json(folder / 'settlement.json')
+        require(settlement['state'] in ('delivered', 'held', 'reused'),
+                'closure round disposition has not settled')
+        if settlement['state'] == 'delivered':
+            proof = pinned(domain.vault, (folder / 'delivery.json').relative_to(domain.vault).as_posix())
+            require(proof == settlement['delivery'] and read_pin(domain.vault, proof)['state'] == 'committed',
+                    'closure round delivery differs from its committed settlement')
+            if delivery is None:
+                delivery = proof
     return {'source_workflow_id': run['source_workflow_id'], 'boards': boards}, delivery
 
 
 def close(domain, run_id):
-    from incremental_closure import finish
+    from incremental_closure import accounting_boundary, current_release, finish
 
     run = domain.status(run_id)
-    return finish(domain, run, *closure_inputs(domain, run))
+    native, delivery = closure_inputs(domain, run)
+    _, release = current_release(domain, delivery)
+    control = IncrementalControl(domain.vault, run_id)
+    head = control.status()
+    if head['state'] != 'active':
+        return run
+    if not head.get('partial_closure'):
+        evidence = accounting_boundary(run, native, delivery, release)
+        if evidence['reservation_ids']:
+            try:
+                control.hold_closure_for_accounting(evidence, head['revision'])
+            except ContractError as error:
+                if error.code != 'STALE_INPUT' or control.status()['state'] == 'active':
+                    raise
+            return run
+        if control.checkpoint({'scope_kind': 'run', 'scope_id': run_id}, 'closure',
+                              {'maps': run['map_result_ids'], 'rounds': run['round_ids']})['state'] != 'active':
+            return run
+    return finish(domain, run, native, delivery)

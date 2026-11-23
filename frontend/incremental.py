@@ -60,6 +60,75 @@ def fingerprint(value):
                                      separators=(',', ':'), allow_nan=False).encode()).hexdigest()
 
 
+def closure_ready(root, run, control, *, interrupted):
+    return (run.get('state') == 'active' and not run.get('active_round_id') and not control.get('active_scopes')
+            and ((control.get('state') == 'active' and interrupted)
+                 or (control.get('state') == 'paused' and (control.get('boundary') or {}).get('stage') == 'closure'))
+            and any(row['state'] == 'reserved' for row in run.get('reservations', {}).values())
+            and all(row['state'] in ('mapped', 'failed', 'mapping_held') for row in run.get('sources', {}).values())
+            and set(run.get('map_result_ids', [])) == set(run.get('consumed_map_ids', []))
+            and all((root / 'rounds' / rid / 'settlement.json').is_file() for rid in run.get('round_ids', [])))
+
+
+def closure_node(directory, root, run, control, rounds, attempts, *, ready, available):
+    node = {'key': 'incremental-closure', 'name': '运行收尾', 'actions': []}
+    reserved = {key: row for key, row in run.get('reservations', {}).items() if row['state'] == 'reserved'}
+    if run.get('state') in ('completed', 'partial'):
+        node['state'] = 'partially-closed' if run['state'] == 'partial' else 'completed'
+        if reserved:
+            vault = root.parents[3].resolve()
+            pointer = control.get('partial_closure') or {}
+            path = (vault / pointer.get('ref', '')).resolve()
+            report = {}
+            if path.is_relative_to(root.resolve()) and path.is_file():
+                contents = path.read_bytes()
+                if hashlib.sha256(contents).hexdigest() == pointer.get('sha256'):
+                    report = json.loads(contents)
+            node['detail'] = f'{len(reserved)} 笔用量尚未确认，已保留预算'
+            node['reservations'] = {
+                key: {'phase': row['phase'], 'disposition': 'retained_unconfirmed', 'actual': None,
+                      'reason': report.get('entries', {}).get(key, {}).get('reason', 'unconfirmed'),
+                      'evidence': {name: entry for name, entry in report.get('entries', {}).get(key, {}).items()
+                                   if name in ('job', 'attempt', 'audit', 'failure', 'native', 'observed_session',
+                                               'http_journal', 'http_sends', 'failure_type')}}
+                for key, row in reserved.items()}
+        return node
+    boundary = control.get('boundary') or {}
+    at_closure = control.get('state') == 'paused' and boundary.get('stage') == 'closure'
+    if not ready:
+        return node
+    accepted = [row for row in rounds if row['delivery_state'] == 'committed']
+    pages = boundary.get('evidence', {}).get('published_pages')
+    if pages is None:
+        pages = 0
+        release = accepted[-1]['release_id'] if accepted else None
+        if release and release.isascii() and release.replace('-', '').isalnum():
+            pages = len(read(root.parents[3] / '_system/knowledge-releases' / release / 'manifest.json').get('subjects', []))
+    node.update(state='closure-accounting',
+                detail=f'{len(accepted)} 轮已验收，{pages} 页已发布，{len(reserved)} 笔待对账')
+    if not available:
+        return node
+    latest = attempts[-1] if attempts else {}
+    action = {'node': node['key'], 'attempt': latest.get('id'), 'gateway_required': False,
+              'control_revision': control['revision'], 'run_revision': run['revision']}
+    node['actions'].append({**action, 'id': 'incremental-closure-preview', 'label': '核对用量并结案'})
+    for attempt in reversed(attempts):
+        if attempt['action'] != 'incremental-closure-preview' or attempt.get('returncode') != 0:
+            continue
+        review = read(directory / 'attempts' / attempt['id'] / 'closure-preview.json')
+        original = review.get('request', {})
+        if (original.get('run_revision') == run['revision']
+                and ((at_closure and original.get('expected_revision') == control['revision']
+                      and original.get('boundary_fingerprint') == fingerprint(boundary))
+                     or (control.get('state') == 'active' and control.get('partial_closure', {}).get('ref', '').endswith(
+                         '/' + str(original.get('operation_id')) + '.json')))):
+            node.update(reservations=review['reservations'], review_ready=True)
+            node['actions'].append({**action, 'id': 'incremental-closure-confirm', 'label': '确认用量处置并结案',
+                                    'preview_attempt': attempt['id'], 'report_sha256': review['report_sha256']})
+        break
+    return node
+
+
 def progress(directory, request, attempts, active, historical, details):
     root = root_for(request)
     run = read(root / 'run.json')
@@ -69,12 +138,16 @@ def progress(directory, request, attempts, active, historical, details):
     if os.name == 'posix' and controller.get('pid'):
         try:
             proc = Path('/proc') / str(int(controller['pid']))
-            controller_active = controller.get('start') == (proc / 'stat').read_text().split(') ', 1)[1].split()[19]
+            fields = (proc / 'stat').read_text().split(') ', 1)[1].split()
+            controller_active = fields[0] not in ('Z', 'X') and controller.get('start') == fields[19]
         except (FileNotFoundError, ValueError, IndexError):
             controller_active = False
     latest = attempts[-1] if attempts else {}
+    waiting_accounting = closure_ready(root, run, control, interrupted=not active and controller_active is False)
     if run.get('state') in ('completed', 'partial'):
         state = run['state']
+    elif waiting_accounting:
+        state = 'closure-accounting'
     elif control.get('state') in ('paused', 'pausing', 'cancelled'):
         state = control['state']
     elif latest.get('returncode', 0) and not run:
@@ -104,8 +177,11 @@ def progress(directory, request, attempts, active, historical, details):
     sources = [{'name': Path(path).name, 'path': path, **row,
                 'admission': manual.get(path), 'actions': []} for path, row in run.get('sources', {}).items()]
     counts = dict(Counter(row['state'] for row in sources))
+    closure = closure_node(directory, root, run, control, rounds, attempts,
+                           ready=waiting_accounting,
+                           available=not historical and not active and controller_active is not True)
     actions = []
-    if not historical and run and run['state'] == 'active' and not active:
+    if not historical and run and run['state'] == 'active' and not active and closure.get('state') != 'closure-accounting':
         if control.get('state') == 'paused':
             actions.append({'id': 'incremental-continue', 'label': '继续当前作用域'})
         elif control.get('state') == 'active':
@@ -138,10 +214,15 @@ def progress(directory, request, attempts, active, historical, details):
     index = read(Path(request['vault_path']) / '_system/reports/retrieval-index-manifest.json')
     delivery_window = read(Path(request['vault_path']) / '_system/metadata/incremental-delivery-state.json')
     delivering = bool(delivery_window and delivery_window.get('state') not in ('committed', 'aborted'))
+    stages = overall_stages(sources, rounds, run, control)
+    if closure.get('state'):
+        stages[-1].update({key: value for key, value in closure.items() if key != 'key'})
+        stages[-1].pop('counts', None)
     data.update(nodes=[{'key': 'incremental-control', 'name': '增量运行控制', 'state': state,
-                       'description': '暂停作用于整个增量运行。继续只释放当前已核验的边界。', 'actions': actions}, *source_nodes],
+                       'description': '暂停作用于整个增量运行。继续只释放当前已核验的边界。', 'actions': actions},
+                      *source_nodes, closure],
                 incremental={'sources': sources, 'source_counts': counts, 'rounds': rounds,
-                             'overall_stages': overall_stages(sources, rounds, run, control),
+                             'overall_stages': stages,
                              'active_round_id': run.get('active_round_id'), 'control': control,
                              'budget': run.get('budget'), 'controller': controller,
                              'controller_active': controller_active, 'delivery_window': delivery_window},
@@ -169,6 +250,21 @@ def command(directory, attempt, config, save):
     if control['revision'] != attempt['control_revision'] or run['revision'] != attempt['run_revision']:
         raise ValueError('增量运行或控制修订已经变化，请刷新后重试。')
     operation = {'run_id': request['operation_id'], 'actor': request['actor'], 'operation_id': attempt['id']}
+    if attempt['action'] in ('incremental-closure-preview', 'incremental-closure-confirm'):
+        if attempt['action'] == 'incremental-closure-preview':
+            boundary = control.get('boundary')
+            operation.update(operation_id='closure-review-' + fingerprint([run['run_id'], run['revision']])[:40],
+                             expected_revision=control['revision'], run_revision=run['revision'],
+                             boundary_fingerprint=fingerprint(boundary) if boundary else None)
+        else:
+            review = read(directory / 'attempts' / attempt['preview_attempt'] / 'closure-preview.json')
+            if review.get('report_sha256') != attempt['report_sha256']:
+                raise ValueError('结案预览已变化，请重新核对。')
+            operation = {**review['request'], 'expected_report_sha256': review['report_sha256']}
+        path = directory / 'attempts' / attempt['id'] / 'incremental-request.json'
+        save(path, operation)
+        return args + ['recover-closure', '--request', str(path)] + (
+            ['--preview'] if attempt['action'] == 'incremental-closure-preview' else [])
     if 'scope_token' in attempt:
         from incremental_node_recovery import validate_action
 

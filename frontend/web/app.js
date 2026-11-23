@@ -7,6 +7,7 @@ const labels = {
   frozen: "输入已固定", settled: "已结算", held: "受阻", committed: "已提交",
   "manual-held": "待手动开始", released: "已允许处理",
   "waiting-dispatch": "等待调度", "waiting-qualification": "等待来源资格核验",
+  "closure-accounting": "待对账", "partially-closed": "已部分结案",
 };
 const waitLabels = { waiting: "等待交接", detached: "等待已结束", handoff: "交接就绪", failed: "来源交接失败" };
 const fileLabels = { ready: "就绪", failed: "转换失败", pending: "未结算", running: "处理中", queued: "排队中",
@@ -330,6 +331,15 @@ function renderIncrementalPhase(phase, source) {
   if (phase.counts) row.append(make("small", Object.entries(phase.counts).map(([state, count]) => `${count} ${labels[state] || state}`).join(" · ")));
   if (phase.round_ids?.length) row.append(make("small", `共享轮次 ${phase.round_ids.join("、")}`));
   if (phase.detail) row.append(make("small", phase.detail));
+  if (!source && phase.key === "closure") {
+    if (phase.reservations) row.append(renderClosureUsage(phase));
+    for (const action of phase.actions || []) {
+      const button = rowButton(action.label, () => reenter(action));
+      button.disabled = !writable || posting || runs.some(run => run.launcher_active);
+      row.append(button);
+    }
+    return row;
+  }
   if (phase.boundary) row.append(make("small", phase.result_state === "completed" ? "本步成果已完成，停在此边界" : "停在此边界"));
   if (source && (phase.recovery_scopes?.length || phase.actions?.length)) {
     const key = `${current.id}:${source.path}:${phase.key}`;
@@ -410,6 +420,40 @@ function renderIncrementalPhase(phase, source) {
     row.append(detail);
   }
   return row;
+}
+
+function renderClosureUsage(phase) {
+  const details = make("details", undefined, "node-recovery");
+  details.open = Boolean(phase.review_ready);
+  const dispositions = {retained_unconfirmed: "保留预留", settled_actual: "按实际用量结算", settled_zero: "按零用量结算"};
+  const reasons = {transport_or_runtime_hold: "调用完成情况待核实", bound_native_response_and_session_usage: "回包和会话用量已匹配",
+    bound_local_rejection_without_http_send: "本地拒绝，未发送且会话零用量", ended_attempt_without_audit: "原生任务已结束，缺少调用审计",
+    reservation_without_attempt_evidence: "只有预留，缺少执行凭据", returned_usage_unverified: "回包存在，用量凭据待核实",
+    recorded_usage_exceeds_reservation: "会话用量超出预留", unconfirmed: "用量待核实"};
+  const phases = {mapping: "Map", coordination: "协调", writing: "写作"};
+  const entries = Object.entries(phase.reservations);
+  details.append(make("summary", `查看 ${entries.length} 笔用量的处置和证据`));
+  for (const [id, entry] of entries) {
+    const block = make("div", undefined, "node-recovery-scope");
+    block.append(make("strong", `${phases[entry.phase] || entry.phase} · ${dispositions[entry.disposition]}`), make("small", id));
+    const evidence = entry.evidence || {};
+    const reason = reasons[entry.reason] || entry.reason;
+    block.append(make("small", [reason, evidence.failure_type?.class, evidence.failure_type?.state].filter(Boolean).join(" · ")));
+    if (entry.actual) block.append(make("small", `${entry.actual.calls} 次 · 输入 ${entry.actual.input_tokens} · 输出 ${entry.actual.output_tokens} token`));
+    if (evidence.native) block.append(make("small", `原生任务 ${evidence.native.task_id} · 执行 ${evidence.native.run_id} · ${evidence.native.outcome}`));
+    if (evidence.observed_session || evidence.session) {
+      const session = evidence.session || evidence.observed_session;
+      block.append(make("small", `会话 ${session.session_id} · ${session.calls} 次 · 输入 ${session.input_tokens} · 输出 ${session.output_tokens} token`));
+    }
+    if (evidence.http_journal) block.append(make("small", `HTTP 发送记录 ${evidence.http_journal.send_count} 条`));
+    const refs = make("ul");
+    for (const proof of [evidence.job, evidence.attempt, evidence.audit, evidence.failure, evidence.native_result, ...(evidence.http_sends || [])]) {
+      if (proof?.ref) refs.append(make("li", proof.ref));
+    }
+    if (refs.childElementCount) block.append(refs);
+    details.append(block);
+  }
+  return details;
 }
 
 async function copyVaultDirectory(field) {
@@ -570,6 +614,8 @@ async function submit(path, body) {
 
 function reenter(action, manifest, pauseBefore, fragments) {
   if (action.id.startsWith("incremental-")) {
+    if (action.id === "incremental-closure-confirm" &&
+        !window.confirm(`确认按已核对的报告结案？\n报告 SHA-256 ${action.report_sha256}`)) return;
     if (action.scope_token) {
       const scope = action.round_id ? `共享轮次 ${action.round_id}` : action.source_path;
       const fragmentScope = fragments ? `，已选 ${fragments.length} 个分片` : "";
@@ -578,7 +624,8 @@ function reenter(action, manifest, pauseBefore, fragments) {
     submit(`/api/runs/${current.id}/reenter`, {action: action.id, node: action.node, attempt: action.attempt,
       control_revision: action.control_revision, run_revision: action.run_revision,
       source_path: action.source_path, source_sha256: action.source_sha256, retry_kind: action.retry_kind,
-      phase: action.phase, round_id: action.round_id, scope_token: action.scope_token, revise_fragments: fragments});
+      phase: action.phase, round_id: action.round_id, scope_token: action.scope_token, revise_fragments: fragments,
+      preview_attempt: action.preview_attempt, report_sha256: action.report_sha256});
     return;
   }
   if (action.manifest && !manifest?.trim()) {

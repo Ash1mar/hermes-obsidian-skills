@@ -16,6 +16,13 @@ matching HTTP journal entry. Unconfirmed consumption retains the original reserv
 evidence, and produces a partial outcome. The original release and Provider generation are
 revalidated, and guarded `00_目录.md` files are derived from eligible pages at closure.
 
+Reserved usage automatically holds a fully drained run at the closure checkpoint even when it was
+not set in the initial pause list. In the console use **核对用量并结案** to view each disposition and
+its evidence, then explicitly confirm that report. For a drained legacy interruption, an operator
+preview with the current revisions and a null boundary fingerprint establishes that checkpoint and
+returns the exact bound request for confirmation. Plain continue cannot release a closure with
+outstanding reservations. A previous rejected ordinary close remains in the audit trail.
+
 `recover-delivery --request` requires run_id, actor, expected_revision, round_id, operation_id, disposition (`continue`, `abort_uncommitted`, or `isolate_committed`) and optional stop_after (`build_committed` or `index_verified`). Recovery uses the original Build authorization and draft targets. Never regenerate semantic outputs to clear a delivery diagnostic. Canonical mutation requires a prepared delivery window; abort is allowed only before canonical writes, while isolation must have been preauthorized.
 
 The console's file-node recovery operations reattach the same run after their scoped authorization or acknowledged recovery. A delivery-node request binds the current control revision and reattaches only after the native delivery receipt is verified and the controller lock is released. The controller reuses saved results and proceeds to the next eligible stage. Paused, cancelled and completed runs receive no new dispatch. The applicable durable checkpoint stays in force, including when recovery itself reaches it. Partial closure finishes the original run.

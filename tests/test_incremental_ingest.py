@@ -197,6 +197,69 @@ def test_closure_usage_session_serializes_native_fractional_time(monkeypatch):
     assert row['ended_at_us'] == 12_625_000 and fingerprint(row)
 
 
+@pytest.mark.parametrize('historical', [False, True])
+def test_accounting_hold_without_configured_pause_and_idempotent_confirm(incremental, monkeypatch, historical):
+    from hermes_source_units import incremental_ingest
+    from hermes_source_units.incremental_control import IncrementalControl
+    import incremental_ingest_controller as controller
+    import incremental_closure as closure
+
+    service, _, _, workflow, _, _, _ = incremental
+    base = service.root('fixture')
+    run = service.status('fixture')
+    run['sources'] = {key: {'state': 'failed'} for key in run['sources']}
+    row = {'request_fingerprint': 'unknown', 'phase': 'mapping', 'state': 'reserved', 'actual': None,
+           'max_calls': 1, 'max_input_tokens': 100, 'max_output_tokens': 50}
+    run['reservations'] = {'unknown': row}
+    put(base/'run.json', run)
+    put(workflow, {**json.loads(workflow.read_text()), 'kanban': {'board_id': 'fixture'}})
+    native = {'source_workflow_id': run['source_workflow_id'], 'boards': ['fixture']}
+    control = IncrementalControl(service.vault, 'fixture')
+    control.initialize('builder', [])
+    monkeypatch.setattr(controller, 'closure_inputs', lambda *_: (native, None))
+    monkeypatch.setattr(incremental_ingest, 'verify_native_drain', lambda *_: native)
+    evidence = {'unknown': {'reservation': row, 'disposition': 'retained_unconfirmed',
+                            'reason': 'completion_unknown', 'actual': None}}
+    monkeypatch.setattr(closure, 'inspect_reservations', lambda *_: evidence)
+    request = {'run_id': 'fixture', 'actor': 'builder', 'operation_id': 'review',
+               'expected_revision': 1, 'run_revision': run['revision'], 'boundary_fingerprint': None}
+    if historical:
+        with pytest.raises(ContractError, match='remains unsettled'):
+            closure.mutate(service, 'fixture', 'close_run', 'close-fixture', native_drained=native, final_delivery=None)
+        old_intent = (base/'runtime-requests/close-fixture.json').read_bytes()
+    else:
+        controller.close(service, 'fixture')
+        head = control.status()
+        request.update(expected_revision=head['revision'], boundary_fingerprint=fingerprint(head['boundary']))
+    review = closure.recover(service, request, preview=True)
+    head = control.status()
+    assert head['state'] == 'paused' and head['pause_after'] == []
+    assert head['boundary']['evidence']['reservation_ids'] == ['unknown']
+    assert not (service.reports('fixture')/'closure.json').exists()
+    assert closure.recover(service, review['request'], preview=True) == review
+    with pytest.raises(ContractError, match='requires recover-closure'):
+        control.control({'action': 'continue', 'run_id': 'fixture', 'actor': 'builder', 'operation_id': 'plain',
+                         'expected_revision': head['revision'], 'boundary_fingerprint': fingerprint(head['boundary'])})
+    request = {**review['request'], 'expected_report_sha256': review['report_sha256']}
+    with pytest.raises(ValueError, match='preview digest changed'):
+        closure.recover(service, {**request, 'expected_report_sha256': 'stale'})
+    finish = closure.finish
+    def interrupted_after_confirmation(*_):
+        raise RuntimeError('simulated restart after confirmation')
+    monkeypatch.setattr(closure, 'finish', interrupted_after_confirmation)
+    with pytest.raises(RuntimeError, match='simulated restart'):
+        closure.recover(service, request)
+    monkeypatch.setattr(closure, 'finish', finish)
+    assert closure.recover(service, {**review['request'], 'boundary_fingerprint': None,
+                           'expected_revision': control.status()['revision']}, preview=True) == review
+    result = closure.recover(service, request)
+    assert result == closure.recover(service, request)
+    assert result['closure']['state'] == 'partial' and result['closure']['retained_reservation_ids'] == ['unknown']
+    assert len(list((base/'operations').glob('close-accounted-*.json'))) == 1
+    if historical:
+        assert (base/'runtime-requests/close-fixture.json').read_bytes() == old_intent
+
+
 def test_budget_cannot_reset_by_restarting_and_unknown_consumption_blocks_closure(incremental):
     service, request, _, _, _, _, _ = incremental
     source = seal(incremental)
