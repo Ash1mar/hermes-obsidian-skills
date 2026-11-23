@@ -80,7 +80,7 @@ def test_ordinary_writing_publishes_only_the_complete_section_and_reuses_it_afte
     assert len(work['fragments']) == 2
     inlet = work['fragments'][0]['prepared']
     headings = [row for row in inlet['projection']['view']['materials'] if row['role'] == 'context']
-    assert {row['core_text'].strip() for row in headings} == {
+    assert {row['text'].strip() for row in headings} == {
         '# Operating requirements', '## 4.1 Inlet isolation'}
     assert all(row['ref'] not in inlet['view']['assigned'] and not row.get('required_dependency') for row in headings)
     monkeypatch.setattr(incremental_writing, 'prepare_work',
