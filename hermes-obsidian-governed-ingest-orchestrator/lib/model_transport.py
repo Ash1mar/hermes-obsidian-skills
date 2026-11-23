@@ -115,10 +115,10 @@ def circuit_status(scope_key, *, transport_db=None):
 
 
 def network_send_count(http_key, *, transport_db=None):
-    """Count exact physical admissions for one pinned logical HTTP reservation."""
+    """Count exact physical admissions, with a missing journal leaving the count unknown."""
     path = Path(transport_db) if transport_db is not None else journal_path()
     if not path.is_file():
-        return 0
+        return None
     with closing(sqlite3.connect(path.resolve().as_uri() + '?mode=ro', uri=True, timeout=3)) as db:
         return db.execute('SELECT count(*) FROM sends WHERE id=?', (http_key,)).fetchone()[0]
 
@@ -319,15 +319,15 @@ class Journal:
                     self.open_circuit(db, route, fingerprint([trip, key, 'probe_failed']))
             elif (not trip and not row.get('circuit_probe')
                     and row['circuit']['generation'] == state['generation']):
-                if success:
-                    db.execute('UPDATE transport_circuits SET failures=0 WHERE route=?', (route,))
-                elif failure:
+                if failure:
                     count = state['consecutive_failures'] + 1
                     if count == CIRCUIT_FAILURE_LIMIT:
                         self.open_circuit(db, route, fingerprint([route, key, row['attempt'], failure]))
                     else:
                         db.execute('INSERT OR REPLACE INTO transport_circuits VALUES (?, ?, NULL, NULL, ?)',
                                    (route, count, state['generation']))
+                elif state['consecutive_failures']:
+                    db.execute('UPDATE transport_circuits SET failures=0 WHERE route=?', (route,))
         row['circuit'] = self.circuit(db, route)
         if failure:
             row['circuit_failure'] = failure

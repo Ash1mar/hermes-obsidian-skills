@@ -1,6 +1,6 @@
 """Modeled transport pause through the native short-path scheduling boundary."""
 
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 import json
 from pathlib import Path
 import sys
@@ -185,3 +185,53 @@ def test_pre_send_circuit_deferral_preserves_budget_without_consuming_ordinal(tm
     assert reserved == [(tmp_path, row, 1, grant)]
     admitted = json.loads(job.with_name('request.attempt-1.json').read_bytes())
     assert admitted['grant'] == resumed_grant and keys[0] != keys[1]
+
+
+def test_real_kanban_keeps_exact_task_and_refuses_unacknowledged_deferral(tmp_path, monkeypatch):
+    kb = pytest.importorskip('hermes_cli.kanban_db')
+    kc = pytest.importorskip('hermes_cli.kanban_db_connect')
+    kd = pytest.importorskip('hermes_cli.kanban_db_dispatch')
+
+    database = tmp_path / 'native' / 'kanban.db'
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path / 'hermes'))
+    monkeypatch.setenv('HERMES_KANBAN_DB', str(database))
+    monkeypatch.setattr(kb, '_fire_task_hook', lambda *_args, **_kwargs: None)
+    op = operation(tmp_path)
+    runner.save(tmp_path / 'operation.json', op)
+    job = tmp_path / 'jobs' / 'request.json'
+    runner.save(job, {'request': {'id': 'request', 'phase': 'incremental-page-write'}})
+    body = runner.task_body(tmp_path, job)
+    task_options = {'title': 'Park original request', 'body': body, 'created_by': runner.CONTRACT,
+                    'assignee': runner.ASSIGNEE, 'idempotency_key': job.stem, 'board': op['board']}
+
+    def deferral(root, original_job, _task, run):
+        path = runner.network_defer_path(original_job, run.id)
+        assert root == tmp_path and run.error == runner.NETWORK_BLOCK_REASON + runner.sha(path)
+        return path, json.loads(path.read_bytes())
+
+    monkeypatch.setattr(runner, 'validate_network_deferral', deferral)
+    with closing(kc.connect(database)) as connection:
+        tid = kb.create_task(connection, **task_options)
+        prior = kb.claim_task(connection, tid, claimer=runner.CONTRACT)
+        marker = runner.network_defer_path(job, prior.current_run_id)
+        runner.save(marker, {'grant': {'run_id': prior.current_run_id}})
+        assert kd._record_task_failure(connection, tid, runner.NETWORK_BLOCK_REASON + runner.sha(marker),
+                                       outcome=runner.NETWORK_BLOCK_OUTCOME, force_trip=True,
+                                       release_claim=True, end_run=True)
+        task = kb.get_task(connection, tid)
+        runs, deferred = runner.native_network_deferrals(tmp_path, job, connection, kb, task)
+        assert task.status == 'blocked' and not task.claim_lock
+        assert len(runs) == len(deferred) == 1 and deferred[0][0] == marker
+
+        assert kb.create_task(connection, **task_options) == tid
+        assert kb.unblock_task(connection, tid)
+        resumed = kb.claim_task(connection, tid, claimer=runner.CONTRACT)
+        assert resumed.id == tid and resumed.body == body and resumed.current_run_id != prior.current_run_id
+        next_marker = runner.network_defer_path(job, resumed.current_run_id)
+        runner.save(next_marker, {'grant': {'run_id': resumed.current_run_id}})
+        assert kd._record_task_failure(connection, tid, 'worker exited before native acknowledgement',
+                                       outcome='worker_exited', force_trip=True, release_claim=True, end_run=True)
+        task = kb.get_task(connection, tid)
+        runs, deferred = runner.native_network_deferrals(tmp_path, job, connection, kb, task)
+        assert task.status == 'blocked' and not task.claim_lock
+        assert len(runs) == 2 and deferred == []

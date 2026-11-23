@@ -119,8 +119,16 @@ def first_event_timeout():
 
 def network_failure(create, name, outcome=None):
     transport = create(name, scope='workflow')
-    send(transport, 200)
-    assert not transport.finish(outcome=outcome or unknown_connection())
+    if outcome:
+        send(transport, 200)
+        assert not transport.finish(outcome=outcome)
+    else:
+        error = httpx.RemoteProtocolError('connection closed before response headers')
+        with pytest.raises(httpx.RemoteProtocolError):
+            send(transport, 200, fault=error)
+        assert not transport.finish(error=error, outcome=unknown_connection())
+        send_record, = transport.journal.history(transport.key)
+        assert send_record['attempt'] == 1
     return transport
 
 
@@ -170,14 +178,28 @@ def test_circuit_counts_terminal_network_failures_resets_and_blocks_before_send(
 
 def test_safe_physical_retry_counts_once_after_terminal_failure(local):
     _, create = local
-    transport = create('retry', scope='workflow')
     error = httpx.ConnectError('could not establish connection')
     for attempt in range(3):
+        transport = create('retry', scope='workflow')
         with pytest.raises(httpx.ConnectError):
             send(transport, 200, fault=error)
         assert transport.finish(error=error, outcome=unknown_connection()) == (attempt < 2)
         assert transport.circuit['consecutive_failures'] == (1 if attempt == 2 else 0)
     assert model.network_send_count(transport.key, transport_db=transport.journal.path) == 3
+
+
+def test_missing_http_journal_cannot_prove_that_a_request_was_unsent(tmp_path):
+    assert model.network_send_count('unverified', transport_db=tmp_path / 'missing.sqlite') is None
+
+
+def test_terminal_non_network_outcome_breaks_the_untripped_failure_streak(local):
+    _, create = local
+    assert network_failure(create, 'before').circuit['consecutive_failures'] == 1
+    rejected = create('request-rejected', scope='workflow')
+    send(rejected, 400)
+    assert not rejected.finish(outcome=failed(code='invalid_request_error'))
+    assert rejected.circuit['consecutive_failures'] == 0
+    assert network_failure(create, 'after').circuit['consecutive_failures'] == 1
 
 
 def test_single_bound_probe_fences_replay_and_resets_only_on_success(local):

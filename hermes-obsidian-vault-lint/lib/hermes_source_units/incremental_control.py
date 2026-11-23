@@ -246,12 +246,12 @@ class IncrementalControl:
             head = self.status()
             if head['state'] == 'pausing':
                 if not head['active_scopes'] and not self.sources_active():
-                    if head['boundary']['stage'] == NETWORK_RECOVERY:
-                        boundary = head['boundary']
-                        evidence = boundary['evidence']
-                        run = self._network_round(boundary['scope'], evidence)
+                    pending_boundary = head.get('boundary') or {}
+                    if pending_boundary.get('stage') == NETWORK_RECOVERY:
+                        evidence = pending_boundary['evidence']
+                        run = self._network_round(pending_boundary['scope'], evidence)
                         evidence['run_revision'] = run['revision']
-                        boundary['input_fingerprint'] = fingerprint(evidence)
+                        pending_boundary['input_fingerprint'] = fingerprint(evidence)
                     head.update(state='paused', revision=head['revision'] + 1)
                     _write_atomic(self.path, _json_bytes(head))
                 return head

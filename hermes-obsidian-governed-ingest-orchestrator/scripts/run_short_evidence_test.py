@@ -41,6 +41,7 @@ STAGE_NODE = {
 OPERATOR_STAGE_NODE = {**STAGE_NODE, 'topic-seed': 'topics'}
 NETWORK_DEFERRED = 'native-short-network-deferred/v1'
 NETWORK_BLOCK_REASON = 'network admission deferred: '
+NETWORK_BLOCK_OUTCOME = 'network_admission_deferred'
 NETWORK_PROBE_ENV = 'HERMES_SHORT_NETWORK_PROBE'
 
 
@@ -146,6 +147,11 @@ def pin_network_report(root, report):
     return {'ref': path.relative_to(root.resolve()).as_posix(), 'sha256': sha(path)}
 
 
+def parked_for_network(run):
+    return bool(run and run.ended_at is not None and run.outcome == 'gave_up'
+                and (run.metadata or {}).get('trigger_outcome') == NETWORK_BLOCK_OUTCOME)
+
+
 def validate_network_deferral(root, job, task, run):
     from model_transport import CONTRACT as HTTP_CONTRACT, circuit_status, network_send_count
 
@@ -176,9 +182,8 @@ def validate_network_deferral(root, job, task, run):
             and report['prior_send_count'] == 0 and transport['contract'] == HTTP_CONTRACT
             and transport['physical_attempts'] == 0 and transport['sends'] == []
             and current and current['route_id'] == report['circuit']['route_id']
-            and marker['http_key'] == key and run.ended_at is not None and run.outcome == 'gave_up'
+            and marker['http_key'] == key and parked_for_network(run)
             and run.error == NETWORK_BLOCK_REASON + sha(marker_path)
-            and (run.metadata or {}).get('trigger_outcome') == 'network_admission_deferred'
             and network_send_count(key) == 0,
             'network-deferred native request lacks bound proof of zero HTTP sends')
     return marker_path, marker
@@ -192,7 +197,10 @@ def native_network_deferrals(root, job, connection, kb, task):
     for marker in markers:
         saved = _load_json(marker)
         run = by_id.get(saved.get('grant', {}).get('run_id'))
-        require(run is not None, 'network deferral lacks its ended native run')
+        if not parked_for_network(run):
+            # A worker can exit after writing the marker and before releasing
+            # its native claim. Preserve that attempt as unconfirmed.
+            return runs, []
         out.append(validate_network_deferral(root, job, task, run))
     return runs, sorted(out, key=lambda item: item[1]['grant']['run_id'])
 
@@ -681,7 +689,7 @@ def worker(root, job):
         if result['state'] == 'network_deferred':
             with closing(kc.connect(board=board)) as conn:
                 require(kd._record_task_failure(conn, task_id, NETWORK_BLOCK_REASON + result['marker_sha256'],
-                                                outcome='network_admission_deferred', force_trip=True,
+                                                outcome=NETWORK_BLOCK_OUTCOME, force_trip=True,
                                                 release_claim=True, end_run=True),
                         'native network-deferred task could not release its original claim')
             return
@@ -760,14 +768,17 @@ def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry
                     continue
                 task = kb.get_task(conn, tid)
                 result_path = job.with_suffix('.result.json')
+                deferred = []
+                if (scope and task.status == 'blocked' and not task.claim_lock
+                        and list(job.parent.glob(job.stem + '.network-deferred-*.json'))):
+                    runs, parked = native_network_deferrals(root, job, conn, kb, task)
+                    if len(parked) == len(runs):
+                        deferred = parked
                 if task.status == 'done' and result_path.exists():
                     result = _load_json(result_path)
                     require(result['task_id'] == tid, 'native completion binding changed')
                     results.append(result)
-                elif (scope and task.status == 'blocked' and not task.claim_lock
-                      and list(job.parent.glob(job.stem + '.network-deferred-*.json'))):
-                    runs, deferred = native_network_deferrals(root, job, conn, kb, task)
-                    require(deferred and len(deferred) == len(runs), 'network deferral escaped native work history')
+                elif deferred:
                     held_circuit = held_circuit or deferred[-1][1]['circuit']
                 else:
                     if task.status == 'running':

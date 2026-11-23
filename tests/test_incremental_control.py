@@ -45,6 +45,8 @@ def test_network_pause_drains_and_only_continues_its_exact_unfinished_round(tmp_
     assert paused['boundary']['stage'] == 'network_recovery'
     assert paused['boundary']['evidence']['run_revision'] == 11
     assert _load_json(root / 'run.json') == run
+    control = IncrementalControl(tmp_path, 'isolated-control')
+    assert control.status() == paused
     request = {'operation_id': 'continue-round', 'action': 'continue', 'actor': 'operator',
                'expected_revision': paused['revision'], 'boundary_fingerprint': fingerprint(paused['boundary'])}
     with pytest.raises(ContractError, match='continue the current network-paused round explicitly'):
