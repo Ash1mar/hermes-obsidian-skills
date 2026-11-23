@@ -22,6 +22,22 @@ from hermes_source_units.source_units import _json_bytes, _write_atomic
 from orchestration import dispatch_ready_programs
 
 
+def refill_handoff(vault, workflow_id, wake, interval, *, fallback_to_sync=False):
+    """Defer a contended dispatch to the next fresh watcher cycle."""
+    try:
+        dispatch_ready_programs(vault, workflow_id)
+    except (ContractError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+        code = getattr(exc, 'code', None)
+        busy = code == 'LOCK_BUSY' or (code is None and str(exc).lstrip().startswith('LOCK_BUSY at $:'))
+        if not busy and not fallback_to_sync:
+            raise
+        print('Ready-card handoff deferred: ' + str(exc), flush=True)
+        if busy:
+            wake.wait(interval)
+        return not busy
+    return True
+
+
 def settle_blocked_pass(adapter,workflow_id,wake,interval):
     """Drain exact ended leases before reporting a blocked workflow and exiting."""
     deadline=time.monotonic()+30
@@ -100,16 +116,10 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                     # Existing ready bindings can refill a free slot without
                     # waiting for the full graph projection. Native CLI rereads
                     # authority, settles exact ended grants, then admits claims.
-                    try:
-                        with span('refill_handoff',vault=vault,workflow_id=workflow_id):
-                            dispatch_ready_programs(vault,workflow_id)
-                    except (ContractError, OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
-                        print('Ready-card handoff deferred: ' + str(exc), flush=True)
-                        if getattr(exc,'code',None)=='LOCK_BUSY' or 'LOCK_BUSY' in str(exc):
-                            # One busy atomic commit must not trigger a long full
-                            # scan. Return to fresh completion/refill after a tick.
-                            wake.wait(interval)
-                            continue
+                    with span('refill_handoff',vault=vault,workflow_id=workflow_id):
+                        ready = refill_handoff(vault, workflow_id, wake, interval, fallback_to_sync=True)
+                    if not ready:
+                        continue
                     if wake.is_set():
                         continue
                     result = adapter._sync_current(workflow_id,max_attempts=1,yield_requested=wake.is_set)
@@ -139,7 +149,8 @@ def watch(vault: str, workflow_id: str, interval: float = 3) -> None:
                 if result.get('program_dispatch') and result.get('background_dispatch'):
                     # Hermes CLI loads its native runtime and backend plugin even
                     # when the operator launched this watcher with system python3.
-                    dispatch_ready_programs(vault,workflow_id)
+                    if not refill_handoff(vault, workflow_id, wake, interval):
+                        continue
                 stamp = (result.get('revision'),result.get('state'),result.get('program_dispatch'))
                 delay = (0 if result.get('revision')!=value['revision'] else
                          min(delay*2,max(interval,12)) if stamp==prior else interval)

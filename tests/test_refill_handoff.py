@@ -7,6 +7,7 @@ import io
 import json
 import os
 from pathlib import Path
+import subprocess
 import sys
 import threading
 from types import ModuleType, SimpleNamespace
@@ -14,9 +15,11 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+ORCHESTRATOR = Path(os.environ.get('HERMES_TEST_ORCHESTRATOR_SKILL',
+                                  ROOT / 'hermes-obsidian-governed-ingest-orchestrator')).resolve()
 sys.path.insert(0, str(ROOT / "hermes-source-units/src"))
 sys.path.insert(0, str(ROOT / "hermes-obsidian-controlled-ingest/lib"))
-sys.path.insert(0, str(ROOT / "hermes-obsidian-governed-ingest-orchestrator/lib"))
+sys.path.insert(0, str(ORCHESTRATOR / 'lib'))
 
 from hermes_source_units import ContractError, runtime_telemetry
 import native_program_dispatch as dispatcher
@@ -28,7 +31,7 @@ def no_span(*args, **kwargs):
 
 
 def script_module(name):
-    path = ROOT / "hermes-obsidian-governed-ingest-orchestrator/scripts" / f"{name}.py"
+    path = ORCHESTRATOR / 'scripts' / f'{name}.py'
     spec = importlib.util.spec_from_file_location("isolated_" + name, path)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -197,7 +200,7 @@ def test_native_refill_failed_first_binding_does_not_obstruct_next(refill, code)
     assert "claim:t2" in refill.events
 
 
-@pytest.mark.parametrize("handoff_error,post_dispatch", [(False, False), (True, False), (False, True)])
+@pytest.mark.parametrize("handoff_error,post_dispatch", [(None, False), ('before', False), (None, True), ('after', True)])
 def test_watcher_refills_before_full_sync_and_retains_wake(monkeypatch, tmp_path, handoff_error, post_dispatch):
     watcher = script_module("watch_ingest_workflow")
     events = []
@@ -226,7 +229,8 @@ def test_watcher_refills_before_full_sync_and_retains_wake(monkeypatch, tmp_path
 
         def status(self, wid):
             reads.append(wid)
-            return {"cancel_requested": len(reads) > 1, "state": "analyzing", "current_stage":"analyzing"}
+            return {"cancel_requested": len(reads) > 1, "state": "analyzing", "current_stage":"analyzing",
+                    "scope": {}, "revision": 1}
 
         def _sync_current(self, wid, *, max_attempts, yield_requested):
             assert max_attempts == 1 and not yield_requested()
@@ -237,7 +241,8 @@ def test_watcher_refills_before_full_sync_and_retains_wake(monkeypatch, tmp_path
 
     def ready(vault, wid):
         events.append("ready-dispatch")
-        if handoff_error:
+        phase = 'after' if 'full-sync' in events else 'before'
+        if handoff_error == phase:
             raise OSError("isolated handoff unavailable")
 
     monkeypatch.setattr(watcher, "IngestKanbanAdapter", Adapter)
@@ -245,9 +250,115 @@ def test_watcher_refills_before_full_sync_and_retains_wake(monkeypatch, tmp_path
     monkeypatch.setattr(watcher, "_exclusive_lock", lambda *a: nullcontext())
     monkeypatch.setattr(watcher, "dispatch_ready_programs", ready)
     monkeypatch.setattr(watcher, "span", no_span)
+    if handoff_error == 'after':
+        with pytest.raises(OSError, match='isolated handoff unavailable'):
+            watcher.watch(str(tmp_path), 'ingest-refill')
+        assert events == ['clear', 'ready-dispatch', 'full-sync', 'ready-dispatch']
+        return
     watcher.watch(str(tmp_path), "ingest-refill")
     assert events == ["clear", "ready-dispatch", "full-sync",
                       *(["ready-dispatch"] if post_dispatch else []), "wait", "clear"]
+
+
+@pytest.mark.parametrize('busy_attempt', [1, 2], ids=['initial-handoff', 'after-full-sync'])
+def test_incremental_source_refill_retries_exact_stderr_lock_without_replacing_work(refill, monkeypatch, tmp_path, busy_attempt):
+    import citation_native_authority
+    import orchestration
+
+    watcher = script_module('watch_ingest_workflow')
+    for module in (watcher, orchestration, dispatcher):
+        assert Path(module.__file__).resolve().parents[1] == ORCHESTRATOR
+    wid = 'ingest-refill'
+    task, card = refill.tasks[0], refill.cards[0]
+    refill.tasks[:] = [task]
+    refill.cards[:] = [card]
+    card['node'] = 'source-prepare:original-source'
+    original_card = dict(card)
+    task.status, task.current_run_id, task.claim_lock = 'scheduled', None, None
+    task.body = json.dumps({'executor': 'program-v1', 'workflow_id': wid, 'worker_binding': task.id})
+    original_body = task.body
+    native_db = sys.modules['hermes_cli'].kanban_db
+    claim_task = native_db.claim_task
+
+    def claim_original(connection, task_id, **options):
+        claimed = claim_task(connection, task_id, **options)
+        assert claimed is task and claimed.claim_lock is None
+        claimed.current_run_id, claimed.claim_lock = 101, 'original-claim'
+        return claimed
+
+    monkeypatch.setattr(native_db, 'claim_task', claim_original)
+    read_native = refill.adapter.workflow.status
+
+    ledger = tmp_path / '_system/ledgers/ingest-workflows' / (wid + '.json')
+    ledger.parent.mkdir(parents=True)
+    value = {**read_native(wid), 'revision': 1, 'current_stage': 'preparing', 'state': 'preparing',
+             'scope': {'workflow_mode': 'incremental_v1'}}
+    ledger.write_text(json.dumps(value), encoding='utf-8')
+    prior_map = tmp_path / '_system/reports/incremental-ingest/original-run/map-results/original-map.json'
+    prior_map.parent.mkdir(parents=True)
+    receipt = b'{"map_result_id":"original-map","snapshot_id":"verified-earlier-source"}\n'
+    prior_map.write_bytes(receipt)
+    reads, syncs, handoffs, waits = [], [], [], []
+    wake = threading.Event()
+
+    def status(workflow_id):
+        assert workflow_id == wid
+        current = json.loads(ledger.read_bytes())
+        assert current['workflow_id'] == wid and current['kanban']['task_map'] == [original_card]
+        reads.append((current['revision'], task.status))
+        assert len(reads) < 6, 'watcher should exit after the original source completes'
+        return current
+
+    def sync(workflow_id, *, max_attempts, yield_requested):
+        assert workflow_id == wid and max_attempts == 1 and not yield_requested()
+        assert task.status == 'scheduled' and not syncs
+        syncs.append(1)
+        task.status = 'ready'
+        ledger.write_text(json.dumps({**value, 'revision': 2}), encoding='utf-8')
+        return {'revision': 2, 'state': 'preparing', 'program_dispatch': True, 'background_dispatch': True}
+
+    def wait(interval):
+        if task.status == 'done':
+            assert wake.is_set()
+            return True
+        assert task.claim_lock is None and 'claim:' + task.id not in refill.events and prior_map.read_bytes() == receipt
+        waits.append((interval, task.status, len(reads)))
+        return False
+
+    def handoff(argv, **options):
+        assert argv == ['hermes', 'ingest-program-dispatch', '--vault', str(tmp_path), '--workflow-id', wid]
+        assert options['capture_output'] and options['text']
+        handoffs.append(task.status)
+        if len(handoffs) == busy_attempt:
+            lock = ledger.parent / '.dispatch-locks' / (wid + '.lock')
+            stderr = json.dumps({'ok': False, 'error': f'LOCK_BUSY at $: Skill kernel lock is held: {lock}; wait limit=0s'})
+            return subprocess.CompletedProcess(argv, 2, stdout='', stderr=stderr + '\n')
+        claimed = dispatcher.dispatch_programs(refill.adapter, wid)
+        if claimed:
+            assert claimed == [original_card['task_id']] and task.body == original_body
+            task.status, task.claim_lock = 'done', None
+            wake.set()
+        return subprocess.CompletedProcess(argv, 0, stdout=json.dumps({'ok': True, 'claimed': claimed}), stderr='')
+
+    adapter = SimpleNamespace(workflow=SimpleNamespace(vault=tmp_path, status=status,
+        source_coverage=lambda _: {'pending': task.status != 'done'}), _sync_current=sync)
+    monkeypatch.setattr(watcher, 'IngestKanbanAdapter', lambda *_a, **_kw: adapter)
+    monkeypatch.setattr(watcher, 'wake_events', lambda *_: nullcontext(wake))
+    monkeypatch.setattr(wake, 'wait', wait)
+    monkeypatch.setattr(watcher, 'span', no_span)
+    monkeypatch.setattr(orchestration, 'IngestKanbanAdapter', lambda *_: refill.adapter)
+    monkeypatch.setattr(citation_native_authority, 'capture', lambda *_: None)
+    monkeypatch.setattr(orchestration, 'span', no_span)
+    monkeypatch.setattr(orchestration.subprocess, 'run', handoff)
+
+    interval = 2.25
+    watcher.watch(str(tmp_path), wid, interval)
+    expected = (1, 'scheduled') if busy_attempt == 1 else (2, 'ready')
+    assert len(waits) == 1 and waits[0][:2] == (interval, expected[1])
+    assert reads[waits[0][2]] == expected
+    assert len(handoffs) == 3 and syncs == [1] and reads[-1] == (2, 'done')
+    assert [item for item in refill.events if item.startswith('claim:')] == ['claim:' + original_card['task_id']]
+    assert refill.events.count('spawn') == 1 and original_card == card and prior_map.read_bytes() == receipt
 
 
 @pytest.fixture

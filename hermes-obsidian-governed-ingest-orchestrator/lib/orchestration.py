@@ -59,13 +59,20 @@ def dispatch_ready_programs(vault, workflow_id):
             '--workflow-id', workflow_id], capture_output=True, text=True, timeout=60)
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or 'native program dispatch failed'
-        try:
-            payload = json.loads(result.stdout)
-        except (ValueError, TypeError, AttributeError):
-            payload = {}
-        if isinstance(payload,dict) and (payload.get('code') == 'LOCK_BUSY'
-                or str(payload.get('error','')).startswith('LOCK_BUSY at $:')):
-            raise ContractError('LOCK_BUSY', '$', 'native dispatch is waiting for the current atomic commit')
+        # The native CLI can put its structured failure on either stream.
+        # An explicit stderr failure outranks a conflicting stdout payload.
+        for output in (result.stderr, result.stdout):
+            try:
+                payload = json.loads(output)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(payload, dict) or payload.get('ok') is True:
+                continue
+            code, error = payload.get('code'), payload.get('error')
+            if code == 'LOCK_BUSY' or (code is None and isinstance(error, str) and error.startswith('LOCK_BUSY at $:')):
+                raise ContractError('LOCK_BUSY', '$', 'native dispatch is waiting for the current atomic commit')
+            if code or error or payload.get('ok') is False:
+                break
         raise RuntimeError(detail)
     payload=json.loads(result.stdout or '{}')
     return {'state':'handoff_checked','native_result':payload}
