@@ -143,7 +143,7 @@ def test_qualification_backoff_frees_capacity_honors_pause_and_holds_only_one_so
            'active_round_id': None, 'map_result_ids': [], 'consumed_map_ids': [], 'round_ids': []}
     head = {'state': 'active', 'pause_after': []}
     domain = SimpleNamespace(vault=tmp_path, root=lambda _: tmp_path, status=lambda _: run)
-    started, checkpoints = [], []
+    started, checkpoints, closures = [], [], []
     clock = SimpleNamespace(now=0)
     lock = tmp_path / 'origin.lock'
 
@@ -179,6 +179,7 @@ def test_qualification_backoff_frees_capacity_honors_pause_and_holds_only_one_so
         run['sources']['a']['state'] = 'mapping_held'
 
     def close(*_):
+        closures.append(run['sources']['a']['state'])
         run['state'] = 'partial'
         return run
 
@@ -200,5 +201,5 @@ def test_qualification_backoff_frees_capacity_honors_pause_and_holds_only_one_so
         head['state'] = 'active'
         assert controller.watch(tmp_path, 'run')['state'] == 'partial'
     assert started == ['a', 'b', 'a', 'a']
-    assert checkpoints == [('mapping', 'b'), ('closure', 'run')]
+    assert checkpoints == [('mapping', 'b')] and closures == ['mapping_held']
     assert not (tmp_path / 'native').exists()
