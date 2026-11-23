@@ -13,6 +13,7 @@ STAGES = ('start', 'prepare', 'source-seal', 'mapping', 'map-commit', 'reserve',
           'freeze-round', 'coordination', 'writing', 'build', 'formal-build', 'release', 'index', 'acceptance',
           'settle-round', 'closure', 'close')
 CHECKPOINTS = ('prepare', 'mapping', 'coordination', 'writing', 'formal-build', 'release', 'acceptance', 'closure')
+NETWORK_RECOVERY = 'network_recovery'
 CONTROL_LOCK_TIMEOUT = 30
 
 
@@ -245,6 +246,12 @@ class IncrementalControl:
             head = self.status()
             if head['state'] == 'pausing':
                 if not head['active_scopes'] and not self.sources_active():
+                    pending_boundary = head.get('boundary') or {}
+                    if pending_boundary.get('stage') == NETWORK_RECOVERY:
+                        evidence = pending_boundary['evidence']
+                        run = self._network_round(pending_boundary['scope'], evidence)
+                        evidence['run_revision'] = run['revision']
+                        pending_boundary['input_fingerprint'] = fingerprint(evidence)
                     head.update(state='paused', revision=head['revision'] + 1)
                     _write_atomic(self.path, _json_bytes(head))
                 return head
@@ -276,6 +283,62 @@ class IncrementalControl:
             _write_atomic(self.path, _json_bytes(head))
             return head
 
+    def _network_round(self, scope, evidence):
+        if not isinstance(scope, dict):
+            raise ContractError('INVALID_SCHEMA', '$.scope', 'network recovery requires a round scope')
+        round_id = safe_id(scope.get('scope_id'))
+        round_root = self.root.parent / 'rounds' / round_id
+        run = _load_json(self.root.parent / 'run.json')
+        frozen = _load_json(round_root / 'input.json')
+        if (scope != {'scope_kind': 'round', 'scope_id': round_id}
+                or run.get('run_id') != self.run_id or run.get('state') != 'active' or run.get('active_round_id') != round_id
+                or frozen.get('run_id') != self.run_id or frozen.get('round_id') != round_id
+                or frozen.get('input_fingerprint') != evidence.get('round_input_fingerprint')
+                or frozen['input_fingerprint'] != fingerprint({k: v for k, v in frozen.items() if k != 'input_fingerprint'})
+                or (round_root / 'settlement.json').exists()):
+            raise ContractError('STALE_INPUT', '$', 'network recovery requires the original unfinished round')
+        expected_circuits = {(row['route_id'], row['trip_id']) for row in evidence['circuits']}
+        observed_circuits = set()
+        run_prefix = self.root.parent.relative_to(self.vault).as_posix() + '/'
+        for pointer in evidence['stage_reports']:
+            if (not isinstance(pointer, dict) or set(pointer) != {'ref', 'sha256'}
+                    or not isinstance(pointer['ref'], str) or not pointer['ref'].startswith(run_prefix)):
+                raise ContractError('INVALID_SCHEMA', '$.stage_reports', 'network recovery requires a report from this run')
+            report = read_pin(self.vault, pointer)
+            if (report.get('run_id') != self.run_id or report.get('round_id') != round_id
+                    or report.get('phase') != evidence['phase']
+                    or report.get('round_input_fingerprint') != frozen['input_fingerprint'] or not report.get('rows')):
+                raise ContractError('STALE_INPUT', '$.stage_reports', 'network recovery report belongs to another stage or round')
+            observed_circuits.update((row['route_id'], row['trip_id']) for row in report['circuits'])
+        if expected_circuits != observed_circuits:
+            raise ContractError('STALE_INPUT', '$.stage_reports', 'network recovery circuit evidence changed')
+        return run
+
+    def hold_network_recovery(self, scope, evidence, expected_revision):
+        """Preserve the current round and drain admitted work before an operator probe."""
+        if (not isinstance(evidence, dict) or evidence.get('phase') not in ('coordination', 'writing')
+                or not isinstance(evidence.get('stage_reports'), list) or not evidence['stage_reports']
+                or not isinstance(evidence.get('circuits'), list) or not evidence['circuits']
+                or any(not isinstance(circuit, dict) or any(
+                           not isinstance(circuit.get(key), str) or not circuit[key] for key in ('route_id', 'trip_id'))
+                       for circuit in evidence['circuits'])):
+            raise ContractError('INVALID_SCHEMA', '$', 'network recovery requires stage and circuit evidence')
+        with _exclusive_lock(self.root / '.lock', timeout=CONTROL_LOCK_TIMEOUT):
+            self._recover_pending()
+            head = self.status()
+            run = self._network_round(scope, evidence)
+            evidence = {**evidence, 'reason': 'model_transport_circuit_open', 'run_revision': run['revision']}
+            boundary = {'scope': scope, 'stage': NETWORK_RECOVERY, 'input_fingerprint': fingerprint(evidence),
+                        'evidence': evidence}
+            if head['state'] in ('pausing', 'paused') and head['boundary'] == boundary:
+                return head
+            if head['state'] != 'active' or head['revision'] != expected_revision:
+                raise ContractError('STALE_INPUT', '$', 'network recovery cannot replace another control boundary')
+            head.update(state='pausing' if head['active_scopes'] or self.sources_active() else 'paused',
+                        boundary=boundary, revision=head['revision'] + 1)
+            _write_atomic(self.path, _json_bytes(head))
+            return head
+
     def control(self, request):
         safe_id(request['operation_id'])
         if request.get('run_id', self.run_id) != self.run_id:
@@ -294,6 +357,9 @@ class IncrementalControl:
             if request['actor'] != head['actor'] or request['expected_revision'] != head['revision']:
                 raise ContractError('REVISION_CONFLICT', '$', 'control actor or revision changed')
             action = request['action']
+            network_boundary = (head.get('boundary') or {}).get('stage') == NETWORK_RECOVERY
+            if 'network_recovery' in request and not (network_boundary and action == 'continue'):
+                raise ContractError('INVALID_TRANSITION', '$', 'network continuation requires its own pause')
             if action == 'continue':
                 if head['state'] != 'paused' or request.get('boundary_fingerprint') != fingerprint(head['boundary']):
                     raise ContractError('STALE_INPUT', '$', 'continue requires the exact acknowledged boundary')
@@ -301,7 +367,9 @@ class IncrementalControl:
                     run = _load_json(self.root.parent / 'run.json')
                     if any(row['state'] == 'reserved' for row in run['reservations'].values()):
                         raise ContractError('INVALID_TRANSITION', '$', 'closure with reserved usage requires recover-closure')
-                if 'partial_closure' in request:
+                if network_boundary:
+                    self._authorize_network_continuation(head, request)
+                elif 'partial_closure' in request:
                     if {'writing_continuation', 'writing_amendment', 'repair_writing'} & request.keys():
                         raise ContractError('INVALID_TRANSITION', '$', 'continue requires one recovery intent')
                     self._authorize_partial_closure(head, request)
@@ -320,6 +388,8 @@ class IncrementalControl:
                 head['released'].append(fingerprint(head['boundary']))
                 head.update(state='active', boundary=None)
             elif action == 'pause':
+                if network_boundary:
+                    raise ContractError('INVALID_TRANSITION', '$', 'the current round is already paused for network recovery')
                 head.update(state='pausing' if head['active_scopes'] or self.sources_active() else 'paused',
                             boundary={'scope': {'scope_kind': 'run', 'scope_id': self.run_id},
                             'stage': 'manual', 'input_fingerprint': identity, 'evidence': {}})
@@ -350,6 +420,20 @@ class IncrementalControl:
             _write_atomic(self.path, _json_bytes(head))
             _write_atomic(receipt, _json_bytes({**transaction, 'commit_state': 'committed'}))
             return head
+
+    def _authorize_network_continuation(self, head, request):
+        if ('network_recovery' not in request or head['active_scopes']
+                or {'partial_closure', 'writing_continuation', 'writing_amendment', 'repair_writing'} & request.keys()):
+            raise ContractError('INVALID_TRANSITION', '$', 'continue the current network-paused round explicitly')
+        boundary = head['boundary']
+        scope = boundary['scope']
+        run = self._network_round(scope, boundary['evidence'])
+        round_id = scope['scope_id']
+        if request['network_recovery'] != {'round_id': round_id, 'run_revision': run['revision']}:
+            raise ContractError('STALE_INPUT', '$', 'network continuation round or run revision changed')
+        head['network_continuation'] = {'operation_id': request['operation_id'], 'boundary': boundary,
+                                        'boundary_fingerprint': request['boundary_fingerprint'],
+                                        'round_id': round_id, 'run_revision': run['revision']}
 
     def _authorize_partial_closure(self, head, request):
         pointer = request['partial_closure']

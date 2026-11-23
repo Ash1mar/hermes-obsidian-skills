@@ -81,6 +81,8 @@ def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recove
                  'incremental': {'run_id': run_id, 'scope_kind': kind, 'scope_id': scope_id, 'stage': stage,
                                  'snapshots': snapshots, 'input_fingerprint': fingerprint([snapshots, scope_id])},
                  'pass_capacity': cfg['pass_worker_concurrency'], 'page_capacity': cfg['reduce_page_concurrency']}
+    if kind == 'round' and stage in ('coordination', 'writing') and recovery_id is None:
+        operation['network_recovery'] = True
     if continuation is not None:
         require(kind == 'round' and stage == 'writing' and recovery_id is not None,
                 'writing continuation requires its own round writing scope')
@@ -100,6 +102,11 @@ def execute_rows(domain, run_id, root, operation, rows):
     import run_short_evidence_test as native
     from incremental_recovery import pending_request, request_files
     from incremental_writing import PHASE as PAGE_FRAGMENT
+
+    if operation.get('network_recovery') and rows:
+        from incremental_network import execute
+
+        return execute(domain, run_id, root, operation, rows, settle_usage)
 
     bounded_coordination = bool(rows) and all(row['phase'] == 'incremental-page-plan' and (
         row['view'].get('planning_revision', 0) >= 4 or row['view'].get('coordination_repair')) for row in rows)

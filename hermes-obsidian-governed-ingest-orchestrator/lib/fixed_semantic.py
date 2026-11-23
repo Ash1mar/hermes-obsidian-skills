@@ -250,6 +250,16 @@ class HermesCaller:
                         outcome = exc.outcome
                     except Exception as exc:
                         error, outcome = exc, classify(exc)
+                    if transport.circuit_block is not None:
+                        blocked = transport.circuit_block
+                        raise StopNativeCall({
+                            'contract': 'native-call-outcome/v1',
+                            'state': 'completion_unknown' if blocked.send_started else 'request_rejected',
+                            'retryable': False, 'source': 'transport_circuit',
+                            'circuit': blocked.circuit, 'http_key': blocked.http_key,
+                            'prior_send_count': blocked.prior_send_count,
+                            'error': {'class': type(blocked).__name__, 'code': blocked.code, 'message': str(blocked)},
+                        })
                     if outcome and outcome.get('source') != 'local_request_guard':
                         recovered = transport.retrieve(outcome)
                         if recovered is not None:
@@ -375,6 +385,8 @@ class HermesCaller:
                 if transport:
                     agent.fixed_http_transport = Transport(transport, agent.session_id, agent.model,
                         input_size=prepared['input_size'], output_cap=getattr(self, 'output_token_limit', OUTPUT_TOKENS))
+            if context and context.get('circuit_scope') and agent.fixed_http_transport is None:
+                raise ContractError('TRANSPORT_CIRCUIT_UNAVAILABLE', '$', 'this model transport cannot enforce the circuit')
             from native_call_state import StopNativeCall,record
             try:
                 with span('sdk_model_request',phase=phase,session_id=agent.session_id):
@@ -387,8 +399,18 @@ class HermesCaller:
                 outcome = exc.outcome
                 if agent.fixed_http_transport:
                     outcome = {**outcome, 'http_transport': agent.fixed_http_transport.evidence()}
-                record(outcome,prepared,agent.session_id,request_sha256=getattr(agent,'fixed_final_request_sha256',None),
-                    output_format=getattr(agent,'fixed_final_output_format',None))
+                try:
+                    record(outcome,prepared,agent.session_id,request_sha256=getattr(agent,'fixed_final_request_sha256',None),
+                        output_format=getattr(agent,'fixed_final_output_format',None))
+                except ContractError as error:
+                    if (outcome.get('source') != 'transport_circuit'
+                            or error.code not in ('NATIVE_REQUEST_REJECTED', 'NATIVE_COMPLETION_UNKNOWN')):
+                        raise
+                    from model_transport import TransportCircuitOpen
+
+                    raise TransportCircuitOpen(outcome['circuit'], http_key=outcome['http_key'],
+                                               prior_send_count=outcome['prior_send_count'],
+                                               report=json.loads(error.message)['report']) from error
             if result.get('error') or result.get('partial'):
                 record({'contract':'native-call-outcome/v1','state':'completion_unknown','retryable':False,
                     'error':{'message':str(result.get('error') or 'native result incomplete')}},prepared,agent.session_id,

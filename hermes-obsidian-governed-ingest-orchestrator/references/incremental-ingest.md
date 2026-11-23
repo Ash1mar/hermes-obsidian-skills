@@ -6,6 +6,22 @@ Use `python3 "<skill-dir>/scripts/manage_incremental_ingest.py" --vault "<vault>
 
 `control --request` accepts an identity-bound pause/continue/cancel request with run_id, actor, operation_id and expected_revision (control revision). Continue also requires the exact boundary_fingerprint. Supported boundaries: prepare, mapping, coordination, writing, formal-build, release, acceptance, closure. Pause drains admitted tasks and denies new claims. Reconcile never releases a pause.
 
+New ordinary round coordination and writing workspaces also record a `network_recovery` boundary after
+three consecutive model route connection or first-event failures. The native dispatcher and HTTP
+admission stop new sends, and in-flight sends drain under the existing retry and timeout policy.
+The original round remains active in the ledger. The pinned stage report distinguishes acknowledged
+results, requests proven not sent and requests whose completion is unknown. Unknown sends retain
+their budget reservations and are isolated from recovery dispatch.
+
+Use **继续本轮** after reviewing the network pause. The equivalent `control --request` is an exact
+`action=continue` with the normal control revision and `boundary_fingerprint`, plus
+`network_recovery={"round_id":"<round>","run_revision":<revision>}`. The authorization is replayable under
+the same operation ID. The controller first admits one original unsent request on the affected route.
+A successful response releases normal dispatch. A new transport failure parks the round again and
+retains its original evidence. A round with no eligible unsent request can process its saved evidence
+without a probe or additional model call. Already settled rounds and closure accounting keep their
+original contract.
+
 `reconcile --request` uses the saved run_id, actor, operation_id and expected_revision (run revision) to attach a new controller to the same execution. Do not create a new run to hide unknown model consumption. `preview-reuse --request` is read-only and checks current snapshot identities/hashes/contracts. Existing raw refs may only be reused by explicit `incremental_reuse_originals` bindings.
 
 At a drained `closure` checkpoint, `recover-closure --request` takes the run ID, actor, operation ID,

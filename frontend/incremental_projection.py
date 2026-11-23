@@ -8,6 +8,8 @@ from pathlib import Path
 import sqlite3
 import sys
 
+from incremental import NETWORK_RECOVERY
+
 sys.path.append(str(Path(__file__).resolve().parents[1] / 'hermes-obsidian-governed-ingest-orchestrator/lib'))
 from incremental_preparation_state import ABNORMAL_ENDS, can_retry_preparation, interrupted_preparation, native_state
 
@@ -68,9 +70,13 @@ def aggregate(states):
 def apply_boundary(value, control, kind, identity):
     boundary = control.get('boundary') or {}
     scope = boundary.get('scope') or {}
-    if (control.get('state') in ('paused', 'pausing') and boundary.get('stage') == value['key']
+    network = boundary.get('stage') == NETWORK_RECOVERY
+    phase = (boundary.get('evidence') or {}).get('phase') if network else boundary.get('stage')
+    if (control.get('state') in ('paused', 'pausing') and phase == value['key']
             and scope.get('scope_kind') == kind and scope.get('scope_id') == identity):
         value.update(result_state=value['state'], state=control['state'], boundary=True)
+        if network:
+            value['network_recovery'] = True
     return value
 
 
@@ -313,7 +319,7 @@ def overall_stages(sources, rounds, run, control):
             state = 'active'
         value = stage(key, state, counts=dict(Counter(values)), scope='source' if key in ('prepare', 'mapping') else 'round' if key != 'closure' else 'run')
         boundary = control.get('boundary') or {}
-        if control.get('state') in ('paused', 'pausing') and boundary.get('stage') == key:
-            value.update(result_state=state, state=control['state'], boundary=True)
+        scope = boundary.get('scope') or {}
+        apply_boundary(value, control, scope.get('scope_kind'), scope.get('scope_id'))
         result.append(value)
     return result

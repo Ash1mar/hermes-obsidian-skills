@@ -149,7 +149,9 @@ class IncrementalConsoleTests(unittest.TestCase):
             self.assertEqual(projected['state'], 'paused')
             self.assertEqual(projected['nodes'][0]['actions'][0]['id'], 'incremental-continue')
             self.assertEqual(projected['incremental']['source_counts'], {'mapped': 1, 'pending': 1})
-            self.assertEqual(len(projected['nodes']), 1)
+            self.assertEqual([node['key'] for node in projected['nodes']], ['incremental-control', 'incremental-closure'])
+            self.assertFalse(projected['nodes'][1]['actions'])
+            self.assertEqual(projected['incremental']['overall_stages'][-1]['state'], 'pending')
             self.assertIsNone(projected['release_id'])
 
 

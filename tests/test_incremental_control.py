@@ -14,6 +14,64 @@ def control_fixture(tmp_path):
     return control
 
 
+def test_network_pause_drains_and_only_continues_its_exact_unfinished_round(tmp_path):
+    from hermes_source_units.incremental_sources import pinned
+
+    control = control_fixture(tmp_path)
+    root = control.root.parent
+    run = {'run_id': control.run_id, 'state': 'active', 'active_round_id': 'round-1', 'revision': 10,
+           'source_workflow_id': 'isolated-source'}
+    _write_atomic(root / 'run.json', _json_bytes(run))
+    frozen = {'run_id': control.run_id, 'round_id': 'round-1'}
+    frozen['input_fingerprint'] = fingerprint(frozen)
+    round_root = root / 'rounds/round-1'
+    _write_atomic(round_root / 'input.json', _json_bytes(frozen))
+    report = round_root / 'network.json'
+    circuit = {'route_id': 'route-id', 'trip_id': 'trip-id'}
+    _write_atomic(report, _json_bytes({'run_id': control.run_id, 'round_id': 'round-1', 'phase': 'writing',
+                                      'round_input_fingerprint': frozen['input_fingerprint'],
+                                      'circuits': [circuit], 'rows': {'request-id': {'unsent': True}}}))
+    evidence = {'phase': 'writing', 'round_input_fingerprint': frozen['input_fingerprint'], 'circuits': [circuit],
+                'stage_reports': [pinned(tmp_path, report.relative_to(tmp_path).as_posix())]}
+    scope = {'scope_kind': 'round', 'scope_id': 'round-1'}
+    with control.executing({'scope_kind': 'source', 'scope_id': 'other-source'}, 'mapping', 'source-input'):
+        pausing = control.hold_network_recovery(scope, evidence, 1)
+        assert pausing['state'] == 'pausing'
+        assert control.hold_network_recovery(scope, evidence, 1) == pausing
+        run['revision'] = 11
+        _write_atomic(root / 'run.json', _json_bytes(run))
+    paused = control.checkpoint(scope, 'mapping', {})
+    assert paused['state'] == 'paused'
+    assert paused['boundary']['stage'] == 'network_recovery'
+    assert paused['boundary']['evidence']['run_revision'] == 11
+    assert _load_json(root / 'run.json') == run
+    control = IncrementalControl(tmp_path, 'isolated-control')
+    assert control.status() == paused
+    request = {'operation_id': 'continue-round', 'action': 'continue', 'actor': 'operator',
+               'expected_revision': paused['revision'], 'boundary_fingerprint': fingerprint(paused['boundary'])}
+    with pytest.raises(ContractError, match='continue the current network-paused round explicitly'):
+        control.control(request)
+    with pytest.raises(ContractError, match='round or run revision changed'):
+        control.control({**request, 'network_recovery': {'round_id': 'round-1', 'run_revision': 10}})
+    request['network_recovery'] = {'round_id': 'round-1', 'run_revision': 11}
+    report_content = report.read_bytes()
+    _write_atomic(report, _json_bytes({}))
+    with pytest.raises(ContractError, match='pinned evidence changed'):
+        control.control(request)
+    _write_atomic(report, report_content)
+    result = control.control(request)
+    assert result['state'] == 'active'
+    assert result['network_continuation']['operation_id'] == 'continue-round'
+    assert result['network_continuation']['boundary'] == paused['boundary']
+    assert control.control(request) == result
+    assert _load_json(root / 'run.json') == run
+    manual = control.control({'action': 'pause', 'actor': 'operator', 'operation_id': 'pause-manual',
+                              'expected_revision': result['revision']})
+    with pytest.raises(ContractError, match='cannot replace another control boundary'):
+        control.hold_network_recovery(scope, evidence, manual['revision'])
+    assert control.status() == manual
+
+
 def test_writing_repair_names_held_plan_and_requires_a_new_pause(tmp_path):
     control = IncrementalControl(tmp_path, 'writing-repair')
     control.initialize('operator', ['writing'])

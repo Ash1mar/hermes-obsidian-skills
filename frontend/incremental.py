@@ -10,6 +10,7 @@ import sys
 
 
 MODE = 'incremental_v1'
+NETWORK_RECOVERY = 'network_recovery'
 PAUSES = ('prepare', 'mapping', 'coordination', 'writing', 'formal-build', 'release', 'acceptance', 'closure')
 DEFAULT_BUDGET = {'max_calls': 600, 'max_input_tokens': 12000000, 'max_output_tokens': 3000000,
                   'phase_limits': {'mapping': 360, 'coordination': 30, 'writing': 210}}
@@ -58,6 +59,16 @@ def root_for(request):
 def fingerprint(value):
     return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
                                      separators=(',', ':'), allow_nan=False).encode()).hexdigest()
+
+
+def network_continue_binding(run, control):
+    boundary = control.get('boundary') or {}
+    rid = run.get('active_round_id')
+    if (control.get('state') == 'paused' and not control.get('active_scopes')
+            and run.get('state') == 'active' and rid and boundary.get('stage') == NETWORK_RECOVERY
+            and boundary.get('scope') == {'scope_kind': 'round', 'scope_id': rid}):
+        return {'round_id': rid, 'boundary_fingerprint': fingerprint(boundary)}
+    return None
 
 
 def closure_ready(root, run, control, *, interrupted):
@@ -180,10 +191,17 @@ def progress(directory, request, attempts, active, historical, details):
     closure = closure_node(directory, root, run, control, rounds, attempts,
                            ready=waiting_accounting,
                            available=not historical and not active and controller_active is not True)
+    boundary = control.get('boundary') or {}
+    network_paused = boundary.get('stage') == NETWORK_RECOVERY and control.get('state') in ('pausing', 'paused')
     actions = []
     if not historical and run and run['state'] == 'active' and not active and closure.get('state') != 'closure-accounting':
         if control.get('state') == 'paused':
-            actions.append({'id': 'incremental-continue', 'label': '继续当前作用域'})
+            if network_paused:
+                binding = network_continue_binding(run, control)
+                if binding and controller_active is not True:
+                    actions.append({'id': 'incremental-continue-round', 'label': '继续本轮', **binding})
+            else:
+                actions.append({'id': 'incremental-continue', 'label': '继续当前作用域'})
         elif control.get('state') == 'active':
             if not control.get('active_scopes'):
                 actions.append({'id': 'incremental-pause', 'label': '暂停增量运行', 'gateway_required': False})
@@ -196,7 +214,7 @@ def progress(directory, request, attempts, active, historical, details):
         source_pipeline(item, root, run, control, source, rounds, native_reader=native_reader)
         admission = item['admission']
         node = 'incremental-source-' + fingerprint({'path': item['path'], 'sha256': item.get('source_sha256')})[:24]
-        if (admission and admission.get('state') == 'held' and not historical and not active
+        if (admission and admission.get('state') == 'held' and not historical and not active and not network_paused
                 and run.get('state') == 'active' and control.get('state') in ('active', 'paused', 'pausing')):
             item['actions'].append({'id': 'incremental-release-source', 'node': node,
                 'label': '开始处理此文件' if control['state'] == 'active' else '允许处理（继续后开始）',
@@ -204,7 +222,7 @@ def progress(directory, request, attempts, active, historical, details):
                 'run_revision': run.get('revision'), 'source_path': item['path'],
                 'source_sha256': admission['sha256']})
         source_actions(item, root, run, control, rounds_by_id, latest.get('id'),
-                       writable=not historical and not active and run.get('state') == 'active',
+                       writable=not historical and not active and not network_paused and run.get('state') == 'active',
                        interrupted=controller_active is not True)
         if admission or item['actions']:
             source_nodes.append({'key': node, 'name': item['name'], 'state': item['state'],
@@ -229,7 +247,7 @@ def progress(directory, request, attempts, active, historical, details):
                 attempts=attempts, sources=request['sources'], active_node=None,
                 workflow_id=source.get('workflow_id'), source_revision=source.get('revision'),
                 source_stage=source.get('current_stage'), source_board=source.get('kanban', {}).get('board_id'),
-                short_board=None, pause=control.get('boundary', {}).get('stage') if control.get('boundary') else None,
+                short_board=None, pause=boundary.get('stage'),
                 operator={}, source_wait={}, pause_request={}, receipts=len(run.get('map_result_ids', [])),
                 release_id=released, indexed=bool(not delivering and released and index.get('release_id') == released and index.get('status') == 'ready'),
                 query_enabled=request['retrieval_policy']['query_enabled'])
@@ -247,7 +265,26 @@ def command(directory, attempt, config, save):
                        '--bootstrap-skill', str(Path(config['skills_root']) / 'hermes-obsidian-vault-bootstrap')]
     root = root_for(request)
     run, control = read(root / 'run.json'), read(root / 'control/head.json')
-    if control['revision'] != attempt['control_revision'] or run['revision'] != attempt['run_revision']:
+    same_revisions = (control['revision'] == attempt['control_revision'] and run['revision'] == attempt['run_revision'])
+    if attempt['action'] == 'incremental-continue-round':
+        binding = {key: attempt[key] for key in ('round_id', 'boundary_fingerprint')}
+        operation = {'run_id': request['operation_id'], 'actor': request['actor'], 'action': 'continue',
+                     'expected_revision': attempt['control_revision'], 'boundary_fingerprint': binding['boundary_fingerprint'],
+                     'network_recovery': {'round_id': binding['round_id'], 'run_revision': attempt['run_revision']}}
+        operation_id = 'network-continue-' + fingerprint(operation)
+        operation['operation_id'] = operation_id
+        if not same_revisions or binding != network_continue_binding(run, control):
+            saved = read(root / 'control/operations' / (operation_id + '.json'))
+            if (run.get('state') != 'active' or run.get('active_round_id') != binding['round_id']
+                    or control.get('state') != 'active'
+                    or control.get('network_continuation', {}).get('operation_id') != operation_id
+                    or saved.get('commit_state') not in ('prepared', 'committed')
+                    or saved.get('request_sha256') != fingerprint(operation)):
+                raise ValueError('等待网络恢复的轮次已经变化，请刷新后重试。')
+        path = directory / 'attempts' / attempt['id'] / 'incremental-request.json'
+        save(path, operation)
+        return args + ['control', '--request', str(path)]
+    if not same_revisions:
         raise ValueError('增量运行或控制修订已经变化，请刷新后重试。')
     operation = {'run_id': request['operation_id'], 'actor': request['actor'], 'operation_id': attempt['id']}
     if attempt['action'] in ('incremental-closure-preview', 'incremental-closure-confirm'):

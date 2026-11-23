@@ -15,6 +15,57 @@ def put(path, value):
 
 
 class PipelineProjectionTests(unittest.TestCase):
+    def test_network_pause_exposes_and_binds_only_the_current_round(self):
+        from incremental import command, progress
+
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            directory, vault = base / 'console', base / 'vault'
+            request = {'operation_id': 'run', 'actor': 'operator', 'vault_path': str(vault),
+                       'vault_name': 'Fixture', 'sources': [], 'retrieval_policy': {'query_enabled': False}}
+            put(directory / 'request.json', request)
+            root = vault / '_system/ledgers/incremental-ingest/run'
+            run = {'state': 'active', 'revision': 8, 'active_round_id': 'round-1', 'round_ids': ['round-1']}
+            put(root / 'run.json', run)
+            boundary = {'scope': {'scope_kind': 'round', 'scope_id': 'round-1'},
+                        'stage': 'network_recovery', 'evidence': {'phase': 'writing', 'run_revision': 8}}
+            control = {'state': 'paused', 'revision': 4, 'active_scopes': {}, 'boundary': boundary}
+            put(root / 'control/head.json', control)
+            attempts = [{'id': 'previous'}]
+            view = progress(directory, request, attempts, False, False, True)
+            action, = view['nodes'][0]['actions']
+            self.assertEqual((action['id'], action['label'], action['round_id']),
+                             ('incremental-continue-round', '继续本轮', 'round-1'))
+            self.assertEqual(action['boundary_fingerprint'], fingerprint(boundary))
+            writing = next(row for row in view['incremental']['overall_stages'] if row['key'] == 'writing')
+            self.assertEqual(writing['state'], 'paused')
+            self.assertTrue(writing['network_recovery'])
+            self.assertFalse(progress(directory, request, attempts, True, False, True)['nodes'][0]['actions'])
+
+            skills = base / 'skills'
+            put(skills / 'hermes-obsidian-governed-ingest-orchestrator/scripts/manage_incremental_ingest.py', {})
+            config = {'skills_root': str(skills)}
+            attempt = {**action, 'action': action['id'], 'id': 'continue'}
+            argv = command(directory, attempt, config, put)
+            sent = json.loads(Path(argv[-1]).read_bytes())
+            self.assertEqual(sent['action'], 'continue')
+            self.assertEqual(sent['network_recovery'], {'round_id': 'round-1', 'run_revision': 8})
+            with self.assertRaisesRegex(ValueError, '轮次已经变化'):
+                command(directory, {**attempt, 'id': 'stale', 'round_id': 'round-2'}, config, put)
+            replay = {**attempt, 'id': 'duplicate'}
+            self.assertEqual(json.loads(Path(command(directory, replay, config, put)[-1]).read_bytes()), sent)
+            operation_id = sent['operation_id']
+            put(root / 'control/operations' / (operation_id + '.json'),
+                {'commit_state': 'prepared', 'request_sha256': fingerprint(sent)})
+            put(root / 'control/head.json', {**control, 'state': 'active', 'revision': 5, 'boundary': None,
+                                           'network_continuation': {'operation_id': operation_id}})
+            self.assertEqual(json.loads(Path(command(directory, replay, config, put)[-1]).read_bytes()), sent)
+            put(root / 'control/head.json', {**control, 'boundary': {**boundary, 'stage': 'writing'}})
+            view = progress(directory, request, attempts, False, False, True)
+            self.assertEqual([row['id'] for row in view['nodes'][0]['actions']], ['incremental-continue'])
+            with self.assertRaisesRegex(ValueError, '轮次已经变化'):
+                command(directory, replay, config, put)
+
     def test_closure_review_binds_latest_control_and_exposes_confirmation(self):
         from incremental import closure_node, closure_ready
 
