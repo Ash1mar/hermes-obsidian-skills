@@ -78,6 +78,11 @@ def test_ordinary_writing_publishes_only_the_complete_section_and_reuses_it_afte
     input_cap = whole['whole_cost']['input_size'] - 1
     work = prepare(build, catalogue, parent, input_cap=input_cap)
     assert len(work['fragments']) == 2
+    inlet = work['fragments'][0]['prepared']
+    headings = [row for row in inlet['projection']['view']['materials'] if row['role'] == 'context']
+    assert {row['core_text'].strip() for row in headings} == {
+        '# Operating requirements', '## 4.1 Inlet isolation'}
+    assert all(row['ref'] not in inlet['view']['assigned'] and not row.get('required_dependency') for row in headings)
     monkeypatch.setattr(incremental_writing, 'prepare_work',
                         lambda *args, **options: prepare(*args, **{'input_cap': input_cap, **options}))
 
@@ -139,19 +144,24 @@ def test_ordinary_writing_publishes_only_the_complete_section_and_reuses_it_afte
         interruption.setattr(prepare_short_evidence_test, 'save', interrupt_final_save)
         with pytest.raises(OSError, match='before final writing receipt'):
             incremental_writing.writing_disposition(domain, control, scope, frozen, [parent], build, hydrated)
+    assert len(interrupted) == 1 and not disposition_path.exists()
     restarted = IncrementalControl(vault, run_id)
     _, disposition = incremental_writing.writing_disposition(domain, restarted, scope, frozen, [parent], build, hydrated)
     assert disposition == interrupted[0]
+    assert len(disposition['written']) == 1, disposition['section_holds']
     written, = disposition['written']
     held, = disposition['held']
     assert held['change_id'] == parent['change_id'] and held['page_id'] == parent['page_id']
+    assert 'unresolved material' in held['reason']
     assert disposition['original_pages'] == 0
     blocked, = disposition['section_holds'][parent['change_id']]
     assert catalogue.sections[snap][blocked['section']]['title'] == '4.2 Outlet pressure'
+    assert 'required fragment is incomplete' in blocked['reason']
     prepare_section = read_pin(vault, written['preparation'])
     child = prepare_section['change']
     assert child['page_id'] != parent['page_id'] and child['name'] == '4.1 Inlet isolation'
     assert child['independent_section']['parent_plan_id'] == parent['change_id']
+    assert child['added_support_refs'] == inlet['support_refs']
     assert [row['request_id'] for row in prepare_section['proofs']] == initial_calls[:1]
     assert all(_sha(path.read_bytes()) == digest for path, digest in original_evidence.items())
     assert {path.name for path in writer.rglob('*.attempt-1.json')} == {

@@ -7,7 +7,7 @@ from hermes_source_units.incremental_pages import require
 from hermes_source_units.incremental_sources import pinned, read_pin
 from hermes_source_units.short_build import identity
 from hermes_source_units.validation import ContractError, canonical_json, fingerprint
-from incremental_writing_evidence import HEADING
+from incremental_writing_evidence import ATX_HEADING, COMMENT, HEADING
 from short_cards import place
 
 ORDINARY_SECTION = 'incremental-independent-section-selection/v1'
@@ -18,7 +18,44 @@ def aliases(catalogue, refs):
     return {catalogue.units[canonical_json(ref['unit_ref'])]['alias'] for ref in refs}
 
 
-def proposals(catalogue, plan, work, slots):
+def exact_heading(text, title):
+    if not isinstance(text, str):
+        return False
+    lines = [line.strip() for line in COMMENT.sub('', text).splitlines() if line.strip()]
+    if len(lines) == 2 and re.fullmatch(r'(?:={2,}|-{2,})', lines[-1]):
+        lines.pop()
+    if len(lines) != 1:
+        return False
+    atx = ATX_HEADING.fullmatch(lines[0])
+    heading = atx[1] if atx else lines[0]
+    return heading.split() == title.split()
+
+
+def ordinary_reads_within_section(catalogue, slot, relevant, snapshot, edges):
+    prepared = slot['fragment']['prepared']
+    materials = {row['ref']: row for row in prepared['projection']['view']['materials']}
+    cited = set(re.findall(r'\[(m[0-9]+)\]', slot['answer']['content']))
+    lineage = {row['section_id'] for row in catalogue.lineage(catalogue.aliases[min(relevant)])}
+    dependencies = {alias for edge in edges for alias in edge}
+    for handle, ref in prepared['material_aliases'].items():
+        item = catalogue.units.get(canonical_json(ref['unit_ref']))
+        if item is None:
+            return False
+        alias = item['alias']
+        if alias in relevant:
+            continue
+        material = materials.get(handle) or {}
+        if (handle in cited or material.get('role') != 'context' or material.get('required_dependency')
+                or alias in dependencies or item['snapshot'] != snapshot or item['section'] not in lineage
+                or item['locator']['kind'] != 'text' or catalogue.writing_body(item)):
+            return False
+        title = catalogue.sections[snapshot][item['section']]['title']
+        if not (exact_heading(catalogue.read(item), title) and exact_heading(material.get('text'), title)):
+            return False
+    return True
+
+
+def proposals(catalogue, plan, work, slots, *, allow_structural_navigation=False):
     """Derive a section only from complete, uniquely bounded registered coverage."""
     if (plan['action'] != 'create' or plan['page_type'] == 'project'
             or re.search(r'对比|比较|compar(?:e|ison)', plan['name'], re.I)):
@@ -65,8 +102,13 @@ def proposals(catalogue, plan, work, slots):
             continue
         # Each fragment must itself be independently readable. Its complete
         # projections and coherent citations are checked before it reaches here.
-        if any(not aliases(catalogue, slots[key]['fragment']['prepared']['material_aliases'].values()) <= relevant
-               for key in members):
+        if allow_structural_navigation:
+            local_reading = all(ordinary_reads_within_section(catalogue, slots[key], relevant, snapshot, edges)
+                                for key in members)
+        else:
+            local_reading = all(aliases(catalogue, slots[key]['fragment']['prepared']['material_aliases'].values()) <= relevant
+                                for key in members)
+        if not local_reading:
             deferred.append({'snapshot': snapshot, 'section': section_id, 'reason': 'fragment reads material outside the section'})
             continue
         covered.update(relevant)
@@ -129,7 +171,7 @@ def ordinary_candidates(vault, service, catalogue, writer, layout, parents, *, p
                 slots[fragment['request']['id']] = slot
             page_slots[plan_id] = slots
             try:
-                selected, deferred[plan_id] = proposals(catalogue, plan, work, slots)
+                selected, deferred[plan_id] = proposals(catalogue, plan, work, slots, allow_structural_navigation=True)
             except (ContractError, ValueError, OSError) as error:
                 deferred[plan_id] = [{'reason': str(error)}]
                 continue
