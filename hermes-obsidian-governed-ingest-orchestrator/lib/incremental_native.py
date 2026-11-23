@@ -199,12 +199,41 @@ def verified_result(root, row):
     return result, pointer
 
 
+def ordinary_section_disposition(domain, frozen, writer_root, writer_operation, view):
+    from incremental_writing_amendment import disposition_path
+
+    run_id, round_id = frozen['run_id'], frozen['round_id']
+    root = domain.root(run_id)
+    require(writer_root == root / 'native' / 'round' / round_id / 'writing'
+            and not writer_operation.get('writing_amendment') and not writer_operation.get('writing_continuation'),
+            'independent section is not bound to the original round writer')
+    original_path = root / 'rounds' / round_id / 'writing-disposition.json'
+    original = _load_json(original_path)
+    head = IncrementalControl(domain.vault, run_id).status()
+    amendment = head.get('writing_amendments', {}).get(round_id)
+    if amendment:
+        current = _load_json(disposition_path(domain, run_id, round_id, amendment['operation_id']))
+    elif round_id in head.get('writing_repairs', {}):
+        current = _load_json(original_path.with_name('writing-revision.json'))
+    else:
+        current = original
+    authorization = view['authorization']
+    require(view['written'] == current['written'] and view['excluded'] == current['held']
+            and authorization['actor'] == writer_operation['actor']
+            and authorization['input_fingerprint'] == frozen['input_fingerprint']
+            and authorization['source_snapshots'] == frozen['snapshots']
+            and authorization['map_result_ids'] == frozen['map_result_ids'],
+            'independent section Build lost its round writing disposition or frozen inputs')
+    return original
+
+
 def build(root, job, request, own, runner):
     from hermes_source_units.build_acceptance import assess, record
     from hermes_source_units.incremental_delivery import IncrementalDeliveryService
     from hermes_source_units.incremental_pages import build_scope, validate_page_revision, validate_preparation
     from hermes_source_units.short_build import admit
     from hermes_source_units.vault_finalize import FileVaultFinalizeService
+    from incremental_sections import ORDINARY_SECTION, ordinary_formal_pages
     from incremental_writing import CONTRACT as FRAGMENTS, assemble, catalogue_for_round, compose, fragment_answers, prepare_work
     from incremental_writing_amendment import CONTRACT as AMENDMENT, formal_pages
 
@@ -266,11 +295,12 @@ def build(root, job, request, own, runner):
     planned = {change['change_id']: change for change in _load_json(changes_path)}
     domain = catalogue = None
     amended = {}
+    ordinary = None
     eligible = {row['resource_id']: row['eligible'] for row in service._source_eligibility(service._current_sets(), {})}
     for pointer in view['written']:
         preparation = read_pin(service.vault, pointer['preparation'])
         writer_root = _vault_path(service.vault, pointer['native_root'])
-        if preparation.get('contract') in (FRAGMENTS, AMENDMENT):
+        if preparation.get('contract') in (FRAGMENTS, AMENDMENT, ORDINARY_SECTION):
             if catalogue is None:
                 from incremental_native import service as incremental_service
 
@@ -293,6 +323,32 @@ def build(root, job, request, own, runner):
                 require(expected == preparation, 'amended page differs from its verified scope and receipts')
                 content = compose(service.build, change, ((row['fragment'], row['answer']) for row in entries))
                 native_fragments = preparation['proofs']
+            elif preparation['contract'] == ORDINARY_SECTION:
+                qualification = preparation['qualification']
+                if ordinary is None:
+                    original = ordinary_section_disposition(domain, frozen, writer_root, writer_operation, view)
+                    ordinary = ordinary_formal_pages(domain, service.build, frozen, catalogue, qualification, writer_root)
+                    ordinary_qualification = qualification
+                    ordinary_writer = writer_root
+                    original_held = {held['change_id'] for held in original['held']}
+                    final_held = {held['change_id'] for held in view['excluded']}
+                selection_path = writer_root / 'independent-sections' / (change['change_id'] + '.json')
+                require(writer_root == ordinary_writer and qualification == ordinary_qualification
+                        and pointer['preparation']['ref'] == selection_path.relative_to(service.vault).as_posix()
+                        and pointer in original['written'] and change in original['independent_sections'],
+                        'independent section is not in the original writing disposition')
+                approved = ordinary.get(change['change_id'])
+                require(approved is not None and approved[0] == preparation,
+                        'independent section differs from its verified original scope and receipts')
+                expected, entries = approved
+                parent_id = change['independent_section']['parent_plan_id']
+                parent = planned.get(parent_id)
+                require(parent is not None and parent_id in original_held and parent_id in final_held
+                        and parent['page_id'] == change['independent_section']['parent_page_id']
+                        and change in view['authorization']['page_changes'],
+                        'independent section requires its exact held parent and selected page authority')
+                content = compose(service.build, change, ((row['fragment'], row['answer']) for row in entries))
+                native_fragments = expected['proofs']
             else:
                 plan = planned.get(preparation['plan_id'])
                 require(plan is not None, 'page writing escaped the original frozen plan')

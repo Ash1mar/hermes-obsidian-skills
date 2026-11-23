@@ -330,6 +330,52 @@ def fragment_receipt(vault, root, fragment):
         **proof, 'request_id': row['id'], 'receipt': pinned(vault, receipt.relative_to(vault).as_posix())}
 
 
+def qualify_held_sections(domain, service, frozen, round_root, writer, catalogue, changes, work):
+    from hermes_source_units.incremental_sources import pinned
+    from incremental_sections import ORDINARY_QUALIFICATION, ordinary_candidates, ordinary_record, section_placements
+    from prepare_short_evidence_test import save
+    from short_cards import snapshot as card_layout
+
+    if not work:
+        return [], [], {}
+    vault = domain.vault
+    path = writer / 'section-qualification.json'
+    batch = {'contract': ORDINARY_QUALIFICATION, 'run_id': frozen['run_id'], 'round_id': frozen['round_id'],
+             'round_input_fingerprint': frozen['input_fingerprint'],
+             'plans': pinned(vault, (round_root / 'page-changes.json').relative_to(vault).as_posix()),
+             'parents': [{'plan_id': plan['change_id'], 'work': pinned(vault, prep.relative_to(vault).as_posix())}
+                         for plan, prep, _ in work]}
+    if path.is_file():
+        existing = _load_json(path)
+        require({key: existing[key] for key in batch if key != 'parents'}
+                == {key: val for key, val in batch.items() if key != 'parents'},
+                'ordinary independent section inputs changed before disposition')
+        original_parents = {row['plan_id']: row['work'] for row in existing['parents']}
+        require(all(original_parents[row['plan_id']] == row['work'] for row in batch['parents']
+                    if row['plan_id'] in original_parents), 'ordinary independent section parent work changed')
+        work = [entry for entry in work if entry[0]['change_id'] in original_parents]
+        layout, placements = existing['layout'], existing['placements']
+    else:
+        layout = card_layout(vault)
+        layout['occupied'] = sorted(set(layout['occupied']) | {plan['path'] for plan in changes if plan.get('path')})
+        placements = None
+    cards, deferred = ordinary_candidates(vault, service, catalogue, writer, layout,
+                                           [(plan, saved) for plan, _, saved in work], placements=placements)
+    if not cards:
+        return [], [], deferred
+    if placements is None:
+        save(path, {**batch, 'layout': layout, 'placements': section_placements(cards)})
+    qualification = pinned(vault, path.relative_to(vault).as_posix())
+    written, accepted = [], []
+    for change, entries in cards:
+        path = writer / 'independent-sections' / (change['change_id'] + '.json')
+        save(path, ordinary_record(change, entries, qualification))
+        written.append({'preparation': pinned(vault, path.relative_to(vault).as_posix()),
+                        'native_root': writer.relative_to(vault).as_posix()})
+        accepted.append(change)
+    return written, accepted, deferred
+
+
 def writing_disposition(domain, control, scope, frozen, changes, service, maps):
     from hermes_source_units.incremental_sources import pinned
     from incremental_runtime import execute_rows, initialize_scope
@@ -406,6 +452,8 @@ def writing_disposition(domain, control, scope, frozen, changes, service, maps):
         if rows:
             # Legacy in-flight preparations retain their original request and budget.
             execute_rows(domain, run_id, writer, operation, rows)
+        restored = set()
+        held_work = []
         for plan, prep, saved in work:
             try:
                 if saved.get('contract') == CONTRACT:
@@ -416,11 +464,32 @@ def writing_disposition(domain, control, scope, frozen, changes, service, maps):
                     validate_page_revision(saved['prepared'], answer)
                 written.append({'preparation': pinned(domain.vault, prep.relative_to(domain.vault).as_posix()),
                                 'native_root': writer.relative_to(domain.vault).as_posix()})
+                restored.add(plan['change_id'])
             except (ContractError, ValueError, OSError) as error:
                 held.append({'change_id': plan['change_id'], 'page_id': plan['page_id'],
                              'state': 'held', 'reason': str(error)})
+                if not repair and saved.get('contract') == CONTRACT:
+                    held_work.append((plan, prep, saved))
         disposition = {'written': written, 'held': held}
         if repair:
             disposition['repair'] = repair
+            if 'independent_sections' in prior:
+                kept, cards = [], []
+                for row in written:
+                    change = selected_change(domain.vault, row)
+                    section = change.get('independent_section')
+                    if section and section['parent_plan_id'] in restored:
+                        continue
+                    if section:
+                        cards.append(change)
+                    kept.append(row)
+                disposition.update(written=kept, original_pages=len(kept) - len(cards), independent_sections=cards,
+                                   section_holds={key: rows for key, rows in prior.get('section_holds', {}).items()
+                                                  if key not in restored})
+        else:
+            sections, cards, deferred = qualify_held_sections(domain, service, frozen, root, writer, catalogue,
+                                                               changes, held_work)
+            disposition.update(written=[*written, *sections], original_pages=len(written),
+                               independent_sections=cards, section_holds=deferred)
         save(path, disposition)
     return path, disposition

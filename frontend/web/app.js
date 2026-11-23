@@ -320,6 +320,9 @@ function renderIncremental(timeline) {
     const row = make("div", undefined, "scope-row");
     row.append(make("span", round.round_id), badge(round.delivery_state || (round.active ? "running" : "settled")));
     row.append(make("small", `${round.mapping_count} 份映射 · ${round.page_count} 项页面处置${round.release_id ? ` · ${round.release_id}` : ""}`));
+    if (round.independent_section_candidates) {
+      row.append(make("small", `写作通过 ${round.original_pages_written} 张整页 · ${round.independent_section_candidates} 张独立小节候选`));
+    }
     rounds.append(row);
     const pipeline = make("ol", undefined, "incremental-pipeline");
     for (const phase of round.stages || []) pipeline.append(renderIncrementalPhase(phase));

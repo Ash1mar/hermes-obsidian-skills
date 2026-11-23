@@ -57,6 +57,14 @@ when its complete model request still fits. Build rechecks the source, scope and
 assembles a single page revision. Updates append the qualified new material while preserving the full
 parent body and its citation bindings.
 
+Ordinary writing also checks held create plans for independently deliverable registered numbered
+sections after the original writing tasks drain. Qualification uses the frozen plans, source Maps,
+original fragments and acknowledged receipts. A section must cover its complete original scope and
+all required dependencies. This check issues no model calls. The writing disposition pins the
+qualifying card and the held parent. Formal Build requalifies the card from that evidence before
+using the ordinary publication and index path. A round can deliver qualified cards when every whole
+page is held. Saved card identities and native replies are reused after restart.
+
 New coordination groups can reconsider a hold that explicitly defers normal writing-time source
 inspection. The controller checks available original material and required dependencies against the
 sealed Map. Only a group with one verified returned attempt can receive one bounded local model
