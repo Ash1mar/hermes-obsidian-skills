@@ -2,6 +2,8 @@
 from pathlib import Path
 import hashlib
 import json
+import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -108,6 +110,52 @@ def map_source(incremental, source):
                    coverage=[{'unit_ref': unit['unit_ref'], 'disposition': 'mapped'} for unit in snap['units']],
                    results=[pinned(service.vault, raw.relative_to(service.vault).as_posix())])
     return service.commit_source_map(req)
+
+
+@pytest.mark.parametrize('phase,reason', [('short-topics', 'seed-incomplete'), ('short-map', 'required-map-incomplete')])
+def test_failed_native_map_scope_is_held_without_a_phantom_map_or_blocking_other_source(incremental, monkeypatch,
+                                                                                       phase, reason):
+    from hermes_source_units import incremental_sources
+
+    service, _, outcomes, workflow, _, _, _ = incremental
+    snapshot = seal(incremental)['snapshot']
+    sid, source = snapshot['snapshot_id'], outcomes[0]['path']
+    workspace = service.root('fixture') / 'native/source' / sid / 'mapping'
+    operation_path, job = workspace / 'operation.json', workspace / 'jobs/job-1.json'
+    put(operation_path, {'contract': 'test-native', 'board': 'isolated-map', 'actor': 'builder',
+                         'vault': str(service.vault), 'workflow_mode': 'incremental_v1',
+                         'incremental': {'run_id': 'fixture', 'scope_kind': 'source', 'scope_id': sid,
+                                         'stage': 'mapping', 'snapshots': [sid]}})
+    put(job, {'request': {'id': 'job-1', 'phase': phase, 'view': {'assigned': ['S1-B1']}}})
+    job_pin = pinned(service.vault, job.relative_to(service.vault).as_posix())
+    task = SimpleNamespace(id='task-2', status='blocked', claim_lock='live', created_by='test-native',
+                           body=json.dumps({'contract': 'test-native', 'operation_sha256': hashlib.sha256(
+                               operation_path.read_bytes()).hexdigest(), 'job': job.name, 'job_sha256': job_pin['sha256']}))
+    ended = SimpleNamespace(id=2, ended_at=10, outcome='gave_up')
+    kb = SimpleNamespace(get_task=lambda *_: task, list_runs=lambda *_, **__: [ended])
+    monkeypatch.setitem(sys.modules, 'hermes_cli', SimpleNamespace(kanban_db=kb))
+    monkeypatch.setattr(incremental_sources, 'completion_connection', lambda _: SimpleNamespace(close=lambda: None))
+    evidence_path = workspace / 'execution-hold.json'
+    put(evidence_path, {'contract': incremental_sources.MAP_ISOLATION, 'run_id': 'fixture', 'snapshot_id': sid,
+                        'board': 'isolated-map', 'reason': reason,
+                        'jobs': [{'job': job_pin, 'task_id': task.id, 'run_id': ended.id, 'state': 'unconfirmed'}]})
+    evidence = pinned(service.vault, evidence_path.relative_to(service.vault).as_posix())
+    request = mutation(service, 'hold-a', source_path=source, snapshot_id=sid, execution_hold=evidence)
+    with pytest.raises(ContractError, match='task binding changed'):
+        service.hold_source_mapping(request)
+    task.claim_lock = None
+    hold = service.hold_source_mapping(request)
+    assert hold['execution_hold'] == evidence and service.hold_source_mapping(request) == hold
+    run = service.status('fixture')
+    assert run['sources'][source]['state'] == 'mapping_held' and run['sources'][source]['snapshot_id'] == sid
+    assert run['map_result_ids'] == [] and run['reservations'] == {}
+
+    put(workflow, {**json.loads(workflow.read_text()), 'source_outcomes': outcomes})
+    source_b = seal(incremental, index=1)
+    mapped = map_source(incremental, source_b)
+    round_input = service.freeze_round(mutation(service, 'freeze-b', round_id='round-1', max_maps=1))
+    assert round_input['map_result_ids'] == [mapped['map_result_id']]
+    assert round_input['snapshots'] == [source_b['snapshot']['snapshot_id']]
 
 
 def test_source_a_maps_while_b_is_preparing_and_b_cannot_stale_a(incremental):

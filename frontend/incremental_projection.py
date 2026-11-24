@@ -218,7 +218,8 @@ def source_pipeline(item, root, run, control, source_workflow, rounds, *, native
     if item['state'] == 'prepared' and wait.get('state') in ('waiting', 'exhausted'):
         mapping, mapping_detail = 'waiting-qualification', f"来源资格锁争用，已记录 {len(wait['attempts'])} 次等待"
     elif item['state'] == 'mapping_held':
-        mapping_detail = '来源资格核验已达到重试上限'
+        mapping_detail = ('必需 Map 任务缺少可核验回执'
+                          if item.get('mapping_hold', {}).get('execution_hold') else '来源资格核验已达到重试上限')
     pipeline.append(apply_boundary(stage('mapping', mapping, detail=mapping_detail), control, 'source', snapshot))
     related = [row for row in rounds if snapshot and snapshot in row['snapshots']]
     resource = None

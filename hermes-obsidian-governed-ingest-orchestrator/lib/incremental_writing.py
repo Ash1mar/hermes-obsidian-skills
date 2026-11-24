@@ -289,11 +289,18 @@ def compose(service, change, fragment_answers):
             'support_refs': unique_refs([*change['retained_support_refs'], *change['added_support_refs']])}
 
 
-def catalogue_for_round(domain, run_id, frozen, service):
+def catalogue_for_round(domain, run_id, frozen, service, *, unavailable=None):
     from hermes_source_units.incremental_sources import read_pin
 
-    maps = [domain.read_map(run_id, mid) for mid in [*frozen['map_result_ids'], *frozen.get('context_map_result_ids', [])]]
-    hydrated = [{**mapped, 'mapped': read_pin(domain.vault, mapped['results'][0])} for mapped in maps]
+    hydrated = []
+    for mid in (*frozen['map_result_ids'], *frozen.get('context_map_result_ids', [])):
+        try:
+            mapped = domain.read_map(run_id, mid)
+            hydrated.append({**mapped, 'mapped': read_pin(domain.vault, mapped['results'][0])})
+        except ContractError as error:
+            if unavailable is None or error.code == 'REVISION_CONFLICT':
+                raise
+            unavailable[mid] = str(error)
     return EvidenceCatalogue(service, hydrated, domain.status(run_id)['actor'])
 
 
@@ -330,9 +337,10 @@ def fragment_receipt(vault, root, fragment):
         **proof, 'request_id': row['id'], 'receipt': pinned(vault, receipt.relative_to(vault).as_posix())}
 
 
-def qualify_held_sections(domain, service, frozen, round_root, writer, catalogue, changes, work):
+def qualify_held_sections(domain, service, frozen, round_root, writer, changes, work):
     from hermes_source_units.incremental_sources import pinned
-    from incremental_sections import ORDINARY_QUALIFICATION, ordinary_candidates, ordinary_record, section_placements
+    from incremental_sections import (ORDINARY_QUALIFICATION, current_ordinary_sections, ordinary_candidates,
+                                      ordinary_record, section_placements)
     from prepare_short_evidence_test import save
     from short_cards import snapshot as card_layout
 
@@ -359,8 +367,13 @@ def qualify_held_sections(domain, service, frozen, round_root, writer, catalogue
         layout = card_layout(vault)
         layout['occupied'] = sorted(set(layout['occupied']) | {plan['path'] for plan in changes if plan.get('path')})
         placements = None
-    cards, deferred = ordinary_candidates(vault, service, catalogue, writer, layout,
-                                           [(plan, saved) for plan, _, saved in work], placements=placements)
+    parents = [(plan, saved) for plan, _, saved in work]
+    try:
+        cards, deferred = current_ordinary_sections(domain, service, frozen, lambda catalogue, unavailable:
+            ordinary_candidates(vault, service, catalogue, writer, layout, parents,
+                                placements=placements, unavailable=unavailable))
+    except (ContractError, ValueError, OSError) as error:
+        return [], [], {plan['change_id']: [{'reason': str(error)}] for plan, _ in parents}
     if not cards:
         return [], [], deferred
     if placements is None:
@@ -487,8 +500,7 @@ def writing_disposition(domain, control, scope, frozen, changes, service, maps):
                                    section_holds={key: rows for key, rows in prior.get('section_holds', {}).items()
                                                   if key not in restored})
         else:
-            sections, cards, deferred = qualify_held_sections(domain, service, frozen, root, writer, catalogue,
-                                                               changes, held_work)
+            sections, cards, deferred = qualify_held_sections(domain, service, frozen, root, writer, changes, held_work)
             disposition.update(written=[*written, *sections], original_pages=len(written),
                                independent_sections=cards, section_holds=deferred)
         save(path, disposition)

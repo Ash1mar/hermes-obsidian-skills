@@ -634,6 +634,8 @@ def replay_node_output(root, row, saved, own, *, mapping_overlay=None):
 
 
 def worker(root, job):
+    from incremental_map_recovery import TRANSIENT_OUTCOME, transient_error
+
     kb, kc, kd = runtime()
     operation = _load_json(root / 'operation.json')
     task_id = os.environ['HERMES_KANBAN_TASK']
@@ -661,7 +663,18 @@ def worker(root, job):
         try:
             own()
             break
-        except ValueError:
+        except ValueError as error:
+            if transient_error(root, operation, error):
+                try:
+                    own(stopped=True)
+                except ValueError:
+                    pass  # The parent has not published the worker PID yet.
+                else:
+                    with closing(kc.connect(board=board)) as conn:
+                        require(kd._record_task_failure(conn, task_id, str(error), outcome=TRANSIENT_OUTCOME,
+                                                        force_trip=True, release_claim=True, end_run=True),
+                                'transient Map startup could not release its exact native grant')
+                    return
             if time.monotonic() >= deadline:
                 raise
             time.sleep(.1)
@@ -702,7 +715,8 @@ def worker(root, job):
     except Exception as error:
         with closing(kc.connect(board=board)) as conn:
             own(stopped=True)
-            kd._record_task_failure(conn, task_id, str(error), outcome='short_evidence_failed',
+            outcome = TRANSIENT_OUTCOME if transient_error(root, operation, error) else 'short_evidence_failed'
+            kd._record_task_failure(conn, task_id, str(error), outcome=outcome,
                                     force_trip=True, release_claim=True, end_run=True)
         raise
     finally:
@@ -733,7 +747,9 @@ def drain_on_error(root, conn, kb, kd, active, resumed, entry):
 
 
 def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry=None, saved_attempts=None,
-          network_probe=None):
+          network_probe=None, mapping_retries=None):
+    from incremental_map_recovery import active_admission, is_map, verify_retry
+
     kb, kc, kd = runtime()
     board = operation['board']
     scope = network_scope(root, operation)
@@ -741,6 +757,9 @@ def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry
     if network_probe:
         require(len(rows) == 1 and rows[0]['id'] == network_probe['request_id'],
                 'network recovery probes exactly one original pending request')
+    if mapping_retries is not None:
+        require(is_map(operation) and mapping_retries == {row['id'] for row in rows},
+                'automatic retry requires the exact original Map jobs')
     pending = []
     for row in rows:
         prefix = f'entry-{entry}-' if entry else 'replay-' if replay else ''
@@ -788,6 +807,8 @@ def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry
                                     'request_id': _load_json(job)['request']['id'], 'attempts': []})
                 del active[tid]
             while pending and len(active) < capacity:
+                if mapping_retries is not None and not active_admission(operation):
+                    break
                 paused = held_circuit or open_network_circuit(scope)
                 if paused and (active or not may_probe(paused, network_probe, dispatched_probe)):
                     if not network_probe:
@@ -801,10 +822,22 @@ def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry
                 job = pending.pop(0)
                 body = task_body(root, job)
                 phase = _load_json(job)['request']['phase']
-                tid = kb.create_task(conn, title=f'Short path {phase}', body=body, assignee=ASSIGNEE,
-                                     created_by=CONTRACT, workspace_kind='dir', workspace_path=str(root),
-                                     project_id='', initial_status='running', max_retries=1,
-                                     max_runtime_seconds=1200, idempotency_key=job.stem, board=board)
+                if mapping_retries is None:
+                    require(not is_map(operation) or not (root / 'map-retries' / job.name).exists(),
+                            'an automatic Map retry cannot bypass its release intent')
+                    tid = kb.create_task(conn, title=f'Short path {phase}', body=body, assignee=ASSIGNEE,
+                                         created_by=CONTRACT, workspace_kind='dir', workspace_path=str(root),
+                                         project_id='', initial_status='running', max_retries=1,
+                                         max_runtime_seconds=1200, idempotency_key=job.stem, board=board)
+                else:
+                    intent = _load_json(root / 'map-retries' / job.name)
+                    tid = intent['task_id']
+                    prior = kb.get_task(conn, tid)
+                    require(prior and prior.body == body and prior.created_by == CONTRACT,
+                            'automatic retry cannot change the original native Map task')
+                    verify_retry(root, operation, job, prior, kb.list_runs(conn, tid, include_active=False))
+                    if prior.status == 'blocked':
+                        require(kb.unblock_task(conn, tid), 'original Map task could not be released for its bounded retry')
                 task = kb.get_task(conn, tid)
                 if scope and task.body == body and task.status == 'blocked' and not task.claim_lock:
                     runs, deferred = native_network_deferrals(root, job, conn, kb, task)
@@ -834,6 +867,8 @@ def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry
                     raise
             if active:
                 capacity_wait = time.monotonic()
+            if pending and not active and mapping_retries is not None and not active_admission(operation):
+                break
             paused = held_circuit or open_network_circuit(scope)
             if paused and not network_probe:
                 held_circuit = paused

@@ -27,6 +27,7 @@ def put(path, value):
 
 @pytest.mark.parametrize('first_request', [False, True], ids=('reuse', 'half-second-contention'))
 def test_mapping_verifies_producers_and_dispatches_fresh_request_once(tmp_path, monkeypatch, first_request):
+    import incremental_map_recovery as recovery
     import prepare_short_evidence_test as planner
     import run_short_evidence_test as native
 
@@ -42,10 +43,11 @@ def test_mapping_verifies_producers_and_dispatches_fresh_request_once(tmp_path, 
         if not first_request or i == 1:
             put(path, {'request': row})
             put(path.with_suffix('.result.json'), {'state': 'settled'})
+            put(root / 'receipts' / path.name, {'request_id': key})
         jobs.append(row)
     unit = {'resource_id': 'resource', 'unit_set_id': 'units', 'unit_id': 'unit'}
     sources = {'S1': {'items': {'S1-B1': {'source_ref': {'unit_ref': unit, 'span': None}, 'sha256': 'bytes'}}}}
-    seen = []
+    inspected, dispatched = [], []
     run = {'actor': 'actor', 'source_manifest': [{'path': '10_Raw/a.pdf'}]}
     domain = SimpleNamespace(vault=tmp_path, root=lambda _: tmp_path, validate_source_snapshot=lambda *_: snapshot, status=lambda _: run)
 
@@ -82,26 +84,33 @@ def test_mapping_verifies_producers_and_dispatches_fresh_request_once(tmp_path, 
     monkeypatch.setattr(runtime, 'load_sources', lambda *_a, **_k: sources)
     monkeypatch.setattr(runtime, 'seed_requests', lambda _: [])
     monkeypatch.setattr(runtime, 'mapping_groups', lambda *_: [])
-    def advance(*_a, **_k):
-        if first_request and not (root / 'jobs' / (jobs[1]['id'] + '.json')).is_file():
+    def advance(*_a, map_receipt_ids, **_k):
+        if first_request and jobs[1]['id'] not in map_receipt_ids:
+            assert map_receipt_ids == {jobs[0]['id']}
             return {'stage': 'map', 'requests': jobs[1:]}
+        assert map_receipt_ids == {row['id'] for row in jobs}
         return {'stage': 'coordination', 'reduced': {
             'dispositions': {'S1-B1': {'status': 'excluded', 'reason': 'non-substantive context'}}, 'unresolved': []}}
 
     monkeypatch.setattr(planner, 'advance', advance)
-    created = []
 
-    def execute(_domain, _run, _root, _operation, rows):
-        seen.extend(row['id'] for row in rows)
+    def inspect(_root, _operation, rows):
+        inspected.extend(row['id'] for row in rows)
+        return [(row, {'state': 'settled'}, {'task_id': row['id']}) for row in rows], {}, [], {}
+
+    def execute(_domain, _run, _root, _operation, rows, _settle_usage):
         for row in rows:
             path = root / 'jobs' / (row['id'] + '.json')
-            if not path.is_file():
-                created.append(row['id'])
-                put(path, {'request': row})
-                put(path.with_suffix('.result.json'), {'state': 'settled'})
-        return [(row, {'state': 'settled'}, {'task_id': row['id']}) for row in rows]
+            assert not path.is_file()
+            dispatched.append(row['id'])
+            put(path, {'request': row})
+            put(path.with_suffix('.result.json'), {'state': 'settled'})
+            put(root / 'receipts' / path.name, {'request_id': row['id']})
+        return [(row, {'state': 'settled'}, {'task_id': row['id']}) for row in rows], {}
 
-    monkeypatch.setattr(runtime, 'execute_rows', execute)
+    monkeypatch.setattr(recovery, 'inspect_map_rows', inspect)
+    monkeypatch.setattr(recovery, 'execute_map_rows', execute)
+    monkeypatch.setattr(runtime, 'settle_usage', lambda *_: None)
     monkeypatch.setattr(native, 'task_body', lambda _root, path: json.dumps({'job': path.name}))
 
     def mutate(_domain, _run, method, _operation_id, **fields):
@@ -111,8 +120,8 @@ def test_mapping_verifies_producers_and_dispatches_fresh_request_once(tmp_path, 
 
     monkeypatch.setattr(runtime, 'mutate', mutate)
     result = runtime.map_source(tmp_path, 'run', snapshot['snapshot_id'])
-    assert seen[-2:] == [row['id'] for row in jobs]
-    assert created == ([jobs[1]['id']] if first_request else [])
+    assert inspected == [row['id'] for row in (jobs[:1] if first_request else jobs)]
+    assert dispatched == ([jobs[1]['id']] if first_request else [])
     if first_request:
         holder.join(timeout=5)
     assert len(result['native_completions']) == 2

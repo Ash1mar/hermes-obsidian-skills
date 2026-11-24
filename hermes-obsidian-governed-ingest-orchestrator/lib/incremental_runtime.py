@@ -198,6 +198,8 @@ def source_alias(run, snapshot):
 
 def map_source(vault, run_id, snapshot_id):
     import run_short_evidence_test as native
+    from incremental_map_recovery import (MapAdmissionDeferred, execute_map_rows, inspect_map_rows,
+                                          required_hold_reason, source_execution_hold)
     from prepare_short_evidence_test import advance, save
     from short_page_contract import CONTRACT as PAGE_CONTRACT
 
@@ -225,35 +227,57 @@ def map_source(vault, run_id, snapshot_id):
         for source in sources.values():
             source['incremental_snapshot_id'] = snapshot_id
         seeds, groups = seed_requests(sources), mapping_groups(sources, MAP_CONTRACT)
-        holds = {}
+        recorded = []
+        for path in sorted((root / 'jobs').glob('*.json')):
+            if len(path.stem) != 64 or any(character not in '0123456789abcdef' for character in path.stem):
+                continue
+            row = _load_json(path)['request']
+            require(path.stem == row['id'] and row['phase'] in ('short-topics', 'short-map'),
+                    'unexpected job in source mapping scope')
+            recorded.append(row)
+        existing, holds, _, _ = inspect_map_rows(root, operation, recorded)
+        acknowledged = {row['id']: (row, result, proof) for row, result, proof in existing}
+        for row, result, _ in existing:
+            settle_usage(domain, run_id, root, row, result)
         dispatch_started = False
         while True:
+            reason = required_hold_reason(root, holds)
+            if reason:
+                evidence = source_execution_hold(domain, run_id, root, operation, holds, reason)
+                return mutate(domain, run_id, 'hold_source_mapping', 'map-execution-held-' + snapshot_id[-48:],
+                              source_path=snapshot['original']['ref'], snapshot_id=snapshot_id, execution_hold=evidence)
+            verified_receipts = {key for key, (_, result, _) in acknowledged.items() if result['state'] == 'settled'}
             plan = advance(sources, seeds, groups, root / 'receipts', native.LIMIT,
-                           native_holds=holds, mapping_contract=MAP_CONTRACT, page_contract=PAGE_CONTRACT)
+                           native_holds=holds, map_receipt_ids=verified_receipts, mapping_contract=MAP_CONTRACT,
+                           page_contract=PAGE_CONTRACT)
             if plan['stage'] not in ('topic-seed', 'map', 'local-map'):
                 require('reduced' in plan, 'source Map stopped without a coverage result')
                 break
             if not dispatch_started and control.status()['state'] != 'active':
                 return MAPPING_DEFERRED
             dispatch_started = True
-            results = execute_rows(domain, run_id, root, operation, plan['requests'])
-            for row, result, proof in results:
-                if result['state'] == 'held':
-                    holds[row['id']] = {'reason': 'native request held', 'request_id': row['id']}
-        # Reconstruct complete producer lineage even when advance() reuses all
-        # old receipts and no longer emits their already completed requests.
+            try:
+                results, isolated = execute_map_rows(domain, run_id, root, operation, plan['requests'], settle_usage)
+            except MapAdmissionDeferred:
+                return MAPPING_DEFERRED
+            acknowledged.update({row['id']: (row, result, proof) for row, result, proof in results})
+            holds.update(isolated)
+        verified = [(row, proof) for row, result, proof in acknowledged.values() if result['state'] == 'settled']
+        if not any(row['phase'] == 'short-map' for row, _ in verified):
+            evidence = source_execution_hold(domain, run_id, root, operation, holds, 'no-verified-results')
+            return mutate(domain, run_id, 'hold_source_mapping', 'map-execution-held-' + snapshot_id[-48:],
+                          source_path=snapshot['original']['ref'], snapshot_id=snapshot_id, execution_hold=evidence)
         proofs = []
-        for path in sorted((root / 'jobs').glob('*.json')):
-            if len(path.stem) != 64 or any(character not in '0123456789abcdef' for character in path.stem):
-                continue
-            row = _load_json(path)['request']
-            require(row['phase'] in ('short-topics', 'short-map'), 'unexpected job in source mapping scope')
-            require(path.with_suffix('.result.json').is_file(), 'source mapping native completion remains unknown')
-            row, result, proof = execute_rows(domain, run_id, root, operation, [row])[0]
+        receipts = []
+        for row, proof in sorted(verified, key=lambda item: item[0]['id']):
+            path = root / 'jobs' / (row['id'] + '.json')
             proofs.append({'proof': proof, 'task_body': json.loads(native.task_body(root, path))})
+            receipt = root / 'receipts' / path.name
+            receipts.append(pinned(domain.vault, receipt.relative_to(domain.vault).as_posix()))
         reduced_path = root / 'mapped.json'
         save(reduced_path, plan['reduced'])
-        require(proofs, 'mapped result requires actual native completion')
+        execution_hold = ({'execution_hold': source_execution_hold(domain, run_id, root, operation, holds, 'partial')}
+                          if holds else {})
         aliases = {key: {'unit_ref': item['source_ref']['unit_ref'], 'sha256': item['sha256'],
                          'snapshot_id': snapshot_id} for source in sources.values() for key, item in source['items'].items()}
         coverage = [{'unit_ref': item['source_ref']['unit_ref'],
@@ -272,9 +296,8 @@ def map_source(vault, run_id, snapshot_id):
         return mutate(domain, run_id, 'commit_source_map', 'map-' + snapshot_id[-56:], snapshot_id=snapshot_id,
             budget_id=budget['budget_id'], request_fingerprint=summary, native_completion=proofs[-1]['proof'],
             task_body=proofs[-1]['task_body'], native_completions=proofs, alias_table=aliases, coverage=coverage,
-            results=[pinned(domain.vault, reduced_path.relative_to(domain.vault).as_posix()),
-                     *[pinned(domain.vault, p.relative_to(domain.vault).as_posix()) for p in sorted((root / 'receipts').glob('*.json'))]],
-            unresolved=plan['reduced'].get('unresolved', []))
+            results=[pinned(domain.vault, reduced_path.relative_to(domain.vault).as_posix()), *receipts],
+            unresolved=plan['reduced'].get('unresolved', []), **execution_hold)
 
 
 def qualify(domain, run_id, snapshot_id):

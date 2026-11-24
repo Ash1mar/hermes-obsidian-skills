@@ -94,6 +94,8 @@ def proposals(catalogue, plan, work, slots, *, allow_structural_navigation=False
             edges.update(catalogue.clause_continuations(whole))
             edges.update(catalogue.explicit_dependencies(whole))
         except ContractError as error:
+            if allow_structural_navigation and error.code == 'REVISION_CONFLICT':
+                raise
             deferred.append({'snapshot': snapshot, 'section': section_id, 'reason': str(error)})
             continue
         if any(left in relevant and right not in relevant for left, right in edges):
@@ -148,7 +150,16 @@ def candidates(service, layout, plans, proposed, page_slots):
     return selected
 
 
-def ordinary_candidates(vault, service, catalogue, writer, layout, parents, *, placements=None):
+def missing_parent_evidence(catalogue, plan, work, unavailable):
+    if not unavailable:
+        return False
+    refs = [*plan['added_support_refs'], *work['change']['added_support_refs'], *work['change']['retained_support_refs']]
+    refs.extend(ref for row in work['fragments'] for ref in row['prepared']['material_aliases'].values())
+    return (any(canonical_json(ref['unit_ref']) not in catalogue.units for ref in refs)
+            or not set(plan['coverage_scope']['snapshots']) <= catalogue.sections.keys())
+
+
+def ordinary_candidates(vault, service, catalogue, writer, layout, parents, *, placements=None, unavailable=None):
     """Select independent sections only from the original, strictly valid native receipts."""
     from incremental_writing import compose, fragment_receipt
     from incremental_writing_amendment import validate_fragment
@@ -158,21 +169,28 @@ def ordinary_candidates(vault, service, catalogue, writer, layout, parents, *, p
         for plan, work in parents:
             plan_id = plan['change_id']
             plans[plan_id] = plan
+            if missing_parent_evidence(catalogue, plan, work, unavailable):
+                deferred[plan_id] = [{'reason': 'original parent writing requires unavailable frozen Map evidence',
+                                      'unavailable_maps': unavailable}]
+                continue
             slots = {}
             for fragment in work['fragments']:
                 slot = {'fragment': fragment, 'state': 'held'}
                 try:
                     answer, proof = fragment_receipt(vault, writer, fragment)
                     validate_fragment(fragment, answer)
-                except (ContractError, ValueError, OSError):
-                    pass
+                except (ValueError, OSError) as error:
+                    if getattr(error, 'code', None) == 'REVISION_CONFLICT':
+                        raise
                 else:
                     slot.update(state='valid', answer=answer, proof=proof)
                 slots[fragment['request']['id']] = slot
             page_slots[plan_id] = slots
             try:
                 selected, deferred[plan_id] = proposals(catalogue, plan, work, slots, allow_structural_navigation=True)
-            except (ContractError, ValueError, OSError) as error:
+            except (ValueError, OSError) as error:
+                if getattr(error, 'code', None) == 'REVISION_CONFLICT':
+                    raise
                 deferred[plan_id] = [{'reason': str(error)}]
                 continue
             proposed.extend(selected)
@@ -196,7 +214,9 @@ def ordinary_candidates(vault, service, catalogue, writer, layout, parents, *, p
                 require(fixed is None or (change['path'], change['change_id']) == (occupied, fixed['change_id']),
                         'independent section differs from its pinned selection')
                 compose(service, change, ((entry['fragment'], entry['answer']) for entry in entries))
-            except (ContractError, ValueError, OSError) as error:
+            except (ValueError, OSError) as error:
+                if getattr(error, 'code', None) == 'REVISION_CONFLICT':
+                    raise
                 deferred[item['parent_plan_id']].append(
                     {'section': item['section'], 'snapshot': item['snapshot'], 'reason': str(error)})
             else:
@@ -222,7 +242,29 @@ def ordinary_record(change, entries, pointer):
             'proofs': [entry['proof'] for entry in entries]}
 
 
-def ordinary_formal_pages(domain, builder, frozen, catalogue, pointer, writer):
+def current_ordinary_sections(domain, builder, frozen, evaluate):
+    """Read the same frozen source evidence under one current registry revision."""
+    from incremental_writing import catalogue_for_round
+
+    for attempt in range(2):
+        revision = builder._document_registry_revision()
+        try:
+            with builder.source.reading_snapshot(verify_hashes=True):
+                unavailable = {}
+                catalogue = catalogue_for_round(domain, frozen['run_id'], frozen, builder, unavailable=unavailable)
+                if catalogue.access['registry_revision'] != revision:
+                    raise ContractError('REVISION_CONFLICT', '$', 'document registry advanced before section review')
+                result = evaluate(catalogue, unavailable)
+                if builder._document_registry_revision() != revision:
+                    raise ContractError('REVISION_CONFLICT', '$', 'document registry advanced during section review')
+        except ContractError as error:
+            if attempt or error.code != 'REVISION_CONFLICT' or builder._document_registry_revision() == revision:
+                raise
+        else:
+            return result
+
+
+def ordinary_formal_pages(domain, builder, frozen, pointer, writer):
     """Requalify original frozen plans and receipts at Build ingress."""
     from incremental_writing import CONTRACT, prepare_work
 
@@ -249,11 +291,20 @@ def ordinary_formal_pages(domain, builder, frozen, catalogue, pointer, writer):
         require(work_pointer['ref'] == (writer / 'fragment-plans' / (plan_id + '.json')).relative_to(vault).as_posix(),
                 'independent section work belongs to a different page')
         work = read_pin(vault, work_pointer)
-        require(work['contract'] == CONTRACT and work['plan_id'] == plan_id
-                and prepare_work(builder, catalogue, plan, input_cap=work['input_cap'],
-                                 writing_revision=work.get('writing_revision', 1)) == work,
+        require(work['contract'] == CONTRACT and work['plan_id'] == plan_id,
                 'independent section original fragment plan changed')
         parents.append((plan, work))
         seen.add(plan_id)
-    cards, _ = ordinary_candidates(vault, builder, catalogue, writer, layout, parents, placements=manifest['placements'])
+
+    def verify(catalogue, unavailable):
+        for plan, work in parents:
+            if missing_parent_evidence(catalogue, plan, work, unavailable):
+                continue
+            require(prepare_work(builder, catalogue, plan, input_cap=work['input_cap'],
+                                 writing_revision=work.get('writing_revision', 1)) == work,
+                    'independent section original fragment plan changed')
+        return ordinary_candidates(vault, builder, catalogue, writer, layout, parents, placements=manifest['placements'],
+                                   unavailable=unavailable)
+
+    cards, _ = current_ordinary_sections(domain, builder, frozen, verify)
     return {change['change_id']: (ordinary_record(change, entries, pointer), entries) for change, entries in cards}

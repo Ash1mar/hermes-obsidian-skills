@@ -15,6 +15,16 @@ def put(path, value):
 
 
 class PipelineProjectionTests(unittest.TestCase):
+    def test_mapping_hold_reports_missing_native_receipts(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder) / 'vault/_system/ledgers/incremental-ingest/run'
+            source = {'path': 'source.pdf', 'state': 'mapping_held', 'snapshot_id': 'snapshot',
+                      'mapping_hold': {'execution_hold': {'ref': 'execution-hold.json'}}}
+            view = source_pipeline(source, root, {'state': 'active'}, {'state': 'active'}, {}, [],
+                                   native_reader=lambda _: {})
+            mapping = next(row for row in view['pipeline'] if row['key'] == 'mapping')
+            self.assertEqual((mapping['state'], mapping['detail']), ('held', '必需 Map 任务缺少可核验回执'))
+
     def test_ordinary_writing_reports_independent_section_candidates(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

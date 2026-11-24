@@ -239,6 +239,15 @@
         "native_completions": {
           "type": "array",
           "items": {}
+        },
+        "execution_hold": {
+          "type": "object",
+          "required": ["ref", "sha256"],
+          "properties": {
+            "ref": { "type": "string", "minLength": 1 },
+            "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

@@ -95,9 +95,12 @@ def preview(sources, seeds, groups):
     return result
 
 
-def collect(rows, saved, overlay=None):
+def collect(rows, saved, overlay=None, *, receipt_ids=None):
     accepted, waiting = {}, []
     for row in rows:
+        if receipt_ids is not None and row['id'] not in receipt_ids:
+            waiting.append(row)
+            continue
         path = saved / f"{row['id']}.json"
         if overlay is not None and not path.is_file():
             path = overlay / path.name
@@ -112,17 +115,17 @@ def collect(rows, saved, overlay=None):
 
 def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_contract=None, fragment_repair=None,
             fragment_exclusions=None, mapping_contract=None, mapping_overlay=None, preserved_pages=(),
-            writing_contract=None, split_output=None, page_namespace=None, card_layout=None):
+            writing_contract=None, split_output=None, page_namespace=None, card_layout=None, map_receipt_ids=None):
     from short_evidence_pass import MAP_CONTRACT, MAP_RECEIPT
 
     native_holds = native_holds or {}
-    accepted, waiting = collect(seeds, saved)
+    accepted, waiting = collect(seeds, saved, receipt_ids=map_receipt_ids)
     if waiting:
         if any(row['id'] in native_holds for row in waiting):
             return {'stage': 'topic_seed_held', 'held': [row['id'] for row in waiting], 'reused': list(accepted)}
         return {'stage': 'topic-seed', 'requests': waiting, 'reused': list(accepted)}
     maps = map_requests(sources, groups, seeds, accepted, mapping_contract)
-    mapped, waiting = collect(maps, saved, mapping_overlay)
+    mapped, waiting = collect(maps, saved, mapping_overlay, receipt_ids=map_receipt_ids)
     map_holds = {row['id']: native_holds[row['id']] for row in waiting if row['id'] in native_holds}
     waiting = [row for row in waiting if row['id'] not in map_holds]
     if waiting:
@@ -131,7 +134,7 @@ def advance(sources, seeds, groups, saved, limit, *, native_holds=None, page_con
                               MAP_CONTRACT if mapping_overlay is not None else mapping_contract)
     held_repairs = [row for row in repairs if not row['budget']['fits']]
     available_repairs = [row for row in repairs if row['budget']['fits'] and row['id'] not in native_holds]
-    repaired, waiting = collect(available_repairs, saved)
+    repaired, waiting = collect(available_repairs, saved, receipt_ids=map_receipt_ids)
     if waiting:
         return {'stage': 'local-map', 'requests': waiting, 'held': held_repairs, 'reused': list(repaired)}
     reduced = reduce_mappings(sources, maps, {**mapped, **repaired}, available_repairs, execution_holds=map_holds)
