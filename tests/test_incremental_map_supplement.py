@@ -164,7 +164,8 @@ def test_directed_map_supplement_preserves_parent_and_replays_confirmation(vault
         assert not controller.runnable(domain, child)
         child_control.control({'run_id': child, 'actor': actor, 'action': 'continue', 'operation_id': 'release-map',
                                'expected_revision': head['revision'], 'boundary_fingerprint': applied['boundary_fingerprint']})
-        incremental_native.mutate(domain, child, 'freeze_round', 'scope-round', round_id='round-1', max_maps=1)
+        child_domain = incremental_native.service(vault, child)
+        incremental_native.mutate(child_domain, child, 'freeze_round', 'scope-round', round_id='round-1', max_maps=1)
         writing = put(domain.root(child) / 'rounds/round-1/writing-disposition.json', {'written': [], 'held': []})
         checkpoint = child_control.checkpoint({'scope_kind': 'round', 'scope_id': 'round-1'}, 'writing',
                                               {'writing_disposition_sha256': writing['sha256']})
