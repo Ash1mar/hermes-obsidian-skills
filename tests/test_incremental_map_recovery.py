@@ -45,8 +45,10 @@ def test_map_drains_and_reuses_twenty_original_results(tmp_path, monkeypatch, fa
 
     def complete(connection, claim, job, request):
         result = {'request_id': request, 'state': 'settled', 'task_id': claim.id, 'run_id': claim.current_run_id}
-        native.save(job.with_suffix('.result.json'), result)
-        assert kb.complete_task(connection, claim.id, expected_run_id=claim.current_run_id, fire_lifecycle_hook=False)
+        path = job.with_suffix('.result.json')
+        native.save(path, result)
+        assert kb.complete_task(connection, claim.id, expected_run_id=claim.current_run_id, fire_lifecycle_hook=False,
+                                result=json.dumps({'state': result['state'], 'result_ref': str(path)}))
 
     def fail(connection, claim):
         assert kd._record_task_failure(
@@ -104,7 +106,9 @@ def test_map_drains_and_reuses_twenty_original_results(tmp_path, monkeypatch, fa
                 fail(connection, claim)
             else:
                 complete(connection, claim, job, job.stem)
-        return SimpleNamespace(pid=4321, poll=lambda: 0)
+        exit_code = int(failure == 'precall-twice')
+        return SimpleNamespace(pid=4321, returncode=exit_code, poll=lambda: exit_code,
+                               wait=lambda **_: exit_code)
 
     monkeypatch.setattr(native.subprocess, 'Popen', simulate_worker)
     old_results = {row['id']: (root / 'jobs' / (row['id'] + '.result.json')).read_bytes() for row in kept}
