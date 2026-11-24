@@ -2,13 +2,11 @@
 import copy
 import hashlib
 import json
-from pathlib import Path
-import sqlite3
 
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _vault_path
 from hermes_source_units.validation import fingerprint
-from fixed_semantic_recovery import task_content, _request_text
+from fixed_semantic_recovery import native_transcript_scope, task_content, _request_text
 
 
 def fail(code,message):raise ContractError(code,'$',message)
@@ -40,8 +38,7 @@ def verify(adapter,value,request,*,home=None):
         if owner.get('workflow_id')==value['workflow_id']:
             contexts.setdefault((owner.get('task_id'),owner.get('node')),[]).append(c)
     checked={};called=set();live={};k=adapter.workflow.knowledge
-    home=Path(home) if home is not None else Path.home()/'.hermes'
-    with sqlite3.connect('file:'+str(home/'state.db')+'?mode=ro',uri=True) as db:
+    with native_transcript_scope(home) as read:
         for path in sorted((root/'semantic-calls').glob('*.json')):
             call=_load_json(path)
             if call.get('phase')!='citation' or call.get('reused_from_audit'):continue
@@ -57,10 +54,10 @@ def verify(adapter,value,request,*,home=None):
             if hashlib.sha256(packet_path.read_bytes()).hexdigest()!=context['packet_sha256']:
                 fail('SOURCE_CHANGED','original native revision packet changed')
             packet=_load_json(packet_path);model=call['model'];session=model['session_id']
-            if (model.get('origin')!='hermes_native_model' or model.get('response_sha256')!=call['response_sha256']
-                    or db.execute('SELECT source FROM sessions WHERE id=?',(session,)).fetchone()!=('kanban',)):
+            if model.get('origin')!='hermes_native_model' or model.get('response_sha256')!=call['response_sha256']:
                 fail('STALE_INPUT','untrusted native citation call')
-            messages=list(db.execute('SELECT role,content,tool_calls FROM messages WHERE session_id=?',(session,)))
+            messages=read(session)
+            if messages is None:fail('STALE_INPUT','untrusted native citation call')
             users=[u for r,c,_ in messages if r=='user' and (u:=native_user(c,call)) is not None]
             responses=[c for r,c,_ in messages if r=='assistant' and fingerprint(c)==call['response_sha256']]
             if len(users)!=1 or len(responses)!=1 or any(t and t!='[]' for _,_,t in messages):

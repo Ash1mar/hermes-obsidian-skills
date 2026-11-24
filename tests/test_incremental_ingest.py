@@ -234,15 +234,71 @@ def test_partial_closure_settles_only_the_authorized_usage(incremental, monkeypa
 
 
 def test_closure_usage_session_serializes_native_fractional_time(monkeypatch):
-    from types import SimpleNamespace
-
     library = Path(__file__).resolve().parents[1] / 'hermes-obsidian-governed-ingest-orchestrator' / 'lib'
     monkeypatch.syspath_prepend(str(library))
     from incremental_closure import session_row
 
-    connection = SimpleNamespace(execute=lambda *_: SimpleNamespace(fetchone=lambda: ('kanban', 12.625, 1, 3, 4)))
-    row = session_row(connection, 'fixed-session')
-    assert row['ended_at_us'] == 12_625_000 and fingerprint(row)
+    sid = '20261124_131500_d3dc9f'
+    records = {sid: {'source': 'kanban', 'ended_at': 12.625, 'api_call_count': 1,
+                     'input_tokens': 0, 'output_tokens': 4}}
+    row = session_row(records.get, sid)
+    assert row == {'source': 'kanban', 'ended_at_us': 12_625_000, 'calls': 1,
+                   'input_tokens': 0, 'output_tokens': 4}
+    assert fingerprint(row)
+    assert session_row(records.get, sid[:-3]) is None
+    del records[sid]['input_tokens']
+    assert session_row(records.get, sid)['input_tokens'] is None
+
+
+@pytest.mark.parametrize('recorded_send,missing_session', [(False, False), (True, False), (False, True)])
+def test_closure_local_zero_requires_exact_session_and_zero_sends(tmp_path, monkeypatch, recorded_send,
+                                                             missing_session):
+    from contextlib import closing
+    import sqlite3
+    from incremental_closure import failure_evidence, pin
+    from model_transport import CONTRACT
+
+    home = tmp_path / 'profile'
+    home.mkdir()
+    monkeypatch.setitem(sys.modules, 'hermes_constants', SimpleNamespace(get_hermes_home=lambda: home))
+    workspace = tmp_path / 'native' / 'mapping'
+    sid = '20261124_131500_d3dc9f'
+    grant = {'board': 'board', 'task_id': 'task', 'run_id': 9}
+    wire = {'user': 'original request'}
+    saved = {'ordinal': 1, 'grant': grant, 'request': {'id': 'request'}}
+    attempt = workspace / 'jobs' / 'request.attempt-1.json'
+    put(attempt, saved)
+    evidence = {'task_id': grant['task_id'], 'run_id': str(grant['run_id']), 'session_id': sid,
+                'wire_sha256': fingerprint(wire), 'state': 'request_rejected', 'source': 'local_request_guard',
+                'error': {'class': 'Rejected'},
+                'http_transport': {'contract': CONTRACT, 'physical_attempts': 0, 'sends': []}}
+    path = workspace / 'call-failures' / (fingerprint(evidence) + '.json')
+    put(path, evidence)
+    entry = {'attempt': pin(tmp_path, attempt), 'disposition': 'retained_unconfirmed', 'actual': None}
+    request_key = fingerprint([str(workspace), grant, {
+        'ref': 'jobs/request.attempt-1.json', 'sha256': entry['attempt']['sha256'], 'ordinal': 1,
+        'request_sha256': saved['request']['id'],
+    }, evidence['wire_sha256']])
+    with closing(sqlite3.connect(home / 'fixed-model-http.sqlite3')) as journal, journal:
+        journal.execute('CREATE TABLE sends (id TEXT)')
+        if recorded_send:
+            journal.execute('INSERT INTO sends VALUES (?)', (request_key,))
+    native = SimpleNamespace(checked_projection=lambda _: {'wire': wire})
+    audit = {'error': 'NATIVE_REQUEST_REJECTED at $: ' + json.dumps({'report': str(path), 'session_id': sid})}
+    seen = []
+
+    def lookup(full_id):
+        seen.append(full_id)
+        return None if missing_session else {'source': 'kanban', 'ended_at': 12.5, 'api_call_count': 0,
+                                             'input_tokens': 0, 'output_tokens': 0}
+
+    failure_evidence(tmp_path, workspace, native, audit, saved, entry, lookup)
+    assert seen == [sid] and entry['http_journal'] == {'request_key': request_key, 'send_count': int(recorded_send)}
+    if recorded_send or missing_session:
+        assert entry['disposition'] == 'retained_unconfirmed' and entry['actual'] is None
+    else:
+        assert entry['disposition'] == 'settled_zero'
+        assert entry['actual'] == {'calls': 0, 'input_tokens': 0, 'output_tokens': 0}
 
 
 @pytest.mark.parametrize('historical', [False, True])
@@ -291,6 +347,21 @@ def test_accounting_hold_without_configured_pause_and_idempotent_confirm(increme
     request = {**review['request'], 'expected_report_sha256': review['report_sha256']}
     with pytest.raises(ValueError, match='preview digest changed'):
         closure.recover(service, {**request, 'expected_report_sha256': 'stale'})
+    with monkeypatch.context() as changed:
+        changed.setattr(closure, 'inspect_reservations', lambda *_: {
+            'unknown': {**evidence['unknown'], 'reason': 'record_changed'}})
+        with pytest.raises(ValueError, match='preview digest changed'):
+            closure.recover(service, request)
+
+    def unavailable(*_):
+        raise OSError('session storage temporarily unavailable')
+
+    with monkeypatch.context() as inaccessible:
+        inaccessible.setattr(closure, 'inspect_reservations', unavailable)
+        with pytest.raises(OSError, match='session storage temporarily unavailable'):
+            closure.recover(service, request)
+        assert control.status() == head
+        assert not (base/'closure-recoveries/review.json').exists()
     finish = closure.finish
     def interrupted_after_confirmation(*_):
         raise RuntimeError('simulated restart after confirmation')
@@ -301,7 +372,9 @@ def test_accounting_hold_without_configured_pause_and_idempotent_confirm(increme
     assert closure.recover(service, {**review['request'], 'boundary_fingerprint': None,
                            'expected_revision': control.status()['revision']}, preview=True) == review
     result = closure.recover(service, request)
-    assert result == closure.recover(service, request)
+    with monkeypatch.context() as inaccessible:
+        inaccessible.setattr(closure, 'inspect_reservations', unavailable)
+        assert result == closure.recover(service, request)
     assert result['closure']['state'] == 'partial' and result['closure']['retained_reservation_ids'] == ['unknown']
     assert len(list((base/'operations').glob('close-accounted-*.json'))) == 1
     if historical:

@@ -1,16 +1,15 @@
 """Reuse genuine audited responses only against identical fresh reading authority."""
 import copy
 import json
-from pathlib import Path
-import sqlite3
 import hashlib,threading
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 
 from hermes_source_units import ContractError
 from hermes_source_units.source_units import _load_json, _vault_path, _write_atomic, _json_bytes
 from hermes_source_units.validation import fingerprint
 from fixed_semantic_schema import validate, slot_results
+from session_transcript_reader import session_transcripts, transcript_identity, transcript_target
 
 _PROOFS=ContextVar('fixed_native_proofs',default=None)
 
@@ -19,13 +18,31 @@ _PROOFS=ContextVar('fixed_native_proofs',default=None)
 def proof_scope():
     if _PROOFS.get() is not None:
         yield;return
-    scope={'dbs':{},'proofs':{},'reports':{}};token=_PROOFS.set(scope)
-    try:
-        from page_budget_store import operation
-        with operation():yield
-    finally:
-        _PROOFS.reset(token)
-        for db in scope['dbs'].values():db.close()
+    from page_budget_store import operation
+
+    with ExitStack() as readers, operation():
+        token = _PROOFS.set({'lifetime': readers, 'transcripts': {}, 'reports': {}})
+        try:
+            yield
+        finally:
+            _PROOFS.reset(token)
+
+
+@contextmanager
+def native_transcript_scope(home=None):
+    """Reuse a reader within one proof scope, and reread its records on every lookup."""
+    profile, path = transcript_target(home)
+    identity = transcript_identity(path)
+    scope = _PROOFS.get()
+    if scope is None:
+        with session_transcripts(profile, path, identity) as read:
+            yield read
+        return
+    key = (profile, path, identity, threading.get_ident())
+    readers = scope['transcripts']
+    if key not in readers:
+        readers[key] = scope['lifetime'].enter_context(session_transcripts(profile, path, identity))
+    yield readers[key]
 
 
 def permitted_tasks(adapter,binding,*,compact=False):
@@ -131,30 +148,20 @@ def native_proof(adapter,binding,path,wire,output_schema,images,permitted,*,home
 
 def transcript_reply(a,wire,*,home=None):
     """Read-only transcript proof; the caller separately checks task authority."""
-    model=a.get('model',{});home=Path(home) if home else Path.home()/'.hermes'
-    if model.get('origin')!='hermes_native_model' or model.get('response_sha256')!=a['response_sha256'] or not (home/'state.db').exists():return None
+    model = a.get('model', {})
+    if model.get('origin') != 'hermes_native_model' or model.get('response_sha256') != a['response_sha256']:
+        return None
     from revision_disposition import native_user
-    identity=(home/'state.db').stat()
-    scope=_PROOFS.get();key=(str(home),threading.get_ident(),identity.st_dev,identity.st_ino);owned=scope is None
-    db=(scope['dbs'].get(key) if scope is not None else None)
-    if db is None:
-        db=sqlite3.connect('file:'+str(home/'state.db')+'?mode=ro',uri=True,check_same_thread=False)
-        if scope is not None:scope['dbs'][key]=db
-    try:
-        version=db.execute('PRAGMA data_version').fetchone()[0]
-        cache_key=(key,version,fingerprint(a),fingerprint(wire))
-        if scope is not None and cache_key in scope['proofs']:return scope['proofs'][cache_key]
-        sid=model['session_id']
-        if db.execute('SELECT source FROM sessions WHERE id=?',(sid,)).fetchone()!=('kanban',):return None
-        rows=list(db.execute('SELECT role,content,tool_calls FROM messages WHERE session_id=?',(sid,)))
-        if any(t and t!='[]' for _,_,t in rows):return None
-        users=[u for r,c,_ in rows if r=='user' and (u:=native_user(c,a))==wire['user']]
-        answers=[c for r,c,_ in rows if r=='assistant' and fingerprint(c)==a['response_sha256']]
-        if len(users)!=1 or len(answers)!=1:return None
-        if scope is not None:scope['proofs'][cache_key]=answers[0]
-        return answers[0]
-    finally:
-        if owned:db.close()
+
+    with native_transcript_scope(home) as read:
+        rows = read(model.get('session_id'))
+    if rows is None or any(tools and tools != '[]' for _, _, tools in rows):
+        return None
+    users = [u for role, content, _ in rows if role == 'user' and isinstance(content, str)
+             and (u := native_user(content, a)) == wire['user']]
+    answers = [content for role, content, _ in rows
+               if role == 'assistant' and fingerprint(content) == a['response_sha256']]
+    return answers[0] if len(users) == len(answers) == 1 else None
 
 
 def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode, *, home=None, candidate_paths=None, entry_checked=False):
@@ -178,13 +185,10 @@ def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode,
         for entry in report['entries']:
             if entry['node'] == binding['node']:
                 permitted[entry['previous_task_id']] = entry
-    home = Path(home) if home is not None else Path.home()/'.hermes'
-    if not (home/'state.db').is_file():
-        return None
     vault = adapter.workflow.vault
     root = vault/'_system/ledgers/ingest-workflows'/binding['workflow_id']/'semantic-calls'
     image_inputs = [{k:v for k,v in image.items() if k != 'url'} for image in images]
-    with sqlite3.connect('file:'+str(home/'state.db')+'?mode=ro', uri=True) as db:
+    with proof_scope():
         paths=sorted(root.glob('*.json'),key=lambda p:p.stat().st_mtime,reverse=True) if candidate_paths is None else candidate_paths
         for path in paths:
             if path.parent!=root:raise ContractError('ACCESS_DENIED','$','replay audit is outside this workflow')
@@ -203,23 +207,10 @@ def recover_reduce(adapter, binding, phase, wire, output_schema, images, decode,
                 if previous and (str(audit.get('native_run_id')) not in previous['ended_run_ids']
                                  or audit['template_hash'] != previous['template_hash']):
                     continue
-                model = audit.get('model', {})
-                if (model.get('origin') != 'hermes_native_model'
-                        or model.get('response_sha256') != audit['response_sha256']):
+                raw = transcript_reply(audit, wire, home=home)
+                if raw is None:
                     continue
-                session = model.get('session_id')
-                if db.execute('SELECT source FROM sessions WHERE id=?', (session,)).fetchone() != ('kanban',):
-                    continue
-                rows = list(db.execute('SELECT role,content,tool_calls FROM messages WHERE session_id=?', (session,)))
-                if any(tools and tools != '[]' for _,_,tools in rows):
-                    continue
-                from revision_disposition import native_user
-                users = [u for role,c,_ in rows if role == 'user'
-                         and (u:=native_user(c,audit)) is not None and u == wire['user']]
-                raw = [c for role,c,_ in rows if role == 'assistant' and fingerprint(c) == audit['response_sha256']]
-                if len(users) != 1 or len(raw) != 1:
-                    continue
-                draft, _ = decode(raw[0])
+                draft, _ = decode(raw)
                 from hermes_source_units.validation import _check_shape
                 _check_shape(output_schema,draft,{},'$')
                 if 'blocked_reason' in draft:
@@ -246,25 +237,21 @@ def recover(adapter, binding, phase, view, decode, system, *, home=None):
     A cancelled/superseded lease is not reused. The current native worker owns a
     fresh checked lease and re-enters normal bound submission with source/ACL checks.
     """
-    home=Path(home) if home is not None else Path.home()/'.hermes'
-    if not (home/'state.db').is_file(): return None
     vault=adapter.workflow.vault
     root=vault/'_system/ledgers/ingest-workflows'/binding['workflow_id']/'semantic-calls'
     checked=adapter.worker_check(binding)
     ids={f't{i}':tid for i,tid in enumerate(checked['task_ids'],1)}
     pending={ids[t['task']]:(t['task'],task_content(view,t)) for t in view['tasks']}
     key='drafts' if phase=='candidate' else 'reviews'
-    with sqlite3.connect('file:'+str(home/'state.db')+'?mode=ro',uri=True) as db:
+    with native_transcript_scope(home) as read:
         for path in sorted(root.glob('*.json'),key=lambda p:p.stat().st_mtime,reverse=True):
             audit=_load_json(path)
             if audit.get('phase')!=phase or audit.get('workflow_id')!=binding['workflow_id'] or audit.get('reused_from_audit'):
                 continue
             model=audit.get('model',{})
             if model.get('origin')!='hermes_native_model': continue
-            session=model.get('session_id')
-            if db.execute('SELECT source FROM sessions WHERE id=?',(session,)).fetchone()!=('kanban',):continue
-            rows=list(db.execute('SELECT role,content,tool_calls FROM messages WHERE session_id=?',(session,)))
-            if any(tools and tools!='[]' for _,_,tools in rows):continue
+            rows=read(model.get('session_id'))
+            if rows is None or any(tools and tools!='[]' for _,_,tools in rows):continue
             users=[c for role,c,_ in rows if role=='user' and fingerprint(c)==audit['user_sha256']]
             raw=[c for role,c,_ in rows if role=='assistant' and fingerprint(c)==audit['response_sha256']]
             if len(users)!=1 or len(raw)!=1 or model.get('response_sha256')!=audit['response_sha256']:continue

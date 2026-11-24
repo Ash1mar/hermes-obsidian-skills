@@ -1,6 +1,5 @@
 """One external report after native settlement; failure never reopens domain work."""
 import json
-import os
 from pathlib import Path
 from hermes_source_units.runtime_telemetry import runtime_directory, event
 
@@ -11,8 +10,7 @@ def export(adapter, workflow_id):
     if marker.exists():return
     try:
         from workflow_metrics import collect
-        db=Path(os.environ.get('HERMES_HOME',str(Path.home()/'.hermes')))/'state.db'
-        result=collect(adapter.workflow,workflow_id,database=db if db.is_file() else None)
+        result=collect(adapter.workflow,workflow_id,active_usage=True)
         settlement=result['efficiency']['native_settlement']
         if (settlement.get('state')!='settled' or not result['snapshot_consistent']
                 or settlement.get('workflow_id')!=workflow_id

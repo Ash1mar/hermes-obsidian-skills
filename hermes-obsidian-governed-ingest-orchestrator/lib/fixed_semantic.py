@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import copy
-from contextlib import contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -292,22 +292,25 @@ class HermesCaller:
                         {'type':'json_schema','json_schema':{k:v for k,v in output.items() if k!='type'}})
                 self.fixed_structured_requests+=1
                 self.fixed_construction_counts['transport_schema_reuses']+=1
-        self.db = SessionDB()
         fields = {k:self.runtime[k] for k in ('provider','api_mode','base_url','api_key','acp_command','acp_args') if k in self.runtime}
         # Native workers inherit lifecycle tools unless explicitly disabled.
         # The program owns that lifecycle; retain its identity/isolation env.
-        agent = FixedAgent(**fields,model=self.model,enabled_toolsets=[],disabled_toolsets=['kanban'],max_iterations=1,
-            max_tokens=getattr(self,'output_token_limit',OUTPUT_TOKENS),run_budget_seconds=600,quiet_mode=True,
-            skip_context_files=True,skip_memory=True,skip_background_review=True,
-            load_soul_identity=False,fallback_model=None,session_db=self.db,platform='kanban',
-            session_id='fixed-'+uuid.uuid4().hex,save_trajectories=False)
-        if agent.tools or agent.valid_tool_names:
-            agent.close(); self.db.close()
-            raise RuntimeError('fixed semantic session unexpectedly exposes tools')
-        agent.fixed_request_checks=0; agent.fixed_limit=self.input_limit
-        agent.fixed_structured_requests=0
-        agent.fixed_stream_timing=[]
-        agent.fixed_owner_thread=threading.get_ident()
+        with ExitStack() as setup:
+            self.db = SessionDB()
+            setup.callback(self.db.close)
+            agent = FixedAgent(**fields,model=self.model,enabled_toolsets=[],disabled_toolsets=['kanban'],max_iterations=1,
+                max_tokens=getattr(self,'output_token_limit',OUTPUT_TOKENS),run_budget_seconds=600,quiet_mode=True,
+                skip_context_files=True,skip_memory=True,skip_background_review=True,
+                load_soul_identity=False,fallback_model=None,session_db=self.db,platform='kanban',
+                session_id='fixed-'+uuid.uuid4().hex,save_trajectories=False)
+            setup.callback(agent.close)
+            if agent.tools or agent.valid_tool_names:
+                raise RuntimeError('fixed semantic session unexpectedly exposes tools')
+            agent.fixed_request_checks=0; agent.fixed_limit=self.input_limit
+            agent.fixed_structured_requests=0
+            agent.fixed_stream_timing=[]
+            agent.fixed_owner_thread=threading.get_ident()
+            setup.pop_all()
         return agent
 
     @contextmanager
@@ -358,9 +361,10 @@ class HermesCaller:
         prepared['consumed']=True
         with span('request_construct', phase=phase):
             agent = self.make_agent()
-        from semantic_output import note_session
-        note_session(agent.session_id)
         try:
+            from semantic_output import note_session
+
+            note_session(agent.session_id)
             prompt=prepared['prompt'];content=prepared['content']
             agent.fixed_request={**prompt,'user':content}
             agent.fixed_text_request=prepared['wire']
