@@ -90,7 +90,7 @@
             </section>
             <aside class="stack">
               <section class="panel" aria-labelledby="history-title">
-                <div class="panel-heading"><h2 id="history-title">运行记录</h2><span id="runs-count" class="tag">0</span></div>
+                <div class="panel-heading"><h2 id="history-title" tabindex="-1">运行记录</h2><span id="runs-count" class="tag">0</span></div>
                 <div id="runs" class="run-list"></div>
               </section>
               <section class="panel" aria-labelledby="snapshot-title">
@@ -128,5 +128,20 @@
       </div>
     </main>
   </div>
+  <dialog id="delete-dialog" aria-labelledby="delete-title" aria-describedby="delete-scope">
+    <form id="delete-form">
+      <h2 id="delete-title">删除记录及Vault</h2>
+      <p id="delete-scope">将永久删除这条运行记录、Vault 和此流程生成的关联产物。此操作无法撤销。</p>
+      <dl id="delete-target" class="facts delete-target"></dl>
+      <p id="delete-pending" class="hint" hidden>上次清理未完成。提交后将继续清理剩余产物。</p>
+      <label for="delete-confirmation">输入上面的 Vault 名称以确认</label>
+      <input id="delete-confirmation" required autocomplete="off" spellcheck="false" autofocus>
+      <p id="delete-error" class="source-error" role="alert" hidden></p>
+      <div class="delete-actions">
+        <button type="button" id="delete-cancel" class="secondary">取消</button>
+        <button type="submit" id="delete-submit" class="danger" disabled>永久删除</button>
+      </div>
+    </form>
+  </dialog>
 </body>
 </html>

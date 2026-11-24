@@ -112,8 +112,7 @@ class IncrementalConsoleTests(unittest.TestCase):
             action = {'id': 'incremental-release-source', 'node': 'source-a', 'attempt': 'prior',
                       'label': '开始处理此文件', 'control_revision': 3, 'run_revision': 5,
                       'source_path': '10_Raw/a.pdf', 'source_sha256': 'a' * 64}
-            console = object.__new__(server.Console)
-            console.state, console.config = base, {'writable': True}
+            console = server.Console({'state': str(base), 'writable': True}, [])
             console.gateway = SimpleNamespace(status={'ready': True})
             console.lock = lambda: (base / 'lease').open('a')
             console.find = lambda _: (directory, False)

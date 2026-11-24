@@ -7,7 +7,7 @@ const labels = {
   frozen: "输入已固定", settled: "已结算", held: "受阻", committed: "已提交",
   "manual-held": "待手动开始", released: "已允许处理",
   "waiting-dispatch": "等待调度", "waiting-qualification": "等待来源资格核验",
-  "closure-accounting": "待对账", "partially-closed": "已部分结案",
+  "closure-accounting": "待对账", "partially-closed": "已部分结案", deletion_pending: "待完成清理",
 };
 const waitLabels = { waiting: "等待交接", detached: "等待已结束", handoff: "交接就绪", failed: "来源交接失败" };
 const fileLabels = { ready: "就绪", failed: "转换失败", pending: "未结算", running: "处理中", queued: "排队中",
@@ -33,6 +33,8 @@ let obsidianAvailable = false;
 let gateway = { state: "checking", ready: false };
 let posting = false;
 let refreshing = false;
+let runListRevision = 0;
+let deleteTarget;
 const draftSources = [];
 const rendered = new Map();
 
@@ -101,14 +103,18 @@ function route() {
   if (view === "devtools") refreshLogs().catch(error => message(error.message, true));
 }
 
+function setSelection(id) {
+  if (selected === id) return;
+  selected = id;
+  current = undefined;
+  attempt = undefined;
+  if (id) localStorage.setItem("hermes-console-run", id);
+  else localStorage.removeItem("hermes-console-run");
+}
+
 function selectRun(id) {
-  if (selected !== id) {
-    selected = id;
-    current = undefined;
-    attempt = undefined;
-    localStorage.setItem("hermes-console-run", id);
-    render();
-  }
+  setSelection(id);
+  render();
   refresh();
 }
 
@@ -129,20 +135,36 @@ function render() {
     : "新建独立测试 Vault，合格页面将发布并同步索引。查询保持关闭。";
   renderWhenChanged("gateway", gateway, renderGateway);
   get("runs-count").textContent = runs.length;
-  renderWhenChanged("runs", [runs, selected], () => {
+  renderWhenChanged("runs", [runs, selected, writable, posting], () => {
     get("runs").replaceChildren(...(runs.length ? runs.map(run => {
-      const button = rowButton("", () => { showForm(false); selectRun(run.id); },
-        `run-item${run.id === selected ? " selected" : ""}`);
-      button.setAttribute("aria-pressed", String(run.id === selected));
-      const title = make("span");
-      title.append(make("strong", run.vault_name), badge(run.state));
-      button.append(title, make("small", run.historical ? `历史 · ${run.id}` : run.id));
-      return button;
+      const isSelected = run.id === selected;
+      const row = make("div", undefined, `run-row${isSelected ? " selected" : ""}`);
+      row.dataset.runId = run.id;
+      const view = rowButton("", () => { showForm(false); selectRun(run.id); }, "run-item");
+      view.setAttribute("aria-pressed", String(isSelected));
+      view.append(make("strong", run.vault_name), make("small", run.historical ? `历史 · ${run.id}` : run.id));
+      const remove = rowButton("删除记录及Vault", () => beginDelete(run), "run-delete");
+      remove.setAttribute("aria-label", `删除记录及Vault · ${run.vault_name}`);
+      remove.disabled = !writable || run.historical || posting || run.launcher_active;
+      if (!writable || run.historical) remove.title = "此记录仅供历史查看";
+      else if (run.launcher_active) remove.title = "执行器退出后可删除";
+      const actions = make("div", undefined, "run-actions");
+      actions.append(badge(run.deletion_pending ? "deletion_pending" : run.state), remove);
+      row.append(view, actions);
+      return row;
     }) : [make("p", "暂无运行记录", "empty")]));
   });
+  if (deleteTarget) {
+    const row = runs.find(run => run.id === deleteTarget.id);
+    get("delete-pending").hidden = !row?.deletion_pending;
+    if (!row && !posting && !get("delete-error").hidden && get("delete-dialog").open) {
+      message(`「${deleteTarget.vault_name}」已从运行记录移除。`);
+      get("delete-dialog").close();
+    }
+  }
   get("selected-label").textContent = current ? current.vault_name : "选择一次运行查看节点状态";
-  get("run-status").replaceChildren(...(current ? [badge(current.state)] : []));
-  renderWhenChanged("timeline", [selected, current?.nodes, current?.incremental, current?.historical, busy, posting, gateway.ready, writable], renderTimeline);
+  get("run-status").replaceChildren(...(current ? [badge(current.deletion_pending ? "deletion_pending" : current.state)] : []));
+  renderWhenChanged("timeline", [selected, current?.nodes, current?.incremental, current?.historical, current?.deletion_pending, busy, posting, gateway.ready, writable], renderTimeline);
   const pausedAt = current?.pause === "network_recovery" ? "等待网络恢复" : current?.pause;
   const summary = current ? [
     ["来源", `${current.source_count} 份 PDF`], ["暂停点", pausedAt],
@@ -184,6 +206,10 @@ function renderGateway() {
 
 function renderTimeline() {
   const timeline = get("timeline");
+  if (current?.deletion_pending) {
+    timeline.replaceChildren(make("p", "请在运行记录中重试删除。", "empty"));
+    return;
+  }
   if (current?.workflow_mode === "incremental_v1") {
     renderIncremental(timeline);
     return;
@@ -491,7 +517,7 @@ function renderVaults() {
   get("vault-list").replaceChildren(...(unique.size ? [...unique.values()].map(run => {
     const card = make("article", undefined, "panel");
     const heading = make("div", undefined, "panel-heading");
-    heading.append(make("h2", run.vault_name), badge(run.state));
+    heading.append(make("h2", run.vault_name), badge(run.deletion_pending ? "deletion_pending" : run.state));
     const body = make("div", undefined, "vault-card-body");
     const directory = make("input");
     directory.type = "text";
@@ -506,7 +532,7 @@ function renderVaults() {
     }
     const manager = rowButton("打开 Linux Obsidian 管理器", () => openLinuxObsidian(run, "manager"), "");
     const open = rowButton("打开已添加的 Vault", () => openLinuxObsidian(run, "open"));
-    manager.disabled = open.disabled = !obsidianAvailable;
+    manager.disabled = open.disabled = !obsidianAvailable || run.deletion_pending;
     const actions = make("div", undefined, "vault-actions");
     actions.append(manager, rowButton("复制目录", () => copyVaultDirectory(directory)), open, rowButton("查看运行", () => {
       selectRun(run.id);
@@ -572,19 +598,19 @@ async function refreshLogs() {
 async function refresh() {
   if (refreshing) return;
   refreshing = true;
+  const revision = runListRevision;
   try {
     const data = await api("/api/runs");
+    if (revision !== runListRevision) return;
     runs = data.runs;
     writable = data.writable;
     gateway = data.gateway;
     obsidianAvailable = data.obsidian_available === true;
-    if (!runs.some(run => run.id === selected)) {
-      selected = runs[0]?.id;
-      attempt = undefined;
-    }
+    if (!runs.some(run => run.id === selected)) setSelection(runs[0]?.id);
     const id = selected;
     if (id) {
       const snapshot = await api(`/api/runs/${id}`);
+      if (revision !== runListRevision) return;
       if (selected === id) {
         if (snapshot.attempts.at(-1)?.id !== current?.attempts.at(-1)?.id) attempt = undefined;
         current = snapshot;
@@ -593,10 +619,59 @@ async function refresh() {
     render();
     await refreshLogs();
   } catch (error) {
+    if (revision !== runListRevision) return;
     get("connection").textContent = "连接异常";
     message(error.message, true);
   } finally {
     refreshing = false;
+    if (revision !== runListRevision) refresh();
+  }
+}
+
+function renderDeleteForm() {
+  const confirmation = get("delete-confirmation");
+  confirmation.disabled = posting;
+  get("delete-cancel").disabled = posting;
+  const submit = get("delete-submit");
+  submit.disabled = posting || confirmation.value !== deleteTarget?.vault_name;
+  submit.textContent = posting ? "正在删除…" : "永久删除";
+}
+
+function beginDelete(run) {
+  deleteTarget = run;
+  facts(get("delete-target"), [["Vault 名称", run.vault_name], ["Vault 目录", run.vault_path], ["运行编号", run.id]]);
+  get("delete-confirmation").value = "";
+  get("delete-error").hidden = true;
+  get("delete-pending").hidden = !run.deletion_pending;
+  renderDeleteForm();
+  get("delete-dialog").showModal();
+}
+
+async function deleteRun(event) {
+  event.preventDefault();
+  const run = deleteTarget;
+  const confirmation = get("delete-confirmation").value;
+  if (!run || posting || confirmation !== run.vault_name) return;
+  posting = true;
+  const errorNotice = get("delete-error");
+  errorNotice.hidden = true;
+  renderDeleteForm();
+  render();
+  try {
+    await api(`/api/runs/${encodeURIComponent(run.id)}/delete`, {confirmation});
+    runListRevision += 1;
+    runs = runs.filter(item => item.id !== run.id);
+    if (selected === run.id) setSelection(runs[0]?.id);
+    message(`已删除「${run.vault_name}」的运行记录、Vault 及关联产物。`);
+    get("delete-dialog").close();
+  } catch (error) {
+    errorNotice.textContent = error.message;
+    errorNotice.hidden = false;
+  } finally {
+    posting = false;
+    renderDeleteForm();
+    render();
+    refresh();
   }
 }
 
@@ -722,6 +797,20 @@ get("workflow-mode").addEventListener("change", () => {
   get("legacy-pause-label").hidden = incremental;
 });
 get("toggle-form").addEventListener("click", () => showForm(get("new-panel").hidden));
+get("delete-confirmation").addEventListener("input", renderDeleteForm);
+get("delete-form").addEventListener("submit", deleteRun);
+get("delete-cancel").addEventListener("click", () => get("delete-dialog").close());
+get("delete-dialog").addEventListener("cancel", event => {
+  if (posting) event.preventDefault();
+});
+get("delete-dialog").addEventListener("close", () => {
+  const rows = get("runs");
+  const row = [...rows.children].find(item => item.dataset.runId === deleteTarget?.id);
+  const focus = row?.querySelector(".run-delete:not(:disabled)") ||
+    rows.querySelector(".run-row.selected .run-item") || get("history-title");
+  deleteTarget = undefined;
+  focus.focus();
+});
 get("attempts").addEventListener("change", event => {
   attempt = event.target.value;
   refreshLog().catch(error => message(error.message, true));

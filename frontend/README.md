@@ -36,6 +36,12 @@ cd /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills
 3. 在新建表单预设暂停点，或在运行时从尚未开始的节点点「在此节点前暂停」。执行器完成前置工作并验证边界后显示「已暂停」，此时可在该节点点击「继续并复用已有成果」。接管或继续前也可选好下一暂停点，执行器会在开始本轮时接收该目标。如果计划跳过无工作量的节点，执行器在下一个可用边界停下。
 4. 在 DevTools 中切换原运行与恢复日志，查看业务工作流、原生看板、源暂停点和短路径回执数。
 
+## 删除运行和 Vault
+
+在「运行记录」中选择对应行的「删除记录及Vault」，核对弹窗里的目录和运行编号，输入 Vault 的完整名称并确认。删除会永久清理该控制台运行的记录、专用 Vault、关联的 Hermes 原生看板及本地 Provider 索引。外部输入 PDF 保留。
+
+执行器、原生任务或索引同步仍在运行时，控制台会提示等待。若清理中断，该条记录标为「待完成清理」，可从同一按钮继续。只读历史报告和其他运行共用的 Vault 无法通过这里删除。
+
 ## 在 Obsidian 中添加 Vault
 
 在 Vault 页复制「Linux Obsidian 目录」，点击「打开 Linux Obsidian 管理器」，选择「打开文件夹作为 Vault」，并粘贴 Linux 路径，例如 `/opt/data/hermes/TestFrontend`。首次添加后，「打开已添加的 Vault」通过后端启动 WSL 内的 Obsidian，按实际路径打开该目录中的 `README.md`。
