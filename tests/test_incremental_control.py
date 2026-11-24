@@ -240,6 +240,57 @@ def test_original_native_work_prevents_executor_retirement(tmp_path, monkeypatch
     assert control.status()['active_scopes'] == head['active_scopes']
 
 
+@pytest.mark.parametrize('prefix', ['proved', 'different-job', 'active-worker', 'wrong-stage', 'changed-proof'])
+def test_dead_map_executor_only_retires_an_exact_unclaimed_retry_prefix(tmp_path, monkeypatch, prefix):
+    import json
+    import sys
+    from types import SimpleNamespace
+
+    control = control_fixture(tmp_path)
+    workspace = control.root.parent / 'native/source/source-a/mapping'
+    operation_path = workspace / 'operation.json'
+    operation = {'contract': 'native-fixture', 'vault': str(tmp_path), 'board': 'board-map',
+                 'workflow_mode': 'incremental_v1', 'incremental': {
+                     'scope_kind': 'source', 'scope_id': 'source-a', 'stage': 'mapping',
+                     'run_id': control.run_id, 'snapshots': ['source-a']}}
+    _write_atomic(operation_path, _json_bytes(operation))
+    name = 'f' * 64 + '.json'
+    job, intent = workspace / 'jobs' / name, workspace / 'map-retries' / name
+    _write_atomic(job, _json_bytes({'request': {'id': name.removesuffix('.json')}}))
+    _write_atomic(intent, _json_bytes({'fake': 'exact native pre-call retry'}))
+    task = SimpleNamespace(id='task-original', status='ready', claim_lock=None, created_by=operation['contract'],
+        body=json.dumps({'contract': operation['contract'], 'operation_sha256': _sha(operation_path.read_bytes()),
+                         'job': name, 'job_sha256': 'wrong' if prefix == 'different-job' else _sha(job.read_bytes())}))
+    runs = [SimpleNamespace(id=1, outcome='gave_up')]
+    kb = SimpleNamespace(list_tasks=lambda _: [task], list_runs=lambda *_, **__: runs)
+    kc = SimpleNamespace(connect=lambda **_: SimpleNamespace(close=lambda: None))
+    monkeypatch.setitem(sys.modules, 'hermes_cli', SimpleNamespace(kanban_db=kb, kanban_db_connect=kc))
+    monkeypatch.setitem(sys.modules, 'native_stop_inventory', SimpleNamespace(
+        workflow_processes=lambda *_: [{'pid': 10}] if prefix == 'active-worker' else []))
+
+    def verify(root, bound, original, candidate, history):
+        assert (root, bound, original, candidate, history) == (workspace, operation, job, task, runs)
+        if prefix == 'changed-proof':
+            raise ValueError('consumption proof changed')
+
+    monkeypatch.setitem(sys.modules, 'incremental_map_recovery', SimpleNamespace(verify_retry=verify))
+    head = control.status()
+    head.update(state='pausing', active_scopes={'original': {'scope_kind': 'source', 'scope_id': 'source-a',
+        'stage': 'prepare' if prefix == 'wrong-stage' else 'mapping', 'owner': {'pid': 424242}}})
+    _write_atomic(control.path, _json_bytes(head))
+    monkeypatch.setattr(control, '_owner_alive', lambda _: False)
+    before = {path: path.read_bytes() for path in (job, intent, operation_path)}
+    if prefix == 'proved':
+        resumed = control.reconcile_executors()
+        assert resumed['active_scopes'] == {} and resumed['state'] == 'pausing'
+    else:
+        with pytest.raises(ContractError, match='orphaned scope still has native work'):
+            control.reconcile_executors()
+        assert control.status()['active_scopes'] == head['active_scopes']
+    assert task.status == 'ready' and task.claim_lock is None
+    assert {path: path.read_bytes() for path in before} == before
+
+
 def test_unknown_checkpoints_and_cross_run_admission_are_rejected(tmp_path):
     control = IncrementalControl(tmp_path, 'isolated-control')
     with pytest.raises(ContractError, match='unknown incremental checkpoint'):

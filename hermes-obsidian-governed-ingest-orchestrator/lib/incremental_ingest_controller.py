@@ -752,8 +752,13 @@ def watch(vault, run_id):
                         result = future.result()
                         del running[snapshot]
                         if result is not MAPPING_DEFERRED:
-                            control.checkpoint({'scope_kind': 'source', 'scope_id': snapshot}, 'mapping',
-                                               {'snapshot_id': snapshot})
+                            source = next(row for row in domain.status(run_id)['sources'].values()
+                                          if row.get('snapshot_id') == snapshot)
+                            require(source['state'] in ('mapped', 'mapping_held'),
+                                    'source Map executor returned without a durable disposition')
+                            if source['state'] == 'mapped':
+                                control.checkpoint({'scope_kind': 'source', 'scope_id': snapshot}, 'mapping',
+                                                   {'snapshot_id': snapshot})
                 if control.status()['state'] != 'active':
                     time.sleep(1)
                     continue

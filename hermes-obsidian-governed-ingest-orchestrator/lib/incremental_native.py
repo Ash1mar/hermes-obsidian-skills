@@ -301,11 +301,12 @@ def build(root, job, request, own, runner):
         preparation = read_pin(service.vault, pointer['preparation'])
         writer_root = _vault_path(service.vault, pointer['native_root'])
         if preparation.get('contract') in (FRAGMENTS, AMENDMENT, ORDINARY_SECTION):
-            if catalogue is None:
+            if domain is None:
                 from incremental_native import service as incremental_service
 
                 domain = incremental_service(service.vault, run_id)
                 frozen = domain.round_input(run_id, round_id)
+            if preparation['contract'] != ORDINARY_SECTION and catalogue is None:
                 catalogue = catalogue_for_round(domain, run_id, frozen, service.build)
             writer_operation = _load_json(writer_root / 'operation.json')
             require(writer_operation['actor'] == operation['actor'] and writer_operation['origin'] == operation['origin']
@@ -327,7 +328,7 @@ def build(root, job, request, own, runner):
                 qualification = preparation['qualification']
                 if ordinary is None:
                     original = ordinary_section_disposition(domain, frozen, writer_root, writer_operation, view)
-                    ordinary = ordinary_formal_pages(domain, service.build, frozen, catalogue, qualification, writer_root)
+                    ordinary = ordinary_formal_pages(domain, service.build, frozen, qualification, writer_root)
                     ordinary_qualification = qualification
                     ordinary_writer = writer_root
                     original_held = {held['change_id'] for held in original['held']}

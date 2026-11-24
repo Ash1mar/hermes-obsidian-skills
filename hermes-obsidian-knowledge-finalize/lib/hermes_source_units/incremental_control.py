@@ -1,5 +1,6 @@
 """Durable scoped admission for explicitly opted-in incremental runs."""
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import re
@@ -156,14 +157,46 @@ class IncrementalControl:
                 raise ContractError('STALE_INPUT', '$', 'native scope changed during executor reconciliation')
             board = operation['board']
             with closing(kc.connect(board=board)) as connection:
-                if any(task.status in ('ready', 'running', 'todo', 'triage') or task.claim_lock
-                       for task in kb.list_tasks(connection)):
+                tasks = kb.list_tasks(connection)
+                if any(task.status in ('running', 'todo', 'triage') or task.claim_lock for task in tasks):
+                    return True
+                if any(task.status == 'ready' and not self._ready_map_retry(scope, path, operation, task, connection)
+                       for task in tasks):
                     return True
             # This reconciliation concerns one original board. Other sources
             # and their source-workflow reconciler may still be progressing.
             if workflow_processes('', board):
                 return True
         return False
+
+    def _ready_map_retry(self, scope, operation_path, operation, task, connection):
+        """A dead Map executor can leave a proven retry released but unclaimed."""
+        if scope['scope_kind'] != 'source' or scope.get('stage') != 'mapping':
+            return False
+        workspace = self.root.parent / 'native' / 'source' / safe_id(scope['scope_id']) / 'mapping'
+        bound = operation['incremental']
+        if (operation_path != workspace / 'operation.json' or bound.get('stage') != 'mapping'
+                or bound.get('snapshots') != [scope['scope_id']]
+                or operation.get('workflow_mode') != 'incremental_v1'
+                or operation.get('vault') != str(self.vault) or task.created_by != operation.get('contract')):
+            return False
+        try:
+            body = json.loads(task.body)
+            name = body.get('job') if isinstance(body, dict) else None
+            if not isinstance(name, str) or not re.fullmatch(r'[0-9a-f]{64}\.json', name):
+                return False
+            job = workspace / 'jobs' / name
+            if (not job.is_file() or not (workspace / 'map-retries' / name).is_file()
+                    or body != {'contract': operation['contract'], 'operation_sha256': _sha(operation_path.read_bytes()),
+                                'job': name, 'job_sha256': _sha(job.read_bytes())}):
+                return False
+            from hermes_cli import kanban_db as kb
+            from incremental_map_recovery import verify_retry
+
+            verify_retry(workspace, operation, job, task, kb.list_runs(connection, task.id, include_active=False))
+        except (ValueError, TypeError, KeyError, ImportError, OSError):
+            return False
+        return True
 
     def reconcile_executors(self):
         """Retire dead controller scopes only after native work has drained.

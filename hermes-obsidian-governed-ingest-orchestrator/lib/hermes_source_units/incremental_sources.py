@@ -3,11 +3,21 @@ from __future__ import annotations
 
 from contextlib import closing
 import json
+import os
 from pathlib import Path
 import re
+import sqlite3
 
 from .source_units import ARTIFACT_ROOT, UNIT_ROOT, FileSourceUnitService, _load_json, _sha, _vault_path
 from .validation import ContractError, fingerprint
+
+
+MAP_ISOLATION = 'incremental-map-execution-isolation/v1'
+
+
+class NativeBoardBusy(ContractError):
+    def __init__(self, message):
+        super().__init__('NATIVE_BOARD_BUSY', '$', message)
 
 
 def require(condition, message, code='INCREMENTAL_INVALID'):
@@ -34,6 +44,21 @@ def read_pin(vault, pointer):
     return _load_json(path)
 
 
+def disappeared_native_sidecar(path, error):
+    """Distinguish SQLite's disappearing journal sidecar from real access denial."""
+    for suffix in ('-wal', '-shm'):
+        sidecar = path.with_name(path.name + suffix)
+        diagnostic = f'kanban.db ({path.name}) is not writable: file {sidecar} is read-only for this user.'
+        if not str(error).startswith(diagnostic):
+            continue
+        try:
+            sidecar.lstat()
+        except FileNotFoundError:
+            return (path.is_file() and not path.is_symlink() and os.access(path, os.R_OK | os.W_OK)
+                    and os.access(path.parent, os.R_OK | os.W_OK | os.X_OK))
+    return False
+
+
 def completion_connection(board):
     """Read an existing historical board without a worker's own DB override.
 
@@ -51,7 +76,96 @@ def completion_connection(board):
     require(not directory.is_symlink() and path.is_file() and not path.is_symlink()
             and path.resolve(strict=True).parent == directory.resolve(strict=True),
             'native evidence database is missing or redirected', 'NATIVE_UNCONFIRMED')
-    return kc.connect(db_path=path.resolve(strict=True), board=board)
+    path = path.resolve(strict=True)
+    try:
+        return kc.connect(db_path=path, board=board)
+    except sqlite3.OperationalError as error:
+        base_code = (getattr(error, 'sqlite_errorcode', None) or 0) & 255
+        if base_code in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) or disappeared_native_sidecar(path, error):
+            raise NativeBoardBusy('native board connection is temporarily unavailable: ' + str(error)) from error
+        raise
+
+
+def verify_mapping_isolation(vault, pointer, workspace, *, run_id, snapshot_id, actor):
+    """Verify exact ended Map jobs without granting those jobs a positive receipt."""
+    from hermes_cli import kanban_db as kb
+
+    require(pointer['ref'] == (workspace / 'execution-hold.json').relative_to(vault).as_posix(),
+            'mapping isolation evidence escaped the source workspace')
+    report = read_pin(vault, pointer)
+    operation_path = workspace / 'operation.json'
+    operation = _load_json(operation_path)
+    scope = operation.get('incremental', {})
+    require(report.get('contract') == MAP_ISOLATION and report.get('run_id') == run_id
+            and report.get('snapshot_id') == snapshot_id and report.get('board') == operation.get('board')
+            and report.get('reason') in ('partial', 'seed-incomplete', 'required-map-incomplete')
+            and isinstance(report.get('jobs'), list) and report['jobs']
+            and operation.get('workflow_mode') == 'incremental_v1' and operation.get('vault') == str(vault)
+            and operation.get('actor') == actor and scope.get('run_id') == run_id
+            and scope.get('scope_kind') == 'source' and scope.get('scope_id') == snapshot_id
+            and scope.get('snapshots') == [snapshot_id] and scope.get('stage') == 'mapping',
+            'mapping isolation report or native scope changed')
+    operation_hash = _sha(operation_path.read_bytes())
+    phases, jobs, repairs = set(), set(), {}
+    required_map_missing = False
+    with closing(completion_connection(operation['board'])) as conn:
+        for entry in report['jobs']:
+            job = _vault_path(vault, entry['job']['ref'])
+            row = read_pin(vault, entry['job'])['request']
+            request_id = safe_id(row['id'])
+            phase = row['phase']
+            require(job == workspace / 'jobs' / (request_id + '.json') and request_id not in jobs
+                    and phase in ('short-topics', 'short-map') and entry.get('state') in ('unconfirmed', 'held')
+                    and type(entry.get('run_id')) is int, 'mapping isolation job identity differs')
+            task = kb.get_task(conn, safe_id(entry['task_id']))
+            body = {'contract': operation['contract'], 'operation_sha256': operation_hash, 'job': job.name,
+                    'job_sha256': entry['job']['sha256']}
+            require(task and task.created_by == operation['contract'] and not task.claim_lock
+                    and json.loads(task.body) == body, 'mapping isolation task binding changed')
+            run = next((item for item in kb.list_runs(conn, task.id, include_active=False)
+                        if item.id == entry['run_id'] and item.ended_at is not None), None)
+            require(run is not None, 'mapping isolation requires an ended native task', 'NATIVE_UNCONFIRMED')
+            result_pointer = entry.get('result')
+            result_path = job.with_suffix('.result.json')
+            result = None
+            if result_pointer or result_path.is_file():
+                require(result_pointer and result_pointer['ref'] == result_path.relative_to(vault).as_posix(),
+                        'mapping isolation native result escaped its exact job')
+                result = read_pin(vault, result_pointer)
+                require(result.get('task_id') == task.id and result.get('run_id') == run.id
+                        and result.get('request_id') == request_id, 'mapping isolation native result identity differs')
+            if entry['state'] == 'held':
+                require(task.status in ('done', 'archived') and run.outcome == 'completed'
+                        and result and result.get('state') == 'held', 'mapping task did not acknowledge a held result')
+            else:
+                require(task.status in ('blocked', 'archived') and run.outcome != 'completed',
+                        'mapping isolation cannot replace an active or completed native result')
+            if reference := entry.get('evidence'):
+                require(_vault_path(vault, reference['ref']) == workspace / 'mapping-dispositions' / job.name,
+                        'mapping job diagnostic escaped the original workspace')
+                diagnostic = read_pin(vault, reference)
+                require(all(diagnostic.get(key) == entry[key] for key in ('job', 'task_id', 'run_id', 'state'))
+                        and diagnostic.get('native_outcome') == run.outcome,
+                        'mapping job diagnostic differs from the original disposition')
+            jobs.add(request_id)
+            phases.add(phase)
+            if phase == 'short-map':
+                assigned = row['view'].get('assigned')
+                require(isinstance(assigned, list) and assigned
+                        and all(isinstance(alias, str) for alias in assigned), 'isolated Map job lacks assigned units')
+                issue = row['view'].get('issue')
+                if issue is None:
+                    required_map_missing = True
+                else:
+                    require(isinstance(issue, dict) and assigned == [issue.get('item')]
+                            and isinstance(issue.get('reason'), str) and issue['reason']
+                            and safe_id(issue.get('parent_request')) and assigned[0] not in repairs,
+                            'isolated follow-up lacks its exact original Map duty')
+                    repairs[assigned[0]] = issue
+    reason = ('seed-incomplete' if 'short-topics' in phases else
+              'required-map-incomplete' if required_map_missing else 'partial')
+    require(report['reason'] == reason, 'mapping isolation reason differs from its native stage')
+    return reason, repairs
 
 
 def verify_native_completion(vault, proof, expected):

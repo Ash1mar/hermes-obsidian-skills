@@ -1,6 +1,7 @@
 """Historical native evidence selects an exact existing board through Hermes."""
 import os
 from pathlib import Path
+import sqlite3
 import sys
 from types import ModuleType, SimpleNamespace
 
@@ -9,7 +10,7 @@ import pytest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'hermes-source-units/src'))
 from hermes_source_units import ContractError
-from hermes_source_units.incremental_sources import completion_connection
+from hermes_source_units.incremental_sources import NativeBoardBusy, completion_connection
 
 
 def runtime(tmp_path, monkeypatch, connect):
@@ -51,6 +52,27 @@ def test_completion_preserves_hermes_permission_denial(tmp_path, monkeypatch):
     with pytest.raises(PermissionError) as caught:
         completion_connection('source-board')
     assert caught.value is denial
+
+
+@pytest.mark.parametrize('disappears', [True, False])
+def test_completion_classifies_only_a_disappeared_preflight_sidecar(tmp_path, monkeypatch, disappears):
+    def preflight(*, db_path, board):
+        assert board == 'source-board'
+        sidecar = db_path.with_name('kanban.db-wal')
+        if disappears:
+            sidecar.unlink()
+        raise sqlite3.OperationalError(
+            f'kanban.db (kanban.db) is not writable: file {sidecar} is read-only for this user. '
+            'Hermes needs read-write access to open the database.')
+
+    _, boards = runtime(tmp_path, monkeypatch, preflight)
+    db = boards / 'source-board/kanban.db'
+    db.parent.mkdir(parents=True)
+    db.touch()
+    db.with_name('kanban.db-wal').touch()
+    expected = NativeBoardBusy if disappears else sqlite3.OperationalError
+    with pytest.raises(expected, match='is read-only for this user'):
+        completion_connection('source-board')
 
 
 def test_completion_never_creates_a_missing_board_or_database(tmp_path, monkeypatch):

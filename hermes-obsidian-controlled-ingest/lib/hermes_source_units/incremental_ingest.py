@@ -5,7 +5,7 @@ import copy
 
 from .incremental_qualification import BACKOFF_SECONDS, LOCK_CONTENTION_CODES, WAIT_CONTRACT, qualification_id
 from .incremental_sources import (pinned, read_pin, require, safe_id, snapshot_content,
-                                  verify_native_completion, verify_native_drain)
+                                  verify_mapping_isolation, verify_native_completion, verify_native_drain)
 from .source_units import _exclusive_lock, _json_bytes, _load_json, _sha, _vault_path, _write_atomic
 from .validation import ContractError, fingerprint
 
@@ -238,8 +238,19 @@ class FileIncrementalIngestService:
             path, snapshot_id = request['source_path'], request['snapshot_id']
             source = run['sources'].get(path, {})
             require(source.get('state') == 'prepared' and source.get('snapshot_id') == snapshot_id,
-                    'qualification hold must name this exact prepared source')
+                    'mapping hold must name this exact prepared source')
             self.validate_source_snapshot(run['run_id'], snapshot_id)
+            if 'execution_hold' in request:
+                require('wait' not in request, 'mapping execution and qualification holds are separate intents')
+                pointer = request['execution_hold']
+                reason, _ = self._mapping_isolation(run, snapshot_id, pointer)
+                require(reason in ('seed-incomplete', 'required-map-incomplete'),
+                        'whole-source hold requires missing mandatory Map evidence')
+                hold = {'state': 'held', 'stage': 'mapping', 'source_path': path, 'snapshot_id': snapshot_id,
+                        'reason': 'source mapping topic seed incomplete' if reason == 'seed-incomplete'
+                        else 'source mapping has an incomplete required Map request', 'execution_hold': pointer}
+                run['sources'][path] = {**source, 'state': 'mapping_held', 'mapping_hold': hold}
+                return hold, [pointer]
             pointer = request['wait']
             expected = self.root(run['run_id']) / 'source-qualification' / safe_id(snapshot_id) / 'wait.json'
             require(pointer['ref'] == expected.relative_to(self.vault).as_posix(), 'qualification wait evidence is outside its snapshot')
@@ -262,6 +273,44 @@ class FileIncrementalIngestService:
             return hold, [pointer]
 
         return self._mutate(request, 'mapping', 'source', request['snapshot_id'], update)
+
+    def _mapping_isolation(self, run, snapshot_id, pointer):
+        workspace = self.root(run['run_id']) / 'native' / 'source' / safe_id(snapshot_id) / 'mapping'
+        return verify_mapping_isolation(self.vault, pointer, workspace, run_id=run['run_id'],
+                                        snapshot_id=snapshot_id, actor=run['actor'])
+
+    def _verify_partial_map(self, run, record):
+        reason, repairs = self._mapping_isolation(run, record['snapshot_id'], record['execution_hold'])
+        require(reason == 'partial' and repairs, 'source-level mapping hold cannot be published as a partial Map')
+        workspace = self.root(run['run_id']) / 'native' / 'source' / record['snapshot_id'] / 'mapping'
+        originals = {}
+        for completion in record['native_completions']:
+            proof = completion['proof']
+            job = read_pin(self.vault, proof['request'])['request']
+            require(_vault_path(self.vault, proof['request']['ref']) == workspace / 'jobs' / (safe_id(job['id']) + '.json'),
+                    'isolated mapping lost its original native workspace')
+            if (job['phase'] == 'short-map' and job['view'].get('issue') is None
+                    and read_pin(self.vault, proof['result']).get('state') == 'settled'):
+                originals[job['id']] = set(job['view']['assigned'])
+        coverage = {fingerprint(row['unit_ref']): row['disposition'] for row in record['coverage']}
+        reduced = read_pin(self.vault, record['results'][0])
+        aliases = record['alias_table']
+        receipts = {pointer['ref']: pointer for pointer in record['results'][1:]}
+        for alias, issue in repairs.items():
+            parent = issue['parent_request']
+            parent_path = (workspace / 'receipts' / (parent + '.json')).relative_to(self.vault).as_posix()
+            require(alias in originals.get(parent, ()) and parent_path in receipts,
+                    'isolated Map follow-up requires its verified original Map receipt')
+            receipt = read_pin(self.vault, receipts[parent_path])
+            answer = receipt.get('normalized') or receipt['answer']['results']['r']
+            disposition = reduced['dispositions'].get(alias, {})
+            require(alias in aliases and coverage.get(fingerprint(aliases[alias]['unit_ref'])) == 'held'
+                    and receipt.get('request_sha256') == parent and any(
+                        row['item'] == alias and row['status'] == 'pending' and row['reason'] == issue['reason']
+                        for row in answer['dispositions'])
+                    and disposition.get('status') == 'pending' and disposition.get('request') == parent
+                    and disposition.get('reason') == issue['reason'],
+                    'isolated Map follow-up must retain its original pending coverage')
 
     def reserve_budget(self, request):
         def update(run, grant):
@@ -347,6 +396,11 @@ class FileIncrementalIngestService:
                       'request_fingerprint': request['request_fingerprint'], 'alias_table': aliases,
                       'results': results, 'coverage': coverage, 'unresolved': request.get('unresolved', []),
                       'native_completions': completions, 'budget_id': budget_id}
+            evidence = list(results)
+            if 'execution_hold' in request:
+                record['execution_hold'] = request['execution_hold']
+                self._verify_partial_map(run, record)
+                evidence.append(record['execution_hold'])
             record['map_result_id'] = 'map-' + fingerprint(record)
             pointer = self._immutable(self.reports(run['run_id']) / 'map-results' / (record['map_result_id'] + '.json'), record)
             if record['map_result_id'] not in run['map_result_ids']:
@@ -354,12 +408,13 @@ class FileIncrementalIngestService:
                 require(source['state'] == 'prepared', 'source already has another mapped result', 'IDEMPOTENCY_CONFLICT')
                 source.update(state='mapped', map_result_id=record['map_result_id'])
                 run['map_result_ids'].append(record['map_result_id'])
-            return record, [pointer, *results]
+            return record, [pointer, *evidence]
 
         return self._mutate(request, 'map-commit', 'source', request['snapshot_id'], update)
 
     def read_map(self, run_id, map_result_id):
-        require(map_result_id in self.status(run_id)['map_result_ids'], 'unknown map result')
+        run = self.status(run_id)
+        require(map_result_id in run['map_result_ids'], 'unknown map result')
         value = _load_json(self.reports(run_id) / 'map-results' / (safe_id(map_result_id) + '.json'))
         require(value['map_result_id'] == 'map-' + fingerprint({k: v for k, v in value.items() if k != 'map_result_id'}),
                 'mapping result fingerprint changed', 'SOURCE_CHANGED')
@@ -369,6 +424,8 @@ class FileIncrementalIngestService:
                 'run_id': run_id, 'snapshot_id': value['snapshot_id']})
         for pointer in value['results']:
             read_pin(self.vault, pointer)
+        if 'execution_hold' in value:
+            self._verify_partial_map(run, value)
         return value
 
     def round_input(self, run_id, round_id):
@@ -450,7 +507,10 @@ class FileIncrementalIngestService:
             for row in run['sources'].values():
                 if row['state'] == 'mapping_held':
                     hold = row['mapping_hold']
-                    read_pin(self.vault, hold['wait'])
+                    if 'execution_hold' in hold:
+                        self._mapping_isolation(run, hold['snapshot_id'], hold['execution_hold'])
+                    else:
+                        read_pin(self.vault, hold['wait'])
                     gaps.append(hold)
             maps = [self.read_map(run['run_id'], mid) for mid in run['map_result_ids']]
             gaps.extend(row for result in maps for row in result['coverage'] if row['disposition'] == 'held')
