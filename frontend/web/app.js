@@ -296,6 +296,8 @@ function renderTimeline() {
 
 const openRecoveryScopes = new Set();
 const selectedRecoveryFragments = new Map();
+const selectedMapRequests = new Map();
+const mapRecoveryNames = {original: "恢复原 Map 卡", supplemental: "独立补做 Map"};
 
 function renderIncremental(timeline) {
   const value = current.incremental;
@@ -375,7 +377,7 @@ function renderIncrementalPhase(phase, source) {
   }
   if (phase.boundary) row.append(make("small", phase.network_recovery ? "等待网络恢复" :
     phase.result_state === "completed" ? "本步成果已完成，停在此边界" : "停在此边界"));
-  if (source && (phase.recovery_scopes?.length || phase.actions?.length)) {
+  if (source && (phase.recovery_scopes?.length || phase.actions?.length || phase.map_recovery?.results?.length)) {
     const key = `${current.id}:${source.path}:${phase.key}`;
     const detail = make("details", undefined, "node-recovery");
     detail.append(make("summary", phase.actions?.length ? "查看范围与操作" : "查看处理范围"));
@@ -383,6 +385,7 @@ function renderIncrementalPhase(phase, source) {
     detail.addEventListener("toggle", () => {
       if (detail.isConnected) detail.open ? openRecoveryScopes.add(key) : openRecoveryScopes.delete(key);
     });
+    if (phase.map_recovery) renderMapRecovery(detail, phase.map_recovery);
     for (const scope of phase.recovery_scopes || []) {
       const section = make("div", undefined, "node-recovery-scope");
       if (scope.round_id) section.append(make("strong", `${scope.round_id} · 共享轮次`),
@@ -425,9 +428,34 @@ function renderIncrementalPhase(phase, source) {
       for (const action of actions) {
         const allowed = action.fragment_ids;
         const selected = selectedRecoveryFragments.get(action.scope_token) || new Set();
-        const enabled = writable && !posting && !runs.some(run => run.launcher_active) && (action.gateway_required === false || gateway.ready);
-        const button = rowButton(action.label, () => reenter(action, undefined, undefined, allowed ? [...selected] : undefined));
-        button.disabled = !enabled || (allowed && !selected.size);
+        const preview = action.id === "incremental-map-recovery-preview";
+        const enabled = writable && !posting && (preview || !runs.some(run => run.launcher_active))
+          && (action.gateway_required === false || gateway.ready);
+        const requestIds = action.request_ids;
+        const selectionKey = `${action.preview_key}:${action.report_sha256}:${action.strategy}`;
+        let requestId = selectedMapRequests.get(selectionKey) || (requestIds?.length === 1 ? requestIds[0] : "");
+        const button = rowButton(action.label, () => reenter(action, undefined, undefined, allowed ? [...selected] : undefined, requestId));
+        button.disabled = !enabled || (allowed && !selected.size) || (requestIds && !requestId);
+        if (requestIds) {
+          const choice = make("select");
+          choice.setAttribute("aria-label", `${mapRecoveryNames[action.strategy]}的原请求`);
+          const placeholder = make("option", "选择原 Map 请求");
+          placeholder.value = "";
+          choice.append(placeholder);
+          for (const id of requestIds) {
+            const entry = make("option", id);
+            entry.value = id;
+            choice.append(entry);
+          }
+          choice.value = requestId;
+          choice.disabled = !enabled;
+          choice.addEventListener("change", () => {
+            requestId = choice.value;
+            selectedMapRequests.set(selectionKey, requestId);
+            button.disabled = !enabled || !requestId;
+          });
+          section.append(choice);
+        }
         if (allowed) {
           const choices = make("fieldset");
           choices.append(make("legend", "选择要核对原生回执的分片"));
@@ -454,6 +482,39 @@ function renderIncrementalPhase(phase, source) {
     row.append(detail);
   }
   return row;
+}
+
+function renderMapRecovery(container, review) {
+  for (const strategy of review.strategies || []) {
+    const section = make("div", undefined, "node-recovery-scope");
+    section.append(make("strong", mapRecoveryNames[strategy.id]),
+      make("small", strategy.allowed ? `${strategy.request_ids.length} 个可确认的原请求` : "当前不可执行"));
+    if (strategy.reason) section.append(make("small", strategy.reason));
+    container.append(section);
+  }
+  if (review.outcomes?.length) {
+    const evidence = make("details", undefined, "node-recovery");
+    evidence.append(make("summary", `查看 ${review.outcomes.length} 张原 Map 卡的处置`));
+    const list = make("ul");
+    const dispositions = {eligible: "符合恢复条件", reuse: "复用已确认回执", isolated: "隔离待核对"};
+    for (const item of review.outcomes) {
+      const outcome = make("li", [item.task_id, item.request_id, dispositions[item.disposition] || item.disposition]
+        .filter(Boolean).join(" · "));
+      if (item.reason) outcome.append(make("small", item.reason));
+      list.append(outcome);
+    }
+    evidence.append(list);
+    container.append(evidence);
+  }
+  for (const result of review.results || []) {
+    const section = make("div", undefined, "node-recovery-scope");
+    section.append(make("strong", mapRecoveryNames[result.strategy]), badge(result.state));
+    if (result.request_id) section.append(make("small", `原请求 ${result.request_id}`));
+    if (result.supplement_run_id) section.append(make("small", `补做运行 ${result.supplement_run_id}`));
+    if (result.boundary) section.append(make("small", `停在 ${stageNames[result.boundary] || result.boundary}`));
+    for (const id of result.map_result_ids || []) section.append(make("small", `补做 Map ${id}`));
+    container.append(section);
+  }
 }
 
 function renderClosureUsage(phase) {
@@ -681,7 +742,8 @@ async function submit(path, body) {
   render();
   try {
     const data = await api(path, body);
-    message(path.endsWith("/pause") ? "暂停已请求，执行器会在指定节点前停下。" : "执行请求已提交。");
+    message(path.endsWith("/pause") ? "暂停已请求，执行器会在指定节点前停下。"
+      : data.preview ? "已核对 Map 恢复范围。" : "执行请求已提交。");
     showForm(false);
     selectRun(data.id);
     return true;
@@ -695,10 +757,14 @@ async function submit(path, body) {
   }
 }
 
-function reenter(action, manifest, pauseBefore, fragments) {
+function reenter(action, manifest, pauseBefore, fragments, requestId) {
   if (action.id.startsWith("incremental-")) {
     if (action.id === "incremental-closure-confirm" &&
         !window.confirm(`确认按已核对的报告结案？\n报告 SHA-256 ${action.report_sha256}`)) return;
+    if (action.id === "incremental-map-recovery-confirm" &&
+        (!requestId || !window.confirm(`${action.label}？\n来源 ${action.source_path}\n原请求 ${requestId}\n预览 SHA-256 ${action.report_sha256}`))) return;
+    if (action.id === "incremental-map-supplement-continue" &&
+        !window.confirm(`确认从补做 Map 停点继续？\n补做运行 ${action.supplement_run_id}\n下一步开始补充轮次的协调和写作。`)) return;
     if (action.scope_token) {
       const scope = action.round_id ? `共享轮次 ${action.round_id}` : action.source_path;
       const fragmentScope = fragments ? `，已选 ${fragments.length} 个分片` : "";
@@ -709,7 +775,10 @@ function reenter(action, manifest, pauseBefore, fragments) {
       source_path: action.source_path, source_sha256: action.source_sha256, retry_kind: action.retry_kind,
       phase: action.phase, round_id: action.round_id, scope_token: action.scope_token, revise_fragments: fragments,
       boundary_fingerprint: action.boundary_fingerprint,
-      preview_attempt: action.preview_attempt, report_sha256: action.report_sha256});
+      preview_attempt: action.preview_attempt, report_sha256: action.report_sha256,
+      preview_key: action.preview_key, strategy: action.strategy, request_id: requestId || undefined,
+      supplement_run_id: action.supplement_run_id, supplement_run_revision: action.supplement_run_revision,
+      supplement_control_revision: action.supplement_control_revision, recovery_operation_id: action.recovery_operation_id});
     return;
   }
   if (action.manifest && !manifest?.trim()) {

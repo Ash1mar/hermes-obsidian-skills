@@ -103,6 +103,8 @@ class IncrementalControl:
         if not run_path.exists():
             return False
         run = _load_json(run_path)
+        if run.get('map_supplement'):
+            return False  # The predecessor's preparer is evidence, not a child executor.
         origin = _vault_path(self.vault, f"_system/ledgers/ingest-workflows/{run['source_workflow_id']}.json")
         if not origin.exists():
             return False

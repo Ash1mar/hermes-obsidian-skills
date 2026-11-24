@@ -51,8 +51,16 @@ def spawn(vault, run_id):
 
 
 def runnable(domain, run_id):
-    return (domain.status(run_id)['state'] == 'active'
-            and IncrementalControl(domain.vault, run_id).status()['state'] == 'active')
+    run = domain.status(run_id)
+    head = IncrementalControl(domain.vault, run_id).status()
+    if run['state'] != 'active' or head['state'] != 'active':
+        return False
+    if 'map_supplement' in run:
+        from incremental_map_supplement import downstream_boundary
+
+        boundary = downstream_boundary(domain, run)
+        return bool(boundary and fingerprint(boundary) in head['released'])
+    return True
 
 
 def resume_run(domain, run_id):
@@ -72,6 +80,8 @@ def sync_sources(domain, run_id):
     import run_short_evidence_test as native
 
     run = domain.status(run_id)
+    if 'map_supplement' in run:
+        return run  # Adopted predecessor evidence is read-only.
     wid = run['source_workflow_id']
     workflow = _load_json(_vault_path(domain.vault, f'_system/ledgers/ingest-workflows/{wid}.json'))
     require(not workflow['cancel_requested'] and workflow['actor'] == run['actor']
@@ -107,6 +117,11 @@ def sync_sources(domain, run_id):
 
 def attach_sources(domain, run_id):
     """Reattach the original source coordinator without resetting its outcomes."""
+    run = domain.status(run_id)
+    if 'map_supplement' in run:
+        domain.map_supplement_lineage(run)
+        return None
+
     from hermes_source_units import FileIngestWorkflowService
     from orchestration import _mutation, dispatch
     from start_vault_workflow import start as provision
@@ -708,9 +723,13 @@ def watch(vault, run_id):
     domain = service(Path(vault), run_id)
     control = IncrementalControl(domain.vault, run_id)
     with _exclusive_lock(domain.root(run_id) / '.controller.lock', timeout=0):
+        initial = domain.status(run_id)
+        supplement = 'map_supplement' in initial
+        if supplement and not runnable(domain, run_id):
+            return initial
         control.reconcile_executors()
         head = control.status()
-        if head['state'] == 'active' and 'mapping' in head.get('pause_after', []):
+        if not supplement and head['state'] == 'active' and 'mapping' in head.get('pause_after', []):
             # A worker may have committed a Map while the old controller was
             # draining another failed future. Restore its checkpoint before dispatch.
             run = domain.status(run_id)
@@ -813,8 +832,9 @@ def closure_inputs(domain, run):
             and all((domain.root(run_id) / 'rounds' / rid / 'settlement.json').is_file() for rid in run['round_ids']),
             'closure requires all original sources and rounds to be settled')
     boards = []
-    workflow = _load_json(_vault_path(domain.vault, f"_system/ledgers/ingest-workflows/{run['source_workflow_id']}.json"))
-    boards.append(workflow['kanban']['board_id'])
+    if 'map_supplement' not in run:
+        workflow = _load_json(_vault_path(domain.vault, f"_system/ledgers/ingest-workflows/{run['source_workflow_id']}.json"))
+        boards.append(workflow['kanban']['board_id'])
     for path in (domain.root(run_id) / 'native').rglob('operation.json'):
         operation = _load_json(path)
         require(operation.get('workflow_mode') == 'incremental_v1'
@@ -831,7 +851,8 @@ def closure_inputs(domain, run):
     # The source watcher observes the last completion independently. Let that
     # ordinary handoff finish, while retaining a bounded, fail-closed drain.
     deadline = time.monotonic() + 30
-    while any(workflow_processes(run['source_workflow_id'], board) for board in boards):
+    owned_workflow = '' if 'map_supplement' in run else run['source_workflow_id']
+    while any(workflow_processes(owned_workflow, board) for board in boards):
         require(time.monotonic() < deadline, 'native consumers still active')
         time.sleep(0.2)
     delivery = None

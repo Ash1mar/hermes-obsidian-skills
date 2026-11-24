@@ -68,8 +68,23 @@ def check_operation(root, operation):
                 and value['stage'] == 'writing' and root.name == grant['operation_id'],
                 'native writing recovery lost its exact round control grant')
     source = _load_json(_vault_path(domain.vault, f"_system/ledgers/ingest-workflows/{run['source_workflow_id']}.json"))
+    source_run = run['run_id']
+    if 'map_supplement' in run:
+        lineage, parent = domain.map_supplement_lineage(run)
+        source_run = parent['run_id']
+        from incremental_map_supplement import downstream_boundary
+
+        if value['stage'] == 'mapping':
+            require(value['scope_kind'] == 'source' and value['scope_id'] == lineage['snapshot_id']
+                    and operation.get('map_supplement') == run['map_supplement']
+                    and operation.get('transport_profile') == 'single-dispatch',
+                    'supplement lost its exact Map scope')
+        else:
+            boundary = downstream_boundary(domain, run)
+            require(boundary and fingerprint(boundary) in controller.status()['released'],
+                    'Map supplement downstream work is not authorized')
     require(not source['cancel_requested'] and source['actor'] == run['actor']
-            and source['scope'].get('incremental_run_id') == run['run_id'], 'incremental source execution stopped')
+            and source['scope'].get('incremental_run_id') == source_run, 'incremental source execution stopped')
     for snapshot_id in value['snapshots']:
         domain.validate_source_snapshot(run['run_id'], snapshot_id)
     require(root.resolve().is_relative_to(domain.root(run['run_id'])), 'native workspace escaped its run')
@@ -79,6 +94,13 @@ def reserve_call(root, row, ordinal, grant):
     operation = _load_json(root / 'operation.json')
     scope = operation['incremental']
     domain = service(Path(operation['vault']), scope['run_id'])
+    if operation.get('map_supplement'):
+        run = domain.status(scope['run_id'])
+        lineage, _ = domain.map_supplement_lineage(run)
+        require(ordinal == 1 and row['id'] == lineage['selected']['request_id']
+                and operation['map_supplement'] == run['map_supplement']
+                and row == read_pin(domain.vault, lineage['selected']['job_pin'])['request'],
+                'Map supplement cannot reserve a second or different request')
     binding = operation.get('writing_amendment') or operation.get('writing_continuation')
     if binding:
         manifest = read_pin(domain.vault, binding)

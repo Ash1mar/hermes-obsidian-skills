@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 import time
 from threading import RLock
 from urllib.parse import parse_qs, urlsplit
@@ -109,6 +110,11 @@ class Console:
     def launch(self, body, run_id=None):
         if not self.config["writable"]:
             raise UserError("当前仅开放历史查看。请在 Hermes 所在的 WSL 中运行控制台。")
+        from incremental_map_preview import (CHILD_BINDING, CONFIRM as MAP_CONFIRM, CONTINUE as MAP_CONTINUE,
+                                             PREVIEW as MAP_PREVIEW, validate_action as validate_map_action)
+
+        if run_id and body.get('action') == MAP_PREVIEW:
+            return self.preview_map_recovery(run_id, body)
         lease = self.lock()
         if lease is None:
             raise UserError("已有控制台任务正在运行，请等待本轮退出后再提交。")
@@ -136,6 +142,8 @@ class Console:
                 if action.startswith('incremental-') and any(body.get(key) != option.get(key)
                         for key in ('control_revision', 'run_revision')):
                     raise UserError('增量运行或控制修订已经变化，请刷新后重试。')
+                if action in (MAP_CONFIRM, MAP_CONTINUE):
+                    validate_map_action(body, option, UserError)
                 if action in ('incremental-closure-preview', 'incremental-closure-confirm') and any(
                         body.get(key) != option.get(key) for key in ('node', 'attempt', 'preview_attempt', 'report_sha256')):
                     raise UserError('结案节点或预览已变化，请刷新后重新核对。')
@@ -207,6 +215,12 @@ class Console:
                 record.update(control_revision=option['control_revision'], run_revision=option['run_revision'])
                 if action == 'incremental-closure-confirm':
                     record.update(preview_attempt=option['preview_attempt'], report_sha256=option['report_sha256'])
+                if action == MAP_CONFIRM:
+                    record.update({key: option[key] for key in ('source_path', 'source_sha256', 'strategy',
+                                                                 'preview_key', 'report_sha256')},
+                                  request_id=body['request_id'])
+                if action == MAP_CONTINUE:
+                    record.update({key: option[key] for key in ('source_path', 'source_sha256', *CHILD_BINDING)})
                 if action == 'incremental-continue-round':
                     record.update(round_id=option['round_id'], boundary_fingerprint=option['boundary_fingerprint'])
                 if action in ('incremental-release-source', 'incremental-retry-source'):
@@ -229,6 +243,58 @@ class Console:
                 save(path, {**record, "returncode": 1, "ended_at": time.time()})
                 raise UserError("无法启动本机执行器，请查看 DevTools。") from error
         return {"id": run_id, "attempt": attempt_id}
+
+    def preview_map_recovery(self, run_id, body):
+        from incremental import entrypoint, root_for
+        from incremental_map_preview import PREVIEW, preview_path, recovery_request, review_binding
+
+        with self.run_lock:
+            directory, historical = self.find(run_id)
+            if historical or self.deletions.pending(run_id):
+                raise UserError('当前运行只供查看，或者正在删除。')
+            snapshot = progress(directory)
+            option = next((action for node in snapshot['nodes'] for action in node['actions']
+                           if action['id'] == PREVIEW and action['node'] == body.get('node')
+                           and action['source_path'] == body.get('source_path')
+                           and action['source_sha256'] == body.get('source_sha256')), None)
+            if option is None:
+                raise UserError('来源身份已变化，请刷新后选择 Map 节点。')
+            request = read(directory / 'request.json')
+            root = root_for(request)
+            operation = recovery_request(request, read(root / 'run.json'), read(root / 'control/head.json'),
+                                         option['source_path'], option['source_sha256'], UserError)
+            try:
+                args = entrypoint(request, self.config)
+            except ValueError as error:
+                raise UserError(str(error)) from error
+        with TemporaryDirectory(prefix='hermes-map-preview-') as scratch:
+            request_path = Path(scratch) / 'request.json'
+            save(request_path, operation)
+            try:
+                process = subprocess.run([*args, 'recover-map', '--request', str(request_path), '--preview'],
+                                         check=False, capture_output=True, timeout=90)
+            except subprocess.TimeoutExpired as error:
+                raise UserError('Map 恢复预览超时，请刷新处理状态后重新核对。') from error
+        if process.returncode:
+            try:
+                diagnostic = json.loads(process.stderr).get('error', '')
+            except (AttributeError, UnicodeError, json.JSONDecodeError):
+                diagnostic = ''
+            raise UserError('Map 恢复预览失败。' + (diagnostic[:1000] if isinstance(diagnostic, str) else ''))
+        report = json.loads(process.stdout)
+        if not review_binding(report, operation, launched=True):
+            raise UserError('Map 恢复报告与当前来源预览不一致。')
+        with self.run_lock:
+            if self.deletions.pending(run_id) or self.find(run_id) != (directory, False):
+                raise UserError('运行已变化，请刷新。')
+            cache = preview_path(directory, operation)
+            cache.parent.mkdir(mode=0o700, exist_ok=True)
+            prior = read(cache).get('request', {})
+            def revisions(bound):
+                return bound.get('run_revision', -1), bound.get('control_revision', -1)
+            if revisions(prior) <= revisions(report['request']):
+                save(cache, report)
+        return {'id': run_id, 'preview': True}
 
     def pause(self, run_id, body):
         import fcntl

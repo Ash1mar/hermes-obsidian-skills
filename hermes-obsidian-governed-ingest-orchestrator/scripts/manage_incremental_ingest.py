@@ -23,13 +23,13 @@ def main():
         sub.add_parser(action).add_argument('--run-id', required=True)
     for action in ('reconcile', 'preview-reuse', 'control', 'recover-coordination', 'recover-delivery', 'retry-source'):
         sub.add_parser(action).add_argument('--request', type=Path, required=True)
-    for action in ('recover-writing', 'recover-closure'):
+    for action in ('recover-writing', 'recover-closure', 'recover-map'):
         recovery = sub.add_parser(action)
         recovery.add_argument('--request', type=Path, required=True)
         recovery.add_argument('--preview', action='store_true')
     args = parser.parse_args()
     try:
-        if args.action in ('start', 'reconcile', 'control', 'recover-coordination', 'recover-delivery', 'retry-source', 'recover-writing', 'recover-closure') and (os.environ.get('HERMES_KANBAN_TASK') or
+        if args.action in ('start', 'reconcile', 'control', 'recover-coordination', 'recover-delivery', 'retry-source', 'recover-writing', 'recover-closure', 'recover-map') and (os.environ.get('HERMES_KANBAN_TASK') or
                                                                 os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT')):
             raise ValueError('incremental operator actions require a trusted operator')
         if args.action == 'start':
@@ -69,18 +69,24 @@ def main():
             elif args.action == 'recover-closure':
                 from incremental_closure import recover
                 result = recover(domain, request, preview=args.preview)
+            elif args.action == 'recover-map':
+                from incremental_map_operator import recover
+                result = recover(domain.vault, request, preview=args.preview)
             elif args.action == 'control':
+                from incremental_map_operator import prepare_child_continuation
+
                 if {'writing_continuation', 'writing_amendment', 'partial_closure'} & request.keys():
                     raise ValueError('bound recovery requires its specific operator entry point')
                 control = IncrementalControl(domain.vault, request['run_id'])
+                run = domain.status(request['run_id'])
+                request = prepare_child_continuation(domain, run, control, request)
                 result = control.control(request)
                 if result['state'] == 'active':
                     from incremental_ingest_controller import resume_run
                     resume_run(domain, request['run_id'])
-                elif result['state'] == 'cancelled':
+                elif result['state'] == 'cancelled' and not run.get('map_supplement'):
                     from native_ingest import control_workflow
                     from hermes_source_units.validation import fingerprint
-                    run = domain.status(request['run_id'])
                     source = domain.vault / '_system/ledgers/ingest-workflows' / (run['source_workflow_id'] + '.json')
                     if source.is_file():
                         control_workflow(domain.vault, run['source_workflow_id'], 'cancel',

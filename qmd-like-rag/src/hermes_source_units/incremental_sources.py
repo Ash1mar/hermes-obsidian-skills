@@ -141,7 +141,9 @@ def verify_mapping_isolation(vault, pointer, workspace, *, run_id, snapshot_id, 
                 require(task.status in ('blocked', 'archived') and run.outcome != 'completed',
                         'mapping isolation cannot replace an active or completed native result')
             if reference := entry.get('evidence'):
-                require(_vault_path(vault, reference['ref']) == workspace / 'mapping-dispositions' / job.name,
+                diagnostics = workspace / 'mapping-dispositions'
+                require(_vault_path(vault, reference['ref']) in (
+                    diagnostics / job.name, diagnostics / f'{job.stem}-attempt-{run.id}.json'),
                         'mapping job diagnostic escaped the original workspace')
                 diagnostic = read_pin(vault, reference)
                 require(all(diagnostic.get(key) == entry[key] for key in ('job', 'task_id', 'run_id', 'state'))
@@ -217,7 +219,7 @@ def verify_native_completion(vault, proof, expected):
             'task_body_sha256': fingerprint(body)}
 
 
-def verify_native_drain(vault, proof, source_workflow_id, boards):
+def verify_native_drain(vault, proof, source_workflow_id, boards, *, source_attached=True):
     """Recheck current queues and actual consumers; a past completion is insufficient."""
     from hermes_cli import kanban_db as kb, kanban_db_connect as kc
     from native_stop_inventory import workflow_processes
@@ -228,7 +230,8 @@ def verify_native_drain(vault, proof, source_workflow_id, boards):
         with closing(completion_connection(board)) as conn:
             require(not any(task.status in ('ready', 'running', 'todo', 'triage') or task.claim_lock
                             for task in kb.list_tasks(conn)), 'native board has unfinished work', 'NATIVE_ACTIVE')
-        require(not workflow_processes(source_workflow_id, board), 'native processes remain active', 'NATIVE_ACTIVE')
+        require(not workflow_processes(source_workflow_id if source_attached else '', board),
+                'native processes remain active', 'NATIVE_ACTIVE')
     return {'source_workflow_id': source_workflow_id, 'boards': sorted(set(boards)), 'verified': True}
 
 

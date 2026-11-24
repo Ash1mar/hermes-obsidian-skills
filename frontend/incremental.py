@@ -140,7 +140,7 @@ def closure_node(directory, root, run, control, rounds, attempts, *, ready, avai
     return node
 
 
-def progress(directory, request, attempts, active, historical, details):
+def progress(directory, request, attempts, active, historical, details, *, legacy_map_retry=False):
     root = root_for(request)
     run = read(root / 'run.json')
     control = read(root / 'control/head.json')
@@ -177,6 +177,7 @@ def progress(directory, request, attempts, active, historical, details):
     source = read(Path(request['vault_path']) / '_system/ledgers/ingest-workflows' / (source_workflow + '.json'))
     from incremental_projection import native_tasks, overall_stages, round_projection, source_pipeline
     from incremental_node_recovery import source_actions
+    from incremental_map_preview import project_map_recovery, recovery_records
     native_cache = {}
     def native_reader(board):
         if board not in native_cache:
@@ -210,6 +211,7 @@ def progress(directory, request, attempts, active, historical, details):
         action.update(node='incremental-control', attempt=latest.get('id'), control_revision=control.get('revision'),
                       run_revision=run.get('revision'))
     source_nodes = []
+    map_recoveries = recovery_records(root)
     for item in sources:
         source_pipeline(item, root, run, control, source, rounds, native_reader=native_reader)
         admission = item['admission']
@@ -223,7 +225,9 @@ def progress(directory, request, attempts, active, historical, details):
                 'source_sha256': admission['sha256']})
         source_actions(item, root, run, control, rounds_by_id, latest.get('id'),
                        writable=not historical and not active and not network_paused and run.get('state') == 'active',
-                       interrupted=controller_active is not True)
+                       interrupted=controller_active is not True, legacy_map_retry=legacy_map_retry)
+        project_map_recovery(directory, root, request, run, control, item, latest, map_recoveries,
+                             preview=not historical, confirm=not historical and not active and controller_active is not True)
         if admission or item['actions']:
             source_nodes.append({'key': node, 'name': item['name'], 'state': item['state'],
                                  'description': '逐文件手动准入；允许处理不会释放暂停边界。',
@@ -254,12 +258,16 @@ def progress(directory, request, attempts, active, historical, details):
     return data
 
 
-def command(directory, attempt, config, save):
-    request = read(directory / 'request.json')
+def entrypoint(request, config):
     script = Path(config['skills_root']) / 'hermes-obsidian-governed-ingest-orchestrator/scripts/manage_incremental_ingest.py'
     if not script.is_file():
         raise ValueError('已安装的 Skill 缺少增量入口。')
-    args = [sys.executable, '-B', str(script), '--vault', request['vault_path']]
+    return [sys.executable, '-B', str(script), '--vault', request['vault_path']]
+
+
+def command(directory, attempt, config, save):
+    request = read(directory / 'request.json')
+    args = entrypoint(request, config)
     if attempt['action'] == 'start':
         return args + ['start', '--request', str(directory / 'request.json'), '--record', str(directory / 'incremental-start.json'),
                        '--bootstrap-skill', str(Path(config['skills_root']) / 'hermes-obsidian-vault-bootstrap')]
@@ -286,6 +294,16 @@ def command(directory, attempt, config, save):
         return args + ['control', '--request', str(path)]
     if not same_revisions:
         raise ValueError('增量运行或控制修订已经变化，请刷新后重试。')
+    from incremental_map_preview import (CONFIRM as MAP_CONFIRM, CONTINUE as MAP_CONTINUE,
+                                         child_continue_request, confirmation_request)
+
+    if attempt['action'] in (MAP_CONFIRM, MAP_CONTINUE):
+        confirming = attempt['action'] == MAP_CONFIRM
+        operation = (confirmation_request(directory, request, run, control, attempt)
+                     if confirming else child_continue_request(root, request, attempt))
+        path = directory / 'attempts' / attempt['id'] / 'incremental-request.json'
+        save(path, operation)
+        return args + ['recover-map' if confirming else 'control', '--request', str(path)]
     operation = {'run_id': request['operation_id'], 'actor': request['actor'], 'operation_id': attempt['id']}
     if attempt['action'] in ('incremental-closure-preview', 'incremental-closure-confirm'):
         if attempt['action'] == 'incremental-closure-preview':
@@ -305,7 +323,8 @@ def command(directory, attempt, config, save):
     if 'scope_token' in attempt:
         from incremental_node_recovery import validate_action
 
-        snapshot = progress(directory, request, [{'id': attempt['prior_attempt']}], False, False, True)
+        snapshot = progress(directory, request, [{'id': attempt['prior_attempt']}], False, False, True,
+                            legacy_map_retry=attempt.get('retry_kind') == 'mapping-unconsumed')
         option = next((action for node in snapshot['nodes'] for action in node['actions']
                        if action['id'] == attempt['action'] and action['node'] == attempt['node']), None)
         if option is None:

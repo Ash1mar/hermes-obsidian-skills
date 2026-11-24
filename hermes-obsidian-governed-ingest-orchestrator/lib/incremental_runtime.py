@@ -58,7 +58,7 @@ def request_path(domain, run_id):
 
 
 def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recovery_id=None, continuation=None,
-                     amendment=None):
+                     amendment=None, map_supplement=None):
     import run_short_evidence_test as native
     from prepare_short_evidence_test import save
     from orchestration import configuration
@@ -72,6 +72,7 @@ def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recove
         require(operation['incremental']['snapshots'] == snapshots, 'incremental workspace inputs changed')
         require(operation.get('writing_continuation') == continuation, 'incremental recovery binding changed')
         require(operation.get('writing_amendment') == amendment, 'incremental amendment binding changed')
+        require(operation.get('map_supplement') == map_supplement, 'Map supplement native scope changed')
         return directory, operation
     run = domain.status(run_id)
     cfg = configuration()
@@ -91,6 +92,10 @@ def initialize_scope(domain, run_id, kind, scope_id, stage, snapshots, *, recove
         require(kind == 'round' and stage == 'writing' and recovery_id is not None and continuation is None,
                 'writing amendment requires its own round writing scope')
         operation['writing_amendment'] = amendment
+    if map_supplement is not None:
+        require(kind == 'source' and stage == 'mapping' and run.get('map_supplement') == map_supplement,
+                'Map supplement requires its authorized source scope')
+        operation.update(map_supplement=map_supplement, transport_profile='single-dispatch')
     kb, _, _ = native.runtime()
     if not any(board['slug'] == operation['board'] for board in kb.list_boards()):
         kb.create_board(operation['board'], name='Incremental ' + scope_id, default_workdir=str(directory))
@@ -194,11 +199,40 @@ def source_alias(run, snapshot):
                          if row['path'] == snapshot['original']['ref']))
 
 
+def commit_reduced_map(domain, run_id, snapshot_id, root, sources, reduced, proofs, receipts, **extra):
+    from prepare_short_evidence_test import save
+    import run_short_evidence_test as native
+
+    reduced_path = root / 'mapped.json'
+    save(reduced_path, reduced)
+    aliases = {key: {'unit_ref': item['source_ref']['unit_ref'], 'sha256': item['sha256'],
+                     'snapshot_id': snapshot_id} for source in sources.values() for key, item in source['items'].items()}
+    coverage = [{'unit_ref': item['source_ref']['unit_ref'],
+                 'disposition': {'linked': 'mapped', 'excluded': 'excluded'}.get(
+                     reduced['dispositions'][key]['status'], 'held'),
+                 'reason': reduced['dispositions'][key].get('reason', 'source Map coverage disposition')}
+                for source in sources.values() for key, item in source['items'].items()]
+    summary = fingerprint({'snapshot': snapshot_id, 'reduced': native.sha(reduced_path)})
+    budget = mutate(domain, run_id, 'reserve_budget', 'map-budget-' + summary[:48], reservation={
+        'request_fingerprint': summary, 'phase': 'mapping', 'max_calls': 0, 'max_input_tokens': 0, 'max_output_tokens': 0})
+    usage_path = root / 'usage' / 'map-summary.json'
+    _write_atomic(usage_path, _json_bytes({'request_fingerprint': summary,
+                                         'actual': {'calls': 0, 'input_tokens': 0, 'output_tokens': 0}}))
+    mutate(domain, run_id, 'settle_budget', 'map-summary-' + summary[:48], budget_id=budget['budget_id'],
+           actual={'calls': 0, 'input_tokens': 0, 'output_tokens': 0}, usage=pinned(domain.vault, usage_path.relative_to(domain.vault).as_posix()))
+    return mutate(domain, run_id, 'commit_source_map', 'map-' + snapshot_id[-56:], snapshot_id=snapshot_id,
+        budget_id=budget['budget_id'], request_fingerprint=summary, native_completion=proofs[-1]['proof'],
+        task_body=proofs[-1]['task_body'], native_completions=proofs, alias_table=aliases, coverage=coverage,
+        results=[pinned(domain.vault, reduced_path.relative_to(domain.vault).as_posix()), *receipts],
+        unresolved=reduced.get('unresolved', []), **extra)
+
+
 def map_source(vault, run_id, snapshot_id):
     import run_short_evidence_test as native
     from incremental_map_recovery import (MapAdmissionDeferred, execute_map_rows, inspect_map_rows,
                                           required_hold_reason, source_execution_hold)
-    from prepare_short_evidence_test import advance, save
+    from incremental_source_retry import execute_selected_retries
+    from prepare_short_evidence_test import advance
     from short_page_contract import CONTRACT as PAGE_CONTRACT
 
     domain = service(Path(vault), run_id)
@@ -225,6 +259,8 @@ def map_source(vault, run_id, snapshot_id):
         for source in sources.values():
             source['incremental_snapshot_id'] = snapshot_id
         seeds, groups = seed_requests(sources), mapping_groups(sources, MAP_CONTRACT)
+        if not execute_selected_retries(domain, run_id, root, operation, control):
+            return MAPPING_DEFERRED
         recorded = []
         for path in sorted((root / 'jobs').glob('*.json')):
             if len(path.stem) != 64 or any(character not in '0123456789abcdef' for character in path.stem):
@@ -272,30 +308,10 @@ def map_source(vault, run_id, snapshot_id):
             proofs.append({'proof': proof, 'task_body': json.loads(native.task_body(root, path))})
             receipt = root / 'receipts' / path.name
             receipts.append(pinned(domain.vault, receipt.relative_to(domain.vault).as_posix()))
-        reduced_path = root / 'mapped.json'
-        save(reduced_path, plan['reduced'])
         execution_hold = ({'execution_hold': source_execution_hold(domain, run_id, root, operation, holds, 'partial')}
                           if holds else {})
-        aliases = {key: {'unit_ref': item['source_ref']['unit_ref'], 'sha256': item['sha256'],
-                         'snapshot_id': snapshot_id} for source in sources.values() for key, item in source['items'].items()}
-        coverage = [{'unit_ref': item['source_ref']['unit_ref'],
-                     'disposition': {'linked': 'mapped', 'excluded': 'excluded'}.get(
-                         plan['reduced']['dispositions'][key]['status'], 'held'),
-                     'reason': plan['reduced']['dispositions'][key].get('reason', 'source Map coverage disposition')}
-                    for source in sources.values() for key, item in source['items'].items()]
-        summary = fingerprint({'snapshot': snapshot_id, 'reduced': native.sha(reduced_path)})
-        budget = mutate(domain, run_id, 'reserve_budget', 'map-budget-' + summary[:48], reservation={
-            'request_fingerprint': summary, 'phase': 'mapping', 'max_calls': 0, 'max_input_tokens': 0, 'max_output_tokens': 0})
-        usage_path = root / 'usage' / 'map-summary.json'
-        _write_atomic(usage_path, _json_bytes({'request_fingerprint': summary,
-                                             'actual': {'calls': 0, 'input_tokens': 0, 'output_tokens': 0}}))
-        mutate(domain, run_id, 'settle_budget', 'map-summary-' + summary[:48], budget_id=budget['budget_id'],
-               actual={'calls': 0, 'input_tokens': 0, 'output_tokens': 0}, usage=pinned(domain.vault, usage_path.relative_to(domain.vault).as_posix()))
-        return mutate(domain, run_id, 'commit_source_map', 'map-' + snapshot_id[-56:], snapshot_id=snapshot_id,
-            budget_id=budget['budget_id'], request_fingerprint=summary, native_completion=proofs[-1]['proof'],
-            task_body=proofs[-1]['task_body'], native_completions=proofs, alias_table=aliases, coverage=coverage,
-            results=[pinned(domain.vault, reduced_path.relative_to(domain.vault).as_posix()), *receipts],
-            unresolved=plan['reduced'].get('unresolved', []), **execution_hold)
+        return commit_reduced_map(domain, run_id, snapshot_id, root, sources, plan['reduced'], proofs, receipts,
+                                  **execution_hold)
 
 
 def qualify(domain, run_id, snapshot_id):
