@@ -90,8 +90,13 @@ def retry_evidence(root, operation, job, row, task, runs, *, released=False):
 
 
 def verify_retry(root, operation, job, task, runs):
-    row = _load_json(job)['request']
+    from incremental_source_retry import RELEASE, verify_selected_release
+
     intent = _load_json(root / 'map-retries' / job.name)
+    if intent.get('contract') == RELEASE:
+        verify_selected_release(root, operation, job, task, runs, intent)
+        return
+    row = _load_json(job)['request']
     require(retry_evidence(root, operation, job, row, task, runs, released=task.status == 'ready') == intent,
             'automatic Map retry no longer has its exact zero-send evidence')
 
@@ -115,6 +120,8 @@ def save_hold(root, operation, job, task, native, *, result=None):
     if receipt.is_file():
         record['observed_receipt'] = job_pin(operation, receipt)
     path = root / 'mapping-dispositions' / job.name
+    if path.is_file() and _load_json(path)['run_id'] != native.id:
+        path = path.with_name(f'{job.stem}-attempt-{native.id}.json')
     save(path, record)
     return {'request_id': job.stem, 'reason': reason, 'evidence': job_pin(operation, path),
             'job': record['job'], 'task_id': task.id, 'run_id': native.id, 'state': state,

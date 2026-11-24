@@ -30,11 +30,12 @@ ID = re.compile(r'[A-Za-z0-9_.:-]{1,160}\Z')
 
 
 def policy(profile='shared'):
-    if profile not in ('shared', 'paced', 'concentrated'):
+    if profile not in ('shared', 'paced', 'concentrated', 'single-dispatch'):
         raise ValueError('unknown fixed model admission profile')
     return {'profile': profile, 'min_interval': 0 if profile == 'concentrated' else 1,
             'max_inflight': 5 if profile == 'paced' else 10, 'overload_inflight': 5,
-            'recover_after_successes': 5, 'max_wait_seconds': MAX_WAIT, 'max_retries': MAX_RETRIES}
+            'recover_after_successes': 5, 'max_wait_seconds': MAX_WAIT,
+            'max_retries': 0 if profile == 'single-dispatch' else MAX_RETRIES}
 
 
 def transport_context(context, prepared):

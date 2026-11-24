@@ -426,6 +426,7 @@ def run_job(root, job, own):
     drafts = {}
     coordination_repair = original['view'].get('coordination_repair')
     ordinals = ((1,) if original['view'].get('fragment_repair') or operation.get('writing_continuation')
+                or operation.get('map_supplement')
                 or coordination_repair else (1, 2))
     if (incremental and operation['incremental']['stage'] == 'mapping'
             and job.with_name(job.stem + '.attempt-1.json').exists()):
@@ -836,6 +837,9 @@ def stage(root, operation, rows, capacity, *, resumed=False, replay=False, entry
                     require(prior and prior.body == body and prior.created_by == CONTRACT,
                             'automatic retry cannot change the original native Map task')
                     verify_retry(root, operation, job, prior, kb.list_runs(conn, tid, include_active=False))
+                    if not active_admission(operation):
+                        pending.insert(0, job)
+                        break
                     if prior.status == 'blocked':
                         require(kb.unblock_task(conn, tid), 'original Map task could not be released for its bounded retry')
                 task = kb.get_task(conn, tid)

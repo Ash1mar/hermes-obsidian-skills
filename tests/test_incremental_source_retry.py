@@ -106,6 +106,7 @@ def test_preparation_retry_claim_preserves_original_and_is_bound_to_one_native_r
 
 
 def fixture(tmp_path,monkeypatch):
+    import incremental_map_recovery
     import run_short_evidence_test as native
     import native_stop_inventory
     import ingest_kanban
@@ -116,7 +117,7 @@ def fixture(tmp_path,monkeypatch):
     snapshot_id='snapshot-a'
     root=tmp_path/'_system/ledgers/incremental-ingest'/run_id
     workspace=root/'native/source'/snapshot_id/'mapping'
-    operation={'contract':native.CONTRACT,'workflow_mode':'incremental_v1','vault':str(tmp_path),'actor':'operator','board':'retry-board','incremental':{'run_id':run_id,'scope_kind':'source','scope_id':snapshot_id,'stage':'mapping','snapshots':[snapshot_id]}}
+    operation={'contract':native.CONTRACT,'workflow_mode':'incremental_v1','vault':str(tmp_path),'actor':'operator','board':'retry-board','pass_capacity':1,'incremental':{'run_id':run_id,'scope_kind':'source','scope_id':snapshot_id,'stage':'mapping','snapshots':[snapshot_id]}}
     _write_atomic(workspace/'operation.json',_json_bytes(operation))
     row={'id':'request-a','phase':'short-topics'}
     job=workspace/'jobs/request-a.json'
@@ -133,7 +134,9 @@ def fixture(tmp_path,monkeypatch):
     monkeypatch.setattr(module,'controller_alive',lambda _:False)
     monkeypatch.setattr(module,'completion_connection',lambda _:SimpleNamespace(close=lambda:None))
     monkeypatch.setattr(native_stop_inventory,'workflow_processes',lambda *_:[])
-    kb=SimpleNamespace(list_tasks=lambda _: [task],list_runs=lambda *_a,**_k:[ended])
+    monkeypatch.setattr(incremental_map_recovery, 'count_sends', lambda *_: 0)
+    kb=SimpleNamespace(list_tasks=lambda *_, **_kw: [task], list_runs=lambda *_a,**_k:[ended],
+                       get_task=lambda *_: task)
     monkeypatch.setattr(native,'runtime',lambda:(kb,None,None))
     unblocked=[]
     def unblock(board,tid):
@@ -143,6 +146,125 @@ def fixture(tmp_path,monkeypatch):
     monkeypatch.setattr(ingest_kanban,'KanbanCLI',lambda:SimpleNamespace(unblock=unblock))
     request={'run_id':run_id,'actor':'operator','operation_id':'retry-a','control_revision':5,'run_revision':7,'source_path':path,'source_sha256':raw_hash,'retry_kind':module.KIND}
     return SimpleNamespace(domain=domain,run=run,control=control,request=request,root=root,workspace=workspace,job=job,row=row,task=task,ended=ended,unblocked=unblocked)
+
+
+def selected_request(item):
+    request_ids = [item.row['id']]
+    preview = module.recovery_inventory(item.domain, item.request['run_id'], item.request['source_path'],
+                                        request_ids=request_ids)
+    return {**item.request, 'request_ids': request_ids, 'evidence_fingerprint': preview['evidence_fingerprint']}
+
+
+def test_selected_paused_approval_waits_for_mapping_authority_and_claims_once(tmp_path, monkeypatch):
+    import incremental_map_recovery as recovery
+    import run_short_evidence_test as native
+
+    item = fixture(tmp_path, monkeypatch)
+    item.ended.metadata = {'trigger_outcome': recovery.TRANSIENT_OUTCOME}
+    request = selected_request(item)
+    receipt = module.retry(tmp_path, request)
+    assert receipt['state'] == 'approved' and receipt['task_ids'] == ['native-a'] and not receipt['pause_released']
+    assert item.task.status == 'blocked' and item.unblocked == []
+    control = module.IncrementalControl(tmp_path, request['run_id'])
+    operation = json.loads((item.workspace / 'operation.json').read_bytes())
+    dispatched = []
+    kb, _, _ = native.runtime()
+    runs = [item.ended]
+    monkeypatch.setattr(kb, 'list_runs', lambda *a, **kw: runs)
+
+    def stage(workspace, op, rows, capacity, *, mapping_retries):
+        assert (workspace, op, rows, mapping_retries) == (item.workspace, operation, [item.row], {item.row['id']})
+        recovery.verify_retry(workspace, op, item.job, item.task, runs)
+        dispatched.append(item.task.id)
+        runs.append(SimpleNamespace(id=4, ended_at=2))
+
+    monkeypatch.setattr(native, 'stage', stage)
+    assert not module.execute_selected_retries(item.domain, request['run_id'], item.workspace, operation, control)
+    assert dispatched == [] and not (item.workspace / 'map-retries' / item.job.name).exists()
+    item.control.update(state='active', boundary=None, revision=6)
+    assert module.execute_selected_retries(item.domain, request['run_id'], item.workspace, operation, control)
+    assert module.execute_selected_retries(item.domain, request['run_id'], item.workspace, operation, control)
+    assert dispatched == ['native-a']
+    assert module.authorize_selected(tmp_path, request) == receipt
+
+
+@pytest.mark.parametrize('sends,code', [(None, 'HTTP_UNKNOWN'), (1, 'HTTP_SENT')])
+def test_selected_inventory_requires_a_known_zero_physical_send(tmp_path, monkeypatch, sends, code):
+    import incremental_map_recovery as recovery
+
+    item = fixture(tmp_path, monkeypatch)
+    item.ended.metadata = {'trigger_outcome': recovery.TRANSIENT_OUTCOME}
+    monkeypatch.setattr(recovery, 'count_sends', lambda *_: sends)
+    data = module.recovery_inventory(item.domain, item.request['run_id'], item.request['source_path'])
+    assert not data['eligible'] and data['isolated'][0]['reason_code'] == code
+    assert item.task.status == 'blocked'
+
+
+def test_recovery_review_isolates_unrelated_consumed_sibling(tmp_path, monkeypatch):
+    import incremental_map_recovery as recovery
+    import run_short_evidence_test as native
+
+    item = fixture(tmp_path, monkeypatch)
+    item.ended.metadata = {'trigger_outcome': recovery.TRANSIENT_OUTCOME}
+    sibling = item.job.with_name('request-b.json')
+    _write_atomic(sibling, _json_bytes({'request': {**item.row, 'id': 'request-b'}}))
+    task = SimpleNamespace(**{**vars(item.task), 'id': 'native-b', 'body': native.task_body(item.workspace, sibling)})
+    kb, _, _ = native.runtime()
+    monkeypatch.setattr(kb, 'list_tasks', lambda *a, **kw: [item.task, task])
+    monkeypatch.setattr(recovery, 'count_sends', lambda _, task_id: int(task_id == 'native-b'))
+    report = module.recovery_inventory(item.domain, item.request['run_id'], item.request['source_path'])
+    assert [row['request_id'] for row in report['eligible']] == [item.row['id']]
+    assert [(row['request_id'], row['reason_code']) for row in report['isolated']] == [('request-b', 'HTTP_SENT')]
+    accepted = module.retry(tmp_path, selected_request(item))
+    assert accepted['task_ids'] == [item.task.id] and item.unblocked == []
+
+
+def test_legacy_wal_recovery_requires_exact_bound_trace_and_current_access(tmp_path, monkeypatch):
+    import os
+    import run_short_evidence_test as native
+
+    item = fixture(tmp_path, monkeypatch)
+    item.ended.started_at = 100
+    item.ended.ended_at = 103
+    item.ended.worker_pid = 99
+    item.ended.metadata = {'trigger_outcome': 'worker_exited'}
+    item.ended.error = 'native worker exited before acknowledgement'
+    seal_path = tmp_path / 'source-seal.json'
+    _write_atomic(seal_path, _json_bytes({'native_completion': {'board': 'preparation-board'}}))
+    item.run['sources'][item.request['source_path']]['seal'] = module.pinned(tmp_path, seal_path.name)
+    boards = tmp_path / 'kanban'
+    source_board = boards / 'preparation-board'
+    source_board.mkdir(parents=True)
+    (source_board / 'kanban.db').touch()
+    log = boards / 'retry-board' / 'logs' / 'native-a.log'
+    log.parent.mkdir(parents=True)
+    kb, _, _ = native.runtime()
+    monkeypatch.setattr(kb, 'board_dir', lambda board: boards / board, raising=False)
+    frames = [
+        ('run_short_evidence_test.py', 'worker'), ('run_short_evidence_test.py', 'own'),
+        ('run_short_evidence_test.py', 'live'), ('incremental_native.py', 'check_operation'),
+        ('incremental_ingest.py', 'validate_source_snapshot'), ('incremental_sources.py', 'verify_native_completion'),
+        ('incremental_sources.py', 'completion_connection'), ('kanban_db_connect.py', 'connect'),
+        ('hermes_state_repair.py', 'preflight_db_writability'),
+    ]
+    prefix = 'Traceback (most recent call last):\n' + ''.join(
+        f'  File "/runtime/{name}", line 1, in {function}\n    run()\n' for name, function in frames)
+    error = ('sqlite3.OperationalError: kanban.db (kanban.db) is not writable: file '
+             f'{source_board / "kanban.db-wal"} is read-only for this user.')
+
+    def scan(text):
+        log.write_text(text + '\n', encoding='utf-8')
+        os.utime(log, (101, 101))
+        return module.recovery_inventory(item.domain, item.request['run_id'], item.request['source_path'])
+
+    data = scan(prefix + error)
+    target, = data['eligible']
+    assert target['reason_code'] == 'LEGACY_WAL_PRECALL'
+    assert target['legacy_preflight']['worker_log']['sha256'] == module._sha(log.read_bytes())
+    assert not scan(prefix.replace('in check_operation', 'in run_job') + error)['eligible']
+    assert not scan(prefix + error.replace(str(source_board), str(boards / 'other')))['eligible']
+    monkeypatch.setattr(module.os, 'access', lambda *_: False)
+    assert not scan(prefix + error)['eligible']
 
 
 def test_paused_retry_unblocks_same_task_without_releasing_boundary_or_reserving_calls(tmp_path,monkeypatch):

@@ -3,7 +3,7 @@ from incremental import fingerprint
 from incremental_projection import read
 
 
-def source_actions(item, root, run, control, rounds, latest, *, writable, interrupted):
+def source_actions(item, root, run, control, rounds, latest, *, writable, interrupted, legacy_map_retry=False):
     """Project review scopes even when the original run is terminal."""
     identity = {'source_path': item['path'], 'source_sha256': item['source_sha256']}
     node = 'incremental-source-' + fingerprint({'path': item['path'], 'sha256': item['source_sha256']})[:24]
@@ -36,7 +36,7 @@ def source_actions(item, root, run, control, rounds, latest, *, writable, interr
         elif key == 'mapping':
             snapshot = item.get('snapshot_id')
             phase['recovery_scopes'] = [{'snapshot_id': snapshot, 'map_result_id': item.get('map_result_id')}] if snapshot else []
-            if item['retry']['allowed'] and (paused or interrupted):
+            if legacy_map_retry and item['retry']['allowed'] and (paused or interrupted):
                 offer({'snapshot_id': snapshot, 'request_ids': sorted(item['retry']['request_ids'])},
                       'incremental-retry-source', '恢复此文件映射', retry_kind=item['retry']['retry_kind'])
             if paused and boundary.get('stage') == key and boundary_scope == {'scope_kind': 'source', 'scope_id': snapshot}:

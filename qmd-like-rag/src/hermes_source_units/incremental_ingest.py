@@ -13,6 +13,7 @@ from .validation import ContractError, fingerprint
 ROOT = '_system/ledgers/incremental-ingest'
 REPORTS = '_system/reports/incremental-ingest'
 MODE = 'incremental_v1'
+MAP_SUPPLEMENT = 'incremental-map-supplement/v1'
 CONTRACTS = {'run': 'incremental-run/v1', 'snapshot': 'incremental-source-snapshot/v1',
              'seal': 'incremental-source-seal/v1', 'map': 'incremental-map-result/v1',
              'round': 'incremental-round-input/v1', 'control': 'incremental-control/v1'}
@@ -153,10 +154,114 @@ class FileIncrementalIngestService:
                 require(existing['start_fingerprint'] == initial['start_fingerprint'], 'run key identifies different scope',
                         'IDEMPOTENCY_CONFLICT')
                 return existing
+            if 'map_supplement' in request:
+                initial['map_supplement'] = request['map_supplement']
+                lineage, predecessor = self.map_supplement_lineage(initial)
+                source_path = lineage['request']['source_path']
+                require(sources == [{'path': source_path, 'sha256': lineage['request']['source_sha256']}]
+                        and budgets == lineage['budget']
+                        and lineage['parent_run'] == pinned(self.vault, (self.root(predecessor['run_id']) / 'run.json')
+                                                             .relative_to(self.vault).as_posix())
+                        and lineage['parent_control'] == pinned(self.vault, (self.root(predecessor['run_id']) / 'control/head.json')
+                                                                 .relative_to(self.vault).as_posix()),
+                        'Map supplement changed its fixed source, original revision or budget')
+                snapshot_id = predecessor['sources'][source_path]['snapshot_id']
+                self.validate_source_snapshot(predecessor['run_id'], snapshot_id)
+                prior = predecessor['sources'][source_path]
+                initial['sources'][source_path] = {key: prior[key] for key in
+                                                  ('snapshot_id', 'snapshot', 'seal', 'source_outcome')}
+                initial['sources'][source_path]['state'] = 'prepared'
             self._admit(initial, 'start', 'run', run_id, request)
             self._immutable(self.root(run_id) / 'start-request.json', request)
+            if 'map_supplement' in initial:
+                self._immutable(self._supplement_index(predecessor['run_id']) / (run_id + '.json'), {
+                    'contract': MAP_SUPPLEMENT, 'run_id': run_id, 'authorization': initial['map_supplement']})
             _write_atomic(path, _json_bytes(initial))
             return initial
+
+    def map_supplement_lineage(self, run):
+        """Authenticate the immutable authorization and original source hold."""
+        pointer = run['map_supplement']
+        expected = self.root(run['run_id']) / 'map-supplement.json'
+        require(pointer['ref'] == expected.relative_to(self.vault).as_posix(),
+                'Map supplement authorization escaped its child run')
+        lineage = read_pin(self.vault, pointer)
+        request = lineage['request']
+        parent_id = safe_id(request['run_id'])
+        require(parent_id != run['run_id'] and lineage['contract'] == MAP_SUPPLEMENT
+                and lineage['supplement_run_id'] == run['run_id']
+                and request['actor'] == run['actor'], 'Map supplement identity differs')
+        parent = self.status(parent_id)
+        source = parent['sources'].get(request['source_path'], {})
+        require('map_supplement' not in parent and parent['actor'] == run['actor']
+                and parent['state'] in ('active', 'partial')
+                and parent['revision'] >= request['run_revision']
+                and parent['start_fingerprint'] == lineage['parent_start_fingerprint']
+                and parent['source_workflow_id'] == run['source_workflow_id']
+                and source.get('state') == 'mapping_held'
+                and source['snapshot_id'] == lineage['snapshot_id']
+                and {key: source[key] for key in ('snapshot', 'seal')} == lineage['parent_source']
+                and source['mapping_hold'].get('execution_hold') == lineage['original_hold'],
+                'original Map hold or source identity changed', 'STALE_INPUT')
+        if lineage['parent_closure']:
+            require(parent['state'] == 'partial' and parent['closure'] == lineage['parent_closure'],
+                    'original terminal closure changed', 'STALE_INPUT')
+            read_pin(self.vault, lineage['parent_closure'])
+        read_pin(self.vault, lineage['original_hold'])
+        return lineage, parent
+
+    def _supplement_index(self, run_id):
+        return _vault_path(self.vault, '_system/metadata/incremental-map-supplements/' + safe_id(run_id))
+
+    def _accounting_run(self, run_id):
+        """Include an acknowledged reservation left in an unsealed journal prefix."""
+        value = self.status(run_id)
+        for path in (self.root(run_id) / 'operations').glob('*.json'):
+            entry = _load_json(path)
+            if entry['state'] != 'prepared':
+                continue
+            proposed = entry['run_after']
+            require(proposed == value or fingerprint(value) == entry['run_before_fingerprint'],
+                    'pending linked budget no longer matches its run', 'REVISION_CONFLICT')
+            value = proposed
+        return value
+
+    def _check_linked_budget(self, run, reservation):
+        # Called under the same Vault mutation lock by both originals and supplements.
+        if 'map_supplement' in run:
+            _, parent = self.map_supplement_lineage(run)
+            parent = self._accounting_run(parent['run_id'])
+        else:
+            parent = run
+        owners = sorted(self._supplement_index(parent['run_id']).glob('*.json'))
+        if not owners:
+            return
+        states = [parent]
+        for path in owners:
+            row = _load_json(path)
+            child_id = safe_id(row['run_id'])
+            require(path.stem == child_id and row['contract'] == MAP_SUPPLEMENT,
+                    'unknown linked Map budget identity')
+            if not (self.root(child_id) / 'run.json').is_file():
+                continue  # No child reservation can exist until its start commits.
+            child = run if child_id == run['run_id'] else self._accounting_run(child_id)
+            lineage = read_pin(self.vault, child['map_supplement'])
+            require(child['map_supplement'] == row['authorization']
+                    and lineage['request']['run_id'] == parent['run_id'], 'linked Map budget owner changed')
+            states.append(child)
+        spent = dict.fromkeys(('calls', 'input_tokens', 'output_tokens'), 0)
+        phase_calls = 0
+        for state in states:
+            for row in state['reservations'].values():
+                actual = row['actual'] if row['state'] == 'settled' else {k: row['max_' + k] for k in spent}
+                for field in spent:
+                    spent[field] += actual[field]
+                if row['phase'] == reservation['phase']:
+                    phase_calls += actual['calls']
+        cap = parent['budget']
+        require(all(used + reservation['max_' + field] <= cap['max_' + field] for field, used in spent.items())
+                and phase_calls + reservation['max_calls'] <= cap['phase_limits'][reservation['phase']],
+                'linked original and supplement budget exhausted', 'BUDGET_EXHAUSTED')
 
     def seal_source_snapshot(self, request):
         path = request['source_path']
@@ -331,6 +436,7 @@ class FileIncrementalIngestService:
                     sum(row['max_calls'] for row in run['reservations'].values() if row['phase'] == phase)
                     + reservation['max_calls'] <= run['budget']['phase_limits'][phase],
                     'phase call budget exhausted', 'BUDGET_EXHAUSTED')
+            self._check_linked_budget(run, reservation)
             # Exact unchanged semantic work cannot obtain a fresh call budget by
             # creating another run. Reuse its verified result or keep unknown
             # consumption unresolved under the original operation.
@@ -364,6 +470,54 @@ class FileIncrementalIngestService:
 
         return self._mutate(request, 'settle-budget', 'run', request['run_id'], update)
 
+    def _map_completions(self, run, snapshot_id, proofs, results):
+        if 'map_supplement' not in run:
+            return [{**self.native_evidence(self.vault, row['proof'], {
+                'task_body': row['task_body'], 'run_id': run['run_id'], 'snapshot_id': snapshot_id}),
+                'proof': row['proof'], 'task_body': row['task_body']} for row in proofs]
+
+        lineage, parent = self.map_supplement_lineage(run)
+        selected = lineage['selected']
+        request_id = safe_id(selected['request_id'])
+        historical = {row['request_id']: row for row in lineage['completed']}
+        require(len(historical) == len(lineage['completed']) and request_id not in historical
+                and len(proofs) == len(historical) + 1, 'Map supplement altered the bound request set')
+        workspace = self.root(run['run_id']) / 'native/source' / safe_id(snapshot_id) / 'mapping'
+        reduced = workspace / 'mapped.json'
+        require(results[0]['ref'] == reduced.relative_to(self.vault).as_posix(), 'Map supplement reduction escaped its scope')
+        original_workspace = self.root(parent['run_id']) / 'native/source' / snapshot_id / 'mapping'
+        seen, receipts, completions = set(), {}, []
+        for row in proofs:
+            proof = row['proof']
+            job = read_pin(self.vault, proof['request'])
+            result = read_pin(self.vault, proof['result'])
+            key = safe_id(job['request']['id'])
+            require(key not in seen and result['state'] == 'settled', 'Map supplement producer is duplicated or unsettled')
+            seen.add(key)
+            if key == request_id:
+                location, run_id = workspace, run['run_id']
+                require(job == read_pin(self.vault, selected['job_pin'])
+                        and _load_json(workspace / 'operation.json').get('map_supplement') == run['map_supplement'],
+                        'Map supplement producer changed the original request or authorization')
+            else:
+                location, run_id = original_workspace, parent['run_id']
+                require(key in historical and proof == historical[key]['proof'],
+                        'Map supplement producer is not an authenticated original result')
+            job_path = location / 'jobs' / (key + '.json')
+            require(proof['request']['ref'] == job_path.relative_to(self.vault).as_posix()
+                    and proof['result']['ref'] == job_path.with_suffix('.result.json').relative_to(self.vault).as_posix(),
+                    'Map supplement producer escaped its native workspace')
+            receipt = pinned(self.vault, (location / 'receipts' / job_path.name).relative_to(self.vault).as_posix())
+            require(key == request_id or receipt == historical[key]['receipt'], 'original Map receipt changed')
+            receipts[key] = receipt
+            completions.append({**self.native_evidence(self.vault, proof, {
+                'task_body': row['task_body'], 'run_id': run_id, 'snapshot_id': snapshot_id}),
+                'proof': proof, 'task_body': row['task_body'], 'producer_run_id': run_id})
+        require(set(historical) | {request_id} == seen
+                and results[1:] == [receipts[key] for key in sorted(receipts)],
+                'Map supplement receipts differ from their exact mixed lineage')
+        return completions
+
     def commit_source_map(self, request):
         def update(run, grant):
             snapshot = self.validate_source_snapshot(run['run_id'], request['snapshot_id'])
@@ -374,9 +528,6 @@ class FileIncrementalIngestService:
             proofs = request.get('native_completions') or [{'proof': request['native_completion'],
                                                           'task_body': request['task_body']}]
             require(proofs, 'all mapped native completions must be provided')
-            completions = [{**self.native_evidence(self.vault, row['proof'], {
-                'task_body': row['task_body'], 'run_id': run['run_id'], 'snapshot_id': snapshot['snapshot_id']}),
-                'proof': row['proof'], 'task_body': row['task_body']} for row in proofs]
             aliases = request['alias_table']
             expected_units = {fingerprint(row['unit_ref']): row['sha256'] for row in snapshot['units']}
             require(aliases and all(row['snapshot_id'] == snapshot['snapshot_id']
@@ -392,6 +543,7 @@ class FileIncrementalIngestService:
             require(results, 'native mapping results required')
             for pointer in results:
                 read_pin(self.vault, pointer)
+            completions = self._map_completions(run, snapshot['snapshot_id'], proofs, results)
             record = {'contract': CONTRACTS['map'], 'snapshot_id': snapshot['snapshot_id'],
                       'request_fingerprint': request['request_fingerprint'], 'alias_table': aliases,
                       'results': results, 'coverage': coverage, 'unresolved': request.get('unresolved', []),
@@ -419,9 +571,9 @@ class FileIncrementalIngestService:
         require(value['map_result_id'] == 'map-' + fingerprint({k: v for k, v in value.items() if k != 'map_result_id'}),
                 'mapping result fingerprint changed', 'SOURCE_CHANGED')
         self.validate_source_snapshot(run_id, value['snapshot_id'])
-        for completion in value['native_completions']:
-            self.native_evidence(self.vault, completion['proof'], {'task_body': completion['task_body'],
-                'run_id': run_id, 'snapshot_id': value['snapshot_id']})
+        completions = self._map_completions(run, value['snapshot_id'], value['native_completions'], value['results'])
+        if 'map_supplement' in run:
+            require(completions == value['native_completions'], 'Map supplement producer attribution changed')
         for pointer in value['results']:
             read_pin(self.vault, pointer)
         if 'execution_hold' in value:
@@ -521,16 +673,21 @@ class FileIncrementalIngestService:
             proof = request.get('native_drained')
             require(isinstance(proof, dict), 'native drain proof required')
             origin = _load_json(_vault_path(self.vault, f"_system/ledgers/ingest-workflows/{run['source_workflow_id']}.json"))
-            boards = {origin['kanban']['board_id']}
+            supplement = 'map_supplement' in run
+            boards = set() if supplement else {origin['kanban']['board_id']}
             for result in maps:
-                boards.update(row['board'] for row in result['native_completions'])
+                boards.update(row['board'] for row in result['native_completions']
+                              if row.get('producer_run_id', run['run_id']) == run['run_id'])
             for path in (self.root(run['run_id']) / 'native').rglob('operation.json'):
                 operation = _load_json(path)
                 require(operation.get('workflow_mode') == MODE
                         and operation.get('incremental', {}).get('run_id') == run['run_id'],
                         'native execution scope changed')
                 boards.add(operation['board'])
-            drain = verify_native_drain(self.vault, proof, run['source_workflow_id'], boards)
+            if supplement:
+                drain = verify_native_drain(self.vault, proof, run['source_workflow_id'], boards, source_attached=False)
+            else:
+                drain = verify_native_drain(self.vault, proof, run['source_workflow_id'], boards)
             final_delivery = request.get('final_delivery')
             delivered = [row for row in settlements if row['state'] == 'delivered']
             if delivered:
