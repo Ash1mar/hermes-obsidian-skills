@@ -2,6 +2,8 @@
 from pathlib import Path
 import sys
 
+import pytest
+
 from test_p3_knowledge_build import vault
 
 
@@ -9,7 +11,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'hermes-obsidian-governed-ingest-orchestrator/scripts'))
 
 
-def test_directed_map_supplement_preserves_parent_and_replays_confirmation(vault, monkeypatch):
+@pytest.mark.parametrize('execution_scope', [None, 'automatic'])
+def test_directed_map_supplement_preserves_parent_and_replays_confirmation(vault, monkeypatch, execution_scope):
+    import incremental_ingest_controller as controller
+    import incremental_map_operator as operator
     import incremental_native
     import incremental_map_supplement as supplement
     import run_short_evidence_test as native
@@ -56,6 +61,7 @@ def test_directed_map_supplement_preserves_parent_and_replays_confirmation(vault
                                             native_evidence=native_completion)
 
     monkeypatch.setattr(supplement, 'service', service)
+    monkeypatch.setattr(operator, 'service', service)
     monkeypatch.setattr(incremental_native, 'service', service)
     monkeypatch.setattr(IncrementalControl, 'sources_active', lambda self: False)
     domain = service(vault, parent_id)
@@ -138,6 +144,8 @@ def test_directed_map_supplement_preserves_parent_and_replays_confirmation(vault
     request = {'run_id': parent_id, 'actor': actor, 'operation_id': 'directed-retry', 'run_revision': 7,
                'control_revision': 1, 'source_path': source_path, 'source_sha256': source_pin['sha256'],
                'request_ids': [selected_row['id']]}
+    if execution_scope:
+        request['execution_scope'] = execution_scope
     report = supplement.supplement(vault, request, preview=True)
     child = report['supplement_run_id']
     assert not domain.root(child).exists()
@@ -145,7 +153,38 @@ def test_directed_map_supplement_preserves_parent_and_replays_confirmation(vault
     applied = supplement.supplement(vault, confirm)
     assert supplement.supplement(vault, confirm) == applied
     assert sends == [selected_row['id']] and applied['reused_receipts'] == 1
-    assert applied['state'] == 'mapping-paused' and IncrementalControl(vault, child).status()['state'] == 'paused'
+    child_control = IncrementalControl(vault, child)
+    head = child_control.status()
+    if execution_scope:
+        assert applied['state'] == 'map-completed' and head['state'] == 'active' and head['pause_after'] == []
+        assert controller.runnable(domain, child)
+        assert report['authorized_stages'] == list(supplement.SUPPLEMENT_AUTOMATIC_STAGES)
+    else:
+        assert applied['state'] == 'mapping-paused' and head['state'] == 'paused'
+        assert not controller.runnable(domain, child)
+        child_control.control({'run_id': child, 'actor': actor, 'action': 'continue', 'operation_id': 'release-map',
+                               'expected_revision': head['revision'], 'boundary_fingerprint': applied['boundary_fingerprint']})
+        incremental_native.mutate(domain, child, 'freeze_round', 'scope-round', round_id='round-1', max_maps=1)
+        writing = put(domain.root(child) / 'rounds/round-1/writing-disposition.json', {'written': [], 'held': []})
+        checkpoint = child_control.checkpoint({'scope_kind': 'round', 'scope_id': 'round-1'}, 'writing',
+                                              {'writing_disposition_sha256': writing['sha256']})
+        monkeypatch.setattr(operator, 'drained_boards', lambda *_: ['new-completed-board'])
+        launches = []
+        monkeypatch.setattr(controller, 'resume_run', lambda _, run_id: launches.append(run_id))
+        approval = {'run_id': child, 'actor': actor, 'operation_id': 'scope-remaining', 'execution_scope': 'automatic',
+                    'expected_run_revision': domain.status(child)['revision'], 'expected_revision': checkpoint['revision'],
+                    'boundary_fingerprint': operator.fingerprint(checkpoint['boundary'])}
+        review = operator.authorize_supplement(vault, approval, preview=True)
+        assert review['read_only'] and review['authorized_stages'] == ['formal-build', 'release', 'acceptance', 'closure']
+        assert review['round_proof'] == writing and not (domain.root(child) / 'map-supplement-automation').exists()
+        valid = {**approval, 'expected_report_sha256': review['report_sha256']}
+        with pytest.raises(ValueError, match='preview changed'):
+            operator.authorize_supplement(vault, {**valid, 'expected_report_sha256': '0' * 64})
+        grant = operator.authorize_supplement(vault, valid)
+        assert operator.authorize_supplement(vault, valid) == grant
+        assert launches == [child, child]
+        assert child_control.status()['pause_after'] == [] and controller.runnable(domain, child)
+        assert supplement.supplement(vault, confirm) == applied and sends == [selected_row['id']]
     child_map = domain.read_map(child, applied['map_result_id'])
     assert {row['producer_run_id'] for row in child_map['native_completions']} == {parent_id, child}
     assert ('old-completed', parent_id) in verified and ('new-completed', child) in verified

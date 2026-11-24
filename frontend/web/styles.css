@@ -166,6 +166,8 @@ pre { margin: 0; min-height: 350px; max-height: 65vh; overflow: auto; background
 .incremental-pipeline > li { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; background: #f6f9fa; border: 1px solid #e2eaed; border-radius: 7px; padding: 9px; }
 .incremental-pipeline strong { font-size: 12px; margin-right: auto; }
 .incremental-pipeline small { width: 100%; overflow-wrap: anywhere; }
+.mapping-actions { display: flex; flex-wrap: wrap; gap: 6px; width: 100%; }
+.mapping-actions button { font-size: 12px; padding: 5px 8px; }
 .incremental-pipeline > li:has(> .node-recovery[open]) { grid-column: 1 / -1; }
 .node-recovery { flex-basis: 100%; font-size: 12px; }
 .node-recovery summary { cursor: pointer; color: var(--teal); }

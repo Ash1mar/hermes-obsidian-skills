@@ -16,6 +16,10 @@ STAGES = ('start', 'prepare', 'source-seal', 'mapping', 'map-commit', 'reserve',
 CHECKPOINTS = ('prepare', 'mapping', 'coordination', 'writing', 'formal-build', 'release', 'acceptance', 'closure')
 NETWORK_RECOVERY = 'network_recovery'
 CONTROL_LOCK_TIMEOUT = 30
+SUPPLEMENT_AUTOMATION = 'automatic'
+SUPPLEMENT_AUTOMATION_CONTRACT = 'incremental-map-supplement-automation/v1'
+SUPPLEMENT_AUTOMATIC_STAGES = ('mapping', 'coordination', 'writing', 'formal-build', 'release', 'acceptance', 'closure')
+SUPPLEMENT_AUTOMATION_BOUNDARIES = SUPPLEMENT_AUTOMATIC_STAGES[:3]
 
 
 class IncrementalControl:
@@ -395,6 +399,8 @@ class IncrementalControl:
             network_boundary = (head.get('boundary') or {}).get('stage') == NETWORK_RECOVERY
             if 'network_recovery' in request and not (network_boundary and action == 'continue'):
                 raise ContractError('INVALID_TRANSITION', '$', 'network continuation requires its own pause')
+            if 'supplement_automation' in request and action != 'continue':
+                raise ContractError('INVALID_TRANSITION', '$', 'Map supplement automation requires an exact continue intent')
             if action == 'continue':
                 if head['state'] != 'paused' or request.get('boundary_fingerprint') != fingerprint(head['boundary']):
                     raise ContractError('STALE_INPUT', '$', 'continue requires the exact acknowledged boundary')
@@ -402,7 +408,9 @@ class IncrementalControl:
                     run = _load_json(self.root.parent / 'run.json')
                     if any(row['state'] == 'reserved' for row in run['reservations'].values()):
                         raise ContractError('INVALID_TRANSITION', '$', 'closure with reserved usage requires recover-closure')
-                if network_boundary:
+                if 'supplement_automation' in request:
+                    self._authorize_supplement_automation(head, request)
+                elif network_boundary:
                     self._authorize_network_continuation(head, request)
                 elif 'partial_closure' in request:
                     if {'writing_continuation', 'writing_amendment', 'repair_writing'} & request.keys():
@@ -455,6 +463,30 @@ class IncrementalControl:
             _write_atomic(self.path, _json_bytes(head))
             _write_atomic(receipt, _json_bytes({**transaction, 'commit_state': 'committed'}))
             return head
+
+    def _authorize_supplement_automation(self, head, request):
+        pointer = request['supplement_automation']
+        report = read_pin(self.vault, pointer)
+        run = _load_json(self.root.parent / 'run.json')
+        boundary = head['boundary']
+        path = self.root.parent / 'map-supplement-automation' / (request['operation_id'] + '.json')
+        stage = boundary['stage']
+        if (set(request) != {'run_id', 'actor', 'operation_id', 'action', 'expected_revision',
+                             'boundary_fingerprint', 'supplement_automation'}
+                or stage not in SUPPLEMENT_AUTOMATION_BOUNDARIES or stage not in head['pause_after']
+                or head['active_scopes'] or head.get('supplement_automation') or not run.get('map_supplement')
+                or run['state'] != 'active' or run['run_id'] != self.run_id or run['actor'] != head['actor']
+                or pointer['ref'] != path.relative_to(self.vault).as_posix()
+                or report.get('contract') != SUPPLEMENT_AUTOMATION_CONTRACT
+                or report.get('map_supplement') != run['map_supplement']
+                or report.get('map_result_id') not in run['map_result_ids']
+                or report.get('authorized_stages') != list(SUPPLEMENT_AUTOMATIC_STAGES[SUPPLEMENT_AUTOMATIC_STAGES.index(stage) + 1:])
+                or report.get('request') != {'run_id': self.run_id, 'actor': head['actor'],
+                    'operation_id': request['operation_id'], 'expected_revision': head['revision'],
+                    'expected_run_revision': run['revision'], 'boundary_fingerprint': request['boundary_fingerprint'],
+                    'execution_scope': SUPPLEMENT_AUTOMATION}):
+            raise ContractError('INVALID_TRANSITION', '$', 'Map supplement automation requires its exact drained planned checkpoint')
+        head.update(pause_after=[], supplement_automation=pointer)
 
     def _authorize_network_continuation(self, head, request):
         if ('network_recovery' not in request or head['active_scopes']

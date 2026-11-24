@@ -50,6 +50,57 @@ def stage(key, state='pending', **info):
     return {'key': key, 'name': dict(STAGES)[key], 'state': state, **info}
 
 
+def linked_supplements(root, run, records):
+    """Read confirmed child execution state using the exact parent recovery binding."""
+    from incremental import fingerprint
+
+    manifest = {row['path']: row['sha256'] for row in run.get('source_manifest', [])}
+    children = {}
+    for record in records:
+        request = record.get('request', {})
+        source, packet = request.get('source_path'), request.get('request_id')
+        if (record.get('contract') != 'incremental-map-operator-recovery/v1'
+                or record.get('state') not in ('prepared', 'committed')
+                or request.get('strategy') != 'supplemental' or request.get('run_id') != root.name
+                or request.get('actor') != run.get('actor') or not packet
+                or source not in manifest or request.get('source_sha256') != manifest[source]):
+            continue
+        successor = 'map-supplement-' + fingerprint([root.name, source, packet])[:48]
+        receipt = record.get('receipt') or {}
+        if receipt and (receipt.get('strategy') != 'supplemental' or receipt.get('supplement_run_id') != successor):
+            continue
+        child = root.parent / successor
+        child_run = read(child / 'run.json')
+        if (child_run.get('run_id') != successor or child_run.get('actor') != request['actor']
+                or child_run.get('source_manifest') != [{'path': source, 'sha256': manifest[source]}]
+                or set(child_run.get('sources', {})) != {source}):
+            continue
+        lineage_path = child / 'map-supplement.json'
+        pointer = child_run.get('map_supplement') or {}
+        if (pointer.get('ref') != lineage_path.relative_to(root.parents[3]).as_posix()
+                or not lineage_path.resolve().is_relative_to(root.parent.resolve())):
+            continue
+        try:
+            content = lineage_path.read_bytes()
+        except FileNotFoundError:
+            continue
+        if hashlib.sha256(content).hexdigest() != pointer.get('sha256'):
+            continue
+        lineage = json.loads(content)
+        binding = ('run_id', 'actor', 'operation_id', 'run_revision', 'control_revision', 'source_path', 'source_sha256')
+        original = lineage.get('request', {})
+        if (lineage.get('contract') != 'incremental-map-supplement/v1' or lineage.get('supplement_run_id') != successor
+                or original.get('request_ids') != [packet]
+                or any(original.get(key) != request.get(key) for key in binding)):
+            continue
+        control = read(child / 'control/head.json')
+        if control.get('actor') != request['actor']:
+            continue
+        children[successor] = {'root': child, 'run': child_run, 'control': control,
+                               'request': request, 'lineage': lineage, 'receipt': receipt}
+    return children
+
+
 def aggregate(states):
     if not states:
         return 'pending'
