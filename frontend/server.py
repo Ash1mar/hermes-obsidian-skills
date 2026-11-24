@@ -13,10 +13,12 @@ import shutil
 import subprocess
 import sys
 import time
+from threading import RLock
 from urllib.parse import parse_qs, urlsplit
 from uuid import uuid4
 
 from gateway_monitor import GatewayMonitor
+from run_deletion import RunDeletion
 from workflow import (FINALIZE, ORCHESTRATOR, STAGE_ORDER, UserError, attempts_for, local_path, log_tail,
                       new_request, progress, read, run_attempt, save)
 
@@ -31,6 +33,8 @@ class Console:
     def __init__(self, config, histories):
         self.config = config
         self.state = Path(config["state"])
+        self.run_lock = RLock()
+        self.deletions = RunDeletion(config)
         self.gateway = GatewayMonitor(self.state, config["writable"])
         self.history = {}
         for directory in histories:
@@ -74,12 +78,33 @@ class Console:
         return read(self.state / "active.json") == {"run": directory.name, "attempt": attempts[-1]["id"]}
 
     def list_runs(self):
-        directories = {p.parent.name: (p.parent, False) for p in self.state.glob("*/request.json")}
-        for key, path in self.history.items():
-            directories.setdefault(key, (path, True))
-        rows = [progress(path, historical=historical, active=self.is_active(path, historical), details=False)
-                for path, historical in directories.values()]
+        with self.run_lock:
+            directories = {p.parent.name: (p.parent, False) for p in self.state.glob("*/request.json")}
+            for key, path in self.history.items():
+                directories.setdefault(key, (path, True))
+            pending = self.deletions.pending_rows()
+            rows = [progress(path, historical=historical, active=self.is_active(path, historical), details=False)
+                    for key, (path, historical) in directories.items() if key not in pending]
+            rows.extend(pending.values())
         return sorted(rows, key=lambda row: (row["started_at"] or 0, row["id"]), reverse=True)
+
+    def delete(self, run_id, body):
+        if not RUN_ID.fullmatch(run_id):
+            raise UserError("无效的运行编号。")
+        if not self.config["writable"]:
+            raise UserError("当前控制台仅供查看。")
+        lease = self.lock()
+        if lease is None:
+            raise UserError("控制台执行器正在运行，请等它退出后再删除。")
+        with closing(lease), self.run_lock:
+            directory = self.state / run_id
+            if not self.deletions.pending(run_id):
+                directory, historical = self.find(run_id)
+                if historical:
+                    raise UserError("历史报告仅供查看，不能在控制台删除。")
+            paths = set(self.state.glob("*/request.json")) | {p / "request.json" for p in self.history.values()}
+            self.deletions.delete(directory, body.get("confirmation"), paths - {directory / "request.json"})
+        return {"id": run_id, "deleted": True}
 
     def launch(self, body, run_id=None):
         if not self.config["writable"]:
@@ -90,6 +115,8 @@ class Console:
         with closing(lease):
             manifest = None
             if run_id:
+                if self.deletions.pending(run_id):
+                    raise UserError("该运行的删除尚未完成，请先完成删除。")
                 directory, historical = self.find(run_id)
                 action = body.get("action")
                 if not isinstance(action, str):
@@ -157,6 +184,7 @@ class Console:
                     self.require_operator_launcher()
                 self.require_gateway()
                 request = new_request(body, self.config)
+                self.deletions.check_new_request(request)
                 run_id = request["operation_id"]
                 directory = self.state / run_id
                 directory.mkdir(mode=0o700)
@@ -298,41 +326,7 @@ class Handler(BaseHTTPRequestHandler):
             elif write and url.path == "/api/runs":
                 self.json(app.launch(self.payload()), HTTPStatus.ACCEPTED)
             elif parts[:2] == ["api", "runs"] and len(parts) in {3, 4}:
-                run_id = parts[2]
-                directory, historical = app.find(run_id)
-                if not write and len(parts) == 3:
-                    self.json(progress(directory, historical=historical, active=app.is_active(directory, historical)))
-                elif write and parts[3:] == ["reenter"]:
-                    self.json(app.launch(self.payload(), run_id), HTTPStatus.ACCEPTED)
-                elif write and parts[3:] == ["pause"]:
-                    self.json(app.pause(run_id, self.payload()), HTTPStatus.ACCEPTED)
-                elif write and parts[3:] == ["obsidian"]:
-                    if platform.system() != "Linux":
-                        raise UserError("请从 WSL 启动控制台以打开 Linux Obsidian。")
-                    from obsidian_app import open_obsidian
-                    vault = read(directory / "request.json")["vault_path"]
-                    self.json(open_obsidian(vault, self.payload().get("action"), app.state,
-                                            app.config.get("obsidian_user")))
-                elif not write and parts[3:] == ["log"]:
-                    entries = attempts_for(directory, historical)
-                    default = entries[-1]["id"] if entries else None
-                    selected = parse_qs(url.query).get("attempt", [default])[0]
-                    entry = next((item for item in entries if item["id"] == selected), None)
-                    if entry is None:
-                        raise FileNotFoundError("attempt")
-                    if historical:
-                        log = directory / entry["log"]
-                    else:
-                        log = directory / "attempts" / selected / "pipeline.log"
-                    text = log_tail(log)
-                    request = read(directory / 'request.json')
-                    if request.get('workflow_mode') == 'incremental_v1':
-                        from incremental import root_for
-                        controller_log = root_for(request) / 'controller.log'
-                        text += '\n' + log_tail(controller_log)
-                    self.json({"text": text})
-                else:
-                    raise FileNotFoundError(url.path)
+                self.run_route(app, parts[2], parts[3] if len(parts) == 4 else "", url.query, write)
             else:
                 raise FileNotFoundError(url.path)
         except (UserError, UnicodeError, json.JSONDecodeError) as error:
@@ -346,6 +340,54 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as error:
             self.log_error("%s: %s", type(error).__name__, error)
             self.json({"error": "无法读取本机运行状态，请检查控制台日志。"}, HTTPStatus.INTERNAL_SERVER_ERROR)
+
+    def run_route(self, app, run_id, action, query, write):
+        if not RUN_ID.fullmatch(run_id):
+            raise UserError("无效的运行编号。")
+        if write and action == "delete":
+            self.json(app.delete(run_id, self.payload()))
+            return
+        if write and action == "reenter":
+            self.json(app.launch(self.payload(), run_id), HTTPStatus.ACCEPTED)
+            return
+        with app.run_lock:
+            pending = app.deletions.pending(run_id)
+            if pending:
+                if not write and not action:
+                    self.json(pending["row"])
+                    return
+                raise UserError("该运行的删除尚未完成，请先完成删除。")
+            directory, historical = app.find(run_id)
+            if not write and not action:
+                self.json(progress(directory, historical=historical, active=app.is_active(directory, historical)))
+            elif write and action == "pause":
+                self.json(app.pause(run_id, self.payload()), HTTPStatus.ACCEPTED)
+            elif write and action == "obsidian":
+                if platform.system() != "Linux":
+                    raise UserError("请从 WSL 启动控制台以打开 Linux Obsidian。")
+                from obsidian_app import open_obsidian
+                vault = read(directory / "request.json")["vault_path"]
+                self.json(open_obsidian(vault, self.payload().get("action"), app.state,
+                                        app.config.get("obsidian_user")))
+            elif not write and action == "log":
+                self.json({"text": self.run_log(directory, historical, query)})
+            else:
+                raise FileNotFoundError(run_id)
+
+    def run_log(self, directory, historical, query):
+        entries = attempts_for(directory, historical)
+        default = entries[-1]["id"] if entries else None
+        selected = parse_qs(query).get("attempt", [default])[0]
+        entry = next((item for item in entries if item["id"] == selected), None)
+        if entry is None:
+            raise FileNotFoundError("attempt")
+        log = directory / entry["log"] if historical else directory / "attempts" / selected / "pipeline.log"
+        text = log_tail(log)
+        request = read(directory / "request.json")
+        if request.get("workflow_mode") == "incremental_v1":
+            from incremental import root_for
+            text += "\n" + log_tail(root_for(request) / "controller.log")
+        return text
 
     def payload(self):
         length = self.headers.get("Content-Length", "")
