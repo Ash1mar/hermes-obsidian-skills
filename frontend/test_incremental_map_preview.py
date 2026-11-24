@@ -141,7 +141,8 @@ def test_durable_child_mapping_stop_is_linked_to_the_original_source(state):
 
     mapping = actions(state)
     linked, = mapping['map_recovery']['results']
-    assert (linked['supplement_run_id'], linked['state'], linked['boundary'], linked['map_result_ids']) +        == (successor, 'paused', 'mapping', ['map-child'])
+    assert (linked['supplement_run_id'], linked['state'], linked['boundary'],
+            linked['map_result_ids']) == (successor, 'paused', 'mapping', ['map-child'])
     continuation, = [row for row in mapping['actions'] if row['id'] == CONTINUE]
     attempt = {**continuation, 'id': 'continue-child', 'action': CONTINUE}
     emitted = []
