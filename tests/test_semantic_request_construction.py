@@ -173,6 +173,36 @@ def sdk(monkeypatch):
     return SimpleNamespace(caller=caller, agents=agents, databases=databases, requests=requests)
 
 
+def test_fixed_agent_setup_failure_releases_borrowed_database(sdk, monkeypatch):
+    def fail_setup(_self, **options):
+        assert options['session_db'] is sdk.databases[-1] and not options['session_db'].closed
+        raise RuntimeError('fixture agent construction failed')
+
+    monkeypatch.setattr(sys.modules['run_agent'].AIAgent, '__init__', fail_setup)
+    with pytest.raises(RuntimeError, match='construction failed'):
+        sdk.caller.make_agent()
+    assert sdk.databases[-1].closed
+
+
+def test_fixed_agent_closes_before_database_if_session_evidence_registration_fails(sdk, monkeypatch):
+    import semantic_output
+
+    def fail_recording(_sid):
+        assert not sdk.databases[-1].closed
+        raise RuntimeError('fixture session registration failed')
+
+    def close(agent):
+        assert not sdk.databases[-1].closed
+        agent.closed = True
+
+    monkeypatch.setattr(semantic_output, 'note_session', fail_recording)
+    monkeypatch.setattr(sys.modules['run_agent'].AIAgent, 'close', close)
+    view = sample_view()
+    with pytest.raises(RuntimeError, match='registration failed'):
+        sdk.caller('citation', view, slot_schema('citation', view['tasks']))
+    assert sdk.agents[-1].closed and sdk.databases[-1].closed and not sdk.requests
+
+
 def guarded_agent(sdk, *, images=None):
     images = images or []
     view = {'tasks': [{'task': 't1'}], 'texts': {'c1': 'Exact bounded material.'}}

@@ -4,15 +4,16 @@ Telemetry is observational, never proof of quality, completion or zero failures.
 Nested/concurrent spans are distributions, not additive workflow wall time.
 """
 from collections import Counter, defaultdict
+from contextlib import nullcontext
 import json
 import hashlib
 import math
 from pathlib import Path
-import sqlite3
 import time
 
 from hermes_source_units.runtime_telemetry import runtime_directory
 from hermes_source_units.validation import fingerprint
+from session_usage_reader import SessionStorageUnavailable, USAGE_FIELDS, active_session_records, session_records
 
 
 def distribution(values):
@@ -107,23 +108,35 @@ def window(events, lower, upper, label):
             'wall_time_caveat':'wall clock locates windows; elapsed_ms is producer monotonic duration; no cross-domain subtraction'}
 
 
-def usage_for(calls, database):
-    ids=sorted({c['model']['session_id'] for c in calls if c.get('model',{}).get('session_id')})
-    rows=[]
-    if database is not None:
-        with sqlite3.connect(Path(database).resolve().as_uri()+'?mode=ro',uri=True) as db:
-            for sid in ids:
-                row=db.execute('SELECT input_tokens,output_tokens,cache_read_tokens,reasoning_tokens,api_call_count FROM sessions WHERE id=?',(sid,)).fetchone()
-                rows.append({'session_id':sid,**dict(zip(('input','output','cache_read_subset','reasoning','api_calls'),row))} if row else {'session_id':sid})
-    else:rows=[{'session_id':sid} for sid in ids]
-    names=('input','output','cache_read_subset','reasoning','api_calls')
+def usage_for(calls, database=None, *, active=False, lookup=None):
+    if sum((database is not None, active, lookup is not None)) > 1:
+        raise ValueError('session usage must have one selected reader')
+    ids = sorted({call['model']['session_id'] for call in calls if (call.get('model') or {}).get('session_id')})
+    rows = []
+    if ids:
+        reader = nullcontext(lookup) if lookup is not None else (
+            active_session_records() if active else session_records(database))
+        try:
+            with reader as read_session:
+                for sid in ids:
+                    source = read_session(sid)
+                    row = {'session_id': sid}
+                    if source is not None:
+                        row.update({name: source[field] for name, field in USAGE_FIELDS.items() if field in source})
+                    rows.append(row)
+        except SessionStorageUnavailable:
+            if not active:
+                raise
+            rows.extend({'session_id': sid} for sid in ids[len(rows):])
+    names = USAGE_FIELDS
     return {'unique_sessions':len(ids),'by_session':rows,
         'known_totals':{k:sum(r[k] for r in rows if isinstance(r.get(k),(int,float))) for k in names},
         'unknown_samples':{k:sum(not isinstance(r.get(k),(int,float)) for r in rows) for k in names},
         'cost_currency':'unknown','scope':'whole-workflow recorded sessions, including recorded failures; cache is an input subset'}
 
 
-def collect(service, workflow_id, *, timeline=None, database=None, windows=(), protected=None, observations=(), protected_roots=()):
+def collect(service, workflow_id, *, timeline=None, database=None, windows=(), protected=None, observations=(),
+            protected_roots=(), active_usage=False):
     started=time.monotonic();cpu=time.process_time();w=service.status(workflow_id);vault=service.vault
     io={'files':0,'bytes':0};file_cache={}
     def read(path):
@@ -218,7 +231,7 @@ def collect(service, workflow_id, *, timeline=None, database=None, windows=(), p
     # A request may fail before its call audit is written. Include observed SDK
     # sessions too, without inventing request-local allocations of session usage.
     usage=usage_for(calls+[{'model':{'session_id':e['session_id']}} for e in events
-        if e['name'] in ('sdk_request_start','sdk_model_request') and e.get('session_id')],database)
+        if e['name'] in ('sdk_request_start','sdk_model_request') and e.get('session_id')],database,active=active_usage)
     definitions=json.loads((Path(__file__).resolve().parents[1]/'config/metric-definitions.json').read_text(encoding='utf-8'))
     registry={key:{'definition':definition,'status':'unknown','reason':'no authoritative collector for this metric'} for key,definition in definitions.items()}
     def measured(key,value,scope,evidence):

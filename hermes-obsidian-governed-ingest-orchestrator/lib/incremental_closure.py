@@ -12,6 +12,7 @@ from hermes_source_units.source_units import _exclusive_lock, _load_json, _sha, 
 from hermes_source_units.validation import fingerprint
 from hermes_source_units.vault_finalize import FileVaultFinalizeService
 from incremental_native import mutate
+from session_usage_reader import active_session_records
 from short_evidence_pass import require
 
 CONTRACT = 'incremental-closure-accounting/v1'
@@ -23,17 +24,17 @@ def pin(vault, path):
     return pinned(vault, path.relative_to(vault).as_posix())
 
 
-def session_row(connection, session_id):
-    row = connection.execute('SELECT source, ended_at, api_call_count, input_tokens, output_tokens '
-                             'FROM sessions WHERE id=?', (session_id,)).fetchone()
-    if not row:
+def session_row(lookup, session_id):
+    row = lookup(session_id)
+    if row is None:
         return None
-    source, ended, calls, input_tokens, output_tokens = row
-    return {'source': source, 'ended_at_us': round(ended * 1_000_000) if ended is not None else None,
-            'calls': calls, 'input_tokens': input_tokens, 'output_tokens': output_tokens}
+    ended = row.get('ended_at')
+    return {'source': row.get('source'), 'ended_at_us': round(ended * 1_000_000) if ended is not None else None,
+            'calls': row.get('api_call_count'), 'input_tokens': row.get('input_tokens'),
+            'output_tokens': row.get('output_tokens')}
 
 
-def returned_usage(native, original, job, saved, audit, ended, connection):
+def returned_usage(native, original, job, saved, audit, ended, lookup):
     from fixed_semantic_recovery import transcript_reply
 
     model = audit.get('model', {})
@@ -47,7 +48,7 @@ def returned_usage(native, original, job, saved, audit, ended, connection):
     if transcript_reply(proof, wire) != audit['raw']:
         return None
     sid = model['session_id']
-    row = session_row(connection, sid)
+    row = session_row(lookup, sid)
     if (not row or row['source'] != 'kanban' or not row['ended_at_us'] or row['calls'] != 1
             or any(type(row[k]) is not int or row[k] < 0 for k in ('input_tokens', 'output_tokens'))):
         return None
@@ -55,7 +56,7 @@ def returned_usage(native, original, job, saved, audit, ended, connection):
             'request_sha256': fingerprint(wire)}
 
 
-def failure_evidence(vault, workspace, native, audit, saved, entry, connection):
+def failure_evidence(vault, workspace, native, audit, saved, entry, lookup):
     from hermes_constants import get_hermes_home
     from model_transport import CONTRACT as HTTP_CONTRACT
 
@@ -76,7 +77,7 @@ def failure_evidence(vault, workspace, native, audit, saved, entry, connection):
     entry['failure'] = pin(vault, path)
     entry['failure_type'] = {**{key: evidence.get(key) for key in ('state', 'source')},
                              'class': evidence['error'].get('class'), 'http_status': evidence['error'].get('status_code')}
-    session = session_row(connection, evidence['session_id'])
+    session = session_row(lookup, evidence['session_id'])
     if session:
         entry['observed_session'] = {**session, 'session_id': evidence['session_id']}
     transport = evidence.get('http_transport') or {}
@@ -110,7 +111,6 @@ def failure_evidence(vault, workspace, native, audit, saved, entry, connection):
 
 def inspect_reservations(domain, run):
     import run_short_evidence_test as native
-    from hermes_state import SessionDB
 
     vault, root = domain.vault, domain.root(run['run_id'])
     reserved = {row['request_fingerprint']: (key, row) for key, row in run['reservations'].items()
@@ -119,8 +119,7 @@ def inspect_reservations(domain, run):
         return {}
     entries, sessions = {}, set()
     kb, _, _ = native.runtime()
-    with closing(SessionDB(read_only=True)) as state, closing(sqlite3.connect(
-            Path(state.db_path).resolve().as_uri() + '?mode=ro', uri=True)) as connection:
+    with active_session_records() as lookup:
         for op in sorted((root / 'native').rglob('operation.json')):
             workspace = op.parent
             matches = []
@@ -181,9 +180,9 @@ def inspect_reservations(domain, run):
                             and audit['request_id'] == saved['request']['id'], 'closure audit identity changed')
                     entry.update(audit=pin(vault, audit_path), reason=audit['state'])
                     if audit['state'] != 'returned':
-                        failure_evidence(vault, workspace, native, audit, saved, entry, connection)
+                        failure_evidence(vault, workspace, native, audit, saved, entry, lookup)
                         continue
-                    session = returned_usage(native, row, job, saved, audit, ended, connection)
+                    session = returned_usage(native, row, job, saved, audit, ended, lookup)
                     if not session:
                         entry['reason'] = 'returned_usage_unverified'
                         continue

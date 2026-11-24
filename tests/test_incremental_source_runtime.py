@@ -25,6 +25,54 @@ def put(path, value):
     path.write_bytes(_json_bytes(value))
 
 
+def test_reusing_map_results_does_not_open_usage_for_settled_or_unattributable_attempts(tmp_path, monkeypatch):
+    import workflow_metrics
+
+    def unexpected_lookup(*args, **kwargs):
+        pytest.fail(f'attempted session lookup for a known or unattributable result: {args!r} {kwargs!r}')
+
+    monkeypatch.setattr(workflow_metrics, 'usage_for', unexpected_lookup)
+    row = {'id': 'original-request'}
+    reservations = {
+        f'budget-{ordinal}': {'request_fingerprint': runtime.fingerprint({'request': row['id'], 'ordinal': ordinal}),
+                              'state': state}
+        for ordinal, state in ((1, 'settled'), (2, 'reserved'))
+    }
+    domain = SimpleNamespace(status=lambda _: {'reservations': reservations})
+    runtime.settle_usage(domain, 'run', tmp_path, row, {'attempts': []})
+    runtime.settle_usage(domain, 'run', tmp_path, row, {'attempts': [
+        {'ordinal': 1, 'model': {'session_id': 'already-accounted-session'}},
+        {'ordinal': 2, 'model': {'state': 'completion_unknown'}},
+    ]})
+    assert not (tmp_path / 'usage').exists()
+
+
+@pytest.mark.parametrize('sample', [
+    {},
+    {'input': 0, 'output': 0},
+    {'api_calls': 0, 'input': 0, 'output': 0},
+    {'api_calls': 1, 'input': 1.5, 'output': 2},
+    {'api_calls': 1, 'input': 101, 'output': 2},
+])
+def test_unverified_session_counters_preserve_the_original_map_reservation(tmp_path, monkeypatch, sample):
+    import workflow_metrics
+
+    row = {'id': 'original-request'}
+    attempt = {'ordinal': 1, 'model': {'session_id': 'exact-session'}}
+    reservation = {'request_fingerprint': runtime.fingerprint({'request': row['id'], 'ordinal': 1}),
+                   'state': 'reserved', 'max_calls': 1, 'max_input_tokens': 100, 'max_output_tokens': 10}
+    domain = SimpleNamespace(status=lambda _: {'reservations': {'budget': reservation}})
+
+    def lookup(calls, *, active):
+        assert calls == [attempt] and active
+        return {'by_session': [{'session_id': 'exact-session', **sample}]}
+
+    monkeypatch.setattr(workflow_metrics, 'usage_for', lookup)
+    runtime.settle_usage(domain, 'run', tmp_path, row, {'attempts': [attempt]})
+    assert reservation['state'] == 'reserved'
+    assert not (tmp_path / 'usage').exists()
+
+
 @pytest.mark.parametrize('first_request', [False, True], ids=('reuse', 'half-second-contention'))
 def test_mapping_verifies_producers_and_dispatches_fresh_request_once(tmp_path, monkeypatch, first_request):
     import incremental_map_recovery as recovery

@@ -892,11 +892,7 @@ def stage_metrics(root, rows, results, start, end):
     matching = [row for row in failures if row['task_id'] in task_ids]
     models = [{'model': {'session_id': row['session_id']}} for row in matching]
     models.extend(row for row in audit_rows if row.get('model'))
-    from hermes_state import SessionDB
-    db = SessionDB(read_only=True)
-    database = db.db_path
-    db.close()
-    usage = usage_for(models, database)
+    usage = usage_for(models, active=True)
     return {
         'phase': rows[0]['phase'], 'planned_requests': len(ids), 'native_tasks': len(results),
         'started_at': start, 'ended_at': end, 'wall_seconds': end - start,

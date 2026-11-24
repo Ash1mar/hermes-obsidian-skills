@@ -1,6 +1,7 @@
 """Reuse pure work only; independent file and database mutations invalidate it."""
 import json,sqlite3,os,threading,time
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing, contextmanager
 from contextvars import copy_context
 from types import SimpleNamespace as NS
 import pytest
@@ -152,6 +153,79 @@ def test_transcript_proof_reuses_connection_but_detects_database_update(tmp_path
         db.execute("UPDATE messages SET content='changed' WHERE role='assistant'");db.commit()
         assert recovery.transcript_reply(audit,wire,home=home) is None
     db.close()
+
+
+def test_managed_transcript_requires_the_exact_full_rows_and_raw_tool_evidence(tmp_path, monkeypatch):
+    assembly = pytest.importorskip('persistence_assembly')
+    constants = pytest.importorskip('hermes_constants')
+    messages = pytest.importorskip('persistence.conversation.messages')
+    import session_transcript_reader as reader
+    from session_usage_reader import SessionStorageUnavailable
+
+    profile = tmp_path / 'active-profile'
+    profile.mkdir()
+    database = tmp_path / 'declared-sessions.sqlite'
+    monkeypatch.setattr(constants, 'get_hermes_home', lambda: profile)
+    monkeypatch.setattr(assembly, 'profile_scope', lambda *, home: home)
+    monkeypatch.setattr(assembly, 'store_location', lambda scope: database if scope == profile else None)
+    session_id = 'fixed-full-native-session-id'
+    wire = {'system': 'JSON', 'user': 'exact request'}
+    raw = '{"content":"original"}'
+    digest = fingerprint(raw)
+    audit = {'user_sha256': fingerprint(wire['user']), 'response_sha256': digest, 'model': {
+        'origin': 'hermes_native_model', 'session_id': session_id, 'response_sha256': digest,
+    }}
+    records = [NS(id=1, session_id=session_id, role='user', content=wire['user'], tool_calls=None),
+               NS(id=2, session_id=session_id, role='assistant', content=raw, tool_calls=None),
+               NS(id=3, session_id=session_id, role='assistant', content='inactive', tool_calls=[])]
+    opened = []
+    requested = []
+    visible = list(records)
+    fail_read = False
+
+    def read_transcript(identity, request):
+        requested.append(identity)
+        assert request.view is messages.TranscriptView.ALL and request.limit is None and not request.include_lineage
+        if fail_read:
+            raise SessionStorageUnavailable('cannot establish managed transcript')
+        return visible
+
+    @contextmanager
+    def open_reader(home):
+        opened.append(home)
+        yield NS(sessions=NS(get=lambda _: NS(session_id=session_id, source='kanban')),
+                 messages=NS(read_transcript=read_transcript))
+
+    monkeypatch.setattr(reader, 'managed_session_reader', open_reader)
+    with closing(sqlite3.connect(database)) as db:
+        db.executescript('CREATE TABLE sessions(id TEXT, source TEXT); '
+                         'CREATE TABLE messages(id INTEGER PRIMARY KEY, session_id TEXT, role TEXT, '
+                         'content TEXT, tool_calls TEXT, active INTEGER, compacted INTEGER);')
+        db.execute('INSERT INTO sessions VALUES (?, ?)', (session_id, 'kanban'))
+        db.executemany('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?)', [
+            (row.id, row.session_id, row.role, row.content, None, int(row.id < 3), int(row.id == 3))
+            for row in records
+        ])
+        db.commit()
+        with recovery.proof_scope():
+            assert recovery.transcript_reply(audit, wire) == raw
+            prefix = {**audit, 'model': {**audit['model'], 'session_id': session_id[:9]}}
+            assert recovery.transcript_reply(prefix, wire) is None
+            assert requested == [session_id]
+            for stored_tool_calls in ('null', '{"broken"'):
+                db.execute('UPDATE messages SET tool_calls=? WHERE id=3', (stored_tool_calls,))
+                db.commit()
+                assert recovery.transcript_reply(audit, wire) is None
+            db.execute("UPDATE messages SET tool_calls='[]' WHERE id=3")
+            db.commit()
+            visible.pop()
+            assert recovery.transcript_reply(audit, wire) is None
+            visible.append(records[-1])
+            assert recovery.transcript_reply(audit, wire) == raw
+            fail_read = True
+            with pytest.raises(SessionStorageUnavailable, match='cannot establish managed transcript'):
+                recovery.transcript_reply(audit, wire)
+    assert opened == [profile]
 
 
 def test_batch_replay_checks_exit_authority_before_results_can_be_used(tmp_path,monkeypatch):

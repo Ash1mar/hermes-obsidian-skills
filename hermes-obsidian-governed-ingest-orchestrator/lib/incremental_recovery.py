@@ -112,14 +112,11 @@ def stopped_history(vault, root, operation, rows, reservations):
 
 def session_usage(history):
     """Read recorded usage for each attributable ordinal without equating absence to zero."""
-    from hermes_state import SessionDB
     from workflow_metrics import usage_for
 
-    with closing(SessionDB(read_only=True)) as database:
-        database_path = database.db_path
     attempts = [attempt for entry in history.values() for attempt in entry['attempts']]
     known = usage_for([{'model': {'session_id': row['session_id']}}
-                       for row in attempts if row.get('session_id')], database_path)
+                       for row in attempts if row.get('session_id')], active=True)
     by_session = {row['session_id']: row for row in known['by_session']}
     for attempt in attempts:
         attempt['recorded_usage'] = by_session.get(attempt.get('session_id'))

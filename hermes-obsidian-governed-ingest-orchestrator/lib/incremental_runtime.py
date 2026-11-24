@@ -160,23 +160,21 @@ def execute_rows(domain, run_id, root, operation, rows):
 
 
 def settle_usage(domain, run_id, root, row, result):
-    from hermes_state import SessionDB
     from workflow_metrics import usage_for
 
-    database = SessionDB(read_only=True)
-    path = database.db_path
-    database.close()
     for attempt in result['attempts']:
         key = fingerprint({'request': row['id'], 'ordinal': attempt['ordinal']})
         budget_id, reservation = next((k, v) for k, v in domain.status(run_id)['reservations'].items()
                                       if v['request_fingerprint'] == key)
-        if reservation['state'] == 'settled':
+        if reservation['state'] == 'settled' or not (attempt.get('model') or {}).get('session_id'):
             continue
-        usage = usage_for([attempt], path)
-        if not attempt.get('model') or usage['unknown_samples']['input'] or usage['unknown_samples']['output']:
+        usage = usage_for([attempt], active=True)
+        sample, = usage['by_session']
+        actual = {'calls': sample.get('api_calls'), 'input_tokens': sample.get('input'),
+                  'output_tokens': sample.get('output')}
+        if actual['calls'] != 1 or any(type(value) is not int or not 0 <= value <= reservation['max_' + name]
+                                       for name, value in actual.items()):
             continue
-        actual = {'calls': 1, 'input_tokens': int(usage['known_totals']['input']),
-                  'output_tokens': int(usage['known_totals']['output'])}
         record = {'request_fingerprint': key, 'actual': actual, 'native_usage': usage}
         ref = root / 'usage' / (key + '.json')
         _write_atomic(ref, _json_bytes(record))
