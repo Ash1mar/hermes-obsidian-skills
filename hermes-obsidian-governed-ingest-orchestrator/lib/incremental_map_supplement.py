@@ -3,7 +3,8 @@ import json
 import os
 from pathlib import Path
 
-from hermes_source_units.incremental_control import IncrementalControl
+from hermes_source_units.incremental_control import (IncrementalControl, SUPPLEMENT_AUTOMATION,
+    SUPPLEMENT_AUTOMATION_CONTRACT, SUPPLEMENT_AUTOMATIC_STAGES)
 from hermes_source_units.incremental_ingest import CONTRACTS, MAP_SUPPLEMENT
 from hermes_source_units.incremental_sources import pinned, read_pin, require, safe_id
 from hermes_source_units.source_units import _exclusive_lock, _load_json, _vault_path
@@ -50,6 +51,33 @@ def check_downstream_release(domain, run, boundary, expected_release=None):
     require(current == authorized,
             'Map supplement publication baseline changed; review a current release before continuing', 'STALE_INPUT')
     return current
+
+
+def automation_authority(domain, run, head):
+    """Return the immutable publication scope that authorized an automatic child."""
+    lineage, _ = domain.map_supplement_lineage(run)
+    pointer = head.get('supplement_automation')
+    if pointer:
+        grant = read_pin(domain.vault, pointer)
+        request = grant['request']
+        path = domain.root(run['run_id']) / 'map-supplement-automation' / (safe_id(request['operation_id']) + '.json')
+        require(pointer['ref'] == path.relative_to(domain.vault).as_posix()
+                and grant['contract'] == SUPPLEMENT_AUTOMATION_CONTRACT and grant['map_supplement'] == run['map_supplement']
+                and request['run_id'] == run['run_id'] and request['actor'] == run['actor']
+                and request['execution_scope'] == SUPPLEMENT_AUTOMATION
+                and request['boundary_fingerprint'] in head['released']
+                and grant['map_result_id'] in run['map_result_ids']
+                and grant['release_baseline'] == lineage['release_baseline'],
+                'supplement automation authorization changed', 'STALE_INPUT')
+        if grant['round_proof']:
+            read_pin(domain.vault, grant['round_proof'])
+    elif lineage['request'].get('execution_scope') != SUPPLEMENT_AUTOMATION:
+        return None
+    else:
+        require(lineage['authorized_stages'] == list(SUPPLEMENT_AUTOMATIC_STAGES),
+                'supplement automatic stage scope changed', 'STALE_INPUT')
+    require(not head['pause_after'], 'automatic supplement planned checkpoints changed', 'STALE_INPUT')
+    return {key: lineage[key] for key in ('release_baseline', 'provider_config')}
 
 
 def remaining_budget(parent):
@@ -150,6 +178,8 @@ def supplement_report(domain, request, child_id):
               'completed': inventory['completed'], 'budget': remaining_budget(parent),
               'release_baseline': release_baseline(domain.vault),
               'provider_config': {'path': str(provider_config), 'sha256': sha(provider_config)}}
+    if request.get('execution_scope') == SUPPLEMENT_AUTOMATION:
+        report['authorized_stages'] = list(SUPPLEMENT_AUTOMATIC_STAGES)
     _, _, _, _, row = original_inputs(domain, parent, report)
     reservation = fingerprint({'request': row['id'], 'ordinal': 1})
     claim = _vault_path(domain.vault,
@@ -213,17 +243,20 @@ def run_packet(domain, run, lineage, parent):
 
 
 def supplement(vault, request, *, preview=False):
-    """Preview and apply only Map recovery, retaining a separate downstream checkpoint."""
+    """Recover the exact Map packet within a separately authorized child run."""
     from prepare_short_evidence_test import save
 
-    require(set(request) == REQUEST | (set() if preview else {'expected_report_sha256'}),
+    optional = {'execution_scope'} & request.keys()
+    require(set(request) == REQUEST | optional | (set() if preview else {'expected_report_sha256'})
+            and (not optional or request['execution_scope'] == SUPPLEMENT_AUTOMATION),
             'exact Map supplement operator request required', 'INVALID_SCHEMA')
     parent_id = safe_id(request['run_id'])
     safe_id(request['operation_id'])
     selected = request['request_ids']
     require(isinstance(selected, list) and len(selected) == 1 and safe_id(selected[0]),
             'Map supplement requires one exact original request ID')
-    request_body = {key: request[key] for key in REQUEST}
+    request_body = {key: request[key] for key in REQUEST | optional}
+    automatic = request_body.get('execution_scope') == SUPPLEMENT_AUTOMATION
     child_id = 'map-supplement-' + fingerprint([parent_id, request['source_path'], selected[0]])[:48]
     domain = service(Path(vault), child_id)
     root = domain.root(child_id)
@@ -251,8 +284,8 @@ def supplement(vault, request, *, preview=False):
         binding = pinned(domain.vault, report_path.relative_to(domain.vault).as_posix())
         parent = domain.status(parent_id)
         head = IncrementalControl(domain.vault, parent_id).status()
-        pauses = ['mapping', 'writing', *[stage for stage in head['pause_after']
-                                        if stage not in ('prepare', 'mapping', 'writing')]]
+        pauses = [] if automatic else ['mapping', 'writing', *[stage for stage in head['pause_after']
+                                                               if stage not in ('prepare', 'mapping', 'writing')]]
         control = IncrementalControl(domain.vault, child_id)
         control.initialize(request['actor'], pauses)
         domain.start({'workflow_mode': 'incremental_v1', 'run_id': child_id,
@@ -273,11 +306,15 @@ def supplement(vault, request, *, preview=False):
         boundary = downstream_boundary(domain, run)
         require(boundary, 'supplement did not seal its authorized Map')
         head = control.checkpoint(scope, 'mapping', boundary['evidence'])
-        require(head['state'] == 'paused' and head['boundary'] == boundary,
-                'separate downstream authorization checkpoint was not recorded')
+        if not automatic:
+            require(head['state'] == 'paused' and head['boundary'] == boundary,
+                    'separate downstream authorization checkpoint was not recorded')
         result = {'run_id': parent_id, 'supplement_run_id': child_id, 'report_sha256': fingerprint(report),
                   'map_result_id': boundary['evidence']['map_result_id'], 'reused_receipts': len(report['completed']),
-                  'state': 'mapping-paused', 'run_revision': run['revision'], 'control_revision': head['revision'],
+                  'state': 'map-completed' if automatic else 'mapping-paused',
+                  'run_revision': run['revision'], 'control_revision': head['revision'],
                   'boundary_fingerprint': fingerprint(boundary)}
+        if automatic:
+            result['execution_scope'] = SUPPLEMENT_AUTOMATION
         save(result_path, result)
         return result

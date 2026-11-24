@@ -19,12 +19,18 @@ def evidence(view,task):
     return task_content({**view,'qa_rule':None},task)
 
 
-def native_user(content,call):
-    if fingerprint(content)==call['user_sha256']:return content
-    # Hermes appends one literal screenshot marker per persisted image part.
-    count=len(call.get('image_inputs',[]));suffix='\n[screenshot]'*count
-    if count and content.endswith(suffix) and fingerprint(content[:-len(suffix)])==call['user_sha256']:
-        return content[:-len(suffix)]
+def native_user(content, call):
+    if not isinstance(content, str):
+        return None
+    if fingerprint(content) == call['user_sha256']:
+        return content
+    # Hermes flattens image parts in the session row. The fixed wire uses high detail.
+    count = len(call.get('image_inputs', []))
+    if count:
+        for marker in ('\n[screenshot detail=high]', '\n[screenshot]'):
+            suffix = marker * count
+            if content.endswith(suffix) and fingerprint(content[:-len(suffix)]) == call['user_sha256']:
+                return content[:-len(suffix)]
     return None
 
 

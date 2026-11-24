@@ -10,8 +10,10 @@ CONFIRM = 'incremental-map-recovery-confirm'
 CONTINUE = 'incremental-map-supplement-continue'
 STRATEGIES = {
     'original': '确认恢复原 Map 卡',
-    'supplemental': '确认独立补做 Map',
+    'supplemental': '确认自动补跑',
 }
+AUTOMATIC_SCOPE = 'automatic'
+AUTOMATIC_STAGES = ['mapping', 'coordination', 'writing', 'formal-build', 'release', 'acceptance', 'closure']
 SHA256 = re.compile(r'[0-9a-f]{64}')
 RUN_ID = re.compile(r'[a-z0-9][a-z0-9_-]{0,95}')
 PREVIEW_ID = re.compile(r'map-recovery-[0-9a-f]{40}')
@@ -25,7 +27,8 @@ def recovery_request(request, run, control, source_path, source_sha256, error):
             or run.get('run_id') != request['operation_id'] or not SHA256.fullmatch(source_sha256 or '')):
         raise error('Map 恢复范围与原来源身份不一致。')
     binding = {'run_id': request['operation_id'], 'actor': request['actor'], 'run_revision': run['revision'],
-               'control_revision': control['revision'], 'source_path': source_path, 'source_sha256': source_sha256}
+               'control_revision': control['revision'], 'source_path': source_path, 'source_sha256': source_sha256,
+               'execution_scope': AUTOMATIC_SCOPE}
     return {**binding, 'operation_id': 'map-recovery-' + fingerprint(binding)[:40]}
 
 
@@ -70,6 +73,9 @@ def allowed_request_ids(strategy):
     if (not strategy or strategy.get('allowed') is not True or not isinstance(ids, list)
             or any(not isinstance(key, str) or not SHA256.fullmatch(key) for key in ids)):
         return []
+    if strategy.get('id') == 'supplemental' and (strategy.get('execution_scope') != AUTOMATIC_SCOPE
+                                               or strategy.get('authorized_stages') != AUTOMATIC_STAGES):
+        return []
     return sorted(set(ids))
 
 
@@ -78,6 +84,8 @@ def validate_action(body, option, error):
             'preview_key', 'report_sha256', 'strategy')
     if option['id'] == CONTINUE:
         keys += CHILD_BINDING
+    if option['id'] == CONFIRM:
+        keys += ('execution_scope', 'authorized_stages')
     if any(body.get(key) != option.get(key) for key in keys):
         raise error('Map 恢复范围、运行修订或预览已变化，请重新核对。')
     if option['id'] == CONFIRM and body.get('request_id') not in option['request_ids']:
@@ -90,7 +98,8 @@ def confirmation_request(directory, request, run, control, attempt):
     bound = review_binding(review, operation)
     strategy = attempt.get('strategy')
     request_id = attempt.get('request_id')
-    if (not bound or attempt.get('preview_key') != bound['operation_id']
+    if (not bound or attempt.get('execution_scope') != bound['execution_scope']
+            or attempt.get('preview_key') != bound['operation_id']
             or attempt.get('report_sha256') != review['report_sha256']
             or request_id not in allowed_request_ids(strategy_for(review, strategy))):
         raise ValueError('Map 恢复预览已变化，请重新核对后确认。')
@@ -221,10 +230,17 @@ def project_map_recovery(directory, root, request, run, control, item, latest, r
         if option is None:
             continue
         ids = allowed_request_ids(option)
+        completed_ids = {row['request_id'] for row in phase['map_recovery']['results']
+                         if row['strategy'] == strategy and row.get('supplement_run_id')}
+        ids = [key for key in ids if key not in completed_ids]
+        authorization = ({'execution_scope': bound['execution_scope'], 'authorized_stages': AUTOMATIC_STAGES}
+                         if strategy == 'supplemental' and ids else {})
         phase['map_recovery']['strategies'].append({
             'id': strategy, 'allowed': bool(ids), 'reason': option.get('reason'), 'request_ids': ids,
+            **authorization,
         })
         if confirm and ids:
             offer({**action, 'id': CONFIRM, 'label': label, 'node': node + '-' + strategy,
                    'strategy': strategy, 'request_ids': ids, 'report_sha256': review['report_sha256'],
-                   'preview_key': bound['operation_id']})
+                   'preview_key': bound['operation_id'], 'execution_scope': bound['execution_scope'],
+                   **authorization})

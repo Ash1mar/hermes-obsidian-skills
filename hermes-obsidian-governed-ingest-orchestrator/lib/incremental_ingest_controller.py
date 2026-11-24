@@ -10,7 +10,7 @@ import sys
 import time
 
 from hermes_source_units.incremental_control import IncrementalControl
-from hermes_source_units.incremental_sources import pinned, read_pin
+from hermes_source_units.incremental_sources import pinned, read_pin, require as enforce
 from hermes_source_units.source_units import _exclusive_lock, _json_bytes, _load_json, _vault_path, _write_atomic
 from hermes_source_units.validation import ContractError, fingerprint
 from incremental_native import NativeCompletionUnconfirmed, mutate, service, verified_result
@@ -56,10 +56,10 @@ def runnable(domain, run_id):
     if run['state'] != 'active' or head['state'] != 'active':
         return False
     if 'map_supplement' in run:
-        from incremental_map_supplement import downstream_boundary
+        from incremental_map_supplement import automation_authority, downstream_boundary
 
         boundary = downstream_boundary(domain, run)
-        return bool(boundary and fingerprint(boundary) in head['released'])
+        return bool(boundary and (automation_authority(domain, run, head) or fingerprint(boundary) in head['released']))
     return True
 
 
@@ -484,16 +484,33 @@ def round_work(domain, run_id, round_id):
         reused = bool(changes) and not held and not coordination_gaps
         reason = 'all planned pages reused' if reused else 'no selected page changes passed writing'
         return settle_held(domain, run_id, round_id, frozen, reason, reused=reused, gaps=[*held, *coordination_gaps])
-    formal, formal_operation = initialize_scope(domain, run_id, 'round', round_id, 'formal-build', frozen['snapshots'])
     finalize = FileVaultFinalizeService(domain.vault)
     selected = [selected_change(domain.vault, row) for row in written]
     auth_path = root / 'build-authorization.json'
+    prefix = root / 'delivery.json'
+    run = domain.status(run_id)
+    runtime = _load_json(request_path(domain, run_id))
+    provider = {'path': runtime['provider_config'], 'sha256': native.sha(Path(runtime['provider_config']))}
+    auto = None
+    if run.get('map_supplement'):
+        from incremental_map_supplement import automation_authority, release_baseline
+
+        auto = automation_authority(domain, run, control.status())
+    if auto is None:
+        base_release = finalize.status()['current_release_id']
+    else:
+        enforce(provider == auto['provider_config'], 'supplement Provider configuration changed', 'STALE_INPUT')
+        baseline = auto['release_baseline']
+        if not prefix.is_file():
+            enforce(release_baseline(domain.vault) == baseline, 'supplement publication baseline changed', 'STALE_INPUT')
+        base_release = baseline['release_id'] if baseline is not None else None
+    formal, formal_operation = initialize_scope(domain, run_id, 'round', round_id, 'formal-build', frozen['snapshots'])
     authorization = {'contract': 'incremental-build-authorization/v1', 'run_id': run_id, 'round_id': round_id,
-        'actor': domain.status(run_id)['actor'], 'pages': [change['change_id'] for change in selected],
-        'page_changes': selected, 'base_release': finalize.status()['current_release_id'],
+        'actor': run['actor'], 'pages': [change['change_id'] for change in selected],
+        'page_changes': selected, 'base_release': base_release,
         'publish': True, 'policy': POLICY, 'input_fingerprint': frozen['input_fingerprint'],
         'source_snapshots': frozen['snapshots'], 'map_result_ids': frozen['map_result_ids']}
-    policy = domain.status(run_id)['policy']
+    policy = run['policy']
     changes_applied = any(
         path.is_file() and _load_json(path).get('state') == 'committed'
         and _load_json(path).get('source_changes') == policy.get('source_changes')
@@ -506,13 +523,13 @@ def round_work(domain, run_id, round_id):
         authorization['isolation_pages'] = policy['isolation_pages']
     if auth_path.exists():
         authorization = _load_json(auth_path)
+        if auto is not None:
+            enforce(authorization['base_release'] == base_release, 'supplement Build authorization release changed', 'STALE_INPUT')
     else:
         save(auth_path, authorization)
-    runtime = _load_json(request_path(domain, run_id))
     view = {'authorization': authorization, 'written': written, 'excluded': held,
             'delivery_id': 'delivery-' + fingerprint([run_id, round_id])[:40],
-            'provider_config': runtime['provider_config'],
-            'provider_config_sha256': native.sha(Path(runtime['provider_config']))}
+            'provider_config': provider['path'], 'provider_config_sha256': provider['sha256']}
     pause_stages = control.status()['pause_after']
     view['stop_after'] = ('build_committed' if 'formal-build' in pause_stages
                           else 'index_verified' if set(pause_stages) & {'release', 'acceptance'} else None)
@@ -522,7 +539,6 @@ def round_work(domain, run_id, round_id):
         row = _load_json(saved_request)
     else:
         save(saved_request, row)
-    prefix = root / 'delivery.json'
     if prefix.is_file() and not acknowledged_delivery_prefix(formal, root, row):
         prior = _load_json(prefix)
         job = formal / 'jobs' / (row['id'] + '.json')

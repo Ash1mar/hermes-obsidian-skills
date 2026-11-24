@@ -23,13 +23,13 @@ def main():
         sub.add_parser(action).add_argument('--run-id', required=True)
     for action in ('reconcile', 'preview-reuse', 'control', 'recover-coordination', 'recover-delivery', 'retry-source'):
         sub.add_parser(action).add_argument('--request', type=Path, required=True)
-    for action in ('recover-writing', 'recover-closure', 'recover-map'):
+    for action in ('recover-writing', 'recover-closure', 'recover-map', 'authorize-map-supplement'):
         recovery = sub.add_parser(action)
         recovery.add_argument('--request', type=Path, required=True)
         recovery.add_argument('--preview', action='store_true')
     args = parser.parse_args()
     try:
-        if args.action in ('start', 'reconcile', 'control', 'recover-coordination', 'recover-delivery', 'retry-source', 'recover-writing', 'recover-closure', 'recover-map') and (os.environ.get('HERMES_KANBAN_TASK') or
+        if args.action in ('start', 'reconcile', 'control', 'recover-coordination', 'recover-delivery', 'retry-source', 'recover-writing', 'recover-closure', 'recover-map', 'authorize-map-supplement') and (os.environ.get('HERMES_KANBAN_TASK') or
                                                                 os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT')):
             raise ValueError('incremental operator actions require a trusted operator')
         if args.action == 'start':
@@ -72,10 +72,13 @@ def main():
             elif args.action == 'recover-map':
                 from incremental_map_operator import recover
                 result = recover(domain.vault, request, preview=args.preview)
+            elif args.action == 'authorize-map-supplement':
+                from incremental_map_operator import authorize_supplement
+                result = authorize_supplement(domain.vault, request, preview=args.preview)
             elif args.action == 'control':
                 from incremental_map_operator import prepare_child_continuation
 
-                if {'writing_continuation', 'writing_amendment', 'partial_closure'} & request.keys():
+                if {'writing_continuation', 'writing_amendment', 'partial_closure', 'supplement_automation'} & request.keys():
                     raise ValueError('bound recovery requires its specific operator entry point')
                 control = IncrementalControl(domain.vault, request['run_id'])
                 run = domain.status(request['run_id'])

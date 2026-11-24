@@ -48,11 +48,18 @@ def recovery(tmp_path, monkeypatch):
 
     def supplement(_vault, request, *, preview=False):
         assert request['request_ids'] == [SELECTED]
+        automatic = request.get('execution_scope') == 'automatic'
         if preview:
-            return {'report_sha256': 'child-admission', 'supplement_run_id': 'child'}
+            report = {'report_sha256': 'child-admission', 'supplement_run_id': 'child'}
+            if automatic:
+                report.update(authorized_stages=list(operator.SUPPLEMENT_AUTOMATIC_STAGES), release_baseline=None)
+            return report
         assert request['expected_report_sha256'] == 'child-admission'
         admissions.append(('supplemental', request))
-        return {'state': 'mapped', 'supplement_run_id': 'child'}
+        receipt = {'state': 'mapped', 'supplement_run_id': 'child'}
+        if automatic:
+            receipt['execution_scope'] = 'automatic'
+        return receipt
 
     monkeypatch.setattr(original, 'recovery_inventory', inventory)
     monkeypatch.setattr(original, 'retry', retry)
@@ -96,3 +103,36 @@ def test_map_confirmation_rejects_changed_evidence_and_replays_one_admission(rec
     assert operator.recover(recovery.vault, request) == receipt
     assert [method for method, _ in recovery.admissions] == [strategy]
     assert receipt['strategy'] == strategy and receipt['request_id'] == SELECTED
+
+
+def test_automatic_scope_and_child_linkage_are_bound_before_resuming(recovery, monkeypatch):
+    import incremental_ingest_controller as controller
+
+    recovery.run['state'] = 'partial'
+    ordinary = operator.recover(recovery.vault, recovery.request, preview=True)
+    automatic = operator.recover(recovery.vault, {**recovery.request, 'execution_scope': 'automatic'}, preview=True)
+    assert ordinary['report_sha256'] != automatic['report_sha256']
+    option, = [row for row in automatic['strategies'] if row['allowed']]
+    assert option['authorized_stages'] == list(operator.SUPPLEMENT_AUTOMATIC_STAGES)
+    assert option['execution_scope'] == 'automatic'
+
+    request = {**automatic['request'], 'request_id': SELECTED, 'strategy': 'supplemental',
+               'expected_report_sha256': automatic['report_sha256']}
+    with pytest.raises(ValueError, match='preview changed'):
+        operator.recover(recovery.vault, {key: value for key, value in request.items() if key != 'execution_scope'})
+    assert recovery.admissions == []
+
+    dispatched = []
+
+    def resume(domain, child):
+        path = domain.vault / '_system/ledgers/incremental-map-recoveries/parent/one-choice.json'
+        assert operator._load_json(path)['state'] == 'committed'
+        dispatched.append(child)
+        if len(dispatched) == 1:
+            raise OSError('launcher interrupted after Map')
+
+    monkeypatch.setattr(controller, 'resume_run', resume)
+    with pytest.raises(OSError, match='launcher interrupted'):
+        operator.recover(recovery.vault, request)
+    assert operator.recover(recovery.vault, request)['execution_scope'] == 'automatic'
+    assert len(recovery.admissions) == 1 and dispatched == ['child', 'child']

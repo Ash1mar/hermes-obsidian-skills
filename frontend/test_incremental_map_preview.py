@@ -8,7 +8,8 @@ import pytest
 
 import server
 from incremental import command, fingerprint, progress, root_for
-from incremental_map_preview import CONFIRM, CONTINUE, PREVIEW, preview_path, recovery_request
+from incremental_map_preview import (AUTOMATIC_SCOPE, AUTOMATIC_STAGES, CONFIRM, CONTINUE, PREVIEW,
+                                     preview_path, recovery_request, validate_action)
 from workflow import save
 
 
@@ -46,7 +47,10 @@ def state(tmp_path):
 
 def report(operation, strategy='supplemental'):
     document = {'request': operation, 'strategies': [
-        {'id': name, 'allowed': name == strategy, 'reason': 'scope checked', 'request_ids': [PACKET] if name == strategy else []}
+        {'id': name, 'allowed': name == strategy, 'reason': 'scope checked',
+         'request_ids': [PACKET] if name == strategy else [],
+         **({'execution_scope': AUTOMATIC_SCOPE, 'authorized_stages': AUTOMATIC_STAGES}
+            if name == 'supplemental' else {})}
         for name in ('original', 'supplemental')
     ], 'outcomes': [{'request_id': PACKET, 'task_id': 't_map', 'disposition': 'eligible'}]}
     return {**document, 'report_sha256': fingerprint(document)}
@@ -101,6 +105,8 @@ def test_preview_works_without_dispatch_lease_and_confirms_returned_revision(sta
     confirm, = [row for row in actions(state)['actions'] if row['id'] == CONFIRM]
     assert confirm['strategy'] == 'supplemental' and confirm['preview_key'] == seen[0]['operation_id']
     assert confirm['run_revision'] == state.run['revision'] and confirm['request_ids'] == [PACKET]
+    assert confirm['execution_scope'] == seen[0]['execution_scope'] == AUTOMATIC_SCOPE
+    assert confirm['authorized_stages'] == AUTOMATIC_STAGES
     assert not [row for row in actions(state, active=True)['actions'] if row['id'] == CONFIRM]
     emitted = []
     attempt = {**confirm, 'id': 'confirmation', 'action': CONFIRM, 'request_id': PACKET}
@@ -109,9 +115,19 @@ def test_preview_works_without_dispatch_lease_and_confirms_returned_revision(sta
     assert emitted == [{**seen[0], 'run_revision': state.run['revision'], 'strategy': 'supplemental',
                         'request_id': PACKET, 'expected_report_sha256': confirm['report_sha256']}]
     for override in ({'report_sha256': 'f' * 64}, {'request_id': 'c' * 64}, {'strategy': 'original'},
-                     {'control_revision': state.control['revision'] - 1}):
+                     {'control_revision': state.control['revision'] - 1}, {'execution_scope': 'map-only'}):
         with pytest.raises(ValueError):
             command(state.directory, {**attempt, **override}, state.config, lambda *_: pytest.fail('saved a stale request'))
+    validate_action(attempt, confirm, ValueError)
+    with pytest.raises(ValueError):
+        validate_action({**attempt, 'authorized_stages': ['mapping']}, confirm, ValueError)
+
+
+def test_map_only_cached_preview_cannot_authorize_automatic_execution(state):
+    operation = recovery_request(state.request, state.run, state.control, SOURCE, SOURCE_SHA, ValueError)
+    legacy = {key: value for key, value in operation.items() if key != 'execution_scope'}
+    put(preview_path(state.directory, legacy), report(legacy))
+    assert [row['id'] for row in actions(state)['actions']] == [PREVIEW]
 
 
 def test_durable_child_mapping_stop_is_linked_to_the_original_source(state):
@@ -143,6 +159,7 @@ def test_durable_child_mapping_stop_is_linked_to_the_original_source(state):
     linked, = mapping['map_recovery']['results']
     assert (linked['supplement_run_id'], linked['state'], linked['boundary'],
             linked['map_result_ids']) == (successor, 'paused', 'mapping', ['map-child'])
+    assert not [row for row in mapping['actions'] if row['id'] == CONFIRM]
     continuation, = [row for row in mapping['actions'] if row['id'] == CONTINUE]
     attempt = {**continuation, 'id': 'continue-child', 'action': CONTINUE}
     emitted = []

@@ -134,6 +134,7 @@ class Console:
                 option = next((item for item in actions if item["id"] == action
                                and item["node"] == body.get("node", item["node"])
                                and item["attempt"] == body.get("attempt", item["attempt"])
+                               and item.get('supplement_run_id') == body.get('supplement_run_id')
                                and item.get("prior_entry") == prior_entry), None)
                 if action in {"attach-source", "continue-operation"} and (not body.get("node") or not body.get("attempt")):
                     option = None
@@ -213,11 +214,13 @@ class Console:
                 record["pause_before"] = option["pause_before"]
             if action.startswith('incremental-'):
                 record.update(control_revision=option['control_revision'], run_revision=option['run_revision'])
+                if option.get('supplement_run_id'):
+                    record['supplement_run_id'] = option['supplement_run_id']
                 if action == 'incremental-closure-confirm':
                     record.update(preview_attempt=option['preview_attempt'], report_sha256=option['report_sha256'])
                 if action == MAP_CONFIRM:
                     record.update({key: option[key] for key in ('source_path', 'source_sha256', 'strategy',
-                                                                 'preview_key', 'report_sha256')},
+                                                                 'preview_key', 'report_sha256', 'execution_scope')},
                                   request_id=body['request_id'])
                 if action == MAP_CONTINUE:
                     record.update({key: option[key] for key in ('source_path', 'source_sha256', *CHILD_BINDING)})

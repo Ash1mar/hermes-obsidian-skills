@@ -12,11 +12,16 @@ from ingest_kanban import pass_node,domain_completed
 from revision_disposition import verify,native_user
 
 
-def test_persisted_image_marker_still_requires_exact_wire_hash():
-    wire='Native input\nImage 1: t1/m1';call={'user_sha256':fingerprint(wire),'image_inputs':[{}]}
-    assert native_user(wire+'\n[screenshot]',call)==wire
-    assert native_user(wire+'changed\n[screenshot]',call) is None
-    assert native_user(wire+'\n[screenshot]\n[screenshot]',call) is None
+@pytest.mark.parametrize('marker', ('\n[screenshot]', '\n[screenshot detail=high]'))
+def test_persisted_image_marker_still_requires_exact_wire_hash(marker):
+    wire = 'Native input\nImage 1: t1/m1'
+    call = {'user_sha256': fingerprint(wire), 'image_inputs': [{}]}
+    assert native_user(wire + marker, call) == wire
+    assert native_user(wire + marker * 2, {**call, 'image_inputs': [{}, {}]}) == wire
+    assert native_user(wire + 'changed' + marker, call) is None
+    assert native_user(wire + marker * 2, call) is None
+    assert native_user(wire + marker, {**call, 'image_inputs': []}) is None
+    assert native_user(wire + '\n[screenshot detail=low]', call) is None
 
 
 def test_partial_revision_preserves_outputs_and_needs_explicit_acceptance(vault,monkeypatch):
