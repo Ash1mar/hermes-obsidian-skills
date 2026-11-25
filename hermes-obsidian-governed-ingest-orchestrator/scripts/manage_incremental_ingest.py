@@ -51,9 +51,10 @@ def main():
             if args.action == 'preview-reuse':
                 result = domain.preview_reuse(request)
             elif args.action == 'retry-source':
-                if request.get('retry_kind') == 'preparation-unfinished':
-                    from incremental_preparation_retry import retry
-                    result = retry(domain, request)
+                import incremental_preparation_retry as preparation
+
+                if request.get('retry_kind') in (preparation.KIND, preparation.STARTUP_KIND):
+                    result = preparation.retry(domain, request)
                 else:
                     from incremental_source_retry import retry
                     result = retry(domain.vault, request)

@@ -133,9 +133,17 @@ def refill(monkeypatch, tmp_path):
     monkeypatch.setitem(sys.modules, "tools.environments.local", local)
     monkeypatch.setitem(sys.modules, "gateway", gateway_package)
     monkeypatch.setitem(sys.modules, "gateway.session_context", gateway_context)
+    state.worker_python = tmp_path / "managed" / "bin" / "python3"
+    state.worker_launches = []
+    monkeypatch.setattr(dispatcher, "worker_runtime", lambda: (state.worker_python, {}))
+
+    def spawn(argv, **kwargs):
+        events.append("spawn")
+        state.worker_launches.append(argv)
+        return SimpleNamespace(pid=500)
+
     monkeypatch.setattr(dispatcher, "subprocess", SimpleNamespace(
-        Popen=lambda *a, **kw: events.append("spawn") or SimpleNamespace(pid=500),
-        DEVNULL=-3, STDOUT=-2, CREATE_NO_WINDOW=0,
+        Popen=spawn, DEVNULL=-3, STDOUT=-2, CREATE_NO_WINDOW=0,
     ))
     monkeypatch.setattr(dispatcher, "span", no_span)
     monkeypatch.setattr(runtime_telemetry, "span", no_span)
@@ -163,6 +171,21 @@ def test_native_refill_reconciles_after_reap_before_fresh_capacity(refill):
     assert events[events.index("fast-reconcile") + 1] == "status"
     assert events.index("admission:t1") < events.index("claim:t1") < events.index("spawn")
     assert sum(item.startswith("claim:") for item in events) == 2
+    assert [argv[0] for argv in refill.worker_launches] == [str(refill.worker_python)] * 2
+
+
+def test_runtime_unavailable_before_any_native_claim(refill, monkeypatch):
+    def unavailable():
+        raise ContractError('PROGRAM_RUNTIME_UNAVAILABLE', '$', 'installed interpreter cannot import Hermes')
+
+    monkeypatch.setattr(dispatcher, 'worker_runtime', unavailable)
+    with pytest.raises(ContractError) as stopped:
+        dispatcher.dispatch_programs(refill.adapter, 'ingest-refill')
+
+    assert stopped.value.code == 'PROGRAM_RUNTIME_UNAVAILABLE'
+    assert all(task.status == 'ready' for task in refill.tasks)
+    assert not any(event.startswith('claim:') for event in refill.events)
+    assert not refill.worker_launches
 
 
 def test_reduce_dispatch_cap_two_even_when_native_config_is_unbounded(refill):

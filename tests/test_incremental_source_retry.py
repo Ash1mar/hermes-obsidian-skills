@@ -105,6 +105,25 @@ def test_preparation_retry_claim_preserves_original_and_is_bound_to_one_native_r
     assert json.loads(path.with_suffix('.started.json').read_bytes())['run_id'] == 10
 
 
+def test_startup_recovery_requires_exact_log_and_one_ended_worker():
+    from incremental_preparation_retry import startup_retry_pending
+    from incremental_preparation_state import startup_failure_evidence
+
+    task = SimpleNamespace(status='archived', claim_lock=None, current_run_id=None, worker_pid=None)
+    ended = {'id': 7, 'outcome': 'scheduled', 'started_at': 1, 'ended_at': 2, 'worker_pid': 19}
+    original = SimpleNamespace(**ended)
+    diagnostic = json.dumps({'ok': False, 'code': 'PROGRAM_EXECUTION_FAILED', 'error': "No module named 'hermes_cli'"})
+    evidence = startup_failure_evidence(task, [original], diagnostic)
+    assert evidence['run_id'] == 7
+    assert startup_failure_evidence(task, [original], diagnostic.replace('hermes_cli', 'unrelated')) is None
+    later_schedule = {'id': 8, 'outcome': 'scheduled', 'worker_pid': None, 'started_at': 3, 'ended_at': 3}
+    receipt = {'prior_run_id': evidence['run_id']}
+    assert startup_retry_pending(receipt, [ended, later_schedule])
+    assert not startup_retry_pending(receipt, [ended, {**later_schedule, 'outcome': None, 'ended_at': None}])
+    assert not startup_retry_pending(receipt, [ended, {**later_schedule, 'worker_pid': 20}])
+    assert startup_failure_evidence(task, [original, SimpleNamespace(**{**ended, 'id': 8})], diagnostic) is None
+
+
 def fixture(tmp_path,monkeypatch):
     import incremental_map_recovery
     import run_short_evidence_test as native
