@@ -1,4 +1,5 @@
 """Later-ready sources keep mapping while the one current round delivers."""
+from concurrent.futures import Future
 from pathlib import Path
 from threading import Event
 from types import SimpleNamespace
@@ -15,6 +16,119 @@ import incremental_ingest_controller as controller
 import incremental_runtime as runtime
 from hermes_source_units.incremental_qualification import QualificationContention, qualification_lock
 from hermes_source_units.source_units import _exclusive_lock
+from hermes_source_units.validation import ContractError
+
+
+class InlineExecutor:
+    def __init__(self, *, max_workers):
+        pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        pass
+
+    def submit(self, function, *args):
+        future = Future()
+        try:
+            future.set_result(function(*args))
+        except Exception as error:
+            future.set_exception(error)
+        return future
+
+
+@pytest.mark.parametrize('stage', ['mapping', 'coordination'])
+@pytest.mark.parametrize('latch,code,paused', [('pausing', 'INCREMENTAL_PAUSED', True),
+    ('active', 'INCREMENTAL_PAUSED', False), ('pausing', 'STALE_INPUT', False)])
+def test_watch_finishes_durable_pause_only_for_a_bound_admission_failure(tmp_path, monkeypatch, stage, latch, code, paused):
+    import orchestration
+
+    round_id = 'round-1' if stage == 'coordination' else None
+    run = {'state': 'active', 'sources': {} if round_id else {'a': {'state': 'prepared', 'snapshot_id': 'a'}},
+           'active_round_id': round_id, 'map_result_ids': [], 'consumed_map_ids': [],
+           'round_ids': [round_id] if round_id else []}
+    head = {'state': 'active', 'boundary': None}
+    domain = SimpleNamespace(vault=tmp_path, root=lambda _: tmp_path, status=lambda _: run)
+    events = []
+
+    class Control:
+        def __init__(self, *_):
+            pass
+
+        def status(self):
+            return head
+
+        def reconcile_executors(self):
+            pass
+
+        def checkpoint(self, scope, checkpoint, evidence):
+            assert scope == {'scope_kind': 'run', 'scope_id': 'run'}
+            assert head['boundary'] == {'stage': 'manual'}
+            events.append('paused')
+            head['state'] = 'paused'
+            return head
+
+    def sync(*_):
+        events.append('sync')
+        return run
+
+    def interrupted(*_):
+        events.append(stage)
+        head.update(state=latch, boundary={'stage': 'manual'} if latch == 'pausing' else None)
+        raise ContractError(code, '$', 'fixture admission changed')
+
+    monkeypatch.setattr(controller, 'service', lambda *_: domain)
+    monkeypatch.setattr(controller, 'IncrementalControl', Control)
+    monkeypatch.setattr(controller, 'ThreadPoolExecutor', InlineExecutor)
+    monkeypatch.setattr(controller, 'sync_sources', sync)
+    monkeypatch.setattr(controller, 'map_source' if stage == 'mapping' else 'round_work', interrupted)
+    monkeypatch.setattr(controller, 'time', SimpleNamespace(sleep=lambda _: None))
+    monkeypatch.setattr(orchestration, 'configuration', lambda: {'source_prepare_concurrency': 1})
+    if paused:
+        assert controller.watch(tmp_path, 'run') == run
+        assert events == ['sync', stage, 'paused'] and run['active_round_id'] == round_id
+    else:
+        with pytest.raises(ContractError) as failure:
+            controller.watch(tmp_path, 'run')
+        assert failure.value.code == code and events == ['sync', stage]
+
+
+def test_watch_reviews_each_eligible_historical_mapping_hold_at_most_once(tmp_path, monkeypatch):
+    import incremental_runtime
+    import orchestration
+
+    run = {'state': 'active', 'active_round_id': None, 'map_result_ids': [], 'consumed_map_ids': [],
+           'sources': {key: {'state': 'mapping_held', 'snapshot_id': key} for key in ('eligible', 'unrelated')}}
+    domain = SimpleNamespace(vault=tmp_path, root=lambda _: tmp_path, status=lambda _: run)
+    events = []
+
+    class Control:
+        def __init__(self, *_):
+            pass
+
+        def status(self):
+            return {'state': 'active'}
+
+        def reconcile_executors(self):
+            pass
+
+    def close(*_):
+        events.append('closure')
+        run['state'] = 'partial'
+        return run
+
+    monkeypatch.setattr(controller, 'service', lambda *_: domain)
+    monkeypatch.setattr(controller, 'IncrementalControl', Control)
+    monkeypatch.setattr(controller, 'ThreadPoolExecutor', InlineExecutor)
+    monkeypatch.setattr(controller, 'sync_sources', lambda *_: run)
+    monkeypatch.setattr(controller, 'map_source', lambda _, __, snapshot: events.append(snapshot))
+    monkeypatch.setattr(controller, 'close', close)
+    monkeypatch.setattr(controller, 'time', SimpleNamespace(sleep=lambda _: None))
+    monkeypatch.setattr(incremental_runtime, 'resumable_mapping_hold', lambda _, __, source: source['snapshot_id'] == 'eligible')
+    monkeypatch.setattr(orchestration, 'configuration', lambda: {'source_prepare_concurrency': 1})
+    assert controller.watch(tmp_path, 'run')['state'] == 'partial'
+    assert events == ['eligible', 'closure']
 
 
 @pytest.mark.parametrize('control_state', ['active', 'paused', 'cancelled'])

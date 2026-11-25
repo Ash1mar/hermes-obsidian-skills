@@ -86,7 +86,7 @@ def test_mapping_verifies_producers_and_dispatches_fresh_request_once(tmp_path, 
     jobs = []
     for i in (1, 2):
         key = str(i) * 64
-        row = {'id': key, 'phase': 'short-topics' if i == 1 else 'short-map'}
+        row = {'id': key, 'phase': 'short-topics' if i == 1 else 'short-map', 'view': {}}
         path = root / 'jobs' / (key + '.json')
         if not first_request or i == 1:
             put(path, {'request': row})
@@ -96,7 +96,8 @@ def test_mapping_verifies_producers_and_dispatches_fresh_request_once(tmp_path, 
     unit = {'resource_id': 'resource', 'unit_set_id': 'units', 'unit_id': 'unit'}
     sources = {'S1': {'items': {'S1-B1': {'source_ref': {'unit_ref': unit, 'span': None}, 'sha256': 'bytes'}}}}
     inspected, dispatched = [], []
-    run = {'actor': 'actor', 'source_manifest': [{'path': '10_Raw/a.pdf'}]}
+    run = {'actor': 'actor', 'source_manifest': [{'path': '10_Raw/a.pdf'}],
+           'sources': {'10_Raw/a.pdf': {'state': 'prepared'}}}
     domain = SimpleNamespace(vault=tmp_path, root=lambda _: tmp_path, validate_source_snapshot=lambda *_: snapshot, status=lambda _: run)
 
     class Control:

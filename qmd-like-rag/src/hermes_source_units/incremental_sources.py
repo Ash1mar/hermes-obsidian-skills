@@ -90,7 +90,8 @@ def verify_mapping_isolation(vault, pointer, workspace, *, run_id, snapshot_id, 
     """Verify exact ended Map jobs without granting those jobs a positive receipt."""
     from hermes_cli import kanban_db as kb
 
-    require(pointer['ref'] == (workspace / 'execution-hold.json').relative_to(vault).as_posix(),
+    partial = pointer['ref'] == (workspace / 'partial-execution-hold.json').relative_to(vault).as_posix()
+    require(partial or pointer['ref'] == (workspace / 'execution-hold.json').relative_to(vault).as_posix(),
             'mapping isolation evidence escaped the source workspace')
     report = read_pin(vault, pointer)
     operation_path = workspace / 'operation.json'
@@ -103,11 +104,12 @@ def verify_mapping_isolation(vault, pointer, workspace, *, run_id, snapshot_id, 
             and operation.get('workflow_mode') == 'incremental_v1' and operation.get('vault') == str(vault)
             and operation.get('actor') == actor and scope.get('run_id') == run_id
             and scope.get('scope_kind') == 'source' and scope.get('scope_id') == snapshot_id
-            and scope.get('snapshots') == [snapshot_id] and scope.get('stage') == 'mapping',
+            and scope.get('snapshots') == [snapshot_id] and scope.get('stage') == 'mapping'
+            and (partial or 'historical_hold' not in report),
             'mapping isolation report or native scope changed')
     operation_hash = _sha(operation_path.read_bytes())
     phases, jobs, repairs = set(), set(), {}
-    required_map_missing = False
+    primary = {}
     with closing(completion_connection(operation['board'])) as conn:
         for entry in report['jobs']:
             job = _vault_path(vault, entry['job']['ref'])
@@ -157,7 +159,11 @@ def verify_mapping_isolation(vault, pointer, workspace, *, run_id, snapshot_id, 
                         and all(isinstance(alias, str) for alias in assigned), 'isolated Map job lacks assigned units')
                 issue = row['view'].get('issue')
                 if issue is None:
-                    required_map_missing = True
+                    require(not partial or entry['state'] == 'held',
+                            'partial Map requires acknowledged held primary requests')
+                    for alias in assigned:
+                        require(alias not in primary, 'held primary Map assignments overlap')
+                        primary[alias] = request_id
                 else:
                     require(isinstance(issue, dict) and assigned == [issue.get('item')]
                             and isinstance(issue.get('reason'), str) and issue['reason']
@@ -165,9 +171,10 @@ def verify_mapping_isolation(vault, pointer, workspace, *, run_id, snapshot_id, 
                             'isolated follow-up lacks its exact original Map duty')
                     repairs[assigned[0]] = issue
     reason = ('seed-incomplete' if 'short-topics' in phases else
-              'required-map-incomplete' if required_map_missing else 'partial')
-    require(report['reason'] == reason, 'mapping isolation reason differs from its native stage')
-    return reason, repairs
+              'required-map-incomplete' if primary and not partial else 'partial')
+    require(report['reason'] == reason and (not partial or reason == 'partial'),
+            'mapping isolation reason differs from its native stage')
+    return reason, repairs, primary
 
 
 def verify_native_completion(vault, proof, expected):

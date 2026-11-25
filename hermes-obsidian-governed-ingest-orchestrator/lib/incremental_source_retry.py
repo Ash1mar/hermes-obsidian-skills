@@ -184,7 +184,8 @@ def recovery_inventory(domain, run_id, source_path, *, request_ids=None):
     if (run['state'] == 'active' and control['state'] in ('active', 'paused', 'pausing')
             and source['state'] == 'prepared' and (control.get('boundary') or {}).get('stage') != 'closure'):
         mode, reason = 'original', 'The original Map card may run only in an admitted mapping scope'
-    elif has_hold or (source.get('map_result_id') and (scope_root / 'execution-hold.json').is_file()):
+    elif has_hold or (source.get('map_result_id') and any(
+            (scope_root / filename).is_file() for filename in ('execution-hold.json', 'partial-execution-hold.json'))):
         mode, reason = 'supplemental', 'The original Map outcome is sealed and requires linked recovery'
     if (scope_root / 'stop.json').exists() and mode == 'original':
         mode, reason = 'unavailable', 'An original native stop marker requires separate supported reconciliation'

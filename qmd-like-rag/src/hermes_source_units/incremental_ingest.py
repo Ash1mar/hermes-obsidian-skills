@@ -348,7 +348,7 @@ class FileIncrementalIngestService:
             if 'execution_hold' in request:
                 require('wait' not in request, 'mapping execution and qualification holds are separate intents')
                 pointer = request['execution_hold']
-                reason, _ = self._mapping_isolation(run, snapshot_id, pointer)
+                reason, _, _ = self._mapping_isolation(run, snapshot_id, pointer)
                 require(reason in ('seed-incomplete', 'required-map-incomplete'),
                         'whole-source hold requires missing mandatory Map evidence')
                 hold = {'state': 'held', 'stage': 'mapping', 'source_path': path, 'snapshot_id': snapshot_id,
@@ -385,8 +385,21 @@ class FileIncrementalIngestService:
                                         snapshot_id=snapshot_id, actor=run['actor'])
 
     def _verify_partial_map(self, run, record):
-        reason, repairs = self._mapping_isolation(run, record['snapshot_id'], record['execution_hold'])
-        require(reason == 'partial' and repairs, 'source-level mapping hold cannot be published as a partial Map')
+        snapshot_id = record['snapshot_id']
+        pointer = record['execution_hold']
+        reason, repairs, primary = self._mapping_isolation(run, snapshot_id, pointer)
+        require(reason == 'partial' and (repairs or primary),
+                'source-level mapping hold cannot be published as a partial Map')
+        report = read_pin(self.vault, pointer)
+        if previous := report.get('historical_hold'):
+            source = next(row for row in run['sources'].values() if row.get('snapshot_id') == snapshot_id)
+            require(primary and source.get('mapping_hold', {}).get('execution_hold') == previous,
+                    'partial Map lost its previous source hold')
+            prior_reason, _, _ = self._mapping_isolation(run, snapshot_id, previous)
+            old = read_pin(self.vault, previous)
+            require(prior_reason == 'required-map-incomplete'
+                    and all(entry in report['jobs'] for entry in old['jobs']),
+                    'partial Map changed earlier isolated job evidence')
         workspace = self.root(run['run_id']) / 'native' / 'source' / record['snapshot_id'] / 'mapping'
         originals = {}
         for completion in record['native_completions']:
@@ -401,6 +414,20 @@ class FileIncrementalIngestService:
         reduced = read_pin(self.vault, record['results'][0])
         aliases = record['alias_table']
         receipts = {pointer['ref']: pointer for pointer in record['results'][1:]}
+        if primary:
+            require(originals and all(set(primary).isdisjoint(units) for units in originals.values()),
+                    'partial Map needs verified primary requests without overlapping coverage')
+            for request_id in originals:
+                ref = (workspace / 'receipts' / (request_id + '.json')).relative_to(self.vault).as_posix()
+                require(ref in receipts and read_pin(self.vault, receipts[ref]).get('request_sha256') == request_id,
+                        'partial Map lost a verified primary receipt')
+        for alias, request_id in primary.items():
+            disposition = reduced['dispositions'].get(alias, {})
+            require(alias in aliases and coverage.get(fingerprint(aliases[alias]['unit_ref'])) == 'held'
+                    and alias in reduced['unresolved'] and alias in record['unresolved']
+                    and disposition.get('status') == 'pending' and disposition.get('request') == request_id
+                    and not disposition.get('topics') and disposition.get('reason') == 'native mapping request held',
+                    'partial Map must retain every isolated primary assignment as an unresolved coverage gap')
         for alias, issue in repairs.items():
             parent = issue['parent_request']
             parent_path = (workspace / 'receipts' / (parent + '.json')).relative_to(self.vault).as_posix()
@@ -557,7 +584,13 @@ class FileIncrementalIngestService:
             pointer = self._immutable(self.reports(run['run_id']) / 'map-results' / (record['map_result_id'] + '.json'), record)
             if record['map_result_id'] not in run['map_result_ids']:
                 source = run['sources'][snapshot['original']['ref']]
-                require(source['state'] == 'prepared', 'source already has another mapped result', 'IDEMPOTENCY_CONFLICT')
+                if source['state'] == 'mapping_held':
+                    prior = source['mapping_hold'].get('execution_hold')
+                    require(prior and 'execution_hold' in record and
+                            read_pin(self.vault, record['execution_hold']).get('historical_hold') == prior,
+                            'historical source hold requires verified partial Map recovery', 'IDEMPOTENCY_CONFLICT')
+                else:
+                    require(source['state'] == 'prepared', 'source already has another mapped result', 'IDEMPOTENCY_CONFLICT')
                 source.update(state='mapped', map_result_id=record['map_result_id'])
                 run['map_result_ids'].append(record['map_result_id'])
             return record, [pointer, *evidence]

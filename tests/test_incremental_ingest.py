@@ -22,7 +22,8 @@ def put(path, value):
 
 @pytest.fixture
 def incremental(vault):
-    refs = publish_sources(vault, ['# A\nFirst independent source.\n', '# B\nSecond independent source.\n'])
+    refs = publish_sources(vault, ['# A\nFirst independent source.\n## A2\nIndependent evidence.\n',
+                                   '# B\nSecond independent source.\n'])
     admission = []
     native = []
 
@@ -156,6 +157,87 @@ def test_failed_native_map_scope_is_held_without_a_phantom_map_or_blocking_other
     round_input = service.freeze_round(mutation(service, 'freeze-b', round_id='round-1', max_maps=1))
     assert round_input['map_result_ids'] == [mapped['map_result_id']]
     assert round_input['snapshots'] == [source_b['snapshot']['snapshot_id']]
+
+
+@pytest.mark.parametrize('historical', [False, True])
+def test_acknowledged_primary_hold_keeps_verified_sibling_map_eligible(incremental, monkeypatch, historical):
+    from hermes_source_units import incremental_sources
+
+    service, _, outcomes, _, _, _, _ = incremental
+    snapshot = seal(incremental)['snapshot']
+    sid, source = snapshot['snapshot_id'], outcomes[0]['path']
+    workspace = service.root('fixture') / 'native/source' / sid / 'mapping'
+    operation_path = workspace / 'operation.json'
+    operation = {'contract': 'test-native', 'board': 'isolated-map', 'actor': 'builder',
+                 'vault': str(service.vault), 'workflow_mode': 'incremental_v1',
+                 'incremental': {'run_id': 'fixture', 'scope_kind': 'source', 'scope_id': sid,
+                                 'stage': 'mapping', 'snapshots': [sid]}}
+    put(operation_path, operation)
+
+    def pin(path):
+        return pinned(service.vault, path.relative_to(service.vault).as_posix())
+
+    aliases = {f'S1-B{i}': {'snapshot_id': sid, **unit} for i, unit in enumerate(snapshot['units'], 1)}
+    assert len(aliases) >= 2
+    missing, *positive = aliases
+
+    def native_result(identifier, assigned, state, number):
+        path = workspace / 'jobs' / (identifier + '.json')
+        put(path, {'request': {'id': identifier, 'phase': 'short-map', 'view': {'assigned': assigned}}})
+        task = f'task-{number}'
+        result = path.with_suffix('.result.json')
+        put(result, {'request_id': identifier, 'task_id': task, 'run_id': number, 'state': state})
+        return {'board': operation['board'], 'task_id': task, 'run_id': number, 'request': pin(path), 'result': pin(result)}
+
+    negative = native_result('held-main', [missing], 'held', 1)
+    settled = native_result('settled-main', positive, 'settled', 2)
+    body = {'contract': operation['contract'], 'operation_sha256': pin(operation_path)['sha256'],
+            'job': 'held-main.json', 'job_sha256': negative['request']['sha256']}
+    task = SimpleNamespace(id=negative['task_id'], status='done', claim_lock=None,
+                           created_by=operation['contract'], body=json.dumps(body))
+    ended = SimpleNamespace(id=negative['run_id'], ended_at=10, outcome='completed')
+    monkeypatch.setitem(sys.modules, 'hermes_cli', SimpleNamespace(kanban_db=SimpleNamespace(
+        get_task=lambda *_: task, list_runs=lambda *_, **__: [ended])))
+    monkeypatch.setattr(incremental_sources, 'completion_connection', lambda _: SimpleNamespace(close=lambda: None))
+    monkeypatch.setattr(service, 'native_evidence', lambda _vault, proof, _expected: proof)
+
+    report = {'contract': incremental_sources.MAP_ISOLATION, 'run_id': 'fixture', 'snapshot_id': sid,
+              'board': operation['board'], 'jobs': [{'job': negative['request'], 'result': negative['result'],
+                                       'task_id': task.id, 'run_id': ended.id, 'state': 'held'}]}
+    previous = None
+    if historical:
+        path = workspace / 'execution-hold.json'
+        put(path, {**report, 'reason': 'required-map-incomplete'})
+        previous = service.hold_source_mapping(mutation(service, 'old-hold', source_path=source,
+                                                       snapshot_id=sid, execution_hold=pin(path)))
+        report['historical_hold'] = previous['execution_hold']
+    partial = workspace / 'partial-execution-hold.json'
+    put(partial, {**report, 'reason': 'partial'})
+    raw = workspace / 'mapped.json'
+    put(raw, {'unresolved': [missing], 'dispositions': {
+        missing: {'status': 'pending', 'request': 'held-main', 'topics': [], 'reason': 'native mapping request held'}}})
+    receipt = workspace / 'receipts/settled-main.json'
+    put(receipt, {'request_sha256': 'settled-main'})
+    budget = service.reserve_budget(mutation(service, 'reserve-partial', reservation={
+        'request_fingerprint': 'map-partial', 'phase': 'mapping', 'max_calls': 0,
+        'max_input_tokens': 0, 'max_output_tokens': 0}))
+    coverage = [{'unit_ref': row['unit_ref'], 'disposition': 'mapped'} for row in aliases.values()]
+    request = mutation(service, 'commit-partial', snapshot_id=sid, budget_id=budget['budget_id'],
+                       request_fingerprint='map-partial', alias_table=aliases, coverage=coverage,
+                       native_completions=[{'proof': settled, 'task_body': {'job': 'settled-main.json'}}],
+                       results=[pin(raw), pin(receipt)], execution_hold=pin(partial), unresolved=[missing])
+    with pytest.raises(ContractError, match='isolated primary assignment'):
+        service.commit_source_map(request)
+    coverage[0].update(disposition='held', reason='native mapping request held')
+    mapped = service.commit_source_map(request)
+    assert service.read_map('fixture', mapped['map_result_id']) == mapped
+    assert service.commit_source_map(request) == mapped
+    source_state = service.status('fixture')['sources'][source]
+    assert source_state['state'] == 'mapped' and source_state.get('mapping_hold') == previous
+    if historical:
+        assert pin(path) == previous['execution_hold']
+    frozen = service.freeze_round(mutation(service, 'freeze-partial', round_id='round-1', max_maps=1))
+    assert frozen['map_result_ids'] == [mapped['map_result_id']]
 
 
 def test_source_a_maps_while_b_is_preparing_and_b_cannot_stale_a(incremental):

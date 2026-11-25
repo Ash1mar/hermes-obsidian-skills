@@ -224,22 +224,29 @@ def execute_map_rows(domain, run_id, root, operation, rows, settle_usage):
     return results, holds
 
 
-def source_execution_hold(domain, run_id, root, operation, holds, reason):
+def source_execution_hold(domain, run_id, root, operation, holds, reason, *, previous=None):
     from prepare_short_evidence_test import save
 
     jobs = [{key: row[key] for key in ('job', 'task_id', 'run_id', 'state', 'result', 'evidence') if key in row}
             for _, row in sorted(holds.items())]
     require(jobs, 'source mapping hold requires exact negative native evidence')
-    path = root / 'execution-hold.json'
-    save(path, {'contract': ISOLATION, 'run_id': run_id, 'snapshot_id': operation['incremental']['scope_id'],
-                'board': operation['board'], 'reason': reason, 'jobs': jobs})
+    has_primary_gap = reason == 'partial' and required_hold_reason(root, holds) == 'required-map-incomplete'
+    path = root / ('partial-execution-hold.json' if has_primary_gap else 'execution-hold.json')
+    report = {'contract': ISOLATION, 'run_id': run_id, 'snapshot_id': operation['incremental']['scope_id'],
+              'board': operation['board'], 'reason': reason, 'jobs': jobs}
+    if previous is not None:
+        require(has_primary_gap, 'historical Map hold requires a bound partial primary Map')
+        report['historical_hold'] = previous
+    save(path, report)
     return pinned(domain.vault, path.relative_to(domain.vault).as_posix())
 
 
-def required_hold_reason(root, holds):
-    rows = [_load_json(root / 'jobs' / (request_id + '.json'))['request'] for request_id in holds]
-    if any(row['phase'] == 'short-topics' for row in rows):
+def required_hold_reason(root, holds, *, allow_acknowledged=False):
+    rows = [(_load_json(root / 'jobs' / (request_id + '.json'))['request'], hold)
+            for request_id, hold in holds.items()]
+    if any(row['phase'] == 'short-topics' for row, _ in rows):
         return 'seed-incomplete'
-    if any(row['phase'] == 'short-map' and not row['view'].get('issue') for row in rows):
+    if any(row['phase'] == 'short-map' and not row['view'].get('issue')
+           and (not allow_acknowledged or hold['state'] != 'held') for row, hold in rows):
         return 'required-map-incomplete'
     return None

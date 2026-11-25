@@ -732,16 +732,21 @@ def delivery_checkpoint(control, round_id, delivery):
             break
 
 
+def paused_admission(control, error):
+    return error.code == 'INCREMENTAL_PAUSED' and control.status()['state'] in ('pausing', 'paused')
+
+
 def watch(vault, run_id):
     from orchestration import configuration
     from incremental_network import RoundNetworkPaused
+    from incremental_runtime import resumable_mapping_hold
 
     domain = service(Path(vault), run_id)
     control = IncrementalControl(domain.vault, run_id)
     with _exclusive_lock(domain.root(run_id) / '.controller.lock', timeout=0):
         initial = domain.status(run_id)
         supplement = 'map_supplement' in initial
-        if supplement and not runnable(domain, run_id):
+        if supplement and control.status()['state'] == 'active' and not runnable(domain, run_id):
             return initial
         control.reconcile_executors()
         head = control.status()
@@ -764,6 +769,7 @@ def watch(vault, run_id):
                     if control.checkpoint(scope, 'mapping', evidence)['state'] != 'active':
                         break
         running = {}
+        attempted_holds = set()
         round_future = None
         with ThreadPoolExecutor(max_workers=configuration()['source_prepare_concurrency']) as pool, \
                 ThreadPoolExecutor(max_workers=1) as rounds:
@@ -775,36 +781,54 @@ def watch(vault, run_id):
                         head = control.status()
                         if head['state'] == 'active':
                             control.hold_network_recovery(paused.scope, paused.evidence, head['revision'])
+                    except ContractError as error:
+                        if not paused_admission(control, error):
+                            raise
                     round_future = None
-                if control.status()['state'] in ('paused', 'cancelled'):
-                    return domain.status(run_id)
-                if control.status()['state'] == 'pausing':
-                    control.checkpoint({'scope_kind': 'run', 'scope_id': run_id}, 'mapping', {})
-                    if control.status()['state'] == 'paused':
-                        return domain.status(run_id)
-                for snapshot, future in list(running.items()):
+                for snapshot, (future, held_source) in list(running.items()):
                     if future.done():
-                        result = future.result()
                         del running[snapshot]
+                        try:
+                            result = future.result()
+                        except ContractError as error:
+                            if not paused_admission(control, error):
+                                raise
+                            continue
+                        if held_source:
+                            attempted_holds.add(snapshot)
                         if result is not MAPPING_DEFERRED:
                             source = next(row for row in domain.status(run_id)['sources'].values()
                                           if row.get('snapshot_id') == snapshot)
                             require(source['state'] in ('mapped', 'mapping_held'),
                                     'source Map executor returned without a durable disposition')
-                            if source['state'] == 'mapped':
+                            if source['state'] == 'mapped' and control.status()['state'] == 'active':
                                 control.checkpoint({'scope_kind': 'source', 'scope_id': snapshot}, 'mapping',
                                                    {'snapshot_id': snapshot})
-                if control.status()['state'] != 'active':
+                head = control.status()
+                drained = not running and round_future is None
+                if head['state'] == 'pausing' and drained:
+                    head = control.checkpoint({'scope_kind': 'run', 'scope_id': run_id}, 'mapping', {})
+                if head['state'] == 'cancelled' or (head['state'] == 'paused' and drained):
+                    return domain.status(run_id)
+                if head['state'] != 'active':
                     time.sleep(1)
                     continue
-                run = sync_sources(domain, run_id)
+                try:
+                    run = sync_sources(domain, run_id)
+                except ContractError as error:
+                    if not paused_admission(control, error):
+                        raise
+                    continue
                 for path, source in run['sources'].items():
-                    if source['state'] != 'prepared' or source['snapshot_id'] in running:
-                        continue
                     if control.status()['state'] != 'active':
                         break
+                    if source['state'] not in ('prepared', 'mapping_held') or source['snapshot_id'] in running:
+                        continue
                     snapshot = source['snapshot_id']
-                    wait = qualification_wait(domain.root(run_id), snapshot)
+                    held_source = source['state'] == 'mapping_held'
+                    if held_source and (snapshot in attempted_holds or not resumable_mapping_hold(domain, run, source)):
+                        continue
+                    wait = None if held_source else qualification_wait(domain.root(run_id), snapshot)
                     if wait and wait['state'] == 'exhausted':
                         pointer = qualification_wait_path(domain.root(run_id), snapshot)
                         try:
@@ -812,13 +836,15 @@ def watch(vault, run_id):
                                    source_path=path, snapshot_id=snapshot,
                                    wait=pinned(domain.vault, pointer.relative_to(domain.vault).as_posix()))
                         except ContractError as error:
-                            if error.code != 'INCREMENTAL_PAUSED':
+                            if not paused_admission(control, error):
                                 raise
                         continue
                     if (wait and wait['state'] == 'waiting' and time.time() < wait['retry_at']
                             or len(running) >= configuration()['source_prepare_concurrency']):
                         continue
-                    running[snapshot] = pool.submit(map_source, str(domain.vault), run_id, snapshot)
+                    running[snapshot] = (pool.submit(map_source, str(domain.vault), run_id, snapshot), held_source)
+                if control.status()['state'] != 'active':
+                    continue
                 run = domain.status(run_id)
                 if round_future is not None:
                     pass  # Keep sealing and mapping later-ready sources during this one fixed round.
@@ -830,10 +856,14 @@ def watch(vault, run_id):
                         mutate(domain, run_id, 'freeze_round', 'freeze-' + round_id, round_id=round_id,
                                max_maps=run['policy']['max_maps_per_round'])
                     except ContractError as error:
-                        if error.code != 'ROUND_BUSY':
+                        if error.code != 'ROUND_BUSY' and not paused_admission(control, error):
                             raise
                 elif not running and all(row['state'] in ('mapped', 'failed', 'mapping_held') for row in run['sources'].values()):
-                    return close(domain, run_id)
+                    try:
+                        return close(domain, run_id)
+                    except ContractError as error:
+                        if not paused_admission(control, error):
+                            raise
                 time.sleep(1)
     return domain.status(run_id)
 

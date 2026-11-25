@@ -227,6 +227,30 @@ def commit_reduced_map(domain, run_id, snapshot_id, root, sources, reduced, proo
         unresolved=reduced.get('unresolved', []), **extra)
 
 
+def resumable_mapping_hold(domain, run, source):
+    """Select historical holds with native dispositions that can form a partial Map."""
+    if 'map_supplement' in run or source.get('state') != 'mapping_held':
+        return False
+    pointer = source.get('mapping_hold', {}).get('execution_hold')
+    if not pointer:
+        return False
+    report = read_pin(domain.vault, pointer)
+    if report['reason'] != 'required-map-incomplete':
+        return False
+    entries = [(read_pin(domain.vault, entry['job'])['request'], entry) for entry in report['jobs']]
+    if any(not row['view'].get('issue') and entry['state'] != 'held' for row, entry in entries):
+        return False
+    root = domain.root(run['run_id']) / 'native/source' / safe_id(source['snapshot_id']) / 'mapping'
+    for path in (root / 'jobs').glob('*.result.json'):
+        if _load_json(path)['state'] != 'settled':
+            continue
+        job = path.with_name(path.name.removesuffix('.result.json') + '.json')
+        row = _load_json(job)['request']
+        if row['phase'] == 'short-map' and not row['view'].get('issue'):
+            return True
+    return False
+
+
 def map_source(vault, run_id, snapshot_id):
     import run_short_evidence_test as native
     from incremental_map_recovery import (MapAdmissionDeferred, execute_map_rows, inspect_map_rows,
@@ -237,13 +261,21 @@ def map_source(vault, run_id, snapshot_id):
 
     domain = service(Path(vault), run_id)
     snapshot = domain.validate_source_snapshot(run_id, snapshot_id)
+    run = domain.status(run_id)
+    original = run['sources'][snapshot['original']['ref']]
+    previous = original.get('mapping_hold', {}).get('execution_hold') if original['state'] == 'mapping_held' else None
+    if original['state'] == 'mapping_held' and not resumable_mapping_hold(domain, run, original):
+        return original['mapping_hold']
     control = IncrementalControl(domain.vault, run_id)
     scope = {'scope_kind': 'source', 'scope_id': snapshot_id}
     with ExitStack() as executor:
         try:
             executor.enter_context(control.executing(scope, 'mapping', fingerprint(snapshot)))
-            qualify(domain, run_id, snapshot_id)
-            mark_qualification_succeeded(domain.root(run_id), snapshot_id)
+            if previous is None:
+                qualify(domain, run_id, snapshot_id)
+                mark_qualification_succeeded(domain.root(run_id), snapshot_id)
+            else:
+                domain._mapping_isolation(run, snapshot_id, previous)
             check_qualification_active(control)
         except QualificationContention as error:
             record_qualification_wait(domain, run_id, snapshot_id, error)
@@ -253,13 +285,13 @@ def map_source(vault, run_id, snapshot_id):
                 raise
             return MAPPING_DEFERRED
         root, operation = initialize_scope(domain, run_id, 'source', snapshot_id, 'mapping', [snapshot_id])
-        alias = source_alias(domain.status(run_id), snapshot)
+        alias = source_alias(run, snapshot)
         sources = load_sources(domain.vault, [source_pin(snapshot)], aliases={snapshot['identity']['resource_id']: alias},
-                               actor=domain.status(run_id)['actor'])
+                               actor=run['actor'])
         for source in sources.values():
             source['incremental_snapshot_id'] = snapshot_id
         seeds, groups = seed_requests(sources), mapping_groups(sources, MAP_CONTRACT)
-        if not execute_selected_retries(domain, run_id, root, operation, control):
+        if previous is None and not execute_selected_retries(domain, run_id, root, operation, control):
             return MAPPING_DEFERRED
         recorded = []
         for path in sorted((root / 'jobs').glob('*.json')):
@@ -275,8 +307,10 @@ def map_source(vault, run_id, snapshot_id):
             settle_usage(domain, run_id, root, row, result)
         dispatch_started = False
         while True:
-            reason = required_hold_reason(root, holds)
+            reason = required_hold_reason(root, holds, allow_acknowledged=True)
             if reason:
+                if previous is not None:
+                    return original['mapping_hold']
                 evidence = source_execution_hold(domain, run_id, root, operation, holds, reason)
                 return mutate(domain, run_id, 'hold_source_mapping', 'map-execution-held-' + snapshot_id[-48:],
                               source_path=snapshot['original']['ref'], snapshot_id=snapshot_id, execution_hold=evidence)
@@ -297,8 +331,12 @@ def map_source(vault, run_id, snapshot_id):
             acknowledged.update({row['id']: (row, result, proof) for row, result, proof in results})
             holds.update(isolated)
         verified = [(row, proof) for row, result, proof in acknowledged.values() if result['state'] == 'settled']
-        if not any(row['phase'] == 'short-map' for row, _ in verified):
-            evidence = source_execution_hold(domain, run_id, root, operation, holds, 'no-verified-results')
+        if not any(row['phase'] == 'short-map' and not row['view'].get('issue') for row, _ in verified):
+            if previous is not None:
+                return original['mapping_hold']
+            reason = required_hold_reason(root, holds)
+            require(reason, 'source Map has no verified main requests or bound execution failure')
+            evidence = source_execution_hold(domain, run_id, root, operation, holds, reason)
             return mutate(domain, run_id, 'hold_source_mapping', 'map-execution-held-' + snapshot_id[-48:],
                           source_path=snapshot['original']['ref'], snapshot_id=snapshot_id, execution_hold=evidence)
         proofs = []
@@ -308,8 +346,8 @@ def map_source(vault, run_id, snapshot_id):
             proofs.append({'proof': proof, 'task_body': json.loads(native.task_body(root, path))})
             receipt = root / 'receipts' / path.name
             receipts.append(pinned(domain.vault, receipt.relative_to(domain.vault).as_posix()))
-        execution_hold = ({'execution_hold': source_execution_hold(domain, run_id, root, operation, holds, 'partial')}
-                          if holds else {})
+        execution_hold = ({'execution_hold': source_execution_hold(domain, run_id, root, operation, holds, 'partial',
+                                                                  previous=previous)} if holds else {})
         return commit_reduced_map(domain, run_id, snapshot_id, root, sources, plan['reduced'], proofs, receipts,
                                   **execution_hold)
 
