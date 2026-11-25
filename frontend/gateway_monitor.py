@@ -15,8 +15,9 @@ START_TIMEOUT = 60
 
 
 class GatewayMonitor:
-    def __init__(self, state, enabled):
+    def __init__(self, state, enabled, *, autostart=True):
         self.state = Path(state)
+        self.autostart = autostart
         self.stop = Event()
         self.thread = None
         self.process = None
@@ -59,7 +60,7 @@ class GatewayMonitor:
 
             record, live = observe()
             deadline = time.monotonic() + START_TIMEOUT
-            if not live.running and not live.probe_error:
+            if self.autostart and not live.running and not live.probe_error:
                 # Serialize simultaneous console launches for the same Hermes profile.
                 lease = (home / ".operator-console-gateway.lock").open("a")
                 try:
@@ -77,7 +78,7 @@ class GatewayMonitor:
                 pid = live.pid
                 phase = record.get("gateway_state") if record.get("pid") == pid else None
                 exit_code = self.process.poll() if self.process else None
-                waiting = time.monotonic() < deadline and not seen_serving
+                waiting = self.autostart and time.monotonic() < deadline and not seen_serving
                 if live.running:
                     if phase in SERVING:
                         seen_serving = True
@@ -115,7 +116,9 @@ class GatewayMonitor:
                 elif self.process and exit_code is None:
                     self.report("unverified", pid=self.process.pid, detail="启动超过 60 秒，仍在等待 Gateway 状态。")
                 else:
-                    self.report("stopped", detail="重启控制台可再次启动 Gateway。")
+                    detail = ("重启控制台可再次启动 Gateway。" if self.autostart
+                              else "控制台已按仅观察模式启动，Gateway 当前未运行。")
+                    self.report("stopped", detail=detail)
                 if lease and (live.running or exit_code is not None or not waiting):
                     lease.close()
                     lease = None

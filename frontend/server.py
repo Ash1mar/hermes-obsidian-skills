@@ -36,7 +36,7 @@ class Console:
         self.state = Path(config["state"])
         self.run_lock = RLock()
         self.deletions = RunDeletion(config)
-        self.gateway = GatewayMonitor(self.state, config["writable"])
+        self.gateway = GatewayMonitor(self.state, config["writable"], autostart=config.get("start_gateway", True))
         self.history = {}
         for directory in histories:
             request = read(directory / "request.json")
@@ -484,14 +484,23 @@ def main():
     parser.add_argument("--wsl-distro", default=os.environ.get("WSL_DISTRO_NAME", "Ubuntu-24.04"))
     parser.add_argument("--history", type=Path, action="append", default=[])
     parser.add_argument("--read-only", action="store_true")
+    parser.add_argument("--no-start-gateway", action="store_true", help="observe Gateway without starting it")
     parser.add_argument("--obsidian-user", help="Linux desktop user used to open Obsidian")
     args = parser.parse_args()
+    writable = platform.system() == "Linux" and not args.read_only
+    if writable:
+        try:
+            from hermes_cli import kanban_db
+            import gateway.status
+        except ImportError as error:
+            parser.exit(2, f"当前 Python 无法加载 Hermes 运行模块（{sys.executable}）：{error}\n"
+                           "请用 frontend/launch.py 从 Hermes 托管环境启动控制台。\n")
     skills = args.skills_root.resolve()
     config = {"state": str(args.state.resolve()), "skills_root": str(skills), "distro": args.wsl_distro,
               "provider_config": str((args.provider_config or skills / FINALIZE / "config/retrieval-provider.json").resolve()),
               "provider_state": str(args.provider_state.resolve()),
               "obsidian_user": args.obsidian_user,
-              "writable": platform.system() == "Linux" and not args.read_only}
+              "writable": writable, "start_gateway": not args.no_start_gateway}
     with ThreadingHTTPServer(("127.0.0.1", args.port), Handler) as server:
         server.console = Console(config, [p.resolve() for p in args.history])
         server.console.gateway.start()
