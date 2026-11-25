@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from incremental import command, progress, settings
+from incremental import command, control_actions, progress, settings
 
 
 class IncrementalConsoleTests(unittest.TestCase):
@@ -152,6 +152,51 @@ class IncrementalConsoleTests(unittest.TestCase):
             self.assertFalse(projected['nodes'][1]['actions'])
             self.assertEqual(projected['incremental']['overall_stages'][-1]['state'], 'pending')
             self.assertIsNone(projected['release_id'])
+
+    def test_pause_admits_active_scopes_and_does_not_bind_work_progress(self):
+        import server
+
+        with tempfile.TemporaryDirectory() as folder:
+            base = Path(folder)
+            directory = base / 'console-fixture'
+            directory.mkdir()
+            request = {'operation_id': directory.name, 'actor': 'operator', 'vault_path': str(base / 'vault')}
+            root = base / 'vault/_system/ledgers/incremental-ingest' / directory.name
+            (root / 'control').mkdir(parents=True)
+            run = {'state': 'active', 'revision': 8}
+            control = {'state': 'active', 'revision': 4, 'active_scopes': {
+                'first': {'stage': 'mapping'}, 'second': {'stage': 'mapping'}}}
+            attempt = {'id': 'prior'}
+            actions = control_actions(run, control, True, 'running', attempt, available=True)
+            pause = next(action for action in actions if action['id'] == 'incremental-pause')
+            self.assertFalse(pause['gateway_required'])
+            snapshot = {'nodes': [{'actions': actions}]}
+            console = server.Console({'state': str(base), 'writable': True}, [])
+            with patch.object(server, 'progress', return_value=snapshot), patch.object(server.subprocess, 'Popen') as popen:
+                (directory / 'request.json').write_text(json.dumps(request))
+                body = {**pause, 'action': pause['id'], 'run_revision': 7}
+                with self.assertRaisesRegex(server.UserError, '控制修订'):
+                    console.launch({**body, 'control_revision': 3}, directory.name)
+                popen.assert_not_called()
+                result = console.launch(body, directory.name)
+
+            record = json.loads((directory / 'attempts' / result['attempt'] / 'attempt.json').read_text())
+            self.assertEqual(record['run_revision'], 8)
+            (root / 'run.json').write_text(json.dumps({**run, 'revision': 9}))
+            control_file = root / 'control/head.json'
+            control_file.write_text(json.dumps(control))
+            script = base / 'skills/hermes-obsidian-governed-ingest-orchestrator/scripts/manage_incremental_ingest.py'
+            script.parent.mkdir(parents=True)
+            script.write_text('# fixture only')
+            emitted = []
+            config = {'skills_root': str(base / 'skills')}
+            argv = command(directory, record, config, lambda _, operation: emitted.append(operation))
+            self.assertEqual(argv[-3], 'control')
+            self.assertEqual(emitted[0]['action'], 'pause')
+            self.assertEqual(emitted[0]['expected_revision'], 4)
+            control_file.write_text(json.dumps({**control, 'state': 'paused', 'revision': 5}))
+            with self.assertRaisesRegex(ValueError, '其他控制状态'):
+                command(directory, record, config, lambda *_: None)
 
 
 if __name__ == '__main__':

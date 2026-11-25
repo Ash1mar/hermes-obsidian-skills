@@ -140,8 +140,9 @@ class Console:
                     option = None
                 if option is None:
                     raise UserError("当前回执不支持此操作。请刷新并检查节点详情。")
-                if action.startswith('incremental-') and any(body.get(key) != option.get(key)
-                        for key in ('control_revision', 'run_revision')):
+                if action.startswith('incremental-') and (
+                        body.get('control_revision') != option.get('control_revision')
+                        or (action != 'incremental-pause' and body.get('run_revision') != option.get('run_revision'))):
                     raise UserError('增量运行或控制修订已经变化，请刷新后重试。')
                 if action in (MAP_CONFIRM, MAP_CONTINUE):
                     validate_map_action(body, option, UserError)
