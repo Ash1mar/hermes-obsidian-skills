@@ -356,7 +356,13 @@ function renderIncremental(timeline) {
     const phase = boundary.evidence.phase === "coordination" ? "页面协调" : "页面写作";
     controls.append(make("p", `${boundary.scope.scope_id} · ${phase}模型连接连续失败。已保留本轮进度。`, "hint"));
   } else if (boundary) controls.append(make("p", `暂停在${incrementalStageNames[boundary.stage] || boundary.stage}`, "hint"));
-  for (const action of current.nodes[0].actions) {
+  const actions = current.nodes[0].actions;
+  const pause = actions.find(action => action.id === "incremental-pause");
+  const pauseButton = rowButton("暂停增量运行", () => { if (pause) reenter(pause); });
+  pauseButton.disabled = !pause || !writable || posting || runs.some(run => run.launcher_active);
+  controls.append(pauseButton);
+  for (const action of actions) {
+    if (action === pause) continue;
     const button = rowButton(action.label, () => reenter(action));
     button.disabled = !writable || posting || (action.gateway_required !== false && !gatewayReady());
     controls.append(button);

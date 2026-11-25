@@ -211,7 +211,7 @@ def control_actions(run, control, controller_active, state, latest, *, available
         elif not supplemental_id or boundary == 'manual':
             actions.append({'id': 'incremental-continue', 'label': '继续当前作用域'})
     elif control.get('state') == 'active':
-        if not control.get('active_scopes') and (not supplemental_id or controller_active is True):
+        if not supplemental_id or controller_active is True:
             actions.append({'id': 'incremental-pause', 'label': '暂停增量运行', 'gateway_required': False})
         if not supplemental_id or controller_active is not True:
             actions.append({'id': 'incremental-reconcile', 'label': '接管并核对未完成工作'})
@@ -400,7 +400,8 @@ def command(directory, attempt, config, save):
         root, run, control, target_id = child['root'], child['run'], child['control'], successor
         if attempt['action'] == 'incremental-continue' and (control.get('boundary') or {}).get('stage') != 'manual':
             raise ValueError('当前补跑停点需要专用恢复入口。')
-    same_revisions = (control['revision'] == attempt['control_revision'] and run['revision'] == attempt['run_revision'])
+    same_control_revision = control['revision'] == attempt['control_revision']
+    same_revisions = same_control_revision and run['revision'] == attempt['run_revision']
     if attempt['action'] == 'incremental-continue-round':
         binding = {key: attempt[key] for key in ('round_id', 'boundary_fingerprint')}
         operation = {'run_id': target_id, 'actor': request['actor'], 'action': 'continue',
@@ -419,7 +420,10 @@ def command(directory, attempt, config, save):
         path = directory / 'attempts' / attempt['id'] / 'incremental-request.json'
         save(path, operation)
         return args + ['control', '--request', str(path)]
-    if not same_revisions:
+    if attempt['action'] == 'incremental-pause':
+        if not same_control_revision or run.get('state') != 'active' or control.get('state') != 'active':
+            raise ValueError('增量运行已进入其他控制状态，请刷新后重试。')
+    elif not same_revisions:
         raise ValueError('增量运行或控制修订已经变化，请刷新后重试。')
     if attempt['action'] in (MAP_CONFIRM, MAP_CONTINUE):
         confirming = attempt['action'] == MAP_CONFIRM
