@@ -31,6 +31,9 @@ let attempt;
 let writable = false;
 let obsidianAvailable = false;
 let gateway = { state: "checking", ready: false };
+let gatewayRevision = 0;
+let gatewayCommand;
+let gatewayRequestError;
 let posting = false;
 let refreshing = false;
 let runListRevision = 0;
@@ -125,15 +128,19 @@ function rowButton(text, callback, style = "secondary") {
   return button;
 }
 
+function gatewayReady() {
+  return gateway.ready && gatewayCommand !== "stop";
+}
+
 function render() {
   const busy = runs.some(run => run.launcher_active);
   get("connection").textContent = writable ? "已连接本机" : "历史查看模式";
-  get("start").disabled = !writable || !gateway.ready || busy || posting;
+  get("start").disabled = !writable || !gatewayReady() || busy || posting;
   get("form-hint").textContent = !writable ? "在 Hermes 所在的 WSL 中启动控制台后即可提交。"
     : busy ? "已有控制台任务正在执行。"
-    : !gateway.ready ? "等待 Hermes Gateway 派发就绪，可在 DevTools 查看启动状态。"
+    : !gatewayReady() ? "Gateway 派发就绪后可开始处理。"
     : "新建独立测试 Vault，合格页面将发布并同步索引。查询保持关闭。";
-  renderWhenChanged("gateway", gateway, renderGateway);
+  renderWhenChanged("gateway", [gateway, writable, gatewayCommand, gatewayRequestError], renderGateway);
   get("runs-count").textContent = runs.length;
   renderWhenChanged("runs", [runs, selected, writable, posting], () => {
     get("runs").replaceChildren(...(runs.length ? runs.map(run => {
@@ -164,7 +171,7 @@ function render() {
   }
   get("selected-label").textContent = current ? current.vault_name : "选择一次运行查看节点状态";
   get("run-status").replaceChildren(...(current ? [badge(current.deletion_pending ? "deletion_pending" : current.state)] : []));
-  renderWhenChanged("timeline", [selected, current?.nodes, current?.incremental, current?.historical, current?.deletion_pending, busy, posting, gateway.ready, writable], renderTimeline);
+  renderWhenChanged("timeline", [selected, current?.nodes, current?.incremental, current?.historical, current?.deletion_pending, busy, posting, gatewayReady(), writable], renderTimeline);
   const pause = current?.pause;
   const pausedAt = pause === "network_recovery" ? "等待网络恢复" : incrementalStageNames[pause] || pause;
   const summary = current ? [
@@ -190,19 +197,54 @@ function render() {
     : "与日志同一轮次的数据来自工作流账本及短路径回执。";
 }
 
+function canControlGateway(action) {
+  return writable && !gatewayCommand && gateway[`can_${action}`] === true;
+}
+
 function renderGateway() {
   const [label, tone] = gatewayLabels[gateway.state] || gatewayLabels.unverified;
   const header = get("gateway-top");
-  header.textContent = `Gateway · ${label}`;
+  const headerText = `Gateway · ${label}${writable ? " · 管理" : ""}`;
+  if (header.textContent !== headerText) header.textContent = headerText;
   header.className = `environment gateway-indicator badge ${tone}`;
+  get("workflow-gateway").hidden = !writable || gatewayReady();
+  get("workflow-gateway-state").textContent = gatewayCommand === "stop" ? "正在提交 Gateway 停止请求。" : `Gateway ${label}。`;
   const status = get("gateway-badge");
   status.textContent = label;
   status.className = `badge ${tone}`;
+  for (const [action, name] of [["start", "启动"], ["stop", "停止"]]) {
+    const button = get(`gateway-${action}`);
+    button.disabled = !canControlGateway(action);
+    button.textContent = gatewayCommand === action ? `正在提交${name}…` : `${name} Gateway`;
+  }
+  const error = get("gateway-control-error");
+  const errors = [gatewayRequestError, !gatewayCommand && gateway.operation_error].filter(Boolean);
+  const errorText = [...new Set(errors)].join("\n");
+  if (error.textContent !== errorText) error.textContent = errorText;
   facts(get("gateway-facts"), [
     ["进程 PID", gateway.pid],
     ["启动方式", { started: "本次控制台启动", reused: "复用已有进程" }[gateway.ownership]],
     ["状态", gateway.detail],
   ]);
+}
+
+async function controlGateway(action) {
+  if (!canControlGateway(action)) return;
+  if (action === "stop" && !window.confirm("停止后将暂停当前 Hermes 配置的 Gateway 服务和任务派发。确认停止？")) return;
+  gatewayCommand = action;
+  gatewayRequestError = undefined;
+  render();
+  try {
+    const data = await api(`/api/gateway/${action}`, {});
+    gateway = data.gateway;
+  } catch (error) {
+    gatewayRequestError = error.message;
+  } finally {
+    gatewayRevision += 1;
+    gatewayCommand = undefined;
+    render();
+    refresh();
+  }
 }
 
 function renderTimeline() {
@@ -277,7 +319,7 @@ function renderTimeline() {
         }
         const button = rowButton(action.label, () => reenter(action, input?.value, nextPause?.value), "secondary");
         button.disabled = !writable || posting || (action.id !== "pause" && runs.some(run => run.launcher_active))
-          || (action.gateway_required !== false && !gateway.ready);
+          || (action.gateway_required !== false && !gatewayReady());
         row.append(button);
         detail.append(row);
       }
@@ -316,7 +358,7 @@ function renderIncremental(timeline) {
   } else if (boundary) controls.append(make("p", `暂停在${incrementalStageNames[boundary.stage] || boundary.stage}`, "hint"));
   for (const action of current.nodes[0].actions) {
     const button = rowButton(action.label, () => reenter(action));
-    button.disabled = !writable || posting || (action.gateway_required !== false && !gateway.ready);
+    button.disabled = !writable || posting || (action.gateway_required !== false && !gatewayReady());
     controls.append(button);
   }
   const stages = make("li", undefined, "incremental-scope");
@@ -334,7 +376,7 @@ function renderIncremental(timeline) {
     for (const action of source.actions || []) {
       if (action.id !== "incremental-release-source") continue;
       const button = rowButton(action.label, () => reenter(action));
-      button.disabled = !writable || posting || (action.gateway_required !== false && !gateway.ready);
+      button.disabled = !writable || posting || (action.gateway_required !== false && !gatewayReady());
       row.append(button);
     }
     card.append(row);
@@ -462,7 +504,7 @@ function appendIncrementalAction(container, action, scopeFragments = []) {
   const selected = selectedRecoveryFragments.get(action.scope_token) || new Set();
   const preview = action.id === "incremental-map-recovery-preview";
   const enabled = writable && !posting && (preview || !runs.some(run => run.launcher_active))
-    && (action.gateway_required === false || gateway.ready);
+    && (action.gateway_required === false || gatewayReady());
   const requestIds = action.request_ids;
   const selectionKey = `${action.preview_key}:${action.report_sha256}:${action.strategy}`;
   let requestId = requestIds?.length === 1 ? requestIds[0] : selectedMapRequests.get(selectionKey);
@@ -667,8 +709,9 @@ function showLog(log, text) {
 
 async function refreshLogs() {
   if (page() !== "devtools") return;
+  const revision = gatewayRevision;
   const gatewayLog = api("/api/gateway/log").then(data => {
-    if (page() !== "devtools") return;
+    if (page() !== "devtools" || revision !== gatewayRevision || gatewayCommand) return;
     const fallback = gateway.ownership === "reused" ? "本次控制台复用了已有 Gateway。"
       : gateway.state === "disabled" ? "历史查看模式未启动 Gateway。"
       : gateway.detail || "等待 Gateway 启动日志。";
@@ -681,12 +724,13 @@ async function refresh() {
   if (refreshing) return;
   refreshing = true;
   const revision = runListRevision;
+  const requestedGatewayRevision = gatewayRevision;
   try {
     const data = await api("/api/runs");
     if (revision !== runListRevision) return;
     runs = data.runs;
     writable = data.writable;
-    gateway = data.gateway;
+    if (requestedGatewayRevision === gatewayRevision && !gatewayCommand) gateway = data.gateway;
     obsidianAvailable = data.obsidian_available === true;
     if (!runs.some(run => run.id === selected)) setSelection(runs[0]?.id);
     const id = selected;
@@ -706,7 +750,7 @@ async function refresh() {
     message(error.message, true);
   } finally {
     refreshing = false;
-    if (revision !== runListRevision) refresh();
+    if (revision !== runListRevision || requestedGatewayRevision !== gatewayRevision) refresh();
   }
 }
 
@@ -900,6 +944,8 @@ get("workflow-mode").addEventListener("change", () => {
   get("legacy-pause-label").hidden = incremental;
 });
 get("toggle-form").addEventListener("click", () => showForm(get("new-panel").hidden));
+get("gateway-start").addEventListener("click", () => controlGateway("start"));
+get("gateway-stop").addEventListener("click", () => controlGateway("stop"));
 get("delete-confirmation").addEventListener("input", renderDeleteForm);
 get("delete-form").addEventListener("submit", deleteRun);
 get("delete-cancel").addEventListener("click", () => get("delete-dialog").close());

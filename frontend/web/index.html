@@ -35,6 +35,9 @@
             <div><h1>文档处理</h1><p>从原始 PDF 到 Vault 发布、索引和最终验收。</p></div>
             <button type="button" class="secondary" id="toggle-form" aria-expanded="true" aria-controls="new-panel">收起新建</button>
           </header>
+          <p class="gateway-workflow hint" id="workflow-gateway" hidden>
+            <span id="workflow-gateway-state"></span> <a href="#devtools">前往 DevTools 管理 Gateway</a>
+          </p>
           <section class="panel new-panel" id="new-panel" aria-labelledby="form-title">
             <div class="panel-heading"><h2 id="form-title">新建 Vault 运行</h2></div>
             <form id="create">
@@ -110,6 +113,14 @@
           <header class="page-header"><div><h1>DevTools</h1><p>查看执行器日志和当前运行的 Hermes 原生状态。</p></div></header>
           <section class="panel terminal-panel gateway-panel" aria-labelledby="gateway-title">
             <div class="panel-heading"><h2 id="gateway-title">Hermes Gateway</h2><span class="badge" id="gateway-badge">检查中</span></div>
+            <div class="gateway-controls">
+              <div class="gateway-buttons" role="group" aria-label="Gateway 操作">
+                <button type="button" id="gateway-start" aria-describedby="gateway-control-hint" disabled>启动 Gateway</button>
+                <button type="button" id="gateway-stop" class="secondary" disabled>停止 Gateway</button>
+              </div>
+              <p id="gateway-control-hint" class="hint">当前配置若启用了 Kanban 派发，启动 Gateway 可能处理已排队的原生任务。</p>
+              <p id="gateway-control-error" class="source-error" role="alert"></p>
+            </div>
             <dl id="gateway-facts" class="facts"></dl>
             <pre id="gateway-log" tabindex="0" aria-label="Gateway 启动日志">等待 Gateway 启动日志。</pre>
           </section>
