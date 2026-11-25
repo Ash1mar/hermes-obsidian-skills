@@ -118,6 +118,12 @@ details p { margin: 6px 0; }
 .terminal-panel { overflow: hidden; }
 .gateway-panel { margin-bottom: 20px; }
 .gateway-panel pre { min-height: 93px; max-height: 260px; }
+.gateway-workflow { margin: -5px 0 18px; padding: 9px 12px; border: 1px solid var(--line); border-radius: 8px; background: #fff; }
+.gateway-controls { padding: 14px 19px; border-bottom: 1px solid var(--line); }
+.gateway-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+#gateway-control-hint { margin-top: 8px; }
+#gateway-control-error { margin: 8px 0 0; white-space: pre-line; overflow-wrap: anywhere; }
+#gateway-control-error:empty { margin: 0; }
 .terminal-panel select { width: min(50%, 220px); padding: 5px; font-size: 12px; }
 pre { margin: 0; min-height: 350px; max-height: 65vh; overflow: auto; background: #102533; color: #d7efea; padding: 17px; white-space: pre-wrap; overflow-wrap: anywhere; font: 12px/1.65 "IBM Plex Mono", Consolas, monospace; }
 #dev-hint { padding: 0 19px 16px; }

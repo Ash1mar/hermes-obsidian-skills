@@ -17,7 +17,7 @@ cd /mnt/c/Users/vimdr/Desktop/hermes-workspace/hermes-obsidian-skills
 
 在 Windows 浏览器打开控制台打印的本机地址。默认端口为 `18465`，可在启动命令末尾添加 `-- --port <端口>` 调整。服务只绑定 `127.0.0.1`，面向同一台机器上的单人操作。若 WSL 的 localhost 转发被禁用，请用 WSL 内的浏览器或恢复该转发。
 
-控制台启动时先检查当前 Hermes profile 的 Gateway，复用已有进程，或运行 `hermes gateway run`。页面顶部显示检查、启动、就绪等状态，点击可进入 DevTools 查看进程 PID、启动来源和本次启动日志。Gateway 就绪后即可提交新流程。打开控制台只启动 Gateway，工作流由提交操作触发。Windows 的历史查看模式不启动 Gateway。
+控制台启动时先检查当前 Hermes profile 的 Gateway，复用已有进程，或运行 `hermes gateway run`。点击页面顶部的 Gateway 状态可进入 DevTools，使用「启动 Gateway」或「停止 Gateway」，并查看状态和操作日志。使用 `--no-start-gateway` 进入控制台时，可用同一按钮手动启动。Gateway 就绪后即可提交新流程。启动会按 Hermes 配置启用派发。停止使用当前 profile 的 `hermes gateway stop`，控制台等待确认进程退出。Windows 历史查看模式只显示状态。
 
 只需查看或删除记录时，可在启动命令末尾添加 `-- --no-start-gateway`。控制台会探测已有 Gateway，无进程时只启动控制台。
 

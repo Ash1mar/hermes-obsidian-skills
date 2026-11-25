@@ -392,6 +392,11 @@ class Handler(BaseHTTPRequestHandler):
                            "obsidian_available": platform.system() == "Linux" and bool(shutil.which("obsidian"))})
             elif not write and url.path == "/api/gateway/log":
                 self.json({"text": app.gateway.log()})
+            elif write and url.path in {"/api/gateway/start", "/api/gateway/stop"}:
+                if not app.config["writable"]:
+                    raise UserError("当前控制台仅供查看。")
+                self.payload()
+                self.json({"gateway": app.gateway.request(parts[-1])}, HTTPStatus.ACCEPTED)
             elif write and url.path == "/api/runs":
                 self.json(app.launch(self.payload()), HTTPStatus.ACCEPTED)
             elif parts[:2] == ["api", "runs"] and len(parts) in {3, 4}:
