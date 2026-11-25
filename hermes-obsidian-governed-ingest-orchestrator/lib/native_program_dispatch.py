@@ -12,11 +12,47 @@ from pathlib import Path
 import subprocess
 import sys
 
+from hermes_managed_runtime import DEFAULT_HERMES_ROOT, clean_python_environment, committed_python
 from program_worker import ASSIGNEE, canonical_binding, admission_check
 from hermes_source_units import ContractError
 from hermes_source_units.pass_capacity import effective as pass_capacity
 from hermes_source_units.source_units import _exclusive_lock, _vault_path
 from hermes_source_units.runtime_telemetry import measured, span
+
+
+def worker_python():
+    import hermes_cli
+
+    cli_file = getattr(hermes_cli, '__file__', None)
+    roots = (DEFAULT_HERMES_ROOT, Path(cli_file).resolve().parents[1]) if cli_file else (DEFAULT_HERMES_ROOT,)
+    for root in roots:
+        if (root / 'pm/environments.py').is_file():
+            return committed_python(root)
+    # Older Hermes installations may run directly in their own virtualenv.
+    if sys.prefix != sys.base_prefix:
+        return Path(sys.executable)
+    raise RuntimeError('No Hermes managed installation or active Hermes virtual environment found')
+
+
+def worker_runtime():
+    try:
+        from tools.environments.local import build_subprocess_env
+        from gateway.session_context import _VAR_MAP
+
+        env = clean_python_environment(build_subprocess_env(inherit_profile_home=True))
+        for key in _VAR_MAP:
+            env.pop(key, None)
+        env.pop('HERMES_DELEGATED_CHILD_CONTEXT', None)
+        python = worker_python()
+        probe = subprocess.run([str(python), '-I', '-B', '-c', 'import hermes_cli'], env=env,
+                               stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10)
+        if probe.returncode:
+            detail = probe.stderr.strip().splitlines()
+            raise RuntimeError(detail[-1] if detail else f'Python exited with status {probe.returncode}')
+    except (ImportError, OSError, RuntimeError, ValueError, subprocess.TimeoutExpired) as error:
+        raise ContractError('PROGRAM_RUNTIME_UNAVAILABLE', '$',
+                            f'Cannot start native program workers with the committed Hermes Python: {error}') from error
+    return python, env
 
 
 def effective_capacity(adapter, native_cap):
@@ -49,6 +85,7 @@ def _dispatch_programs(adapter, workflow_id):
     if not board:
         return []
     spawned = []
+    runtime = None
     with contextlib.closing(kc.connect(board=board)) as conn:
         kd.reap_worker_zombies()
         # Native termination and trusted completion acknowledgement precede
@@ -111,6 +148,9 @@ def _dispatch_programs(adapter, workflow_id):
                     or current['kanban']['board_id'] != board
                     or task.idempotency_key != card['idempotency_key']):
                 raise RuntimeError('native program card differs from the canonical binding')
+            if runtime is None:
+                runtime = worker_runtime()
+            python, worker_env = runtime
             try:
                 admission_check(adapter, request)
             except ContractError as exc:
@@ -153,12 +193,7 @@ def _dispatch_programs(adapter, workflow_id):
             try:
                 workspace = kw.resolve_workspace(claimed, board=board)
                 kw.set_workspace_path(conn, claimed.id, str(workspace))
-                from tools.environments.local import build_subprocess_env
-                from gateway.session_context import _VAR_MAP
-                env = build_subprocess_env(inherit_profile_home=True)
-                for key in _VAR_MAP:
-                    env.pop(key, None)
-                env.pop('HERMES_DELEGATED_CHILD_CONTEXT', None)
+                env = worker_env.copy()
                 env.update(HERMES_KANBAN_TASK=claimed.id,
                     HERMES_KANBAN_RUN_ID=str(claimed.current_run_id),
                     HERMES_KANBAN_CLAIM_LOCK=claimed.claim_lock,
@@ -167,7 +202,7 @@ def _dispatch_programs(adapter, workflow_id):
                     HERMES_KANBAN_WORKSPACE=str(workspace), TERMINAL_CWD=str(workspace),
                     HERMES_INGEST_EXECUTOR=executor,HERMES_INGEST_WORKFLOW_ID=workflow_id,HERMES_INGEST_NODE=request['node'])
                 script = Path(__file__).resolve().parents[1] / 'scripts/run_program_worker.py'
-                argv = kd._restart_safe_worker_argv(claimed, [sys.executable, str(script),
+                argv = kd._restart_safe_worker_argv(claimed, [str(python), str(script),
                     '--vault', str(adapter.workflow.vault), '--binding', body['worker_binding']])
                 with kd._open_worker_log(claimed, board) as output:
                     with span('native_spawn',binding=request,native_run_id=str(claimed.current_run_id)):
