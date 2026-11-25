@@ -9,7 +9,6 @@ from hermes_source_units.incremental_sources import completion_connection, requi
 from hermes_source_units.source_units import _exclusive_lock, _load_json, _sha, _vault_path
 from hermes_source_units.validation import fingerprint
 from incremental_preparation_state import can_retry_preparation, native_state, startup_failure_evidence
-from prepare_short_evidence_test import save
 
 KIND = 'preparation-unfinished'
 STARTUP_KIND = 'preparation-runtime-startup'
@@ -31,6 +30,7 @@ def authorize_startup_retry(domain, request):
     """Stage the exact original pre-registration failure under a manual pause."""
     from hermes_cli import kanban_db as kb
     from ingest_kanban import IngestKanbanAdapter
+    from prepare_short_evidence_test import save
     from program_worker import canonical_binding
 
     require(set(request) == {'run_id', 'actor', 'operation_id', 'control_revision', 'run_revision',
@@ -200,6 +200,7 @@ def startup_retry_pending(receipt, native_runs):
 def authorize_retry(domain, request):
     from hermes_cli import kanban_db as kb
     from ingest_kanban import IngestKanbanAdapter, desired_graph, failure_record
+    from prepare_short_evidence_test import save
     from program_worker import canonical_binding
 
     require(set(request) == {'run_id', 'actor', 'operation_id', 'control_revision', 'run_revision',
@@ -303,6 +304,8 @@ def conversion_generation(adapter, bound, source):
             and os.environ.get('HERMES_KANBAN_TASK') == bound['task_id']
             and os.environ.get('HERMES_KANBAN_BOARD') == grant['board'] and native_run > grant['prior_run_id'],
             'source preparation retry escaped its native task or input')
+    from prepare_short_evidence_test import save
+
     save(path.with_suffix('.started.json'), {'operation_id': request['operation_id'], 'run_id': native_run,
                                             'task_id': bound['task_id']})
     return request['operation_id']
