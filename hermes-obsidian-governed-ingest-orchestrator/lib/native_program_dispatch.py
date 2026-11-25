@@ -134,14 +134,15 @@ def _dispatch_programs(adapter, workflow_id):
             if executor not in ('program-v1', 'semantic-v1') or body.get('workflow_id') != workflow_id:
                 raise RuntimeError('program card lacks its executor contract')
             request, current = canonical_binding(adapter, body['worker_binding'], executor=executor)
-            if request['node'].startswith('source-prepare:') and current['scope'].get('workflow_mode') == 'incremental_v1':
+            scope = current.get('scope', {})
+            if request['node'].startswith('source-prepare:') and scope.get('workflow_mode') == 'incremental_v1':
                 from incremental_preparation_retry import startup_retry_receipt, startup_retry_pending
 
                 staged = startup_retry_receipt(adapter.workflow.vault, current, task.id, request['node'], request['input_fingerprint'])
                 if staged:
                     from hermes_source_units.incremental_control import IncrementalControl
 
-                    if IncrementalControl(adapter.workflow.vault, current['scope']['incremental_run_id']).status()['state'] != 'active':
+                    if IncrementalControl(adapter.workflow.vault, scope['incremental_run_id']).status()['state'] != 'active':
                         continue
                     native_runs = [{'id': row.id, 'outcome': row.outcome, 'worker_pid': row.worker_pid,
                                     'started_at': row.started_at, 'ended_at': row.ended_at}
