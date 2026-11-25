@@ -25,6 +25,58 @@ class PipelineProjectionTests(unittest.TestCase):
             mapping = next(row for row in view['pipeline'] if row['key'] == 'mapping')
             self.assertEqual((mapping['state'], mapping['detail']), ('held', '必需 Map 任务缺少可核验回执'))
 
+    def test_reopened_mapping_hold_projects_live_work_without_completing_downstream(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            put(root / 'native/source/snapshot/mapping/operation.json', {'board': 'original-map'})
+            source = {'path': 'source.pdf', 'state': 'mapping_held', 'snapshot_id': 'snapshot',
+                      'mapping_hold': {'execution_hold': {'ref': 'execution-hold.json'}}}
+            run = {'state': 'active', 'map_result_ids': ['older-map'], 'consumed_map_ids': ['older-map']}
+            scope = {'scope_kind': 'source', 'scope_id': 'snapshot', 'stage': 'mapping'}
+            blocked = {'status': 'blocked', 'claimed': False, 'last_outcome': 'error'}
+            cases = (
+                ('active', {}, {'status': 'running', 'claimed': True}, 'running'),
+                ('active', {}, {'status': 'ready', 'claimed': True}, 'running'),
+                ('active', {}, {'status': 'ready', 'claimed': False}, 'waiting-dispatch'),
+                ('active', {'mapping': scope}, None, 'running'),
+                ('active', {'mapping': {**scope, 'scope_id': 'another'}}, None, 'held'),
+                ('active', {}, {'status': 'done', 'claimed': False}, 'held'),
+                ('pausing', {'mapping': scope}, None, 'pausing'),
+                ('paused', {}, {'status': 'running', 'claimed': True}, 'held'),
+                ('cancelled', {}, {'status': 'ready', 'claimed': False}, 'held'),
+            )
+            for state, active_scopes, task, expected in cases:
+                with self.subTest(state=state, active_scopes=active_scopes, task=task):
+                    tasks = {'isolated': blocked}
+                    if task:
+                        tasks['other-request'] = task
+                    reader = lambda board: tasks if board == 'original-map' else {}
+                    control = {'state': state, 'active_scopes': active_scopes}
+                    if state == 'pausing':
+                        control['boundary'] = {'stage': 'mapping', 'scope': scope}
+                    view = source_pipeline(dict(source), root, run, control, {}, [], native_reader=reader)
+                    prepare, mapping, coordination = view['pipeline'][:3]
+                    self.assertEqual(view['state'], 'mapping_held')
+                    self.assertEqual(mapping['state'], expected)
+                    self.assertEqual(view['display_state'], expected)
+                    self.assertEqual(prepare['state'], 'completed')
+                    self.assertEqual(coordination['state'], 'held' if expected == 'held' else 'pending')
+                    if expected == 'pausing':
+                        self.assertEqual(mapping['result_state'], 'running')
+                    if expected == 'running':
+                        self.assertIn('原 Map 看板', mapping['detail'])
+                        round_ = {'stages': [{'key': key, 'state': 'completed'}
+                                             for key in ('coordination', 'writing', 'formal-build', 'release', 'acceptance')]}
+                        overall = overall_stages([view], [round_], run, control)
+                        self.assertEqual(overall[1]['state'], 'running')
+                        self.assertEqual(overall[2]['state'], 'active')
+
+            control = {'state': 'active', 'active_scopes': {'mapping': scope}}
+            qualification = {**source, 'mapping_hold': {'wait': {'ref': 'qualification-wait.json'}}}
+            view = source_pipeline(qualification, root, run, control, {}, [], native_reader=lambda _: {})
+            self.assertEqual(view['display_state'], 'held')
+            self.assertEqual(view['pipeline'][1]['detail'], '来源资格核验已达到重试上限')
+
     def test_ordinary_writing_reports_independent_section_candidates(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

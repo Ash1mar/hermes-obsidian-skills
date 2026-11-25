@@ -136,17 +136,26 @@ def active_scope(control, kind, identity, phase):
                for row in control.get('active_scopes', {}).values())
 
 
-def operation_state(directory, control, kind, identity, phase, *, complete=False, native_reader=None):
+def operation_state(directory, control, kind, identity, phase, *, complete=False, native_reader=None,
+                    track_dispatch=False):
     if complete:
         return 'completed'
     operation = read(directory / 'operation.json')
     tasks = (native_reader or native_tasks)(operation.get('board')).values() if operation else []
-    if any(row['status'] == 'running' or row['claimed'] for row in tasks):
+    work_allowed = not track_dispatch or control.get('state') in ('active', 'pausing')
+    if work_allowed and any(row['status'] == 'running' or row['claimed'] for row in tasks):
         return 'running'
+    admitted = work_allowed and active_scope(control, kind, identity, phase)
+    if track_dispatch:
+        # A source Map can proceed with other requests while an isolated request stays blocked.
+        if admitted:
+            return 'running'
+        if control.get('state') == 'active' and any(row['status'] == 'ready' for row in tasks):
+            return 'waiting-dispatch'
     if any(row['status'] in ('failed', 'triage') or
            (row['status'] == 'blocked' and row.get('last_outcome') in ('failed', 'error')) for row in tasks):
         return 'failed'
-    if active_scope(control, kind, identity, phase):
+    if admitted:
         return 'running'
     results = [read(path) for path in (directory / 'jobs').glob('*.result.json')]
     if any(row.get('state') == 'failed' for row in results):
@@ -263,15 +272,33 @@ def source_pipeline(item, root, run, control, source_workflow, rounds, *, native
                       retry_eligible=retry_preparation, interrupted_run_id=task.get('last_run_id') if retry_preparation else None)]
     snapshot = item.get('snapshot_id')
     wait = read(root / 'source-qualification' / snapshot / 'wait.json') if snapshot else {}
-    mapping = 'completed' if item['state'] == 'mapped' else 'held' if prep_state == 'failed' or item['state'] == 'mapping_held' else (
-        operation_state(root / 'native/source' / snapshot / 'mapping', control, 'source', snapshot, 'mapping', native_reader=native_reader) if snapshot else 'pending')
+    source_state = item['state']
+    mapping_held = source_state == 'mapping_held'
+    execution_hold = mapping_held and bool(item.get('mapping_hold', {}).get('execution_hold'))
+    check_reopened_map = (execution_hold and run.get('state') == 'active'
+                          and control.get('state') in ('active', 'pausing'))
+    mapping = 'pending'
+    if snapshot and (source_state == 'prepared' or check_reopened_map):
+        mapping = operation_state(root / 'native/source' / snapshot / 'mapping', control, 'source',
+                                  snapshot, 'mapping', native_reader=native_reader, track_dispatch=True)
     mapping_detail = None
-    if item['state'] == 'prepared' and wait.get('state') in ('waiting', 'exhausted'):
+    if source_state == 'mapped':
+        mapping = 'completed'
+    elif prep_state == 'failed':
+        mapping = 'held'
+    elif mapping_held:
+        if mapping == 'running':
+            mapping_detail = '正在原 Map 看板处理可继续的请求'
+        elif mapping == 'waiting-dispatch':
+            mapping_detail = '原 Map 看板有请求等待调度'
+        else:
+            mapping = 'held'
+            mapping_detail = ('必需 Map 任务缺少可核验回执' if execution_hold
+                              else '来源资格核验已达到重试上限')
+    elif source_state == 'prepared' and wait.get('state') in ('waiting', 'exhausted'):
         mapping, mapping_detail = 'waiting-qualification', f"来源资格锁争用，已记录 {len(wait['attempts'])} 次等待"
-    elif item['state'] == 'mapping_held':
-        mapping_detail = ('必需 Map 任务缺少可核验回执'
-                          if item.get('mapping_hold', {}).get('execution_hold') else '来源资格核验已达到重试上限')
-    pipeline.append(apply_boundary(stage('mapping', mapping, detail=mapping_detail), control, 'source', snapshot))
+    mapping_stage = apply_boundary(stage('mapping', mapping, detail=mapping_detail), control, 'source', snapshot)
+    pipeline.append(mapping_stage)
     related = [row for row in rounds if snapshot and snapshot in row['snapshots']]
     resource = None
     pointer = item.get('snapshot') or {}
@@ -292,7 +319,7 @@ def source_pipeline(item, root, run, control, source_workflow, rounds, *, native
         relevant = [next(value for value in row['stages'] if value['key'] == key) for row in related]
         states = [row['state'] for row in relevant]
         value = aggregate(states)
-        if not related and (prep_state == 'failed' or item['state'] == 'mapping_held'):
+        if not related and mapping == 'held':
             value = 'held'
         failure = next((phase.get('detail') for phase in reversed(relevant) if phase['state'] == 'failed'), None)
         pipeline.append(stage(key, value, shared=True, round_ids=[row['round_id'] for row in related],
@@ -303,8 +330,9 @@ def source_pipeline(item, root, run, control, source_workflow, rounds, *, native
     retry = retry_capability(item, root, run, control, native_reader=native_reader)
     if not retry['allowed'] and prep_state == 'failed':
         retry['reason'] = reason or '此来源失败尚无可用的受控重试入口。'
-    display = mapping if item['state'] == 'mapping_held' or (item['state'] == 'prepared' and mapping != 'pending') else (
-        prep_state if item['state'] == 'pending' else item['state'])
+    display = prep_state if source_state == 'pending' else source_state
+    if mapping_held or (source_state == 'prepared' and mapping_stage['state'] != 'pending'):
+        display = mapping_stage['state']
     item.update(source_sha256=digest, display_state=display, pipeline=pipeline, native_preparation={k: v for k, v in task.items() if k != 'body'}, failure_reason=reason, related_rounds=[
         {'round_id': row['round_id'], 'dependent_page_ids': dependencies[row['round_id']], 'shared': True,
          'dependent_change_ids': dependent_changes[row['round_id']],
@@ -360,11 +388,15 @@ def retry_capability(item, root, run, control, *, native_reader=None):
 
 def overall_stages(sources, rounds, run, control):
     result = []
-    final_inputs = all(row['state'] in ('mapped', 'failed', 'mapping_held') for row in sources) and not run.get('active_round_id') and set(
-        run.get('map_result_ids', [])) == set(run.get('consumed_map_ids', []))
+    mapping_states = [next(row for row in source['pipeline'] if row['key'] == 'mapping')['state'] for source in sources]
+    final_inputs = (all(row['state'] in ('mapped', 'failed', 'mapping_held') for row in sources)
+                    and not any(state in ('running', 'waiting-dispatch', 'paused', 'pausing') for state in mapping_states)
+                    and not run.get('active_round_id')
+                    and set(run.get('map_result_ids', [])) == set(run.get('consumed_map_ids', [])))
     for key, _ in STAGES:
-        values = ([next(row for row in source['pipeline'] if row['key'] == key)['state'] for source in sources]
-                  if key in ('prepare', 'mapping') else [next(row for row in round_['stages'] if row['key'] == key)['state']
+        values = (mapping_states if key == 'mapping' else
+                  [next(row for row in source['pipeline'] if row['key'] == key)['state'] for source in sources]
+                  if key == 'prepare' else [next(row for row in round_['stages'] if row['key'] == key)['state']
                       for round_ in rounds] if key != 'closure' else [run['state'] if run.get('state') in ('completed', 'partial') else 'pending'])
         state = aggregate(values)
         if key not in ('prepare', 'mapping', 'closure') and state == 'completed' and not final_inputs:
