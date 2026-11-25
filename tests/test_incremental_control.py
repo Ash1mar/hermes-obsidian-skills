@@ -14,6 +14,21 @@ def control_fixture(tmp_path):
     return control
 
 
+def test_manual_continue_waits_for_startup_recovery_receipt(tmp_path):
+    control = control_fixture(tmp_path)
+    paused = control.control({'action': 'pause', 'actor': 'operator', 'operation_id': 'pause',
+                              'expected_revision': 1})
+    intent = control.root.parent / 'preparation-retries' / (fingerprint('original.pdf') + '.json')
+    _write_atomic(intent, _json_bytes({'request': {'retry_kind': 'preparation-runtime-startup'}}))
+    request = {'action': 'continue', 'actor': 'operator', 'operation_id': 'resume',
+               'expected_revision': paused['revision'], 'boundary_fingerprint': fingerprint(paused['boundary'])}
+    with pytest.raises(ContractError, match='finish staging the original source startup retry'):
+        control.control(request)
+    assert control.status() == paused
+    _write_atomic(intent.with_suffix('.dispatch.json'), _json_bytes({'state': 'staged'}))
+    assert control.control(request)['state'] == 'active'
+
+
 def test_network_pause_drains_and_only_continues_its_exact_unfinished_round(tmp_path):
     from hermes_source_units.incremental_sources import pinned
 

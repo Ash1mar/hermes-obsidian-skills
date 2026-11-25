@@ -1,5 +1,8 @@
 """Evidence required to treat a native preparation as an interrupted execution."""
 
+import hashlib
+import json
+
 ABNORMAL_ENDS = frozenset({'failed', 'error', 'worker_exited', 'worker_crash', 'crashed', 'gave_up',
                            'timeout', 'timed_out', 'lease_expired', 'claim_expired', 'killed', 'cancelled',
                            'reclaimed', 'stale'})
@@ -30,3 +33,29 @@ def can_retry_preparation(*, run_state, control_state, admission, source_state, 
     return (run_state == control_state == 'active' and admission != 'held' and source_state == 'pending'
             and not outcome and not needs_review and task.get('status') in ('blocked', 'scheduled')
             and interrupted_preparation(task, execution))
+
+
+def startup_failure_evidence(task, runs, log):
+    """Correlate one pre-registration import failure with its original native run."""
+    if (task.status not in ('archived', 'blocked', 'scheduled') or task.claim_lock
+            or task.current_run_id is not None or task.worker_pid or not runs or not log):
+        return None
+    if any(row.ended_at is None or row.outcome == 'completed' for row in runs):
+        return None
+    attempted = [row for row in runs if row.worker_pid]
+    if len(attempted) != 1:
+        return None
+    ended = attempted[0]
+    if (ended.id != max(row.id for row in runs) or ended.outcome not in ABNORMAL_ENDS | {'scheduled'}
+            or type(ended.worker_pid) is not int or ended.worker_pid <= 0
+            or ended.started_at is None or ended.started_at > ended.ended_at):
+        return None
+    try:
+        diagnostic = json.loads(log)
+    except (TypeError, ValueError):
+        return None
+    if diagnostic != {'ok': False, 'code': 'PROGRAM_EXECUTION_FAILED', 'error': "No module named 'hermes_cli'"}:
+        return None
+    return {'run_id': ended.id, 'outcome': ended.outcome, 'worker_pid': ended.worker_pid,
+            'started_at': ended.started_at, 'ended_at': ended.ended_at,
+            'log_sha256': hashlib.sha256(log.encode('utf-8')).hexdigest()}

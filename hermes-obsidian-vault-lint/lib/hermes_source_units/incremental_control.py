@@ -404,6 +404,12 @@ class IncrementalControl:
             if action == 'continue':
                 if head['state'] != 'paused' or request.get('boundary_fingerprint') != fingerprint(head['boundary']):
                     raise ContractError('STALE_INPUT', '$', 'continue requires the exact acknowledged boundary')
+                if head['boundary']['stage'] == 'manual':
+                    for pending in (self.root.parent / 'preparation-retries').glob('*.json'):
+                        if (re.fullmatch(r'[0-9a-f]{64}', pending.stem)
+                                and not pending.with_suffix('.dispatch.json').is_file()
+                                and _load_json(pending).get('request', {}).get('retry_kind') == 'preparation-runtime-startup'):
+                            raise ContractError('INCREMENTAL_PAUSED', '$', 'finish staging the original source startup retry first')
                 if head['boundary']['stage'] == 'closure' and 'partial_closure' not in request:
                     run = _load_json(self.root.parent / 'run.json')
                     if any(row['state'] == 'reserved' for row in run['reservations'].values()):

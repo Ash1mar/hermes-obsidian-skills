@@ -1983,6 +1983,12 @@ class IngestKanbanAdapter:
                                 durable_slice_failure = failure_at >= float(ended[-1]['started_at'])
                             except (KeyError, TypeError, ValueError):
                                 pass
+                    if ended and node.kind == 'source-prepare' and updated['scope'].get('workflow_mode') == 'incremental_v1':
+                        from incremental_preparation_retry import startup_retry_receipt, startup_retry_pending
+
+                        staged = startup_retry_receipt(self.workflow.vault, updated, ids[node.name], node.name, node.input_fingerprint)
+                        if staged and startup_retry_pending(staged, ended):
+                            ended = []  # Projection must not re-report the authenticated pre-registration failure.
                     if ended and not durable_slice_failure and snapshot['task']['status'] not in ('running', 'archived') and not self._failed_card(workflow_id, node):
                         self._projection_failure(workflow_id, node, ids[node.name], "NATIVE_WORKER_STOPPED",
                             str(ended[-1].get("error") or ended[-1].get("summary") or "worker ended without a Vault outcome"))
